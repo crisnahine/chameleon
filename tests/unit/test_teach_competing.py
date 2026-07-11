@@ -322,3 +322,32 @@ def test_teach_competing_alias_preferred_never_warns_as_package(tmp_path, monkey
         )
         assert res["status"] == "success"
         assert "package.json" not in (res.get("warning") or "")
+
+
+def test_teach_competing_baseurl_bare_import_not_flagged_as_package(tmp_path, monkeypatch):
+    # A bare specifier resolved via tsconfig `baseUrl` (`lib/api-client` ->
+    # `<repo>/lib/api-client.ts`) is a first-party module, not a missing npm
+    # package. It must not be flagged, while a genuinely absent bare package still is.
+    from chameleon_mcp import tools
+
+    repo = _setup_repo_with_package_json(tmp_path, monkeypatch, ["axios"])
+    (repo / "tsconfig.json").write_text(
+        json.dumps({"compilerOptions": {"baseUrl": "."}}), encoding="utf-8"
+    )
+    (repo / "lib").mkdir(exist_ok=True)
+    (repo / "lib" / "api-client.ts").write_text("export const api = {};\n", encoding="utf-8")
+
+    ok = _data(
+        tools.teach_competing_import(
+            str(repo), archetype="httpclient", preferred="lib/api-client", over="fetch"
+        )
+    )
+    assert "package.json" not in (ok.get("warning") or "")
+
+    # detection intact: a real missing bare package still warns
+    bad = _data(
+        tools.teach_competing_import(
+            str(repo), archetype="httpclient", preferred="totally-absent-pkg", over="fetch"
+        )
+    )
+    assert "package.json" in (bad.get("warning") or "")

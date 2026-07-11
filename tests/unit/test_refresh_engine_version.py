@@ -395,15 +395,37 @@ def test_profile_needs_rederive_on_empty_summary(tmp_path):
     assert t._profile_needs_rederive(pd) is True
 
 
-def test_profile_needs_rederive_on_unsupported_schema_manifest(tmp_path):
-    # A too-new / unsupported schema_version in profile.json is rejected at read
-    # time; a plain refresh must REPAIR it (re-derive) rather than noop, or the
-    # user has no slash-command recovery path (BUG-A1).
+def test_profile_needs_rederive_false_on_too_new_int_schema(tmp_path):
+    # A too-new INTEGER schema_version is a forward-compat mismatch (a NEWER engine
+    # wrote it), NOT corruption -- so _profile_needs_rederive must NOT report it as
+    # needing a re-derive. Re-deriving would DOWNGRADE and destroy a teammate's
+    # newer committed profile. refresh_repo refuses this case up front with an
+    # unsupported_schema_version status (verified separately); by the time
+    # _profile_needs_rederive is consulted the too-new case has already returned,
+    # so it treats a complete-but-newer profile as not-needing-repair. (A non-int
+    # schema IS corruption and still forces repair -- see the sibling test below.)
     pd = _complete_profile(tmp_path)
     pd.joinpath("profile.json").write_text(
         json.dumps({"generation": 1, "schema_version": 999}), encoding="utf-8"
     )
-    assert t._profile_needs_rederive(pd) is True
+    assert t._profile_needs_rederive(pd) is False
+
+
+def test_refresh_refuses_too_new_schema_without_downgrading(tmp_path):
+    # The real recovery-safety contract: refresh_repo must REFUSE a profile whose
+    # schema_version is newer than this engine supports (a teammate's newer
+    # committed profile) -- both with and without force -- instead of re-deriving
+    # and silently DOWNGRADING it. The profile.json must be left byte-identical.
+    pd = _complete_profile(tmp_path)
+    manifest = json.dumps({"generation": 1, "schema_version": 999})
+    pd.joinpath("profile.json").write_text(manifest, encoding="utf-8")
+
+    for force in (False, True):
+        out = t._refresh_repo_locked(tmp_path, force=force)
+        data = out.get("data", out)
+        assert data.get("status") == "unsupported_schema_version", (force, data)
+        # The newer profile is preserved untouched -- never downgraded.
+        assert pd.joinpath("profile.json").read_text(encoding="utf-8") == manifest
 
 
 def test_profile_needs_rederive_on_corrupt_manifest(tmp_path):

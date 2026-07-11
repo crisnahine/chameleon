@@ -125,3 +125,37 @@ class TestMalformedPointers:
         rel = Path(os.path.relpath(gitdir_abs, wt))
         (wt / ".git").write_text(f"gitdir: {rel}\n", encoding="utf-8")
         assert resolve_profile_root(wt) == main
+
+
+class TestVerifyBackref:
+    """The trust bridge (`verify_backref=True`) must resolve a GENUINE linked
+    worktree to its main but REFUSE a forged `.git` pointer planted in an
+    attacker directory — the security gate behind trust inheritance."""
+
+    def test_genuine_worktree_passes_backref(self, tmp_path):
+        main = _make_main_repo(tmp_path / "main")
+        wt = tmp_path / "wt"
+        _git("worktree", "add", "-q", str(wt), "-b", "feature", cwd=main)
+        # A real worktree is registered under <main>/.git/worktrees/<name>/gitdir,
+        # so the back-ref round-trips and the trust bridge resolves to main.
+        assert main_worktree_root(wt / ".git", verify_backref=True) == main
+        # Non-verified path is unchanged.
+        assert main_worktree_root(wt / ".git") == main
+
+    def test_forged_pointer_refused_by_backref(self, tmp_path):
+        # A genuine worktree provides a real <main>/.git/worktrees/<name> gitdir.
+        main = _make_main_repo(tmp_path / "main")
+        real_wt = tmp_path / "real-wt"
+        _git("worktree", "add", "-q", str(real_wt), "-b", "feature", cwd=main)
+        real_gitdir = (real_wt / ".git").read_text(encoding="utf-8").strip()
+
+        # Attacker dir: a hand-crafted .git FILE pointing at the SAME real gitdir,
+        # plus a byte-identical .chameleon copy. The real worktrees/<name>/gitdir
+        # back-references real-wt, NOT this dir, so verify_backref refuses it.
+        forge = tmp_path / "forge"
+        forge.mkdir()
+        (forge / ".git").write_text(real_gitdir + "\n", encoding="utf-8")
+        assert main_worktree_root(forge / ".git", verify_backref=True) is None
+        # Without verification the forged pointer WOULD resolve — proving the
+        # back-ref check is what closes the gap (content path stays permissive).
+        assert main_worktree_root(forge / ".git") == main

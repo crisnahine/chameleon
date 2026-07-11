@@ -1349,16 +1349,15 @@ def get_archetype(repo: str, file_path: str) -> dict:
     if repo_root is None:
         return _envelope(_empty_archetype_envelope(content_signal_value, p.is_file()))
 
+    # The repo arg is ADVISORY: find_repo_root re-homes the file to its OWN
+    # repo/workspace, and the trust gate + archetype lookup below use that repo_id
+    # (expected_repo_id). An origin-less monorepo derives a DISTINCT repo_id per
+    # workspace root, so a caller following the documented "detect_repo once,
+    # reuse repo_id" pattern passes the COORDINATOR id for a workspace file --
+    # which used to mismatch here and return a blind, doc-invisible negative.
+    # Proceed with the file's own repo so the answer reflects the workspace the
+    # file lives in; trust is still gated on expected_repo_id below.
     expected_repo_id = _compute_repo_id(repo_root)
-    _mismatch = _empty_archetype_envelope(content_signal_value, p.is_file())
-    _mismatch["reason"] = "repo-arg-mismatch"
-    if _REPO_ID_RE.match(repo) if isinstance(repo, str) else False:
-        if expected_repo_id != repo:
-            return _envelope(dict(_mismatch))
-    else:
-        _resolved_path, resolved_repo_id = _resolve_repo_arg(repo)
-        if resolved_repo_id is None or resolved_repo_id != expected_repo_id:
-            return _envelope(dict(_mismatch))
 
     # Trust-gate: archetype classification is profile-derived content served from
     # the committed, attacker-controllable .chameleon/ profile, so refuse it from
@@ -1981,6 +1980,16 @@ def get_pattern_context(file_path: str) -> dict:
     content_signal_value = _content_signal_for_path(p)
     arch_response = _get_archetype_with_loaded(p, repo_root, loaded, content_signal_value)
     arch_data = arch_response["data"]
+
+    # Trust gate (parity with the public get_archetype, which refuses an untrusted
+    # profile): an untrusted profile is attacker-controllable, so its archetype
+    # CLASSIFICATION, witness PATH, and sha_hint must not be disclosed -- not only
+    # the canonical content. _get_archetype_with_loaded bypasses get_archetype's
+    # gate, so null the archetype here; the witness/sha block below is keyed on
+    # arch_data["archetype"] and therefore stays empty, and the canonical_excerpt
+    # keeps its untrusted redaction marker.
+    if trust_state_str == "untrusted":
+        arch_data = _empty_archetype_envelope(content_signal_value, p.is_file())
 
     if arch_data.get("archetype"):
         arch_entry = loaded.archetypes.get("archetypes", {}).get(arch_data["archetype"], {}) or {}
@@ -3423,23 +3432,17 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
     if repo_root is None:
         return _envelope({**empty, "reason": "path-unresolved"})
 
-    # The repo arg must agree with the file's own repo, mirroring get_archetype's
-    # cross-arg consistency check (a mismatched repo id must not read another
-    # repo's index).
     expected_repo_id = _compute_repo_id(repo_root)
-    if isinstance(repo, str) and _REPO_ID_RE.match(repo):
-        if repo != expected_repo_id:
-            return _envelope({**empty, "reason": "repo-arg-mismatch"})
-    else:
-        _resolved_path, resolved_repo_id = _resolve_repo_arg(repo)
-        if resolved_repo_id is None or resolved_repo_id != expected_repo_id:
-            # The file_path re-homes (via find_repo_root) to a repo/workspace
-            # other than the repo arg -- e.g. a nested monorepo package with its
-            # own .chameleon, which search_codebase surfaces from the coordinator
-            # index but whose per-file profile data lives in the package's profile.
-            # Name the mismatch instead of a bare empty so the caller can re-query
-            # with that workspace as `repo` (silent found:false read as "no data").
-            return _envelope({**empty, "reason": "repo-arg-mismatch"})
+    # The repo arg is ADVISORY: find_repo_root re-homes the file to its OWN
+    # repo/workspace, and the trust gate + index lookup below use that repo_id
+    # (expected_repo_id). An origin-less monorepo derives a DISTINCT repo_id per
+    # workspace root, so a caller following the documented "detect_repo once,
+    # reuse repo_id" pattern passes the COORDINATOR id for a workspace file --
+    # which used to mismatch here and return a blind, doc-invisible
+    # "repo-arg-mismatch" negative indistinguishable from a real no-match. Proceed
+    # with the file's own repo instead so the query answers for the workspace the
+    # file actually lives in (origin-backed monorepos share one repo_id, so this
+    # is a no-op there). Trust is still gated on expected_repo_id below.
 
     # Trust-gate: the index is an attacker-controllable committed artifact, so
     # its importer paths must not reach the model surface from an untrusted
@@ -3691,22 +3694,17 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
     if repo_root is None:
         return _envelope({**empty, "reason": "path-unresolved"})
 
-    # The repo arg must agree with the file's own repo, mirroring
-    # query_symbol_importers' cross-arg consistency check.
     expected_repo_id = _compute_repo_id(repo_root)
-    if isinstance(repo, str) and _REPO_ID_RE.match(repo):
-        if repo != expected_repo_id:
-            return _envelope({**empty, "reason": "repo-arg-mismatch"})
-    else:
-        _resolved_path, resolved_repo_id = _resolve_repo_arg(repo)
-        if resolved_repo_id is None or resolved_repo_id != expected_repo_id:
-            # The file_path re-homes (via find_repo_root) to a repo/workspace
-            # other than the repo arg -- e.g. a nested monorepo package with its
-            # own .chameleon, which search_codebase surfaces from the coordinator
-            # index but whose per-file profile data lives in the package's profile.
-            # Name the mismatch instead of a bare empty so the caller can re-query
-            # with that workspace as `repo` (silent found:false read as "no data").
-            return _envelope({**empty, "reason": "repo-arg-mismatch"})
+    # The repo arg is ADVISORY: find_repo_root re-homes the file to its OWN
+    # repo/workspace, and the trust gate + index lookup below use that repo_id
+    # (expected_repo_id). An origin-less monorepo derives a DISTINCT repo_id per
+    # workspace root, so a caller following the documented "detect_repo once,
+    # reuse repo_id" pattern passes the COORDINATOR id for a workspace file --
+    # which used to mismatch here and return a blind, doc-invisible
+    # "repo-arg-mismatch" negative indistinguishable from a real no-match. Proceed
+    # with the file's own repo instead so the query answers for the workspace the
+    # file actually lives in (origin-backed monorepos share one repo_id, so this
+    # is a no-op there). Trust is still gated on expected_repo_id below.
 
     # Trust-gate: the calls index is a committed artifact whose caller paths
     # must not reach the model surface from an untrusted profile.
@@ -3853,22 +3851,17 @@ def get_blast_radius(repo: str, file_path: str, function_name: str, depth: int =
     if repo_root is None:
         return _envelope({**empty, "reason": "path-unresolved"})
 
-    # The repo arg must agree with the file's own repo, mirroring get_callers'
-    # cross-arg consistency check.
     expected_repo_id = _compute_repo_id(repo_root)
-    if isinstance(repo, str) and _REPO_ID_RE.match(repo):
-        if repo != expected_repo_id:
-            return _envelope({**empty, "reason": "repo-arg-mismatch"})
-    else:
-        _resolved_path, resolved_repo_id = _resolve_repo_arg(repo)
-        if resolved_repo_id is None or resolved_repo_id != expected_repo_id:
-            # The file_path re-homes (via find_repo_root) to a repo/workspace
-            # other than the repo arg -- e.g. a nested monorepo package with its
-            # own .chameleon, which search_codebase surfaces from the coordinator
-            # index but whose per-file profile data lives in the package's profile.
-            # Name the mismatch instead of a bare empty so the caller can re-query
-            # with that workspace as `repo` (silent found:false read as "no data").
-            return _envelope({**empty, "reason": "repo-arg-mismatch"})
+    # The repo arg is ADVISORY: find_repo_root re-homes the file to its OWN
+    # repo/workspace, and the trust gate + index lookup below use that repo_id
+    # (expected_repo_id). An origin-less monorepo derives a DISTINCT repo_id per
+    # workspace root, so a caller following the documented "detect_repo once,
+    # reuse repo_id" pattern passes the COORDINATOR id for a workspace file --
+    # which used to mismatch here and return a blind, doc-invisible
+    # "repo-arg-mismatch" negative indistinguishable from a real no-match. Proceed
+    # with the file's own repo instead so the query answers for the workspace the
+    # file actually lives in (origin-backed monorepos share one repo_id, so this
+    # is a no-op there). Trust is still gated on expected_repo_id below.
 
     # Trust-gate: the calls index is a committed artifact whose caller paths must
     # not reach the model surface from an untrusted profile.
@@ -4235,19 +4228,16 @@ def get_callees(repo: str, file_path: str, function_name: str) -> dict:
         return _envelope({**empty, "reason": "path-unresolved"})
 
     expected_repo_id = _compute_repo_id(repo_root)
-    if isinstance(repo, str) and _REPO_ID_RE.match(repo):
-        if repo != expected_repo_id:
-            return _envelope({**empty, "reason": "repo-arg-mismatch"})
-    else:
-        _resolved_path, resolved_repo_id = _resolve_repo_arg(repo)
-        if resolved_repo_id is None or resolved_repo_id != expected_repo_id:
-            # The file_path re-homes (via find_repo_root) to a repo/workspace
-            # other than the repo arg -- e.g. a nested monorepo package with its
-            # own .chameleon, which search_codebase surfaces from the coordinator
-            # index but whose per-file profile data lives in the package's profile.
-            # Name the mismatch instead of a bare empty so the caller can re-query
-            # with that workspace as `repo` (silent found:false read as "no data").
-            return _envelope({**empty, "reason": "repo-arg-mismatch"})
+    # The repo arg is ADVISORY: find_repo_root re-homes the file to its OWN
+    # repo/workspace, and the trust gate + index lookup below use that repo_id
+    # (expected_repo_id). An origin-less monorepo derives a DISTINCT repo_id per
+    # workspace root, so a caller following the documented "detect_repo once,
+    # reuse repo_id" pattern passes the COORDINATOR id for a workspace file --
+    # which used to mismatch here and return a blind, doc-invisible
+    # "repo-arg-mismatch" negative indistinguishable from a real no-match. Proceed
+    # with the file's own repo instead so the query answers for the workspace the
+    # file actually lives in (origin-backed monorepos share one repo_id, so this
+    # is a no-op there). Trust is still gated on expected_repo_id below.
 
     gate = _trust_state_for(expected_repo_id)
     if gate is None or not gate.grants_root(repo_root):
@@ -5001,23 +4991,17 @@ def get_duplication_candidates(repo: str, file_path: str) -> dict:
     if repo_root is None:
         return _envelope({**empty, "reason": "path-unresolved"})
 
-    # The repo arg must agree with the file's own repo, mirroring the other
-    # cross-file reads (a mismatched repo id must not read another repo's
-    # catalog).
     expected_repo_id = _compute_repo_id(repo_root)
-    if isinstance(repo, str) and _REPO_ID_RE.match(repo):
-        if repo != expected_repo_id:
-            return _envelope({**empty, "reason": "repo-arg-mismatch"})
-    else:
-        _resolved_path, resolved_repo_id = _resolve_repo_arg(repo)
-        if resolved_repo_id is None or resolved_repo_id != expected_repo_id:
-            # The file_path re-homes (via find_repo_root) to a repo/workspace
-            # other than the repo arg -- e.g. a nested monorepo package with its
-            # own .chameleon, which search_codebase surfaces from the coordinator
-            # index but whose per-file profile data lives in the package's profile.
-            # Name the mismatch instead of a bare empty so the caller can re-query
-            # with that workspace as `repo` (silent found:false read as "no data").
-            return _envelope({**empty, "reason": "repo-arg-mismatch"})
+    # The repo arg is ADVISORY: find_repo_root re-homes the file to its OWN
+    # repo/workspace, and the trust gate + index lookup below use that repo_id
+    # (expected_repo_id). An origin-less monorepo derives a DISTINCT repo_id per
+    # workspace root, so a caller following the documented "detect_repo once,
+    # reuse repo_id" pattern passes the COORDINATOR id for a workspace file --
+    # which used to mismatch here and return a blind, doc-invisible
+    # "repo-arg-mismatch" negative indistinguishable from a real no-match. Proceed
+    # with the file's own repo instead so the query answers for the workspace the
+    # file actually lives in (origin-backed monorepos share one repo_id, so this
+    # is a no-op there). Trust is still gated on expected_repo_id below.
 
     # Trust-gate: the catalog is an attacker-controllable committed artifact, so
     # its function names and paths must not reach the model surface from an
@@ -5431,6 +5415,43 @@ def _profile_unrenderable_status(profile_dir: Path) -> str | None:
         return "profile_corrupted"
     if isinstance(sv, int) and sv > MAX_SUPPORTED_SCHEMA_VERSION:
         return "profile_unsupported_schema_version"
+    # profile.json parsing alone is not enough: a PRESENT-but-UNPARSEABLE core
+    # artifact (archetypes/canonicals/rules) is what makes load_profile_dir raise
+    # and the hooks fail open (enforce NOTHING) -- yet get_status would still
+    # render mode=enforce with active rules over it, a false-clean. Flag that
+    # here. Deliberately NOT a full load_profile_dir call: get_status renders
+    # legitimately-partial profiles on purpose (e.g. a missing enforcement.json
+    # still lists the read-time security pair), and the full load rejects those.
+    # Two corruption shapes are the false-clean case: a present-but-unparseable
+    # core JSON, and a cross-artifact GENERATION mismatch (e.g. archetypes.json
+    # reset to a valid-but-empty {} by a crashed/partial write or a bad 3-way
+    # .chameleon merge -- parses fine, but its generation no longer matches the
+    # others, so load_profile_dir rejects it exactly as the refresh-side twin does).
+    _core_objs: dict[str, dict] = {}
+    for _core in ("archetypes.json", "canonicals.json", "rules.json"):
+        _cp = profile_dir / _core
+        if not _cp.exists():
+            continue
+        try:
+            _obj = json.loads(_cp.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return "profile_corrupted"
+        if not isinstance(_obj, dict):
+            return "profile_corrupted"
+        _core_objs[_core] = _obj
+    # Generation parity mirrors load_profile_dir (profile/loader.py): when the
+    # full core trio is present alongside profile.json, all four generations must
+    # be equal integers or the profile is unloadable. Only checked when all are
+    # present, so a legitimately-partial profile is never false-flagged.
+    if len(_core_objs) == 3 and isinstance(peek, dict):
+        _gens = (
+            peek.get("generation"),
+            _core_objs["archetypes.json"].get("generation"),
+            _core_objs["rules.json"].get("generation"),
+            _core_objs["canonicals.json"].get("generation"),
+        )
+        if not all(isinstance(_g, int) for _g in _gens) or len(set(_gens)) != 1:
+            return "profile_corrupted"
     return None
 
 
@@ -7654,7 +7675,6 @@ def _profile_needs_rederive(profile_dir) -> bool:
     import json as _json
 
     from chameleon_mcp.bootstrap.transaction import is_committed
-    from chameleon_mcp.profile.loader import MAX_SUPPORTED_SCHEMA_VERSION
 
     # COMMITTED sentinel -- the loader's FIRST rejection (loader.py, checked before
     # generation/schema). A profile missing it is hard-rejected at read time
@@ -7688,11 +7708,12 @@ def _profile_needs_rederive(profile_dir) -> bool:
     if not isinstance(manifest, dict):
         return True
     schema = manifest.get("schema_version")
-    if schema is not None and (
-        isinstance(schema, bool)
-        or not isinstance(schema, int)
-        or schema > MAX_SUPPORTED_SCHEMA_VERSION
-    ):
+    # A non-int / bool schema_version is corruption -> repair. A schema ABOVE the
+    # supported max is NOT corruption: it is a newer-engine profile, and re-deriving
+    # would downgrade a teammate's committed work. refresh_repo refuses that case
+    # up front (the too-new-schema guard), so it never reaches here; do NOT force a
+    # rebuild on it.
+    if schema is not None and (isinstance(schema, bool) or not isinstance(schema, int)):
         return True
     # Cross-artifact generation gate -- mirrors load_profile_dir (profile/loader.py):
     # the loader REJECTS a profile whose profile/archetypes/rules/canonicals
@@ -7861,6 +7882,39 @@ def _refresh_repo_locked(repo_path, *, force: bool, analysis_root: Path | None =
     started_at = time.time()
     profile_dir = repo_path / ".chameleon"
     persisted_pg = _persisted_paths_glob(profile_dir)
+
+    # Too-new-schema guard (BEFORE the force short-circuit and every re-derive
+    # path below): a profile whose schema_version is ABOVE this engine's supported
+    # max was written by a NEWER chameleon. It is a forward-compat mismatch, not
+    # corruption -- re-deriving it (force, engine-upgrade, or repair path) would
+    # DOWNGRADE and destroy a teammate's committed newer profile. The read path
+    # already refuses it as profile_unsupported_schema_version; refuse here too,
+    # even under force, rather than clobbering. Recovery is to upgrade chameleon
+    # (or delete .chameleon to rebuild deliberately). A non-int/bool schema is
+    # corruption, handled by the repair path, not here.
+    from chameleon_mcp.profile.loader import MAX_SUPPORTED_SCHEMA_VERSION as _MAX_SCHEMA
+
+    try:
+        _pj_manifest = json.loads((profile_dir / "profile.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        _pj_manifest = None
+    _pj_schema = _pj_manifest.get("schema_version") if isinstance(_pj_manifest, dict) else None
+    if (
+        isinstance(_pj_schema, int)
+        and not isinstance(_pj_schema, bool)
+        and _pj_schema > _MAX_SCHEMA
+    ):
+        return _envelope(
+            {
+                "status": "unsupported_schema_version",
+                "error": (
+                    f"profile schema_version {_pj_schema} is newer than this engine "
+                    f"supports (max {_MAX_SCHEMA}); it was written by a newer chameleon. "
+                    "Refusing to re-derive so the newer profile is not downgraded -- "
+                    "upgrade chameleon to refresh it."
+                ),
+            }
+        )
 
     if force:
         return bootstrap_repo(
@@ -8039,6 +8093,30 @@ def _refresh_repo_locked(repo_path, *, force: bool, analysis_root: Path | None =
         return bootstrap_repo(
             str(repo_path), force=True, paths_glob=persisted_pg, analysis_root=analysis_root
         )
+
+    # A content-preserving rename (git mv) of a canonical-witness file keeps the
+    # file COUNT and every mtime unchanged, so cardinality_match + nothing_newer
+    # both stay true and the noop gate would preserve a profile whose canonical
+    # witness now points at a deleted path -- the WHOLE archetype's excerpt then
+    # reads `missing` (including untouched sibling files), silently, until a forced
+    # refresh. A vanished canonical witness is real drift the noop check misses, so
+    # re-derive fully to re-select a live witness. Bounded: canonicals.json read +
+    # one is_file per witness, off the per-edit hot path (refresh only).
+    try:
+        _canon = json.loads((profile_dir / "canonicals.json").read_text(encoding="utf-8"))
+        _canon_map = _canon.get("canonicals", {}) if isinstance(_canon, dict) else {}
+        for _entries in _canon_map.values():
+            for _e in _entries if isinstance(_entries, list) else []:
+                _wp = (_e.get("witness") or {}).get("path") if isinstance(_e, dict) else None
+                if _wp and not (repo_root / _wp).is_file():
+                    return bootstrap_repo(
+                        str(repo_path),
+                        force=True,
+                        paths_glob=persisted_pg,
+                        analysis_root=analysis_root,
+                    )
+    except (OSError, ValueError):
+        pass  # unreadable canonicals is handled by the repair guard above
 
     refresh_inputs = list(candidates) + [idioms_path]
     max_mtime = index_db.max_mtime_over(refresh_inputs)
@@ -11546,6 +11624,28 @@ def _npm_package_root(specifier: str) -> str | None:
     return s.split("/", 1)[0] or None
 
 
+def _resolves_under_tsconfig_baseurl(specifier: str, repo_path: Path) -> bool:
+    """True when a bare specifier is a first-party module resolved via tsconfig
+    ``baseUrl`` (so it is NOT a missing npm package).
+
+    A repo with ``compilerOptions.baseUrl`` (commonly ``"."``) lets code import a
+    local module by a bare path (`lib/api-client` -> `<repo>/lib/api-client.ts`).
+    ``_npm_package_root`` reads that as the package ``lib`` and the caller would
+    warn it is absent from package.json -- a false positive on a valid first-party
+    import. Resolve the specifier against baseUrl and probe the standard TS
+    suffixes; a hit means first-party. Best-effort, fail toward NOT warning."""
+    try:
+        from chameleon_mcp.phantom_imports import _exists_with_suffix, _load_tsconfig_paths
+
+        base_url, _paths = _load_tsconfig_paths(str(repo_path))
+        if not base_url:
+            return False
+        candidate = (repo_path / base_url / specifier).resolve()
+        return _exists_with_suffix(candidate)
+    except Exception:
+        return False
+
+
 def _package_json_dependency_names(repo_path: Path) -> set[str] | None:
     """Every declared dependency name across EVERY package.json in the repo, or None
     when there is no readable root package.json.
@@ -11869,7 +11969,7 @@ def teach_competing_import(
     if not already:
         try:
             pkg_name = _npm_package_root(preferred)
-            if pkg_name is not None:
+            if pkg_name is not None and not _resolves_under_tsconfig_baseurl(preferred, repo_path):
                 deps = _package_json_dependency_names(repo_path)
                 if deps is not None and pkg_name not in deps:
                     warnings.append(

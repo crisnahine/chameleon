@@ -188,3 +188,58 @@ def test_escaped_dollar_unescapes_to_literal_then_rejected():
     # `\$` is an escaped literal dollar; after unescaping it is a metachar, so
     # the target is treated as unparseable rather than guessed.
     assert extract(r"echo x > /a/out\$EXT") == []
+
+
+class TestMoveCopyDestArming:
+    """mv/cp/ln/install must arm the destination so a rename/copy/link cannot
+    launder a Stop-blocked secret file past the turn-end gate (regression for the
+    subshell / redirect / ln / install evasion sweep)."""
+
+    def test_plain_mv_cp_git_ln_install(self):
+        for cmd in (
+            "mv leaked.ts renamed.ts",
+            "cp leaked.ts renamed.ts",
+            "git mv leaked.ts renamed.ts",
+            "ln leaked.ts renamed.ts",
+            "ln -s leaked.ts renamed.ts",
+            "install -m 600 leaked.ts renamed.ts",
+        ):
+            assert "renamed.ts" in extract(cmd), cmd
+
+    def test_subshell_and_brace_group(self):
+        assert "renamed.ts" in extract("(mv leaked.ts renamed.ts)")
+        assert "renamed.ts" in extract("{ mv leaked.ts renamed.ts; }")
+
+    def test_redirect_does_not_hide_destination(self):
+        # The real dest is armed even behind a redirect (the redirect used to
+        # steal the last-operand slot); a bare fd like `2` is never the dest.
+        # (`/dev/null` may appear as a legit `>`-redirect write target -- harmless,
+        # filtered downstream as a non-code file.)
+        assert "renamed.ts" in extract("mv leaked.ts renamed.ts >/dev/null 2>&1")
+        assert "renamed.ts" in extract("mv leaked.ts renamed.ts 2>/dev/null")
+        assert "2" not in extract("mv leaked.ts renamed.ts >/dev/null 2>&1")
+
+    def test_mv_into_directory_offers_basename_candidate(self):
+        got = extract("mv leaked.ts subdir/")
+        assert "subdir/leaked.ts" in got
+
+    def test_non_move_commands_do_not_arm(self):
+        assert extract("npm install foo") == []
+        assert extract('echo "mv secret to prod"') == []
+        assert extract("printf 'cp'") == []
+        assert extract("grep mv file.txt") == []
+        assert extract('git commit -m "move it"') == []
+
+    def test_command_modifiers_do_not_hide_destination(self):
+        for prefix in ("env", "command", "sudo", "time", "nohup", "nice"):
+            cmd = f"{prefix} mv leaked.ts renamed.ts"
+            assert "renamed.ts" in extract(cmd), cmd
+
+    def test_command_substitution_and_assignment(self):
+        assert "renamed.ts" in extract("x=$(mv leaked.ts renamed.ts)")
+        assert "renamed.ts" in extract("x=`mv leaked.ts renamed.ts`")
+        assert "renamed.ts" in extract("FOO=bar mv leaked.ts renamed.ts")
+
+    def test_gnu_target_directory_flag(self):
+        assert "destdir/leaked.ts" in extract("mv -t destdir leaked.ts")
+        assert "destdir/leaked.ts" in extract("mv --target-directory=destdir leaked.ts")

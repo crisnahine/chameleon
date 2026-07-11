@@ -490,7 +490,9 @@ class TestFoldStringConcat:
         assert _fold_string_concat('"ab" + "cd"') == '"abcd"'
 
     def test_single_quote_fold(self):
-        assert _fold_string_concat("'ab' + 'cd'") == "'abcd'"
+        # The unified fold re-emits every collapsed literal double-quoted (the
+        # downstream secret scan is quote-agnostic); the point is contiguity.
+        assert _fold_string_concat("'ab' + 'cd'") == '"abcd"'
 
     def test_triple_concat(self):
         assert _fold_string_concat('"a" + "b" + "c"') == '"abc"'
@@ -1156,6 +1158,71 @@ class TestRubyNamingConventionLint:
         assert len(violations) == 1
         assert "Api::V1::FooController" in violations[0].message
         assert violations[0].actual == "SomethingNovel"
+
+    def test_ruby_framework_root_base_not_flagged(self):
+        # Regression (real-app, mastodon): a large `app/controllers` archetype
+        # folds api/admin/settings namespaces into one cluster whose dominant base
+        # is `Api::BaseController`. A top-level web controller correctly extending
+        # `ApplicationController` (the Rails framework root, shared ancestor of
+        # every namespace base) must NOT be steered onto the API base.
+        content = "class AccountsController < ApplicationController\nend\n"
+        conventions = {
+            "inheritance": {
+                "dominant_base": "Api::BaseController",
+                "frequency": 0.74,
+                "sample_size": 334,
+                "known_bases": ["Api::BaseController", "Admin::BaseController"],
+            },
+        }
+        assert lint_conventions(content, conventions, language="ruby") == []
+
+    def test_python_peer_composition_not_flagged(self):
+        # Regression (real-app, py-django-readthedocs): a serializer extending a
+        # same-file peer that itself roots at the dominant base is textbook DRF
+        # composition, not a deviation. The whole chain is compliant; the check
+        # must not flag each descendant link.
+        content = (
+            "class VersionSerializer(serializers.ModelSerializer):\n    pass\n\n"
+            "class VersionAdminSerializer(VersionSerializer):\n    pass\n"
+        )
+        conventions = {
+            "inheritance": {
+                "dominant_base": "serializers.ModelSerializer",
+                "frequency": 0.60,
+                "sample_size": 40,
+            },
+        }
+        assert lint_conventions(content, conventions, language="python") == []
+
+    def test_python_same_module_base_family_not_flagged(self):
+        # A different base from the dominant's own framework module
+        # (`serializers.RelatedField` alongside `serializers.ModelSerializer`) is a
+        # legitimate DRF variant, the Python analog of the Ruby `*BaseController`
+        # namespace family -- not a wrong base.
+        content = "class NotificationField(serializers.RelatedField):\n    pass\n"
+        conventions = {
+            "inheritance": {
+                "dominant_base": "serializers.ModelSerializer",
+                "frequency": 0.60,
+                "sample_size": 40,
+            },
+        }
+        assert lint_conventions(content, conventions, language="python") == []
+
+    def test_python_genuinely_unrelated_base_still_flags(self):
+        # Detection intact: a serializer extending an unrelated, non-peer,
+        # non-family base is still flagged.
+        content = "class BadSerializer(SomethingUnrelated):\n    pass\n"
+        conventions = {
+            "inheritance": {
+                "dominant_base": "serializers.ModelSerializer",
+                "frequency": 0.60,
+                "sample_size": 40,
+            },
+        }
+        v = lint_conventions(content, conventions, language="python")
+        assert len(v) == 1
+        assert v[0].rule == "inheritance-convention-violation"
 
 
 class TestRubyHeredocStrip:

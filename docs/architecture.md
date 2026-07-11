@@ -988,7 +988,7 @@ escape hatch.
 | `import-preference-violation` | warning | Archetype-dependent, calibration-gated. |
 | `jsx-presence-mismatch` | error / warning | Block-eligible only at error. |
 | `naming-convention-violation` | warning | Calibration- and signal-gated. |
-| `inheritance-convention-violation` | warning | Ruby; calibration-gated. |
+| `inheritance-convention-violation` | warning | Ruby and Python; calibration-gated. |
 | `file-naming-convention-violation` | warning | Calibration-gated. |
 | `default-export-kind-mismatch`, `top-level-node-kinds-mismatch`, `named-export-count-bucket-mismatch`, `content-signal-mismatch` | warning/info | Advisory structural shape. |
 | `insecure-random`, `weak-hash`, `sql-string-interpolation`, `command-injection`, `insecure-deserialization` | warning | Advisory security sinks; never block-eligible. |

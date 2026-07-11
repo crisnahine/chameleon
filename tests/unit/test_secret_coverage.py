@@ -8,7 +8,12 @@ quote styles or assembled via `.join('')` is reassembled before scanning.
 
 from __future__ import annotations
 
-from chameleon_mcp.lint_engine import _fold_string_concat, scan_secrets
+# chameleon-ignore-file secret-detected-in-content
+# This is the secret scanner's OWN test suite: it must embed fake credentials
+# (dummy AWS/GitHub/Stripe tokens) as literals so the detector and the concat
+# de-obfuscation fold can be exercised. None are real secrets. The named
+# file-scope directive is the sanctioned escape for exactly such fixtures.
+from chameleon_mcp.lint_engine import _fold_string_concat, scan_hard_secrets, scan_secrets
 from chameleon_mcp.profile.secret_scanner import scan_for_secrets
 
 
@@ -147,3 +152,72 @@ class TestFoldRobustness:
         # Linear-time guarantee: a long alternating chain must not hang.
         chain = ("'a' + \"b\" + " * 500) + '"c"'
         _fold_string_concat(chain)
+
+    def test_string_dense_large_content_is_fast(self):
+        # Regression: an atom whose body swallowed newlines turned every quote in
+        # a docstring-heavy file into a giant multi-line "adjacency", making the
+        # fold multi-second on ~100KB. Newline-bounded atoms keep it near-linear.
+        # A docstring/string-dense 100KB blob must fold well under a generous bound.
+        import time
+
+        blob = (
+            'def f():\n    """doc "quoted" text over\n    many lines"""\n    x = "a" + "b"\n' * 1200
+        )[:100_000]
+        start = time.perf_counter()
+        _fold_string_concat(blob)
+        assert time.perf_counter() - start < 1.0  # real cost ~60ms; 1s is slack for CI
+
+
+class TestSplitSecretForms:
+    """Every string-splitting form must reconstruct a hardcoded AWS key so the
+    hard-secret scan sees it (regression for the concat-fold evasion sweep)."""
+
+    def _denies(self, code: str) -> bool:
+        return bool(scan_hard_secrets(_fold_string_concat(code)))
+
+    def test_bypass_forms_all_fold_to_a_hit(self):
+        forms = [
+            "k = `AKIA` + `ABCDEFGHIJKLMNOP`",  # backtick concat
+            "k = \"AKIA\" + 'ABCDEFGHIJKLMNOP'",  # cross quote
+            'k = f"AKIA" + f"ABCDEFGHIJKLMNOP"',  # f-string prefix
+            'k = r"AKIA" + b"ABCDEFGHIJKLMNOP"',  # r/b prefixes
+            'k = """AKIA""" + "ABCDEFGHIJKLMNOP"',  # triple + single mix
+            'k = "AKIA" "ABCDEFGHIJKLMNOP"',  # implicit adjacency (Python/Ruby)
+            'k = "AKIA""ABCDEFGHIJKLMNOP"',  # adjacency, no space
+            'k = "".join(["AKIA", "ABCDEFGHIJKLMNOP"])',  # Python join order
+            'k = ["AKIA", "ABCDEFGHIJKLMNOP"].join("")',  # JS join order
+            "k = %w[AKIA ABCDEFGHIJKLMNOP].join",  # Ruby word array
+            'k = `AKIA${""}ABCDEFGHIJKLMNOP`',  # template empty interpolation
+            "k = `AKIA${}ABCDEFGHIJKLMNOP`",  # template bare ${}
+            r'k = "\x41\x4b\x49\x41" + "ABCDEFGHIJKLMNOP"',  # hex-escaped head + concat
+        ]
+        for code in forms:
+            assert self._denies(code), f"split form not folded to a hit: {code!r}"
+
+    def test_known_limits_are_not_claimed_fixed(self):
+        # Documented residuals of a lint-time regex heuristic (no taint analysis,
+        # no runtime evaluation). These are NOT caught; the assertion pins the
+        # boundary so a future change that DOES catch them updates this test
+        # deliberately rather than by accident.
+        data_flow = 'parts = ["AKIA", "ABCDEFGHIJKLMNOP"]\nk = "".join(parts)'
+        single_all_hex = (
+            r'k = "\x41\x4b\x49\x41\x41\x42\x43\x44\x45\x46'
+            r'\x47\x48\x49\x4a\x4b\x4c\x4d\x4e\x4f\x50"'
+        )
+        assert not self._denies(data_flow)  # needs variable taint tracking
+        assert not self._denies(single_all_hex)  # single lone literal, never folded
+
+    def test_legit_code_does_not_false_positive(self):
+        clean = [
+            "const u = `https://api/${id}/x`;",  # real interpolation
+            'msg = "hello" + "world"',
+            'msg = "error: " "not found"',  # adjacent non-secret
+            'xs = ["apple", "banana", "cherry"]',
+            'connect("localhost", "8080")',
+            'p = "/".join(["usr", "local"])',  # real separator
+            "['a', 'b'].join('-')",  # non-empty separator
+            "['a', x, 'b'].join('')",  # non-literal element
+            'langs = %w[ruby python go].join(",")',
+        ]
+        for code in clean:
+            assert not self._denies(code), f"false positive on: {code!r}"

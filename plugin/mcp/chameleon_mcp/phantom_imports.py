@@ -21,6 +21,7 @@ from pathlib import Path
 
 from chameleon_mcp.lint_engine import Violation
 from chameleon_mcp.symbol_index import (
+    exports_index_mtime,
     load_exports_index,
     load_reverse_index,
     module_key_for_path,
@@ -419,6 +420,47 @@ def _exists_with_suffix(base: Path) -> bool:
         return True
 
 
+def _resolved_file_mtime(base: Path) -> float | None:
+    """mtime of the on-disk file ``base`` resolves to (TS/JS suffix probe), else None.
+
+    Mirrors ``_exists_with_suffix``'s candidate order but returns the mtime of the
+    first real file so the phantom-symbol check can tell whether the target module
+    was edited since the exports index was built. None on any ambiguity/error."""
+    try:
+        s = str(base)
+        for js_ext, ts_exts in _JS_TO_TS.items():
+            if s.endswith(js_ext):
+                stem = s[: -len(js_ext)]
+                for te in ts_exts:
+                    p = Path(stem + te)
+                    if p.is_file():
+                        return p.stat().st_mtime
+        for suf in _TS_CODE_SUFFIXES:
+            p = base if suf == "" else Path(s + suf)
+            if p.is_file():
+                return p.stat().st_mtime
+        for suf in _TS_INDEX_SUFFIXES:
+            p = Path(s + suf)
+            if p.is_file():
+                return p.stat().st_mtime
+    except OSError:
+        return None
+    return None
+
+
+def _py_target_stale(root: Path | None, key: str | None, index_mtime: float | None) -> bool:
+    """True if the Python target module (``root/key``) was edited AFTER the exports
+    index was built -- so its indexed export set is stale and must not drive a
+    false phantom-symbol flag. False on any ambiguity (fail open, i.e. still flag
+    only when the index is trustworthy)."""
+    if index_mtime is None or key is None or root is None:
+        return False
+    try:
+        return (root / key).stat().st_mtime > index_mtime
+    except OSError:
+        return False
+
+
 def _load_tsconfig_paths(repo_root_str: str) -> tuple[str, tuple[tuple[str, tuple[str, ...]], ...]]:
     """(baseUrl, ((pattern, (targets,...)),...)) from tsconfig/jsconfig.
 
@@ -611,6 +653,7 @@ def lint_phantom_imports(
         symbol_check_on = _SYMBOL_RULE not in _ignored
         exports_index = load_exports_index(root) if symbol_check_on else None
         symbol_check_on = symbol_check_on and exports_index is not None
+        _ts_index_mtime = exports_index_mtime(root) if symbol_check_on else None
         ts_rules = ((rules or {}).get("rules") or {}).get("typescript") or {}
         paths = ts_rules.get("paths") or {}
         source = ts_rules.get("source") or "tsconfig.json"
@@ -665,6 +708,17 @@ def lint_phantom_imports(
             entry = exports_index.lookup(key) if key is not None else None
             if entry is None or entry.open:
                 return
+            # Stale-index guard: if the TARGET module file was edited since the
+            # exports index was built (a same-turn export rename, or a genuinely
+            # out-of-date committed index), its indexed name set is not
+            # authoritative -- fail open (no phantom-symbol flag) rather than emit a
+            # false "not exported" for a name the file now DOES export. Cheap mtime
+            # check, only paid on the pre-flag path; mirrors the Stop cross-file
+            # live re-verify.
+            if _ts_index_mtime is not None:
+                _tgt_mtime = _resolved_file_mtime(base)
+                if _tgt_mtime is not None and _tgt_mtime > _ts_index_mtime:
+                    return
             for nm in names:
                 if nm not in entry.names:
                     violations.append(_symbol_violation(nm, spec))
@@ -791,6 +845,7 @@ def lint_phantom_imports(
         symbol_check_on = _SYMBOL_RULE not in _ignored_py
         exports_index = load_exports_index(root) if symbol_check_on else None
         symbol_check_on = symbol_check_on and exports_index is not None
+        _py_index_mtime = exports_index_mtime(root) if symbol_check_on else None
         seen_py: set[str] = set()
         for m in _PY_RELATIVE_IMPORT_RE.finditer(scan):
             if len(seen_py) >= _MAX_SPECS:
@@ -821,7 +876,11 @@ def lint_phantom_imports(
             if symbol_check_on and resolves and module:
                 key = resolve_python_index_key(base, root)
                 entry = exports_index.lookup(key) if key is not None else None
-                if entry is not None and not entry.open:
+                if (
+                    entry is not None
+                    and not entry.open
+                    and not _py_target_stale(root, key, _py_index_mtime)
+                ):
                     for nm in _py_imported_names(names_clause):
                         if nm not in entry.names:
                             violations.append(_symbol_violation(nm, spec))
@@ -856,6 +915,11 @@ def lint_phantom_imports(
                     continue
                 entry = exports_index.lookup(key)
                 if entry is None or entry.open:
+                    continue
+                # Stale-index guard: the target module was edited since the index
+                # was built (same-turn rename or an out-of-date committed index),
+                # so its export set is not authoritative -- fail open.
+                if _py_target_stale(root, key, _py_index_mtime):
                     continue
                 # A package __init__'s export set lists sibling submodules, but
                 # a PEP 420 namespace subpackage (a directory with no __init__)

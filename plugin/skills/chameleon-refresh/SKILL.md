@@ -99,3 +99,13 @@ the first place. After reporting the refresh diff, call
   `chameleon-auto-idiom` skill.
 - `status == "ok"` and `active_count > 0` → say nothing; don't nag a profile
   that already has idioms.
+
+## Surface dropped archetypes
+
+A full re-bootstrap (the >10%-churn path) returns the same diagnostic warning
+lists as `/chameleon-init` — `sparse_cluster_warnings`,
+`bimodal_cluster_warnings`, `workspace_skipped_warnings`,
+`workspace_glob_warnings`, `nested_profile_warnings`. When any is non-empty, name
+it in one short line (the pattern + reason, e.g. "2 `*.guard.ts` files fell below
+the cluster floor — no archetype covers them; `/chameleon-teach` to capture the
+role"). Skip empty categories; keep it terse. Advisory only.

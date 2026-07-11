@@ -4,6 +4,114 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.1] - 2026-07-11
+
+Whole-plugin real-world QA campaign: 8 parallel testers against real repos
+(no mocks/unit-only) surfaced 6 P1 + 4 P2 issues, each reproduced independently
+before fixing and re-verified by an adversarial pass.
+
+### Fixed
+
+- **Secret-deny concat-fold missed many split forms (P1).** A hardcoded
+  credential split so the raw bytes never held the literal token reached disk
+  under enforce mode with no deny. The fold is rebuilt around one unified string
+  atom (all quote styles plus `r`/`b`/`f`/`u` prefixes), now covering: backtick
+  and cross-quote and triple/single-mix `+` concat, implicit adjacency
+  (`"AKIA" "REST"` — valid Python/Ruby concatenation), `[...].join('')` (JS) and
+  `''.join([...])` (Python order), Ruby `%w[...].join`, and an empty template
+  interpolation (`` `AKIA${''}REST` ``), and hex/unicode-escaped tokens
+  (`"\x41\x4b..." + "…"`). The atom uses an atomic group + possessive
+  quantifiers so pairing atoms around a `+` can't backtrack (a naive version
+  hung multi-second on a string-dense file); a hard pass cap bounds the loop.
+  Verified against a false-positive battery (real interpolation, dict/list
+  literals, non-empty `.join` separators, two-arg calls) so legit code never
+  denies. Documented residuals a lint-time regex can't reach (no taint analysis
+  or runtime eval): variable-then-`join`, a lone fully-hex-escaped literal, and
+  glob-into-directory. `_fold_string_concat` in `lint_engine.py`.
+- **Secret-deny blind to a credential padded into the middle of an over-cap
+  write (P1).** The over-cap head+tail scan blanked the middle third, so a secret
+  padded to the center shipped. Over-cap writes are now scanned in full up to 8×
+  the cap. `_deny_scan_content` in `hook_helper.py`.
+- **`mv`/`cp`/`ln`/`install` laundered a blocked secret past the Stop backstop
+  (P1).** A secret file blocked at Stop could be relocated to a new path that
+  nothing armed, ending the turn cleanly with the credential on disk. The Stop
+  backstop now arms the destination of `mv`/`cp`/`git mv`/`ln`/`install`, found
+  at any command position: inside a subshell (`(mv a b)`), behind a redirect
+  (`mv a b >/dev/null 2>&1`, which previously hid the destination), after a
+  command modifier (`env`/`sudo`/`time`/… `mv`), in a command substitution
+  (`x=$(mv a b)`), or with a GNU `-t DIR` target. `npm install`, `grep mv`, and
+  `mv` inside a string stay unmatched. `_extract_bash_write_targets` in
+  `hook_helper.py`.
+- **Committed `.chameleon/` broke worktree trust inheritance (P1).** Because
+  `/chameleon-init` commits `.chameleon/`, `git worktree add` checked it into
+  every new worktree, defeating the trust redirect — a fresh worktree (e.g. for
+  `/chameleon-deep-work`) ran untrusted with guardrails silently off, for both
+  local-only and origin-backed repos. Trust now bridges a linked worktree to its
+  main root via the `.git` pointer, fail-closed on profile-content divergence so
+  a poisoned feature-branch profile still reads untrusted. `_resolve_main_key` in
+  `profile/trust.py`.
+- **`refresh` silently downgraded a newer-schema profile (P1, data loss).** A
+  profile written by a newer engine was re-derived down to the current schema,
+  destroying a teammate's committed work — and session-start auto-refresh did it
+  unprompted. `refresh_repo` now refuses a too-new `schema_version` (both force
+  and non-force) and preserves it. `_refresh_repo_locked` in `tools.py`.
+- **Comprehension tools went blind on an origin-less monorepo (P1).** Reusing the
+  coordinator `repo_id` for a workspace file (the documented "detect_repo once,
+  reuse the id" pattern) returned a doc-invisible `repo-arg-mismatch` negative,
+  because an origin-less monorepo derives a distinct `repo_id` per workspace. The
+  `repo` arg is now advisory: `get_archetype`/`get_callers`/`get_callees`/
+  `get_blast_radius`/`query_symbol_importers`/`get_duplication_candidates` answer
+  for the file's own repo. Trust stays gated on the file's repo_id (no boundary
+  crossing).
+- **Coordinator monorepo got a spurious duplicate root profile (P2).** A declared
+  coordinator (pnpm-workspace.yaml / `workspaces`) whose root carries no source
+  wrote a lossy root profile duplicating one workspace, contradicting the
+  documented `success_workspaces_only` contract and making root `describe_codebase`
+  show only part of the repo. It now drops the redundant root profile and reports
+  `success_workspaces_only`; a manifest-less `apps/*` repo keeps its root union
+  profile. `orchestrator.py`.
+- **`refresh` noop was fooled by a content-preserving rename (P2).** A `git mv` of
+  a canonical-witness file kept the file count and mtimes unchanged, so refresh
+  noop'd while the whole archetype's canonical excerpt silently went `missing`.
+  Refresh now re-derives when a canonical witness has vanished. `tools.py`.
+- **`get_pattern_context` disclosed profile data from an untrusted profile (P2).**
+  It redacted only the canonical content, still leaking the archetype
+  classification, witness path, and content hash from an attacker-plantable
+  committed profile. It now nulls those under untrusted, matching `get_archetype`.
+  `tools.py`.
+- **`get_status` reported enforce-healthy over an unloadable profile (P2).** A
+  corrupt/truncated core artifact (archetypes/canonicals/rules.json) made every
+  read tool degrade honestly while `/chameleon-status` still showed `mode=enforce`
+  — now it reports the profile corrupt. Legitimately-partial profiles still render
+  normally. `_profile_unrenderable_status` in `tools.py`.
+- **Phantom-symbol lint false-flagged a same-turn export rename (P2).** The check
+  trusted the bootstrap-time exports index with no live fallback, so renaming an
+  export and updating its importer in one turn produced a false "not exported."
+  It now skips a target module edited since the index was built (TS and Python),
+  fail-open. `phantom_imports.py` / `symbol_index.py`.
+- **`/chameleon-init` and `/chameleon-refresh` swallowed bootstrap diagnostic
+  warnings (P2).** The envelope carries `sparse_cluster_warnings` and siblings
+  naming real code that got no archetype (e.g. two NestJS `*.guard.ts` files
+  below the cluster floor), but the skills never surfaced them, so a role
+  silently had no guidance. Both skills now report the non-empty warning
+  categories tersely and point the user at `/chameleon-teach`.
+- **`teach_competing_import` false-warned on a `baseUrl`-relative import (P3).**
+  A first-party module imported by a bare path under tsconfig `baseUrl`
+  (`lib/api-client`) was read as the npm package `lib` and warned "not in
+  package.json." It now resolves the specifier against `baseUrl` first and skips
+  the warning when it's a real local module; a genuinely absent package still
+  warns. `tools.py`.
+- **`inheritance-convention-violation` false-flagged legitimate inheritance in
+  Ruby and Python (P2).** A Rails controller extending `ApplicationController`
+  (idiomatic top-level, when the archetype's dominant base is some namespace
+  `*::BaseController`) and a Python class extending a same-file peer or another
+  base from the dominant's own framework module (`serializers.RelatedField`
+  alongside `serializers.ModelSerializer`) were flagged as wrong-base. Now a
+  framework root base, a same-file peer (local composition), and a same-module
+  base family are all exempt; a genuinely unrelated base still flags.
+  `lint_engine.py`. (Also corrected `docs/architecture.md`: the rule runs on
+  Python too, not Ruby only.)
+
 ## [3.0.0] - 2026-07-10
 
 ### Added (2026-07-11)

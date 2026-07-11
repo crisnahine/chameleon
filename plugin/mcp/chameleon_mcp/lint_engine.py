@@ -1169,111 +1169,200 @@ MAX_SECRETS_PER_FILE = 1000
 
 _MAX_CONCAT_FOLDS_PER_FILE = 1000
 
-_CONCAT_DQ = re.compile(
-    r'"((?:\\.|[^"\\])*)"\s*\+\s*"((?:\\.|[^"\\])*)"',
-    re.DOTALL,
+# A single "string atom": an optional language prefix (f, r, b, u, rb, fr, ...)
+# followed by one string literal in ANY style — triple-double, triple-single,
+# double, single, or backtick. One atom recognizer feeds every fold shape below,
+# so a token split across quote STYLES, string PREFIXES, or triple/single mixes
+# folds uniformly instead of needing a bespoke regex per combination (the
+# whack-a-mole that let template-`${}`, f-string, adjacency, and Python-order
+# `.join` splits slip through). The body is captured non-greedily.
+_STR_ATOM = (
+    # Optional Python string prefix (r/b/f/u and 2-char combos), guarded so it
+    # cannot start mid-identifier OR right after a quote -- otherwise the prefix
+    # would eat a STRING'S OWN content letters (the `b` in `'a', 'b'`) as if they
+    # were a prefix and corrupt the match. A BARE quote (no prefix) has no such
+    # guard, so a quote directly after another quote still matches -- zero-space
+    # adjacency (`"AKIA""REST"`) folds.
+    r"(?:(?<![A-Za-z0-9_'\"`])[rRbBfFuU]{1,2})?"
+    # ATOMIC group (?>...): once one quote alternative matches at a position, the
+    # engine never backtracks INTO it. Without this, pairing two atoms around a
+    # `+` (`_UNIFIED_CONCAT`) backtracked catastrophically on a file with many
+    # string literals (multi-second per pass). Atomic groups are Python 3.11+,
+    # which the plugin requires.
+    # Every body excludes a newline: a hardcoded secret is a single-line token
+    # (`AKIA[0-9A-Z]{16}` etc. never spans a line), so a string atom never needs
+    # to cross one. Without this, `[^"\\]` swallowed whole multi-line docstrings
+    # from one quote to the next far away -- 100+ giant false "adjacencies" per
+    # file and a multi-second fold. Newline-bounded atoms match only real
+    # single-line literals, which is all secret reconstruction requires.
+    r"(?>"
+    r'"""(?:\\.|(?!""")[^\n])*+"""'  # triple double
+    r"|'''(?:\\.|(?!''')[^\n])*+'''"  # triple single
+    r'|"(?:\\.|[^"\\\n])*+"'  # double
+    r"|'(?:\\.|[^'\\\n])*+'"  # single
+    r"|`(?:\\.|[^`\\\n])*+`"  # backtick
+    r")"
 )
-_CONCAT_SQ = re.compile(
-    r"'((?:\\.|[^'\\])*)'\s*\+\s*'((?:\\.|[^'\\])*)'",
-    re.DOTALL,
-)
-# Mixed-quote concat (`"a" + 'b'` or `'a' + "b"`). Either side may open with a
-# single or double quote independently; the inner bodies are joined and re-
-# emitted as one double-quoted literal so a token split across quote styles
-# (`'ghp_' + "rest"`) becomes contiguous for the scanners.
-_CONCAT_MIXED = re.compile(
-    r"""(["'])((?:\\.|(?!\1)[^\\])*)\1\s*\+\s*(["'])((?:\\.|(?!\3)[^\\])*)\3""",
-    re.DOTALL,
-)
-# Array of string literals collapsed via .join(''): ['gh','p_','rest'].join('').
-# Only an empty / single-quote-or-double-quote-empty separator counts, since a
-# non-empty separator (e.g. .join('-')) would not reconstruct a contiguous
-# token. The element list must be string literals only; any non-literal element
-# aborts the fold for that array.
+# Two atoms joined by `+` (cross-style, prefixed, triple/single mixed all covered
+# by the atom). Also plain ADJACENCY (`"a" "b"` with only inline whitespace, no
+# operator) — valid concatenation in Python and Ruby, a common no-operator split.
+_UNIFIED_CONCAT = re.compile(rf"({_STR_ATOM})\s*\+\s*({_STR_ATOM})", re.DOTALL)
+_ADJACENT_CONCAT = re.compile(rf"({_STR_ATOM})[ \t]*({_STR_ATOM})")
+# `[...].join('')` (JS order) AND `''.join([...])` (Python order). Empty separator
+# only — a non-empty one would not reconstruct a contiguous token. Elements are
+# string atoms; a non-literal element leaves the array unfolded.
+_ARRAY_ELEMENTS = rf"(?:{_STR_ATOM}\s*,\s*)*{_STR_ATOM}"
 _ARRAY_JOIN = re.compile(
-    r"""\[\s*((?:["'](?:\\.|[^"'\\])*["']\s*,\s*)*["'](?:\\.|[^"'\\])*["'])\s*,?\s*\]"""
-    r"""\s*\.\s*join\(\s*(?:''|""|)\s*\)""",
+    rf"\[\s*({_ARRAY_ELEMENTS})\s*,?\s*\]\s*\.\s*join\(\s*(?:''|\"\"|``|)\s*\)",
     re.DOTALL,
 )
-_ARRAY_ELEMENT = re.compile(r"""(["'])((?:\\.|(?!\1)[^\\])*)\1""", re.DOTALL)
+_PY_JOIN = re.compile(
+    rf"(?:''|\"\"|``)\s*\.\s*join\(\s*\[\s*({_ARRAY_ELEMENTS})\s*,?\s*\]\s*\)",
+    re.DOTALL,
+)
+# Ruby word array joined: `%w[AKIA REST].join` / `%w(...).join` / `%w{...}` / `%w<...>`.
+# Barewords (whitespace-separated, no quotes) joined with an empty separator.
+_RUBY_WORDARRAY_JOIN = re.compile(
+    r"%[wWiI]([\[\(\{<])([^\]\)\}>]*)[\]\)\}>]\s*\.\s*join\b(?:\(\s*(?:''|\"\")?\s*\))?",
+    re.DOTALL,
+)
+_ATOM_RE = re.compile(_STR_ATOM, re.DOTALL)
+# Empty template interpolation `${''}` / `${""}` / `${}` used purely to split a
+# token inside a backtick literal (`` `AKIA${''}REST` ``); stripping it makes the
+# token contiguous in the RAW content the secret scan reads. Only EMPTY / empty-
+# string-literal interpolations are removed, so a real `${value}` is untouched.
+_EMPTY_INTERP = re.compile(r"\$\{\s*(?:''|\"\"|``)?\s*\}")
+
+
+_ESCAPE_RE = re.compile(
+    r"\\(x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|u\{[0-9A-Fa-f]{1,6}\}|U[0-9A-Fa-f]{8}|.)",
+    re.DOTALL,
+)
+
+
+def _decode_escape(m: re.Match) -> str:
+    """Resolve one backslash escape to the character it denotes.
+
+    Numeric escapes (`\\x41`, `\\u0041`, `\\u{41}`, `\\U00000041`) DECODE to the
+    real character so a secret hidden as hex/unicode escapes (`"\\x41\\x4b..."`)
+    reconstructs to `AKIA...` for the scanner. Any other `\\<char>` collapses to
+    that char (the pre-existing behavior). Never raises."""
+    e = m.group(1)
+    try:
+        if e[0] == "x":
+            return chr(int(e[1:], 16))
+        if e[0] == "u":
+            h = e[2:-1] if e[1] == "{" else e[1:]
+            return chr(int(h, 16))
+        if e[0] == "U":
+            return chr(int(e[1:], 16))
+    except (ValueError, OverflowError):
+        pass
+    return e
 
 
 def _strip_string_escapes(body: str) -> str:
-    """Drop backslash escapes so a re-emitted literal body stays inert.
+    """Resolve backslash escapes so a re-emitted literal body stays inert.
 
-    Folding joins the raw inner text of two literals; an escape like `\\"` or
-    `\\'` that was valid in its original quote style becomes meaningless (or
-    breaks the wrapping quote) once the body is re-wrapped. We only need the
-    decoded characters for pattern matching, so collapse `\\x` to `x` and let a
-    bare wrapping quote be re-escaped by the caller.
+    Folding joins the raw inner text of two literals; an escape valid in its
+    original quote style becomes meaningless once the body is re-wrapped. A
+    numeric escape is DECODED to its character (so a hex/unicode-encoded secret
+    reconstructs); any other `\\<char>` collapses to that char, and a bare
+    wrapping quote is re-escaped by the caller.
     """
-    return re.sub(r"\\(.)", r"\1", body)
+    return _ESCAPE_RE.sub(_decode_escape, body)
+
+
+def _atom_body(atom: str) -> str:
+    """Inner text of one `_STR_ATOM` match (prefix + quotes stripped, unescaped)."""
+    i = 0
+    while i < len(atom) and atom[i].isalpha():
+        i += 1
+    body = atom[i:]
+    for q in ('"""', "'''"):
+        if len(body) >= 6 and body.startswith(q) and body.endswith(q):
+            return _strip_string_escapes(body[3:-3])
+    if len(body) >= 2 and body[0] in "\"'`" and body[-1] == body[0]:
+        return _strip_string_escapes(body[1:-1])
+    return _strip_string_escapes(body)
 
 
 def _fold_string_concat(content: str, *, max_folds: int = _MAX_CONCAT_FOLDS_PER_FILE) -> str:
     """Iteratively collapse split string literals into single literals.
 
-    Folds same-quote concat (`"a" + "b"`, `'a' + 'b'`), cross-quote concat
-    (`"a" + 'b'`), and `[...].join('')` of string literals. All three are
-    common ways a hardcoded token gets visually split (`'ghp_' + "rest"`,
-    `['sk_live_', key].join('')`) so the raw bytes never contain the literal
-    secret; folding makes the token contiguous before the scanners see it.
+    A hardcoded credential is commonly split so the raw bytes never contain the
+    literal token; folding reconstructs it before the scanners see it. Covered
+    shapes (any quote style, string prefix, or triple/single mix, via one atom):
+    concat with `+` (cross-quote, backtick, f/r/b-prefixed, and triple-vs-single
+    mixes), plain ADJACENCY (two adjacent literals with no operator -- valid
+    concatenation in Python and Ruby), `[...].join('')` (JS order) and
+    `''.join([...])` (Python order), Ruby `%w[...].join`, and an empty template
+    interpolation used to split inside a backtick literal.
 
-    Runs multiple passes because folding can create new folding opportunities
-    (`"a" + "b" + "c"` → `"ab" + "c"` → `"abc"`). We bound *total*
-    substitutions across passes at `max_folds`; once we're at the cap we
-    stop returning whatever we've already produced. This keeps a pathologically
-    long concat chain (auto-generated code, fuzzer input, etc.) from
-    dominating lint_file latency. The 100KB content cap upstream gives a
-    secondary defense.
+    Runs multiple passes because folding creates new opportunities
+    (`"a" + "b" + "c"` → `"ab" + "c"` → `"abc"`). Total substitutions across
+    passes are bounded at `max_folds` so a pathological chain can't dominate
+    lint_file latency; the 100KB content cap upstream is a secondary defense.
 
-    Cross-quote and array-join folds re-emit a double-quoted literal whose body
-    has escapes stripped and any bare `"` re-escaped, so the result is always a
-    well-formed literal that cannot swallow following text on the next pass.
-
-    Pure function, no I/O. Safe to call on hostile input; the regex engine
-    runs at most `max_folds x 4` total substitutions before bailing.
+    Pure function, no I/O. Every fold re-emits a well-formed double-quoted
+    literal (escapes stripped, bare `"` re-escaped) that cannot swallow
+    following text on the next pass.
     """
-    if "+" not in content and ".join" not in content:
+    # Skip only when nothing foldable is present: no concat operator/join, no
+    # string quote of ANY style (backtick included -- a pure-backtick template
+    # split has no "/'), and no empty `${}` interpolation to strip.
+    if not any(tok in content for tok in ("+", ".join", '"', "'", "`", "${")):
         return content
 
     def _emit_dq(body: str) -> str:
         return '"' + _strip_string_escapes(body).replace('"', '\\"') + '"'
 
+    def _fold_atoms(text: str) -> str:
+        return "".join(_atom_body(a) for a in _ATOM_RE.findall(text) or [text])
+
+    # One-time pre-pass: drop empty `${}` interpolations so a template-literal
+    # split (`` `AKIA${''}REST` ``) is contiguous for the raw secret scan.
+    content = _EMPTY_INTERP.sub("", content)
+
+    def _join_concat(m: re.Match) -> str:
+        return _emit_dq(_atom_body(m.group(1)) + _atom_body(m.group(2)))
+
+    def _join_arraylike(m: re.Match) -> str:
+        return _emit_dq(_fold_atoms(m.group(1)))
+
+    def _join_wordarray(m: re.Match) -> str:
+        return _emit_dq("".join(m.group(2).split()))
+
     remaining = max_folds
+    # Hard pass cap: even with the per-pass substitution budget, a hostile input
+    # must not spin the loop. Real split chains are only a few levels deep, so a
+    # dozen passes is far more than any genuine case needs; the atomic-group
+    # atom above already bounds per-regex cost.
+    passes_left = 16
     out = content
-    while remaining > 0:
+    while remaining > 0 and passes_left > 0:
+        passes_left -= 1
         before = out
-
-        def _join_dq(m: re.Match) -> str:
-            return '"' + m.group(1) + m.group(2) + '"'
-
-        def _join_sq(m: re.Match) -> str:
-            return "'" + m.group(1) + m.group(2) + "'"
-
-        def _join_mixed(m: re.Match) -> str:
-            return _emit_dq(m.group(2) + m.group(4))
-
-        def _join_array(m: re.Match) -> str:
-            parts = [
-                _strip_string_escapes(em.group(2)) for em in _ARRAY_ELEMENT.finditer(m.group(1))
-            ]
-            return _emit_dq("".join(parts))
-
-        out, n_dq = _CONCAT_DQ.subn(_join_dq, out, count=remaining)
-        remaining -= n_dq
+        # Array/word-array joins first (they contain inner atoms the pairwise
+        # concat folder would otherwise partially consume).
+        out, n = _ARRAY_JOIN.subn(_join_arraylike, out, count=remaining)
+        remaining -= n
         if remaining <= 0:
             break
-        out, n_sq = _CONCAT_SQ.subn(_join_sq, out, count=remaining)
-        remaining -= n_sq
+        out, n = _PY_JOIN.subn(_join_arraylike, out, count=remaining)
+        remaining -= n
         if remaining <= 0:
             break
-        out, n_mixed = _CONCAT_MIXED.subn(_join_mixed, out, count=remaining)
-        remaining -= n_mixed
+        out, n = _RUBY_WORDARRAY_JOIN.subn(_join_wordarray, out, count=remaining)
+        remaining -= n
         if remaining <= 0:
             break
-        out, n_arr = _ARRAY_JOIN.subn(_join_array, out, count=remaining)
-        remaining -= n_arr
+        out, n = _UNIFIED_CONCAT.subn(_join_concat, out, count=remaining)
+        remaining -= n
+        if remaining <= 0:
+            break
+        out, n = _ADJACENT_CONCAT.subn(_join_concat, out, count=remaining)
+        remaining -= n
         if out == before:
             break
     return out
@@ -3832,6 +3921,19 @@ def lint_conventions(
                     or class_tail in _RAILS_APP_ROOT_BASES
                 ):
                     continue
+                # Inheriting DIRECTLY from a Rails framework root base
+                # (`ApplicationController`, `ApplicationRecord`, ...) is the
+                # idiomatic top-level convention, not a deviation. A large
+                # controller archetype folds api/admin/settings namespaces into one
+                # cluster whose dominant base is some `*::BaseController`; a real,
+                # non-trivial subgroup of top-level web controllers correctly
+                # extends `ApplicationController` and must not be steered onto an
+                # API base (which carries API-specific auth/rendering). The
+                # framework root is the shared ancestor of every namespace base, so
+                # extending it is always legitimate.
+                superclass_tail = superclass.rsplit("::", 1)[-1] if superclass else None
+                if superclass_tail in _RAILS_APP_ROOT_BASES:
+                    continue
                 if superclass is None or (
                     superclass not in known_bases
                     and superclass.rsplit("::", 1)[-1] not in known_base_tails
@@ -4081,6 +4183,25 @@ def _python_inheritance_violations(scan_content: str, inheritance: dict) -> list
     known_bases = set(inheritance.get("known_bases") or ())
     known_bases.add(dominant_base)
     known_tails = {b.rsplit(".", 1)[-1] for b in known_bases}
+    # The dominant base's MODULE family (`serializers` in `serializers.Model
+    # Serializer`). Other bases from the same framework module (`serializers.
+    # RelatedField`, `serializers.Serializer`, `models.Manager` alongside
+    # `models.Model`) are legitimate variants of the same convention, not
+    # deviations -- the Python analog of the Ruby `*BaseController` namespace
+    # family. Only set when the dominant base is module-qualified, so a bare-name
+    # dominant (`BaseModel`) never matches everything.
+    dominant_module = dominant_base.rsplit(".", 1)[0] if "." in dominant_base else None
+
+    # Every top-level class DEFINED in this file. Extending a same-file peer is
+    # legitimate local composition (textbook DRF: an `Admin`/`ReadOnly` variant
+    # extends its base serializer, which itself roots at `serializers.Model
+    # Serializer`); the deviation, if any, surfaces at the peer that directly
+    # extends a non-known base, not at every descendant. Without this, a
+    # single-inheritance-from-a-sibling chain is flagged at each link even though
+    # the whole chain is compliant.
+    local_classes = {
+        m.group(2) for m in _PY_CLASS_BASES_LINT_RE.finditer(scan_content) if len(m.group(1)) == 0
+    }
 
     out: list[Violation] = []
     for m in _PY_CLASS_BASES_LINT_RE.finditer(scan_content):
@@ -4105,7 +4226,13 @@ def _python_inheritance_violations(scan_content: str, inheritance: dict) -> list
                 bases.append(part)
         if not bases:
             continue
-        if any(b in known_bases or b.rsplit(".", 1)[-1] in known_tails for b in bases):
+        if any(
+            b in known_bases
+            or b.rsplit(".", 1)[-1] in known_tails
+            or b in local_classes
+            or (dominant_module is not None and "." in b and b.rsplit(".", 1)[0] == dominant_module)
+            for b in bases
+        ):
             continue
         out.append(
             Violation(

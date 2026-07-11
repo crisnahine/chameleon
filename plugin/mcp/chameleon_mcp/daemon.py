@@ -519,6 +519,60 @@ def _sweep_orphan_version_files() -> None:
             except (FileNotFoundError, OSError):
                 pass
 
+    _sweep_orphan_tmp_sockets()
+
+
+# A socket younger than this is spared even when unconnectable: a daemon that
+# has bind()'d but not yet listen()'d is briefly connect-refused, and reaping it
+# in that window would delete a starting daemon's socket. Bind-to-listen is
+# sub-millisecond, so this grace is orders of magnitude larger than needed.
+_ORPHAN_SOCKET_GRACE_SECONDS = 60
+
+
+def _sweep_orphan_tmp_sockets() -> None:
+    """Reap dead ``d-*.sock`` files in the per-user socket dir.
+
+    The version-scoped pidfile sweep above only reaps a socket a pidfile in the
+    CURRENT data dir back-references. A daemon that was SIGKILLed and whose data
+    dir was later removed (test-harness cleanup, an uninstalled version) leaves
+    its socket in the shared per-user tmp dir with no pidfile pointing at it, so
+    nothing ever reaps it and the dir grows without bound. This scans the socket
+    base(s) directly and removes any ``d-*.sock`` that no listener accepts a
+    connect on AND that is older than the startup grace window. A LIVE daemon's
+    socket always accepts the connect, so it is never touched. Best-effort;
+    never raises.
+
+    Default-ON with a kill switch (``CHAMELEON_DAEMON_SOCKET_SWEEP=0``): local
+    file I/O plus a local socket liveness probe, no repo-code execution and no
+    network, so it follows the default-on-with-kill-switch principle. An operator
+    who suspects the liveness probe is misfiring can disable the reap."""
+    if os.environ.get("CHAMELEON_DAEMON_SOCKET_SWEEP") == "0":
+        return
+    try:
+        now = time.time()
+    except Exception:  # noqa: BLE001
+        return
+    for base in _socket_tmp_bases():
+        try:
+            socks = list(base.glob("d-*.sock"))
+        except OSError:
+            continue
+        for sp in socks:
+            try:
+                age = now - sp.stat().st_mtime
+            except OSError:
+                continue
+            if age < _ORPHAN_SOCKET_GRACE_SECONDS:
+                continue
+            # Connectable == a live daemon is listening here; leave it. Only a
+            # socket with no listener (ECONNREFUSED) is a real orphan.
+            if _socket_connectable(str(sp)):
+                continue
+            try:
+                sp.unlink()
+            except (FileNotFoundError, OSError):
+                pass
+
 
 def _recv_exact(conn: socket.socket, n: int) -> bytes | None:
     """Read exactly `n` bytes from the socket. Returns None on EOF / error."""

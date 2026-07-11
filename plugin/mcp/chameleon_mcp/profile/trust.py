@@ -27,20 +27,63 @@ from chameleon_mcp.safe_open import (
 def _resolve_main_key(repo_root: Path | str, self_key: str) -> str | None:
     """Resolved main-worktree path key for a linked worktree, else ``None``.
 
-    A grant on a main worktree covers its linked worktrees: they share the
-    git-remote-derived repo_id and read the main checkout's committed
-    ``.chameleon``. For every non-worktree root ``resolve_profile_root`` returns
-    the input unchanged, so this returns ``None`` and trust behavior is
-    byte-identical. Returns ``None`` when the resolved key equals ``self_key``
-    (nothing to inherit).
+    A grant on a main worktree covers its linked worktrees: they are the same
+    repo and read the same reviewed profile. This resolves a linked worktree
+    (identified by its ``.git`` FILE pointer) to its MAIN worktree root so a grant
+    recorded for main's path also vouches for the worktree -- INDEPENDENT of
+    whether the worktree checked out its own committed ``.chameleon``.
+
+    That independence is the fix for the common, documented workflow:
+    ``/chameleon-init`` tells teams to COMMIT ``.chameleon`` so it is shared, and
+    ``git worktree add`` then checks it into every new worktree. The old
+    resolution keyed on ``.chameleon`` being ABSENT from the worktree, so a
+    committed profile defeated the bridge and a freshly created worktree (e.g.
+    for ``/chameleon-deep-work``) came up untrusted with its guardrails silently
+    off. Keying on the ``.git`` pointer instead makes trust inherit either way.
+
+    Content is still guarded downstream: the resolved key drives the granted
+    profile-hash lookup, so a worktree whose ``.chameleon`` diverges from the
+    granted profile does not silently pass as the reviewed one. For every
+    non-worktree root (``.git`` is a directory or absent) this returns ``None``
+    and trust behavior is byte-identical. Returns ``None`` when the resolved key
+    equals ``self_key`` (nothing to inherit).
     """
-    from chameleon_mcp.worktree import resolve_profile_root
+    from chameleon_mcp.worktree import main_worktree_root
 
     try:
-        main_key = str(resolve_profile_root(Path(repo_root)).resolve())
+        wt_root = Path(repo_root)
+        git_marker = wt_root / ".git"
+        # A linked worktree has a ``.git`` FILE (a ``gitdir:`` pointer); a
+        # standalone repo has a ``.git`` DIRECTORY. Only the file case bridges.
+        if not git_marker.is_file():
+            return None
+        # verify_backref: the trust bridge fails closed against a forged .git
+        # pointer (a planted dir claiming to be a worktree of a victim's trusted
+        # main). The profile-content path (resolve_profile_root) does not need it.
+        main_root = main_worktree_root(git_marker, verify_backref=True)
+        if main_root is None:
+            return None
+        main_key = str(main_root.resolve())
+        if main_key == self_key:
+            return None
+        # Fail-closed content gate. Inherit main's grant ONLY when the worktree
+        # either has no profile of its own (it reads main's) OR carries a profile
+        # trust-hash-identical to main's -- i.e. it is the same reviewed content.
+        # A worktree checked out on a branch whose ``.chameleon`` was modified (a
+        # poisoned feature branch) diverges here and does NOT inherit trust; it
+        # reads untrusted, regardless of the one-time-trust default that would
+        # otherwise skip the staleness re-check. Off the per-edit hot path for
+        # every non-worktree repo (the ``.git``-is-a-file gate returns first).
+        wt_profile = wt_root / ".chameleon"
+        if wt_profile.exists():
+            main_profile = main_root / ".chameleon"
+            if (not main_profile.exists()) or hash_profile(wt_profile) != hash_profile(
+                main_profile
+            ):
+                return None
     except OSError:
         return None
-    return main_key if main_key != self_key else None
+    return main_key
 
 
 class ProfileInjectionError(Exception):

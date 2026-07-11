@@ -203,6 +203,26 @@ offer in step 3 is unconditional: ask the user whether to run it now. If they
 accept, invoke the `chameleon-auto-idiom` skill in this same session. It is
 append-only — it never touches idioms the team later adds.
 
+### Surface dropped archetypes (do not swallow the bootstrap warnings)
+
+The bootstrap envelope carries diagnostic warning lists that name real code the
+profile did NOT turn into an archetype. Read them and, when non-empty, tell the
+user in one short line each — otherwise a real role silently has no guidance:
+
+- `sparse_cluster_warnings` — a small group of same-role files (e.g. two
+  `*.guard.ts` NestJS guards, one migration) fell below the cluster-size floor,
+  so no archetype covers them. List each pattern and suggest
+  `/chameleon-teach` to capture the role by hand if it matters.
+- `bimodal_cluster_warnings` — a cluster split into two shapes; the canonical
+  witness may not represent both. Worth a `/chameleon-refresh` after the tree
+  settles.
+- `workspace_skipped_warnings` / `workspace_glob_warnings` /
+  `nested_profile_warnings` — a monorepo workspace was skipped or a glob
+  matched nothing; name the path so the user can bootstrap it explicitly.
+
+Keep it terse (the counts, not a wall of JSON). Skip a category whose list is
+empty. This is advisory — none of it blocks a successful bootstrap.
+
 ### Offer the conventions memory wiring
 
 When the bootstrap produced `.chameleon/conventions.md` (it exists whenever the

@@ -4011,6 +4011,82 @@ _SED_OPERAND_RE = re.compile(
     re.VERBOSE,
 )
 
+# mv/cp/git-mv/ln/install all relocate or duplicate a file's CONTENT to a new
+# path, so the DESTINATION is a write target the Stop backstop must re-scan --
+# otherwise a secret file already blocked at its original path is laundered past
+# the turn-end gate (`mv leaked.ts ok.ts`). ln makes a hard link (same bytes at
+# both paths) and install copies, so both launder exactly like mv/cp.
+_MOVE_CMD_RE = re.compile(r"(?:git\s+)?(?:mv|cp|ln|install)\b")
+# Command modifiers that can precede the real command (`env mv`, `sudo mv`,
+# `time mv`, ...). A move command right after one of these -- or after a command
+# boundary / substitution opener / env-assignment -- is still a real relocation,
+# so it must not be missed just because it is not the segment's first word.
+_CMD_MODIFIERS = frozenset(
+    {
+        "env",
+        "command",
+        "sudo",
+        "doas",
+        "time",
+        "nohup",
+        "nice",
+        "ionice",
+        "stdbuf",
+        "setsid",
+        "exec",
+        "builtin",
+        "xargs",
+    }
+)
+_ASSIGNMENT_RE = re.compile(r"[A-Za-z_]\w*=\S*\Z")
+# Operands of a move command end at the next command separator / group closer.
+_TAIL_END_RE = re.compile(r"[;&|)}`]")
+# GNU `-t DEST` / `--target-directory=DEST`: the destination is the flag argument,
+# not the last operand, so sources land INSIDE it.
+_TARGET_DIR_FLAG_RE = re.compile(
+    r"(?:^|\s)(?:-t\s+|--target-directory[=\s])(?P<dir>\"[^\"]*\"|'[^']*'|[^\s;&|<>()`]+)"
+)
+_OPERAND_TOKEN_RE = re.compile(
+    r"""
+    "(?:[^"\\]|\\.)*"
+    | '[^']*'
+    | (?:\\.|[^\s;&|<>()`$*?\[\]{}~\\])+
+    """,
+    re.VERBOSE,
+)
+# A shell redirect (`>f`, `>>f`, `2>f`, `2>&1`, `<f`) must be stripped from an
+# mv/cp tail before operands are read, or its target (`/dev/null`) or fd (`2`)
+# is mistaken for the move destination and the real dest goes un-armed.
+_REDIRECT_STRIP_RE = re.compile(r"\s*\d*(?:>>?|<)\s*(?:&\s*\d+|[^\s;&|<>()]*)")
+
+
+def _iter_move_copy_tails(command: str):
+    """Yield the operand tail after each real mv/cp/ln/install command occurrence.
+
+    A move command counts when it starts at a command position: string start, a
+    command boundary (`;&|(){}` / backtick / `=`), a command-substitution opener
+    (`$(`/backtick), an env-assignment prefix (`VAR=val mv`), or a command
+    modifier (`env`/`sudo`/`time`/...). This catches the ordinary laundering
+    idioms (`env mv a b`, `x=$(mv a b)`, `(mv a b)`) that a head-only anchor
+    missed. Over-matching is harmless: a bogus tail arms a path the recorder's
+    detect_language / is_file filter drops, never a false block."""
+    for m in _MOVE_CMD_RE.finditer(command):
+        pre = command[: m.start()].rstrip()
+        ok = False
+        if pre == "" or pre[-1] in ";&|(){}`=":
+            ok = True
+        else:
+            last = pre.rsplit(None, 1)[-1] if pre.split() else ""
+            if last in _CMD_MODIFIERS or _ASSIGNMENT_RE.search(last):
+                ok = True
+        if not ok:
+            continue
+        tail = command[m.end() :]
+        end = _TAIL_END_RE.search(tail)
+        if end is not None:
+            tail = tail[: end.start()]
+        yield tail
+
 
 def _unquote_target(raw: str) -> str | None:
     """Strip one matching pair of surrounding quotes from an extracted operand.
@@ -4094,6 +4170,46 @@ def _extract_bash_write_targets(command: str) -> list[str]:
                 operands = _SED_OPERAND_RE.findall(part)
                 if operands:
                     _add(operands[-1])
+
+    # mv/cp/ln/install: arm the DESTINATION so a rename/copy/link cannot launder a
+    # blocked secret file past the Stop backstop. The destination is the last
+    # operand (or the `-t DIR` argument); for the `mv f.ts dir/` form the file
+    # lands at dir/basename(f.ts), so that candidate is offered too and the
+    # recorder's own is_file filter keeps whichever exists. A directory or
+    # non-language dest contributes nothing downstream (detect_language / is_file
+    # reject it).
+    if any(tok in command for tok in ("mv", "cp", "ln", "install")):
+        for raw_tail in _iter_move_copy_tails(command):
+            # Drop redirects so `>/dev/null 2>&1` is not read as the destination.
+            tail = _REDIRECT_STRIP_RE.sub(" ", raw_tail)
+            ops = [
+                uq
+                for uq in (_unquote_target(tok) for tok in _OPERAND_TOKEN_RE.findall(tail))
+                if uq and not uq.startswith("-")
+            ]
+            ops = [o.rstrip(");}") for o in ops if o.rstrip(");}")]
+
+            # GNU `-t DEST` / `--target-directory=DEST`: sources land inside DEST,
+            # so DEST is the destination even though it is not the last operand.
+            tflag = _TARGET_DIR_FLAG_RE.search(raw_tail)
+            if tflag is not None:
+                tdest = _unquote_target(tflag.group("dir"))
+                if tdest:
+                    _add(tdest)
+                    for src in ops:
+                        base = src.rstrip("/").rsplit("/", 1)[-1]
+                        if base:
+                            _add(tdest.rstrip("/") + "/" + base)
+                continue
+
+            if len(ops) < 2:
+                continue
+            dest = ops[-1]
+            _add(dest)
+            for src in ops[:-1]:
+                base = src.rstrip("/").rsplit("/", 1)[-1]
+                if base:
+                    _add(dest.rstrip("/") + "/" + base)
 
     return targets
 
@@ -4859,29 +4975,39 @@ def _deny_scan_content(proposed: str) -> str:
     """Content window for the deterministic hard-secret / hard-eval DENY scans.
 
     The deny is the ONLY gate that stops the write from landing on disk, so it
-    must not be evadable by padding the offending token past a fixed prefix cap
-    (the advisory 100KB ``PREWRITE_SECRET_SCAN_MAX_CHARS`` window). Any single
-    proposed write up to ``PREWRITE_DENY_SCAN_MAX_CHARS`` is scanned in full; a
-    pathologically larger write is scanned head+tail (each half of the ceiling),
-    which still defeats front- or back-padding while bounding worst-case work.
+    must not be evadable by padding the offending token ANYWHERE in the write --
+    front, back, or MIDDLE. A model tool call's proposed content is bounded by
+    the model's output context (far under the cap), so it is always scanned in
+    full; the over-cap path only exists for a direct, oversized MCP call.
 
-    The dropped middle is replaced by the SAME NUMBER of newlines it contained,
-    so a hit in the tail window is still reported at its TRUE line number (a
-    plain ``\\n`` join would report a tail secret short by the dropped middle's
-    line count and misdirect the ``chameleon-ignore`` hint). Counting newlines is
-    far cheaper than the regex scan the cap bounds, and the padding is blank lines
-    the scanners skip.
+    A former head+tail window (each half the cap, middle replaced by newlines)
+    defeated only front/back padding: a token pushed to the exact center landed
+    in the blanked middle third and reached the scanner as blank lines. So an
+    over-cap write is now scanned IN FULL up to a hard ceiling (a large multiple
+    of the cap). The hard-secret/eval patterns are linear char-class regexes with
+    no catastrophic backtracking, so a larger buffer costs only linear time, and
+    the full string preserves TRUE line numbers for the ``chameleon-ignore`` hint.
+    Only a write ABOVE the hard ceiling -- orders of magnitude past anything a
+    model tool call can emit -- falls back to head+tail (a documented residual
+    that also risks the hook's wall-clock budget); the middle newlines there keep
+    a tail hit's line number honest.
     """
     from chameleon_mcp._thresholds import threshold_int
 
     if not proposed:
         return proposed
     cap = threshold_int("PREWRITE_DENY_SCAN_MAX_CHARS")
-    if len(proposed) <= cap:
+    if len(proposed) <= cap * _DENY_SCAN_FULL_CEILING_MULT:
         return proposed
     half = cap // 2
     mid_newlines = proposed[half:-half].count("\n")
     return proposed[:half] + ("\n" * mid_newlines) + proposed[-half:]
+
+
+# Over-cap writes are scanned in full up to this multiple of
+# PREWRITE_DENY_SCAN_MAX_CHARS (8M -> 64M) so a middle-padded secret is not
+# blanked out; only an absurd write past this bound falls back to head+tail.
+_DENY_SCAN_FULL_CEILING_MULT = 8
 
 
 def _proposed_hard_secret_violations(

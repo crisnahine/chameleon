@@ -51,7 +51,7 @@ def resolve_profile_root(repo_root: Path) -> Path:
     return repo_root
 
 
-def main_worktree_root(git_file: Path) -> Path | None:
+def main_worktree_root(git_file: Path, *, verify_backref: bool = False) -> Path | None:
     """Resolve the main worktree root from a linked worktree's ``.git`` file.
 
     The file holds ``gitdir: <main>/.git/worktrees/<name>``. From that gitdir we
@@ -59,6 +59,16 @@ def main_worktree_root(git_file: Path) -> Path | None:
     worktree. Returns ``None`` when the file is not a worktree pointer or the
     main worktree cannot be determined (e.g. a bare repository, whose common
     dir is not named ``.git``).
+
+    ``verify_backref`` (used by the TRUST bridge, not the profile-content path)
+    additionally requires that ``<gitdir>/gitdir`` points BACK at ``git_file`` --
+    the registration git writes for a genuine linked worktree. Without it, an
+    attacker could plant a directory containing a hand-crafted ``.git`` file
+    whose ``gitdir:`` points at a victim's trusted main plus a byte-identical
+    ``.chameleon`` copy, and inherit that main's trust. A forged pointer has no
+    matching back-reference (creating one needs write access to the victim's
+    ``.git``), so the bridge is refused. Fail-closed: any read error or mismatch
+    returns ``None``.
     """
     try:
         text = git_file.read_text(encoding="utf-8", errors="replace").strip()
@@ -80,6 +90,9 @@ def main_worktree_root(git_file: Path) -> Path | None:
     except OSError:
         return None
 
+    if verify_backref and not _backref_points_to(gitdir, git_file):
+        return None
+
     common_dir = _common_dir(gitdir)
     if common_dir is None:
         return None
@@ -87,6 +100,26 @@ def main_worktree_root(git_file: Path) -> Path | None:
     if common_dir.name != ".git":
         return None
     return common_dir.parent
+
+
+def _backref_points_to(gitdir: Path, git_file: Path) -> bool:
+    """True iff ``<gitdir>/gitdir`` back-references ``git_file``.
+
+    Git writes ``<main>/.git/worktrees/<name>/gitdir`` holding the absolute path
+    of the linked worktree's own ``.git`` file. A genuine worktree round-trips;
+    a forged ``.git`` pointer planted in an attacker directory does not (the real
+    registration under the victim's ``.git`` still names the real worktree).
+    Fail-closed on any read/resolve error."""
+    try:
+        raw = (gitdir / "gitdir").read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return False
+    if not raw:
+        return False
+    try:
+        return Path(raw).resolve() == git_file.resolve()
+    except OSError:
+        return False
 
 
 def _common_dir(gitdir: Path) -> Path | None:

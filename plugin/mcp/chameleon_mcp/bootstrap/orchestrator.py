@@ -1529,10 +1529,36 @@ def bootstrap_repo(
         )
         if hint_stale:
             report.language_hint = None
+        # A DECLARED coordinator (a workspace manifest: pnpm-workspace.yaml /
+        # package.json "workspaces") whose ROOT carries no first-class source of
+        # its own still reports status="success" here, because the root pass
+        # recovered an extractor via _detect_workspace_ts_monorepo and its scan
+        # WIDENED into the declared workspace dirs -- producing a root profile that
+        # is a redundant, LOSSY duplicate of the per-workspace profiles the fan-out
+        # just wrote (one workspace's cluster survives at root; the others fall
+        # below the sparse-cluster floor and vanish). That contradicts the
+        # documented coordinator contract (no root profile, status
+        # "success_workspaces_only") and leaves a confusing orphan profile whose
+        # describe_codebase shows only part of the repo. Detect it by the root
+        # having no language signal of ITS OWN (_select_extractor(scan_root) is
+        # None -- the widening is what made it "succeed"), drop the duplicate root
+        # profile, and route to the coordinator status. A coordinator whose root
+        # DOES carry real source (_select_extractor non-None) keeps its root
+        # profile; a manifest-less repo with apps/ subdirs (bulletproof-react)
+        # returned earlier at the has_workspaces gate and never reaches here.
+        if report.status == "success" and _select_extractor(scan_root) is None:
+            import shutil as _shutil
+
+            _root_profile = repo_root / profile_dir_name
+            if _root_profile.name == profile_dir_name and _root_profile.is_dir():
+                _shutil.rmtree(_root_profile, ignore_errors=True)
+            report.status = "success_workspaces_only"
+            report.error = None
+            report.archetypes_detected = 0
         # Only amend the root profile if the root actually produced one; a
         # coordinator-only root (failed language detection) has no root profile
         # to amend, but its workspaces were still bootstrapped above.
-        if report.status == "success":
+        elif report.status == "success":
             _amend_root_profile_with_workspaces(
                 repo_root / profile_dir_name,
                 workspace_reports,

@@ -229,6 +229,30 @@ def load_exports_index(repo_root: Path | str | None) -> ExportsIndex | None:
     return index
 
 
+def exports_index_mtime(repo_root: Path | str | None) -> float | None:
+    """mtime of the committed ``exports_index.json`` for ``repo_root``, or None.
+
+    Same path resolution as :func:`load_exports_index` (including the linked
+    git-worktree redirect) so the phantom-symbol check can tell whether a target
+    module was edited SINCE the index was built -- a stale index (a same-turn
+    export rename, or a genuinely out-of-date committed one) must not drive a
+    false "not exported" flag. None on any ambiguity/error (the caller then does
+    not suppress -- it simply has no staleness signal)."""
+    if repo_root is None:
+        return None
+    try:
+        root = Path(repo_root).resolve()
+    except OSError:
+        return None
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    root = resolve_profile_root(root)
+    try:
+        return (root / ".chameleon" / EXPORTS_INDEX_FILENAME).stat().st_mtime
+    except OSError:
+        return None
+
+
 def resolve_index_key(base: Path, repo_root: Path) -> str | None:
     """Map a resolved module base path to its repo-relative index key, or None.
 
