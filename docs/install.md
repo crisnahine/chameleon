@@ -203,7 +203,16 @@ Open a TypeScript/JavaScript, Ruby, or Python repo in Claude Code.
 
    You type the repo's folder name to confirm. Trust is per-user and lives at `~/.local/share/chameleon/<repo_id>/.trust`. It is not committed, so every teammate trusts once on their own machine.
 
-3. **Edit a file.** Before the edit lands, chameleon should mention which archetype the file matches and point at the canonical example. That is it working.
+3. **Wire the conventions file (recommended, one line).** Bootstrap writes `.chameleon/conventions.md` — your repo's derived conventions rendered for Claude's memory channel, where rules are followed far more reliably than as hook advice (measured 100% vs 40% adherence for identical content). `/chameleon-init` offers this at the end; the default wiring creates one new file and edits nothing:
+
+   ```
+   # .claude/rules/chameleon-conventions.md
+   @../../.chameleon/conventions.md
+   ```
+
+   Commit that one-liner and the whole team is covered. Prefer it personal? Put `@.chameleon/conventions.md` in `CLAUDE.local.md` instead (untracked). Chameleon keeps the imported file fresh on every refresh and teach; it never edits your `CLAUDE.md`.
+
+4. **Edit a file.** Before the edit lands, chameleon should mention which archetype the file matches and point at the canonical example. That is it working.
 
 **The status line wires itself.** At session start (any repo, profiled or not, unless chameleon is opted out for it), chameleon writes its status line (`bin/chameleon-statusline.sh` — profile name, trust state, and an update badge, in a <100ms budget) into the repo's `.claude/settings.local.json`. It deliberately skips this when you already configured a `statusLine` in the project's `settings.json` or your global `~/.claude/settings.json`, so it never overrides a choice you made. To opt out afterwards, delete the `statusLine` block from `settings.local.json` and set your own anywhere.
 

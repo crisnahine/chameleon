@@ -140,6 +140,7 @@ Per-repo, committed to git:           Per-user, local only (never committed):
   profile.json, archetypes.json,        index.db (repo registry)
   canonicals.json, conventions.json,    <repo_id>/
   rules.json, idioms.md, principles.md,   drift.db, .trust,
+  conventions.md (memory-channel mirror),
   config.json, *index*.json, ...          .pause_until, prodtree/, markers
 ```
 
@@ -235,6 +236,7 @@ All JSON artifacts carry `schema_version`, `engine_min_version`, and a
 | `canonicals.json` | Per-archetype canonical: the witness (path + sha hint), normative shape (AST query + callable signatures), normative idioms (comments), and the secret/injection/poisoning scan verdicts. |
 | `conventions.json` | Per-archetype derived conventions (imports, naming, error handling, body shape, doc coverage, test pairing, inheritance and method calls for Ruby, class contract, key exports) plus repo-level layering. |
 | `principles.md` | Data-backed prose principles generated from conventions. |
+| `conventions.md` | The CLAUDE.md-channel mirror: the rendered conventions block, for wiring into Claude's memory channel via a one-line `.claude/rules/chameleon-conventions.md`, `CLAUDE.local.md`, or a `CLAUDE.md` import (init offers all three, consent-gated; none edits an existing file by default). Rewritten by bootstrap/refresh, re-synced by teach/unteach, repaired by refresh when missing; absent when nothing renders. Kill switch `CHAMELEON_CONVENTIONS_MD=0`. Motive: memory-channel delivery measured 100% rule adherence vs 40% for the same content as a hook advisory (results-published/migration-ab-2026-07-11.md). |
 | `rules.json` | Tool-derived rules keyed by source: prettier, tsconfig compiler options, eslint, editorconfig, rubocop. |
 | `idioms.md` | Human-authored team idioms. Carried forward byte-identical across refresh; never regenerated. |
 | `profile.summary.md` | Human-readable summary for PR review and the trust prompt. |
@@ -665,8 +667,13 @@ banner and the other hooks fail open silently and log a `no-interpreter` line.
 **What each hook does:**
 
 - **session-start** loads the `using-chameleon` skill, detects the repo and
-  language, injects the convention primer wrapped in `<chameleon-context>`,
-  appends a drift banner when warranted, runs the default-on auto-refresh, and
+  language, injects the convention primer wrapped in `<chameleon-context>`
+  (the `<chameleon-conventions>` block leads, BEFORE the skill text, and
+  carries explicit anti-majority framing — a rule buried after ~14k chars of
+  mechanics measurably loses authority, and a model otherwise dismisses a
+  taught rule that contradicts the sibling-file majority as "inverted";
+  results-published/migration-ab-2026-07-11.md), appends a drift banner when
+  warranted, runs the default-on auto-refresh, and
   fires the advisor daemon asynchronously. It also wires the status line: when
   neither the project's `settings.json` nor the global `~/.claude/settings.json`
   declares a `statusLine`, `_wire_statusline_settings` writes the chameleon
@@ -1006,6 +1013,16 @@ requires the rule name (`// chameleon-ignore secret-detected-in-content`,
 `// chameleon-ignore eval-call`), keeping a security bypass deliberate and
 auditable. Advisory-grade variants (entropy-based secret hits, warning-severity
 dynamic eval) stay bare-suppressible.
+
+The directive is scoped to human-approved exceptions. The deny reasons and the
+using-chameleon skill both instruct the model that it must not add an ignore on
+its own judgment — in particular never because existing files still use the
+blocked pattern (they may be mid-migration; the block encodes the team's
+current decision). Measured motive: in the migration-scenario A/B the deny's
+old "add the directive if intentional" phrasing was used by the model to
+self-approve keeping the majority's wrong import; scoping the directive to
+human approval eliminated every wrong-import completion
+(results-published/migration-ab-2026-07-11.md).
 
 Every inline override records one durable row in `drift.db.rule_overrides` (with
 a `blanket` flag for bare directives). `get_override_audit` and

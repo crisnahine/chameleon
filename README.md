@@ -88,7 +88,7 @@ Real output from the bundled `golden-ts-nestjs` fixture, so you can reproduce it
 
 We ship a Rails + TypeScript codebase at [Empire Flippers](https://empireflippers.com/), and we review every AI PR that touches it. The failure mode was always the same: the code worked, and it read wrong. `axios` where the team standardized on our HTTP wrapper, a hand-rolled date formatter next to the one we already had, a new service that skipped the base class every other service extends. We wrote CLAUDE.md rules for all of it, and they rotted in a week, because prose about code goes stale the moment the code moves and nobody's job is rewriting the style guide after every refactor. Then we noticed when the model DID conform: exactly when a real file from our repo happened to be sitting in its context. It needs to see one of our files at the moment it writes, not read prose about them. So we built the thing that shows it one, automatically, derived from the repo itself.
 
-That was 175 releases ago. We still run it daily on the code that pays our salaries.
+That was 176 releases ago. We still run it daily on the code that pays our salaries.
 
 ## Why the rule-file approach fails
 
@@ -99,6 +99,8 @@ You have tried this: a conventions section in `CLAUDE.md`, a `.cursorrules`, an 
 3. **Prose loses.** "Please use our wrapper" competes with everything else in context. A concrete file to imitate is how in-context learning actually works.
 
 Chameleon inverts all three. Conventions are derived by parsing the code itself: the official TypeScript Compiler API for TS/JS, Prism for Ruby, bundled libcst for Python. The profile derives from the production branch tip through a clean git worktree, never your dirty checkout, so a half-finished experiment cannot poison the team's norms. It refreshes automatically on drift. The rules cannot rot, because they are recomputed from the thing they describe.
+
+And chameleon writes the rule file for you, in the one channel models actually obey: `.chameleon/conventions.md` is the derived conventions rendered for Claude's memory channel, kept fresh by every refresh and teach. Wire it once — a one-line `.claude/rules/chameleon-conventions.md` covers the whole team without touching your `CLAUDE.md` (or use `CLAUDE.local.md` to keep it personal). Measured, not asserted: the identical rules were followed 100% of the time through this channel versus 40% as hook-injected advice, across TypeScript, Ruby, and Python, on two models (`tests/effectiveness/results-published/multiconv-ab-2026-07-11.md`).
 
 ## Each failure, mapped to the mechanism that kills it
 
@@ -267,7 +269,7 @@ Every number below is checkable in this repo right now:
 | What | Count | Verify yourself |
 |---|---|---|
 | Unit tests | **5,311** | `PYTHONPATH=. plugin/mcp/.venv/bin/python -m pytest tests/unit/ --co -q` |
-| Released versions | **182** (v0.1.1 to v2.69.0) | `git tag \| wc -l` |
+| Released versions | **183** (v0.1.1 to v3.0.0) | `git tag \| wc -l` |
 | Changelog | **6,500+ lines** | `wc -l CHANGELOG.md` |
 | CI | ubuntu + macos + **native Windows**, Python 3.11-3.13 | [.github/workflows/ci.yml](.github/workflows/ci.yml) |
 | Per-edit hot path | benchmarked cold/warm p50 and p99 | `PYTHONPATH=. plugin/mcp/.venv/bin/python tests/bench_hot_path.py` |

@@ -6,6 +6,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [3.0.0] - 2026-07-10
 
+### Added (2026-07-11)
+
+- **`.chameleon/conventions.md` — the CLAUDE.md-channel mirror.** Bootstrap,
+  refresh, and teach/unteach now maintain a rendered conventions file for the
+  repo to wire into Claude's memory channel. Measured motive: the identical
+  rules were followed 100% via this channel vs 40% as a hook advisory (see
+  `tests/effectiveness/results-published/migration-ab-2026-07-11.md`).
+  `/chameleon-init` offers three consent-gated wirings, none of which edit an
+  existing file by default: a one-line `.claude/rules/chameleon-conventions.md`
+  (auto-loads for the whole team), `CLAUDE.local.md` (personal), or a
+  `CLAUDE.md` import on explicit preference. Kill switch
+  `CHAMELEON_CONVENTIONS_MD=0`. A refresh repairs a missing mirror
+  (`_profile_needs_rederive`), and any engine upgrade already forces the full
+  re-derive that writes it — existing profiles gain the file on their first
+  refresh after upgrading.
+- **Multi-convention effectiveness campaign published** (30 tasks x TS/Ruby/
+  Python x 4 arms x 2 models, deterministic scorer, the repo's own
+  cluster-bootstrap bar): chameleon 1.00 conformance on every task, every
+  language, both models; bar MET vs no-plugin on both models; MET vs
+  stale-CLAUDE.md on haiku; ceiling-tie vs perfectly-maintained CLAUDE.md.
+  Instruments committed (`tests/study_*.py`); all results in
+  `tests/effectiveness/results-published/` (including the null dogfood
+  retrospective and the unfavorable single-convention run, per policy).
+- Judge-panel calibration gate computed: kappa 1.000 on the 13-pair golden
+  set (Fable-reference labels, provenance in
+  `tests/effectiveness/golden/LABELS_PROVENANCE.md` — not human labels).
+
+### Changed (2026-07-11)
+
+- SessionStart injection reorders: the `<chameleon-conventions>` block now
+  leads the context (before the skill text) and carries explicit
+  anti-majority framing ("existing files may be mid-migration; never infer a
+  convention from sibling-file majority against a rule here").
+- The `// chameleon-ignore` escape hatch is scoped to human-approved
+  exceptions in both the import-preference deny reason and the
+  using-chameleon skill: the model must not self-approve an override because
+  existing files still use the blocked pattern.
+- pr-review gains a mechanical dependency demotion sweep before verdict
+  rendering (a new-dependency's name alone can never be a BLOCK/FIX).
+
+### Fixed (2026-07-11)
+
+- Journey act 12b phase-41 checker read the raw stream-json transcript, so
+  line-based assertions saw escaped `\n` — a structural false positive that
+  failed the dependency-ACK check on every run. Both historical "failures"
+  re-adjudicate as passes; live re-run green.
+
 ### Breaking (v3)
 
 - **MCP surface folded from 48 tools to 19.** The 16 comprehension/conformance
