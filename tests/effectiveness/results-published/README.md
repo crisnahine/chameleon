@@ -60,3 +60,12 @@ Reproduction notes: spawns real `claude -p` sessions (each run cost ~$60);
 requirements are listed in `../README.md`. Judge-panel winners are LLM votes,
 so a re-run reproduces the harness mechanics and the statistical machinery,
 not the exact vote sequence; expect the same shape, not identical tables.
+
+
+## Flat study artifacts
+
+Besides per-run directories, this directory holds flat, self-describing study
+publications (`dogfood-study-*.md`, `migration-ab-*.md`, `multiconv-ab-*.md`,
+`pr-outcomes-*.md`, each with a `.metrics.json` sidecar where applicable) under
+the same verbatim-whatever-the-verdict policy. Golden-set label provenance
+lives in `../golden/LABELS_PROVENANCE.md`.

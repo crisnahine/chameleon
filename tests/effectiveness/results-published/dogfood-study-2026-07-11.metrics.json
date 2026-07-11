@@ -1,0 +1,95 @@
+{
+ "study": "real-world dogfood effectiveness study",
+ "preregistration": "docs/effectiveness-study.md",
+ "adoption_date": "2026-06-01",
+ "ref": "origin/production",
+ "window": "2026-01-01 .. 2026-07-10",
+ "D1_new_violation_rate": [
+  {
+   "pre_rate": 209.54,
+   "post_rate": 224.79,
+   "diff": -15.25,
+   "lo": -76.43,
+   "hi": 57.55,
+   "n_pre": 71,
+   "n_post": 42,
+   "supported": false,
+   "label": "ef-client (TS)",
+   "metric": "viol_per_100_files",
+   "verdict": "NULL (CI straddles 0)"
+  },
+  {
+   "pre_rate": 112.94,
+   "post_rate": 100.46,
+   "diff": 12.48,
+   "lo": -13.85,
+   "hi": 37.86,
+   "n_pre": 171,
+   "n_post": 135,
+   "supported": false,
+   "label": "ef-api (Rails)",
+   "metric": "viol_per_100_files",
+   "verdict": "NULL (CI straddles 0)"
+  }
+ ],
+ "H2_review_comments_per_pr": [
+  {
+   "pre_rate": 0.622,
+   "post_rate": 2.478,
+   "diff": -1.856,
+   "lo": -3.315,
+   "hi": -0.574,
+   "n_pre": 82,
+   "n_post": 46,
+   "supported": false,
+   "label": "ef-client (TS)",
+   "metric": "comments_per_pr",
+   "verdict": "REVERSED (post higher, CI excludes 0)"
+  },
+  {
+   "pre_rate": 0.487,
+   "post_rate": 3.362,
+   "diff": -2.875,
+   "lo": -3.84,
+   "hi": -1.994,
+   "n_pre": 193,
+   "n_post": 149,
+   "supported": false,
+   "label": "ef-api (Rails)",
+   "metric": "comments_per_pr",
+   "verdict": "REVERSED (post higher, CI excludes 0)"
+  }
+ ],
+ "D2_governed_vs_ungoverned": [
+  {
+   "repo": "/Users/crisn/Documents/Projects/Testing Apps/ef-client",
+   "ref": "origin/production",
+   "governed_merged_files": 3,
+   "ungoverned_merged_files": 177,
+   "governed_scored": 3,
+   "ungoverned_scored": 177,
+   "ungoverned_viol_per_file": 1.9322,
+   "governed_viol_per_file": 1.3333000000000002,
+   "diff_per_file": 0.5989,
+   "ci_lo": -1.0282,
+   "ci_hi": 1.9040000000000001,
+   "underpowered": true,
+   "label": "ef-client (TS)"
+  },
+  {
+   "repo": "/Users/crisn/Documents/Projects/Testing Apps/ef-api",
+   "ref": "origin/production",
+   "governed_merged_files": 102,
+   "ungoverned_merged_files": 844,
+   "governed_scored": 100,
+   "ungoverned_scored": 836,
+   "ungoverned_viol_per_file": 0.3337,
+   "governed_viol_per_file": 1.13,
+   "diff_per_file": -0.7963,
+   "ci_lo": -1.475,
+   "ci_hi": -0.2668,
+   "underpowered": false,
+   "label": "ef-api (Rails)"
+  }
+ ]
+}
