@@ -42,7 +42,15 @@ PHASE 3, Doctor baseline:
 PHASE 4, bootstrap resource limits + using-chameleon:
   emit checkpoint started phase 4
   Use Bash to verify `mcp/typescript-checksums.json` exists. Parse it,
-  count entries. Verify each listed file exists under mcp/node_modules/typescript/.
+  count entries. Then verify the checksummed TypeScript package files exist in
+  ONE of the two supported locations: `mcp/node_modules/typescript/` (a dev
+  tree that ran npm install), or the per-user lazy-provisioned copy under the
+  chameleon data dir at `node-deps/<version>/node_modules/typescript/` (the
+  normal state for a cache/marketplace install). If NEITHER location exists
+  yet, that is ALSO a pass — the lean install provisions TS deps on the first
+  TypeScript extraction (a later act's bootstrap exercises exactly that);
+  report "lazy provisioning pending" rather than a failure. Only report
+  failure when a copy EXISTS but is missing files the checksums list.
   Then describe (in plain text) what you can see of the using-chameleon
   skill content in your current session context. The runner will inspect
   your transcript for chameleon-context markers in the SessionStart system message.

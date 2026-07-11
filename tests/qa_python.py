@@ -32,11 +32,23 @@ if not REPO_PATH:
     sys.exit(0)
 
 
+# Vendored trees must never be probed: the engine correctly refuses archetypes
+# for them, so a picker that wanders into .venv/site-packages reports engine
+# "failures" that are really its own bad pick (surfaced on a bed carrying an
+# in-repo .venv).
+_VENDORED_PARTS = frozenset(
+    {".venv", "venv", "site-packages", "node_modules", "vendor", ".git", "dist", "build"}
+)
+
+
 def _first_file(*globs: str, exclude: tuple[str, ...] = ()) -> str | None:
-    """Return the first existing repo file matching any glob, skipping excludes."""
+    """Return the first existing repo SOURCE file matching any glob, skipping
+    excludes and vendored trees."""
     root = Path(REPO_PATH)
     for pattern in globs:
         for p in sorted(root.glob(pattern)):
+            if any(part in _VENDORED_PARTS for part in p.parts):
+                continue
             if p.is_file() and not any(x in p.name for x in exclude):
                 return str(p)
     return None

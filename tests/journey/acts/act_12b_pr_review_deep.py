@@ -188,6 +188,18 @@ def run(ctx: JourneyContext) -> ActResult:
         r"<<<CHAMELEON_REVIEW>>>(.*?)<<<END_REVIEW>>>", transcript_text, re.DOTALL
     )
     review_span = span_match.group(1) if span_match else ""
+    # The span is captured from the RAW stream-json transcript, where newlines
+    # are the two-character escape `\n`. The phase-41 checker iterates LINES;
+    # without unescaping, the whole review collapses into one "line" that
+    # contains both the gem name and the (phase-40-required) BLOCK headings —
+    # a structural false positive that failed phase 41 on every run. Targeted
+    # unescape of the JSON string escapes the line semantics depend on.
+    review_span = (
+        review_span.replace("\\r\\n", "\n")
+        .replace("\\n", "\n")
+        .replace("\\t", "\t")
+        .replace('\\"', '"')
+    )
     span_lower = review_span.lower()
 
     # ---- Phase 40: real tool evidence + the three deterministic BLOCK findings ----
