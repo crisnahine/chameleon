@@ -7129,13 +7129,20 @@ def _idiom_review_gate(
         # still gets its review. The Bash-write recorder applies the same
         # non-code gate at record time; the Edit-tool path records everything
         # (the Stop lint universe needs it), so the scoping happens here.
+        # A notebook is Python source (detect_language('.ipynb') is None), same
+        # as the _ignore_hint comment-token special case.
         from chameleon_mcp.lint_engine import detect_language
 
-        governed = [p for p in edited if detect_language(p) is not None]
+        def _governed_language(path: str) -> str | None:
+            if path.lower().endswith(".ipynb"):
+                return "python"
+            return detect_language(path)
+
+        governed = [p for p in edited if _governed_language(p) is not None]
         if not governed:
             _emit_check_event(repo_id, session_id, "idiom_review", "skipped", "no_governed_files")
             return None
-        edited_languages = sorted({detect_language(p) for p in governed})
+        edited_languages = sorted({_governed_language(p) for p in governed})
 
         # Test-run signal: when the turn touched real source (not a pure
         # test/docs edit) and no passing test runner was observed this session,
@@ -7148,7 +7155,7 @@ def _idiom_review_gate(
 
             edited_source = False
             for path in governed:
-                lang = detect_language(path)
+                lang = _governed_language(path)
                 try:
                     rel = os.path.relpath(path, str(repo_root))
                 except ValueError:

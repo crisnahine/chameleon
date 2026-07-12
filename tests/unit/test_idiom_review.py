@@ -490,6 +490,25 @@ def test_language_scoped_idiom_dropped_for_unedited_language(make_trusted_repo):
     assert "ruby-slack-services" not in reason
 
 
+def test_notebook_only_turn_still_governed_as_python(make_trusted_repo):
+    # detect_language('.ipynb') is None, but a notebook cell is Python source:
+    # a notebook-only turn keeps its idiom review instead of silently skipping.
+    repo, data_dir, sid, _file_path, profile_dir = make_trusted_repo(mode="enforce")
+    nb_path = str(repo / "analysis.ipynb")
+    _touch_edited_file(nb_path, data_dir, sid, content='{"cells": []}\n')
+    _write_idioms(
+        profile_dir,
+        "### py-thresholds\nLanguage: python\nStatus: active\nConstants live in DEFAULTS.\n",
+    )
+
+    out = _run_stop(
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
+        env={"CHAMELEON_ENFORCE": "1"},
+    )
+    assert out.get("decision") == "block"
+    assert "py-thresholds" in out.get("reason", "")
+
+
 def test_all_idioms_language_scoped_out_no_block_no_marker(make_trusted_repo):
     # Every idiom tagged for another language -> nothing in scope: no block, and
     # the once-per-session marker survives for a later governed turn.
