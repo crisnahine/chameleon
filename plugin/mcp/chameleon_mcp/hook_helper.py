@@ -7119,6 +7119,24 @@ def _idiom_review_gate(
         if not edited:
             return None
 
+        # Idioms govern SOURCE, so the review is scoped to the turn's edits in a
+        # recognized language. A turn that touched only unrecognized files
+        # (markdown, JSON/config, CLAUDE.local.md) has no idiom surface: no
+        # archetype resolves for such files, the renderer's cannot-scope
+        # fallback would dump EVERY idiom at full text, and the review directive
+        # would demand a re-check against idioms that cannot apply. Skip
+        # without burning the once-per-session marker -- a later source edit
+        # still gets its review. The Bash-write recorder applies the same
+        # non-code gate at record time; the Edit-tool path records everything
+        # (the Stop lint universe needs it), so the scoping happens here.
+        from chameleon_mcp.lint_engine import detect_language
+
+        governed = [p for p in edited if detect_language(p) is not None]
+        if not governed:
+            _emit_check_event(repo_id, session_id, "idiom_review", "skipped", "no_governed_files")
+            return None
+        edited_languages = sorted({detect_language(p) for p in governed})
+
         # Test-run signal: when the turn touched real source (not a pure
         # test/docs edit) and no passing test runner was observed this session,
         # the self-review directive is worth strengthening with a "run the
@@ -7127,13 +7145,10 @@ def _idiom_review_gate(
         no_test_for_source_edit = False
         try:
             from chameleon_mcp.exec_log import session_test_run_seen
-            from chameleon_mcp.lint_engine import detect_language
 
             edited_source = False
-            for path in edited:
+            for path in governed:
                 lang = detect_language(path)
-                if lang is None:
-                    continue
                 try:
                     rel = os.path.relpath(path, str(repo_root))
                 except ValueError:
@@ -7165,23 +7180,24 @@ def _idiom_review_gate(
 
         from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
-        # Resolve the edited files' archetypes: the terse rendering scopes idioms to
-        # them (filter), and the legacy full-dump reorders by them. Turn-end Stop
-        # path (not the <100ms hot path), so resolving a few is fine; cap edited[:5]
-        # and fail open to no archetypes (the renderer then keeps all -- cannot
-        # scope -- rather than hiding everything).
+        # Resolve the governed files' archetypes: the terse rendering scopes idioms
+        # to them (filter), and the legacy full-dump reorders by them. Turn-end Stop
+        # path (not the <100ms hot path), so resolving a few is fine; cap
+        # governed[:5] and fail open to no archetypes (the renderer then keeps all
+        # same-language + untagged idioms -- cannot scope by archetype -- rather
+        # than hiding everything).
         edited_archetypes: list[str] = []
         try:
             from chameleon_mcp.tools import get_pattern_context
 
-            for f in edited[:5]:
+            for f in governed[:5]:
                 arch = get_pattern_context(file_path=f)["data"]["archetype"]["archetype"]
                 if arch:
                     edited_archetypes.append(arch)
         except Exception:
             edited_archetypes = []
 
-        names = ", ".join(sanitize_for_chameleon_context(Path(p).name) for p in edited[:5])
+        names = ", ".join(sanitize_for_chameleon_context(Path(p).name) for p in governed[:5])
 
         # Terse rendering is default-ON (kill switch CHAMELEON_STOP_IDIOM_TERSE=0
         # restores the legacy full dump of idioms + principles).
@@ -7226,6 +7242,7 @@ def _idiom_review_gate(
                 char_cap=_STOP_IDIOM_FULLTEXT_CHAR_CAP,
                 max_terse=_STOP_IDIOM_MAX_TERSE,
                 summary_max_chars=_STOP_IDIOM_SUMMARY_MAX_CHARS,
+                edited_languages=edited_languages,
             )
             if idioms_rendered:
                 body.append("")
@@ -7357,7 +7374,9 @@ def _idiom_review_gate(
         parts.append("")
         parts.append(
             "Ending again confirms the review is done. To skip this check, add "
-            f"{_ignore_hint(edited[:5], 'idioms')} in a file you touched."
+            f"{_ignore_hint(governed[:5], 'idioms')} in a file you touched. To turn "
+            "this once-per-session review off for this repo durably, set "
+            '"enforcement": {"idiom_review": false} in .chameleon/config.json.'
         )
 
         # Charge the same reconciled per-workspace counter the cap check read, so

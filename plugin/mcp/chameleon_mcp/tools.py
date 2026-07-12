@@ -1664,6 +1664,14 @@ def _classify_profile_load_failure(profile_file: Path) -> str:
 
 _IDIOM_ARCHETYPE_LINE_RE = re.compile(r"(?im)^[ \t]*Archetype:[ \t]*(.+?)[ \t]*$")
 
+_IDIOM_LANGUAGE_LINE_RE = re.compile(r"(?im)^[ \t]*Language:[ \t]*(.+?)[ \t]*$")
+
+# Language tags that scope an idiom to one language (the values teach writes
+# from profile.json). Any other Language: value — "any", a hand-edited tag, a
+# typo — never filters an idiom out: an unrecognized tag fails open to shown,
+# not silently hidden.
+_IDIOM_SCOPED_LANGUAGES = frozenset({"typescript", "ruby", "python"})
+
 
 def _reorder_idioms_by_archetypes(idioms_text: str, archetypes) -> str:
     """Surface idioms for the given archetypes FIRST so a downstream char-cap
@@ -1867,11 +1875,16 @@ def _render_stop_idioms(
     char_cap: int,
     max_terse: int,
     summary_max_chars: int,
+    edited_languages=None,
 ) -> str:
     """Render idioms.md for the turn-end self-review: filter, summarize, escalate.
 
-    Three composed transforms over the parsed ``### `` blocks:
+    Four composed transforms over the parsed ``### `` blocks:
 
+    - Language filter: drop blocks whose ``Language`` tag is a recognized concrete
+      language (``_IDIOM_SCOPED_LANGUAGES``) the turn did not edit. Untagged,
+      ``any``, and unrecognized tags always survive (fail open to shown), and an
+      empty ``edited_languages`` disables the filter entirely (cannot scope).
     - Filter (B): keep only blocks whose ``Archetype`` is one of ``edited_archetypes``
       plus untagged/general blocks; drop other-archetype blocks (they do not govern
       what was edited this turn). No archetype resolved -> keep all (cannot scope).
@@ -1885,8 +1898,8 @@ def _render_stop_idioms(
       as unseen (full) even when other idioms of the same archetype were shown.
 
     All output is sanitized at the boundary. ``""`` when nothing is in scope (the
-    edited archetypes are simply not governed by any idiom), which the caller reads
-    as "no idiom section" rather than an empty heading.
+    edited archetypes/languages are simply not governed by any idiom), which the
+    caller reads as "no idiom section" rather than an empty heading.
     """
     from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
@@ -1900,6 +1913,17 @@ def _render_stop_idioms(
         if len(s) > char_cap:
             s = s[:char_cap].rstrip() + "\n... (idioms truncated; see idioms.md)"
         return s
+
+    langs = {ln.strip().lower() for ln in (edited_languages or []) if ln and ln.strip()}
+    if langs:
+        scoped = []
+        for b in blocks:
+            m = _IDIOM_LANGUAGE_LINE_RE.search(b[2])
+            tag = m.group(1).strip().lower() if m else None
+            if tag in _IDIOM_SCOPED_LANGUAGES and tag not in langs:
+                continue
+            scoped.append(b)
+        blocks = scoped
 
     if wanted:
         kept = [b for b in blocks if b[1] is None or b[1] in wanted]

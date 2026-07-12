@@ -417,3 +417,105 @@ def test_idiom_gate_fails_open_when_archetype_resolver_raises(make_trusted_repo,
     )
     assert out.get("decision") == "block"
     assert "idiom" in out.get("reason", "").lower() or "principle" in out.get("reason", "").lower()
+
+
+def test_docs_only_turn_no_block_and_marker_not_burned(make_trusted_repo):
+    # A turn that edited only files with no recognized source language (the
+    # /chameleon-init CLAUDE.local.md consent edit is the real-world case) has
+    # no idiom surface: the gate must not fire, and must not burn the
+    # once-per-session marker -- a later source edit still gets its review.
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
+    md_path = str(repo / "CLAUDE.local.md")
+    _touch_edited_file(md_path, data_dir, sid, content="@.chameleon/conventions.md\n")
+    _write_idioms(profile_dir)
+
+    out1 = _run_stop(
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
+        env={"CHAMELEON_ENFORCE": "1"},
+    )
+    assert out1.get("decision") != "block"
+
+    # Same session, now a source file is edited: the review still fires.
+    _touch_edited_file(file_path, data_dir, sid)
+    out2 = _run_stop(
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
+        env={"CHAMELEON_ENFORCE": "1"},
+    )
+    assert out2.get("decision") == "block"
+
+
+def test_mixed_turn_reviews_only_source_files(make_trusted_repo):
+    # A turn that edited a source file AND a docs file fires the review, but the
+    # directive names only the source file -- the docs edit is not idiom-governed.
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
+    md_path = str(repo / "notes.md")
+    Path(md_path).write_text("scratch\n", encoding="utf-8")
+    Path(file_path).write_text("x = 1\n", encoding="utf-8")
+    st = EnforcementState()
+    st.files[md_path] = FileState()
+    st.files[file_path] = FileState()
+    save_state(st, data_dir, sid)
+    _write_idioms(profile_dir)
+
+    out = _run_stop(
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
+        env={"CHAMELEON_ENFORCE": "1"},
+    )
+    assert out.get("decision") == "block"
+    reason = out.get("reason", "")
+    assert "Widget.ts" in reason
+    assert "notes.md" not in reason
+
+
+def test_language_scoped_idiom_dropped_for_unedited_language(make_trusted_repo):
+    # An idiom tagged for a language the turn never touched is out of scope even
+    # when no archetype resolves; untagged and Language:any idioms stay in.
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
+    _touch_edited_file(file_path, data_dir, sid)  # Widget.ts -> typescript
+    _write_idioms(
+        profile_dir,
+        "### ruby-slack-services\nLanguage: ruby\nStatus: active\n"
+        "Slack posts go through the service objects, never the raw client.\n\n"
+        "### any-transactions\nLanguage: any\nStatus: active\n"
+        "Wrap multi-row writes in a transaction.\n",
+    )
+
+    out = _run_stop(
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
+        env={"CHAMELEON_ENFORCE": "1"},
+    )
+    assert out.get("decision") == "block"
+    reason = out.get("reason", "")
+    assert "any-transactions" in reason
+    assert "ruby-slack-services" not in reason
+
+
+def test_all_idioms_language_scoped_out_no_block_no_marker(make_trusted_repo):
+    # Every idiom tagged for another language -> nothing in scope: no block, and
+    # the once-per-session marker survives for a later governed turn.
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
+    _touch_edited_file(file_path, data_dir, sid)  # Widget.ts -> typescript
+    _write_idioms(
+        profile_dir,
+        "### ruby-only\nLanguage: ruby\nStatus: active\nUse the service objects.\n",
+    )
+
+    out1 = _run_stop(
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
+        env={"CHAMELEON_ENFORCE": "1"},
+    )
+    assert out1.get("decision") != "block"
+
+    # A typescript idiom appears (teach/refresh): the review still fires later
+    # in the same session because the marker was never burned.
+    _write_idioms(
+        profile_dir,
+        "### ruby-only\nLanguage: ruby\nStatus: active\nUse the service objects.\n\n"
+        "### ts-imports\nLanguage: typescript\nStatus: active\nUse the api client wrapper.\n",
+    )
+    out2 = _run_stop(
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
+        env={"CHAMELEON_ENFORCE": "1"},
+    )
+    assert out2.get("decision") == "block"
+    assert "ts-imports" in out2.get("reason", "")

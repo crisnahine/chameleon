@@ -24,8 +24,10 @@ vocabulary is an open set). ``reason`` values defined so far: ``spawn_timeout``,
 judge path), ``in_flight_at_stop`` (an async spawn unfinished at Stop, recorded
 as a SKIPPED check), ``cooldown``, ``verify_env_off``, ``enforce_env_off``,
 ``mode_off``, ``feature_disabled``, ``marker_exists``, ``cap_reached``,
-``corr_judge_active``, ``digest_already_judged``, ``suppressed``. Unknown
-reasons are stored verbatim.
+``corr_judge_active``, ``digest_already_judged``, ``suppressed``,
+``no_governed_files`` (the idiom review skipped a turn whose edits carry no
+recognized source language, without burning its once-per-session marker).
+Unknown reasons are stored verbatim.
 """
 
 from __future__ import annotations
