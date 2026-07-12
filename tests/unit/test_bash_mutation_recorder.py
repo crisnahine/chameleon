@@ -62,9 +62,7 @@ def test_trusted_ts_write_records_violation(tmp_path: Path):
 
     with (
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=repo),
-        patch(
-            "chameleon_mcp.profile.trust.trust_state_for", return_value=_trusted_rec()
-        ),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=_trusted_rec()),
         patch("chameleon_mcp.tools._compute_repo_id", return_value="rid"),
         patch(
             "chameleon_mcp.tools.get_archetype",
@@ -103,9 +101,7 @@ def test_untrusted_profile_is_skipped(tmp_path: Path):
 
     with (
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=repo),
-        patch(
-            "chameleon_mcp.profile.trust.trust_state_for", return_value=_untrusted_rec()
-        ),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=_untrusted_rec()),
         patch("chameleon_mcp.tools._compute_repo_id", return_value="rid"),
         patch("chameleon_mcp.hook_helper._lint_file_in_process") as lint,
         patch("chameleon_mcp.enforcement.save_state") as save_state,
@@ -141,9 +137,7 @@ def test_non_ts_ruby_target_skipped_before_stat(tmp_path: Path):
 
     with (
         patch("chameleon_mcp.hook_helper._lint_file_in_process") as lint,
-        patch(
-            "chameleon_mcp.profile.trust.trust_state_for", return_value=_trusted_rec()
-        ),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=_trusted_rec()),
     ):
         _call_mark(f"cat > {repo / 'out.log'}", repo)
 
@@ -175,9 +169,7 @@ def test_target_outside_repo_skipped(tmp_path: Path):
         # find_repo_root returns a DIFFERENT root than where the file lives, so
         # relative_to raises and the file is skipped.
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=repo),
-        patch(
-            "chameleon_mcp.profile.trust.trust_state_for", return_value=_trusted_rec()
-        ),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=_trusted_rec()),
         patch("chameleon_mcp.tools._compute_repo_id", return_value="rid"),
         patch("chameleon_mcp.hook_helper._lint_file_in_process") as lint,
     ):
@@ -199,9 +191,7 @@ def test_clean_file_recorded_clean_for_crossfile(tmp_path: Path):
 
     with (
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=repo),
-        patch(
-            "chameleon_mcp.profile.trust.trust_state_for", return_value=_trusted_rec()
-        ),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=_trusted_rec()),
         patch("chameleon_mcp.tools._compute_repo_id", return_value="rid"),
         patch(
             "chameleon_mcp.tools.get_archetype",
@@ -234,9 +224,7 @@ def test_inline_ignore_clears_hard_class(tmp_path: Path):
 
     with (
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=repo),
-        patch(
-            "chameleon_mcp.profile.trust.trust_state_for", return_value=_trusted_rec()
-        ),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=_trusted_rec()),
         patch("chameleon_mcp.tools._compute_repo_id", return_value="rid"),
         patch(
             "chameleon_mcp.tools.get_archetype",
@@ -266,9 +254,7 @@ def test_lint_exception_fails_open(tmp_path: Path):
 
     with (
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=repo),
-        patch(
-            "chameleon_mcp.profile.trust.trust_state_for", return_value=_trusted_rec()
-        ),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=_trusted_rec()),
         patch("chameleon_mcp.tools._compute_repo_id", return_value="rid"),
         patch(
             "chameleon_mcp.tools.get_archetype",

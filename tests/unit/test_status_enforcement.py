@@ -36,9 +36,7 @@ def make_trusted_repo(tmp_path):
         profile_dir = repo / ".chameleon"
         profile_dir.mkdir(parents=True, exist_ok=True)
         profile_dir.joinpath("config.json").write_text(
-            json.dumps(
-                {"enforcement": {"mode": mode, "stop_block_cap": stop_block_cap}}
-            ),
+            json.dumps({"enforcement": {"mode": mode, "stop_block_cap": stop_block_cap}}),
             encoding="utf-8",
         )
         # A COMMITTED, LOADABLE profile: bootstrap always writes the core trio
@@ -49,9 +47,7 @@ def make_trusted_repo(tmp_path):
         # minimal-but-complete set at one generation.
         _gen = 1
         profile_dir.joinpath("profile.json").write_text(
-            json.dumps(
-                {"schema_version": 1, "language": "typescript", "generation": _gen}
-            ),
+            json.dumps({"schema_version": 1, "language": "typescript", "generation": _gen}),
             encoding="utf-8",
         )
         profile_dir.joinpath("archetypes.json").write_text(
@@ -63,9 +59,7 @@ def make_trusted_repo(tmp_path):
         profile_dir.joinpath("rules.json").write_text(
             json.dumps({"generation": _gen, "rules": {}}), encoding="utf-8"
         )
-        profile_dir.joinpath("COMMITTED").write_text(
-            "committed-at=1\npid=1\n", encoding="utf-8"
-        )
+        profile_dir.joinpath("COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
 
         data_dir = tmp_path / repo_id
         data_dir.mkdir(parents=True, exist_ok=True)
@@ -75,12 +69,8 @@ def make_trusted_repo(tmp_path):
 
         session_id = "s-status"
 
-        stack.enter_context(
-            patch("chameleon_mcp.profile.loader.find_repo_root", return_value=repo)
-        )
-        stack.enter_context(
-            patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id)
-        )
+        stack.enter_context(patch("chameleon_mcp.profile.loader.find_repo_root", return_value=repo))
+        stack.enter_context(patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id))
         stack.enter_context(
             patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path)
         )
@@ -287,10 +277,7 @@ def test_status_lists_security_rules_active_without_artifact(make_trusted_repo):
     enf = out["data"]["enforcement"]
     assert "secret-detected-in-content" in enf["active"]
     assert "eval-call" in enf["active"]
-    assert all(
-        d["rule"] not in ("secret-detected-in-content", "eval-call")
-        for d in enf["demoted"]
-    )
+    assert all(d["rule"] not in ("secret-detected-in-content", "eval-call") for d in enf["demoted"])
 
 
 def test_status_unprofiled_repo_lists_no_security_rules(make_trusted_repo):
@@ -367,9 +354,7 @@ def test_status_unrelated_section_typo_still_shows_enforce(make_trusted_repo):
     # (the gates still enforce via the isolated read), so config_malformed is
     # False and the mode is the real "enforce".
     profile_dir.joinpath("config.json").write_text(
-        json.dumps(
-            {"enforcement": {"mode": "enforce"}, "auto_refresh": {"enabled": "yes"}}
-        ),
+        json.dumps({"enforcement": {"mode": "enforce"}, "auto_refresh": {"enabled": "yes"}}),
         encoding="utf-8",
     )
     enf = get_status(str(repo))["data"]["enforcement"]

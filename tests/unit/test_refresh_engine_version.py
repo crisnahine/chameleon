@@ -103,12 +103,8 @@ def _seed_repo(tmp_path: Path, monkeypatch, engine_version: str) -> Path:
     (pd / "symbol_signatures.json").write_text(
         json.dumps({"schema_version": _sigs_sv}), encoding="utf-8"
     )
-    (pd / "counterexamples.json").write_text(
-        json.dumps({"schema_version": 1}), encoding="utf-8"
-    )
-    (pd / "enforcement.json").write_text(
-        json.dumps({"block_rules": {}}), encoding="utf-8"
-    )
+    (pd / "counterexamples.json").write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+    (pd / "enforcement.json").write_text(json.dumps({"block_rules": {}}), encoding="utf-8")
     (pd / "profile.summary.md").write_text("# summary\n", encoding="utf-8")
     (pd / "principles.md").write_text(
         "# principles\n\n## anti-hallucination protocol\n\n- Don't invent symbols.\n",
@@ -117,9 +113,7 @@ def _seed_repo(tmp_path: Path, monkeypatch, engine_version: str) -> Path:
     # idioms.md: bootstrap always writes at least the scaffold, and refresh
     # re-derives when it is missing (to recreate the template and warn), so a
     # noop-eligible profile must carry it.
-    (pd / "idioms.md").write_text(
-        "# idioms\n\n## active\n\n_(no idioms yet)_\n", encoding="utf-8"
-    )
+    (pd / "idioms.md").write_text("# idioms\n\n## active\n\n_(no idioms yet)_\n", encoding="utf-8")
     # COMMITTED sentinel: the repair gate mirrors the loader's sentinel check, so
     # a noop-eligible (complete) profile must carry it.
     (pd / "COMMITTED").write_text("ok\n", encoding="utf-8")
@@ -169,9 +163,7 @@ def test_drift_status_flags_engine_version_mismatch(tmp_path, monkeypatch):
     pd = repo / ".chameleon"
     pd.mkdir(parents=True)
     pd.joinpath("archetypes.json").write_text(
-        json.dumps(
-            {"schema_version": 8, "engine_min_version": "0.5.0", "archetypes": {}}
-        ),
+        json.dumps({"schema_version": 8, "engine_min_version": "0.5.0", "archetypes": {}}),
         encoding="utf-8",
     )
     out = t.get_drift_status(str(repo.resolve())).get("data", {})
@@ -192,9 +184,7 @@ def test_session_drift_banner_fires_on_engine_mismatch(tmp_path, monkeypatch):
     pd = repo / ".chameleon"
     pd.mkdir(parents=True)
     pd.joinpath("archetypes.json").write_text(
-        json.dumps(
-            {"schema_version": 8, "engine_min_version": "0.5.0", "archetypes": {}}
-        ),
+        json.dumps({"schema_version": 8, "engine_min_version": "0.5.0", "archetypes": {}}),
         encoding="utf-8",
     )
     banner = hook_helper._drift_banner_for_repo(repo.resolve(), session_id="s1")
@@ -247,9 +237,7 @@ def test_principles_incomplete_detects_missing_protocol(tmp_path):
     detected so refresh re-derives it instead of noop/partial preserving it."""
     pd = tmp_path / ".chameleon"
     pd.mkdir()
-    pd.joinpath("principles.md").write_text(
-        "# principles\n\n1. foo\n", encoding="utf-8"
-    )
+    pd.joinpath("principles.md").write_text("# principles\n\n1. foo\n", encoding="utf-8")
     assert t._principles_incomplete(pd) is True
     pd.joinpath("principles.md").write_text(
         "# principles\n\n## anti-hallucination protocol\n\n- Don't invent symbols.\n",
@@ -285,24 +273,18 @@ def _complete_profile(tmp_path):
     from chameleon_mcp.function_catalog import SCHEMA_VERSION as _catalog_sv
     from chameleon_mcp.symbol_signatures import SCHEMA_VERSION as _sigs_sv
 
-    pd.joinpath("conventions.json").write_text(
-        json.dumps({"schema_version": 8}), encoding="utf-8"
-    )
+    pd.joinpath("conventions.json").write_text(json.dumps({"schema_version": 8}), encoding="utf-8")
     for name, sv in (
         ("calls_index.json", _calls_sv),
         ("function_catalog.json", _catalog_sv),
         ("symbol_signatures.json", _sigs_sv),
         ("counterexamples.json", _cex_sv),
     ):
-        pd.joinpath(name).write_text(
-            json.dumps({"schema_version": sv}), encoding="utf-8"
-        )
+        pd.joinpath(name).write_text(json.dumps({"schema_version": sv}), encoding="utf-8")
     # enforcement.json is written by every bootstrap (all languages); a complete
     # profile carries it with block_rules as a DICT (the shape write_block_rules
     # emits and active_block_rules reads).
-    pd.joinpath("enforcement.json").write_text(
-        json.dumps({"block_rules": {}}), encoding="utf-8"
-    )
+    pd.joinpath("enforcement.json").write_text(json.dumps({"block_rules": {}}), encoding="utf-8")
     pd.joinpath("profile.json").write_text(
         json.dumps({"generation": 1, "schema_version": 8}), encoding="utf-8"
     )
@@ -368,9 +350,7 @@ def test_profile_needs_rederive_on_corrupt_enforcement(tmp_path):
     ):
         pd.joinpath("enforcement.json").write_text(json.dumps(bad), encoding="utf-8")
         assert t._profile_needs_rederive(pd) is True, bad
-    pd.joinpath("enforcement.json").write_text(
-        json.dumps({"block_rules": {}}), encoding="utf-8"
-    )
+    pd.joinpath("enforcement.json").write_text(json.dumps({"block_rules": {}}), encoding="utf-8")
     assert t._profile_needs_rederive(pd) is False
 
 
@@ -386,13 +366,9 @@ def test_profile_needs_rederive_on_corrupt_ruby_constant_index(tmp_path):
     )
     assert not (pd / "constant_index.json").exists()
     assert t._profile_needs_rederive(pd) is False  # absent -> no forced rebuild
-    pd.joinpath("constant_index.json").write_text(
-        json.dumps({"User": []}), encoding="utf-8"
-    )
+    pd.joinpath("constant_index.json").write_text(json.dumps({"User": []}), encoding="utf-8")
     assert t._profile_needs_rederive(pd) is False  # present + valid dict
-    pd.joinpath("constant_index.json").write_text(
-        "{ CORRUPT not json", encoding="utf-8"
-    )
+    pd.joinpath("constant_index.json").write_text("{ CORRUPT not json", encoding="utf-8")
     assert t._profile_needs_rederive(pd) is True
     pd.joinpath("constant_index.json").write_text(json.dumps([1, 2]), encoding="utf-8")
     assert t._profile_needs_rederive(pd) is True
@@ -409,12 +385,8 @@ def test_profile_needs_rederive_on_corrupt_python_indexes(tmp_path):
             json.dumps({"generation": 1, "schema_version": 8, "language": lang}),
             encoding="utf-8",
         )
-        pd.joinpath("exports_index.json").write_text(
-            json.dumps({"a": 1}), encoding="utf-8"
-        )
-        pd.joinpath("reverse_index.json").write_text(
-            json.dumps({"a": 1}), encoding="utf-8"
-        )
+        pd.joinpath("exports_index.json").write_text(json.dumps({"a": 1}), encoding="utf-8")
+        pd.joinpath("reverse_index.json").write_text(json.dumps({"a": 1}), encoding="utf-8")
         assert t._profile_needs_rederive(pd) is False, lang
         pd.joinpath("exports_index.json").write_text("{not json", encoding="utf-8")
         assert t._profile_needs_rederive(pd) is True, lang
@@ -522,9 +494,7 @@ def test_maybe_preserve_trust_honors_always(tmp_path, monkeypatch):
     grant_trust(rid, pd)  # a prior trust record must exist
 
     pre = {"trust_record_existed": True, "repo_id": rid, "structural_hashes": {}}
-    envelope = {
-        "data": {"archetype_diff": {"added": ["new-archetype"]}}
-    }  # NOT identical
+    envelope = {"data": {"archetype_diff": {"added": ["new-archetype"]}}}  # NOT identical
     t._maybe_preserve_trust_across_refresh(repo.resolve(), pre, envelope)
 
     assert envelope["data"].get("trust_preserved") is True
@@ -532,9 +502,7 @@ def test_maybe_preserve_trust_honors_always(tmp_path, monkeypatch):
     assert trust_state_for(rid) is not None
 
 
-def test_maybe_preserve_trust_extends_to_refresh_created_workspace(
-    tmp_path, monkeypatch
-):
+def test_maybe_preserve_trust_extends_to_refresh_created_workspace(tmp_path, monkeypatch):
     """A refresh of a trusted monorepo root that CREATES a new workspace profile
     (e.g. a Python app discovered on re-derivation) must extend the preserved root
     trust to that workspace — otherwise injection AND the deny gates are silently
@@ -565,9 +533,7 @@ def test_maybe_preserve_trust_extends_to_refresh_created_workspace(
     assert not record_before.grants_root(ws.parent.resolve())  # workspace untrusted
 
     pre = {"trust_record_existed": True, "repo_id": rid, "structural_hashes": {}}
-    envelope = {
-        "data": {"archetype_diff": {"added": ["x"]}}
-    }  # not structurally identical
+    envelope = {"data": {"archetype_diff": {"added": ["x"]}}}  # not structurally identical
     t._maybe_preserve_trust_across_refresh(repo.resolve(), pre, envelope)
 
     assert envelope["data"].get("trust_preserved") is True
@@ -585,9 +551,7 @@ def test_maybe_preserve_trust_extends_to_refresh_created_workspace(
 def test_persisted_paths_glob_returns_none_on_non_utf8_profile(tmp_path: Path):
     pd = tmp_path / ".chameleon"
     pd.mkdir()
-    (pd / "profile.json").write_bytes(
-        b'{"discovery": {"paths_glob": "\xff\xfe**/*.rb"}}'
-    )
+    (pd / "profile.json").write_bytes(b'{"discovery": {"paths_glob": "\xff\xfe**/*.rb"}}')
     assert t._persisted_paths_glob(pd) is None
 
 

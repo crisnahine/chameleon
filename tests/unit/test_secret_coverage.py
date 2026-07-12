@@ -165,8 +165,7 @@ class TestFoldRobustness:
         import time
 
         blob = (
-            'def f():\n    """doc "quoted" text over\n    many lines"""\n    x = "a" + "b"\n'
-            * 1200
+            'def f():\n    """doc "quoted" text over\n    many lines"""\n    x = "a" + "b"\n' * 1200
         )[:100_000]
         start = time.perf_counter()
         _fold_string_concat(blob)
