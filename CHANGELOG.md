@@ -4,6 +4,44 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.3] - 2026-07-12
+
+Field feedback: the turn-end Stop idiom self-review read as a recurring "hook
+flood" — it re-fired in every new chat, and a docs-only turn (the
+`/chameleon-init` CLAUDE.local.md consent edit itself) dumped EVERY team idiom
+at full text because nothing scoped it.
+
+### Fixed
+
+- **Docs/config-only turns no longer trigger the Stop idiom review.** The gate
+  treated every recorded edited file as idiom-governed, so a turn that touched
+  only `CLAUDE.local.md` (or any markdown/config file) resolved zero archetypes
+  and the renderer's cannot-scope fallback dumped the full text of every
+  not-yet-seen idiom — including a `Language: ruby` service idiom for a
+  markdown edit. A file now counts as idiom-governed only when
+  `detect_language` recognizes it; a turn with no governed file skips the
+  review (check-event reason `no_governed_files`) without burning the
+  once-per-session marker. `_idiom_review_gate` in `hook_helper.py`.
+- **Language-scoped idiom filtering at the Stop review.** An idiom whose
+  `Language:` tag names a recognized language (`typescript`/`ruby`/`python`)
+  the turn did not edit is dropped from the review; untagged, `Language: any`,
+  and unrecognized tags fail open to shown. Composes with the existing
+  archetype filter, so a mixed-language repo's review no longer dumps
+  other-language idioms when archetype resolution comes up empty.
+  `_render_stop_idioms` in `tools.py`.
+
+### Changed
+
+- **The durable off-switch is now discoverable where the pain is.** The
+  enforce-mode block message names `.chameleon/config.json`
+  `"enforcement": {"idiom_review": false}` (per-repo, committed → team-wide,
+  survives new chats) alongside the existing inline-ignore hint; the
+  `/chameleon-disable` skill gained a "Silencing ONE surface durably" section
+  (`idiom_review: false`, `stop_backstop: false`, `stop_block_cap: 0`) and
+  routes the recurring-Stop-text complaint to the config key instead of a
+  session-only disable; architecture.md and the env-vars reference document
+  the same path.
+
 ## [3.0.2] - 2026-07-12
 
 Whole-plugin from-scratch real-world QA campaign: 29 parallel testers exercised
