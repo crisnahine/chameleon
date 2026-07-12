@@ -4,6 +4,115 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.2] - 2026-07-12
+
+Whole-plugin from-scratch real-world QA campaign: 29 parallel testers exercised
+the real plugin surface (real hook binaries, in-process MCP tools, skills, and
+infra) against the real profiled repos across TypeScript/Ruby/Python and every
+supported framework. 54 findings were confirmed and remediated, each reproduced
+before fixing and re-verified by an adversarial pass; the fix wave itself was
+verified, catching and repairing 3 fix-introduced regressions. Full unit suite
+green (5413 passed), ruff clean.
+
+### Fixed
+
+- **Canonical-witness recency tiebreak was defeated by per-file clock jitter
+  (P1).** `select_canonicals` forwarded `now=None`, so every per-file recency
+  weight re-evaluated `time.time()`; two files sharing a commit epoch got weights
+  differing by sub-millisecond jitter, and because recency sorts above typicality
+  that jitter picked a near-empty aggregator over the real majority implementation
+  as the archetype witness. The clock is snapshotted once per pass.
+  `select_canonicals` in `bootstrap/canonical.py`.
+- **A hex/unicode-escaped secret in a single literal bypassed the deny (P1).**
+  `KEY = "\x41\x4b\x49\x41..."` (a fully-escaped AKIA token) never hit the
+  concat-fold path, so the escapes were never decoded and the raw bytes never
+  matched. A numeric-escape-decoded scan pass (`\x`/`\u`/`\U` only, so line
+  numbers stay truthful) now runs alongside the fold pass. `_scan_with_concat_fold`
+  in `lint_engine.py`.
+- **`rsync`/`scp`/`dd` and interpreter one-liners laundered a blocked secret past
+  the Stop backstop (P1).** The destination-arming token list covered only
+  `mv`/`cp`/`ln`/`install`; a `rsync a b`, `dd if=a of=b`, or `python -c
+  "open('x','w').write(secret)"` relocated a blocked secret to an unarmed path.
+  The extractor now arms rsync/scp positional destinations, dd `of=` targets, and
+  the quoted write-sink path inside a `python -c`/`node -e`/`ruby -e` one-liner.
+  `_extract_bash_write_targets` in `hook_helper.py`.
+- **A Bash-written no-archetype file, or a Bash `rm`, was invisible to the
+  crossfile-existence check (P1).** The recorder skipped a clean no-archetype file
+  and never saw a fresh `rm`, so a `sed`/`rm` that broke an importer bypassed the
+  turn-end deny that the Edit path enforces. Clean ts/js/rb/py Bash writes are now
+  recorded (parity with Edit), and a Bash-deleted ts/py module is recorded so the
+  Stop prune feeds it to the FP-safe deleted-module advisory. `hook_helper.py`.
+- **forwardRef/memo-wrapped React components were invisible to every TS
+  comprehension tool (P1).** `const X = forwardRef((props, ref) => {})` returned
+  null from the name resolver (the arrow's parent is the wrapper call, not the
+  binding), dropping the component from search/callers/dup. The resolver now
+  ascends through `forwardRef`/`memo`/`observer`/`connect` wrappers to the binding
+  name. `callableNameOf` in `scripts/ts_dump.mjs`.
+- **`get_status` and `detect_repo` reported a healthy enforce panel over an
+  unloadable profile (P1/P2).** A missing/corrupt core artifact (archetypes/
+  canonicals/rules), a generation mismatch, an absent profile.json beside live
+  artifacts, or a corrupt conventions.json makes `load_profile_dir` refuse and the
+  hooks fail open, yet both tools rendered `mode=enforce`. They now report the
+  profile corrupt, matching `get_pattern_context`. `_profile_unrenderable_status`
+  and `detect_repo` in `tools.py`.
+- **Security-idiom prose silently disabled ALL taught idioms (P1).** An idiom
+  whose rationale said "never call `eval()` on user input" or "avoid `rm -rf`"
+  tripped the prompt-injection scan and dropped the entire idiom block from every
+  context-injection path. The dangerous-code sinks (eval/exec/rm-rf/os.system) are
+  now flagged only in an imperative context; a negated/advisory usage passes, while
+  an offensive `always run eval(user)` still blocks. `_looks_suspicious` in
+  `tools.py`.
+- **Deleting `idioms.md` then refreshing was a silent permanent no-op (P1).**
+  Refresh noop'd and never recreated the template or warned, so taught idioms
+  vanished. Refresh now re-derives once when `idioms.md` is missing (writing a
+  fresh template and surfacing the "restore from git history" warning), then
+  self-heals. `_refresh_repo_locked` in `tools.py`.
+- **The statusline trust field bypassed the line-protocol sanitizer (P1).**
+  `$p.name` was stripped of control/bidi/ANSI chars but `$p.trust` was
+  concatenated raw, so a crafted cache could forge entries and inject terminal
+  escapes. Both fields now share the sanitizer. `bin/chameleon-statusline.sh`.
+- **Enforcement/quality fixes (P2/P3).** `get_status` remediation text no longer
+  tells the user to `/chameleon-refresh` a too-new-schema profile (refresh refuses
+  it); the Tier-2 witness lead honors `confidence_band` (a low-confidence AST match
+  no longer says "mirror closely"); the Rails inheritance rule exempts a
+  third-party gem base (`LookbooksController < Lookbook::PreviewController`); the
+  inline-ignore override is no longer double-counted across the Pre/PostToolUse
+  gates; `disable_session` recognizes an edit-only session via its enforcement
+  state; the merge driver's `*.chameleon-merge.tmp` orphans are swept; a new Flask
+  blueprint is no longer mislabeled `util`; `teach_competing_import`'s npm-package
+  warning is gated to TS/JS profiles.
+- **Independent-file findings (P2/P3).** Corrupt `tsconfig.json`/`pyproject.toml`
+  parse failures are surfaced (not silently swallowed); no-remote monorepo
+  workspace `repo_id`/summary/`nested_profile_warnings` corrected; NestJS
+  `implements` heritage consumed for class contracts; Python async/await signal
+  captured; absolute first-party phantom-import detection added; `Data.define`
+  block-form class methods attributed correctly; root-level TS extension bucketing,
+  stale `reverse_index` schema handling, `pnpm-workspace` without `packages:`, the
+  duplication body-hash, blast-radius caller-edge parity, and several doc/skill
+  drifts fixed. `orchestrator.py`, `conventions.py`, `phantom_imports.py`,
+  `prism_dump.rb`, `libcst_dump.py`, `signatures.py`, `symbol_index.py`,
+  `workspace.py`, `function_catalog.py`, `blast_radius.py`, `enforcement_calibration.py`,
+  `tool_config.py`, `violation_class.py`, `extractors/python.py`, `clustering.py`.
+- **Fix-wave regressions caught by the verify pass and repaired.** The
+  blast-radius parity fix leaked `<anonymous>`/`<module>` placeholder hops into the
+  correctness-judge advisory — the judge now trims them while the read tools keep
+  the parity. The inheritance-calibration fix crashed the read path on a `null`
+  frequency/consistency in a damaged `conventions.json` — coerced to fail-open. The
+  absolute-phantom-import fix false-flagged (and could BLOCK) a real PEP 420
+  namespace-package import — the full dotted path is now confirmed absent before
+  flagging.
+
+### Known remaining (tracked)
+
+- `naming-convention-violation`/`inheritance-convention-violation` lint messages
+  carry no parseable line number, so the pr-review hunk-gate mis-buckets
+  pre-existing drift in a changed file.
+- `posttool-verify`/`lint_file` cost scales with LINE count, not bytes; a 100KB
+  many-short-line file can exceed the hook's internal timeout and drop its lint.
+- Partial refresh carries `function_catalog.json` verbatim, so
+  `get_duplication_candidates` misses duplication introduced in that refresh until
+  the next full refresh.
+
 ## [3.0.1] - 2026-07-11
 
 Whole-plugin real-world QA campaign: 8 parallel testers against real repos

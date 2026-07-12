@@ -31,7 +31,7 @@ if [[ -f "$cache_file" ]]; then
     # terminal escape -- locale-independent, and no per-render process spawn.
     records=$(jq -r '
       (.profiles // [])[] as $p
-        | "P\t" + (($p.name // "") | gsub("[\u0000-\u001f\u007f\u0080-\u009f\u200b-\u200d\ufeff\u200e-\u200f\u202a-\u202e\u2066-\u2069\u2500-\u259f]"; "")) + "\t" + ($p.trust // ""),
+        | "P\t" + (($p.name // "") | gsub("[\u0000-\u001f\u007f\u0080-\u009f\u200b-\u200d\ufeff\u200e-\u200f\u202a-\u202e\u2066-\u2069\u2500-\u259f]"; "")) + "\t" + (($p.trust // "") | gsub("[\u0000-\u001f\u007f\u0080-\u009f\u200b-\u200d\ufeff\u200e-\u200f\u202a-\u202e\u2066-\u2069\u2500-\u259f]"; "")),
       "A\t" + ((.activity // "") | tostring | gsub("[\u0000-\u001f\u007f\u0080-\u009f\u200b-\u200d\ufeff\u200e-\u200f\u202a-\u202e\u2066-\u2069\u2500-\u259f]"; "")),
       "U\t" + ((.update // "") | tostring | gsub("[\u0000-\u001f\u007f\u0080-\u009f\u200b-\u200d\ufeff\u200e-\u200f\u202a-\u202e\u2066-\u2069\u2500-\u259f]"; ""))
     ' "$cache_file" 2>/dev/null || true)
@@ -76,7 +76,12 @@ if [[ -f "$cache_file" ]]; then
           parts="$parts │ ⬆ v${update} ready — /reload-plugins or reopen session"
         fi
       fi
-      printf '🦎 chameleon │ %s' "$parts"
+      # `|| true`: a closed stdout (e.g. a caller reading only stderr) makes
+      # printf's write() fail under `-e`, which would otherwise abort the
+      # script with a nonzero exit -- the fail-open contract this statusline
+      # holds everywhere else (see the jq-miss guard above) requires exit 0
+      # regardless of what happened to the fd we tried to write to.
+      printf '🦎 chameleon │ %s' "$parts" || true
       exit 0
     fi
   else
@@ -116,7 +121,7 @@ if ps:
     print(f'🦎 chameleon │ {parts}')
 " 2>/dev/null || true)
     if [[ -n "$result" ]]; then
-      printf '%s' "$result"
+      printf '%s' "$result" || true
       exit 0
     fi
   fi
@@ -125,7 +130,7 @@ fi
 dir="$project_dir"
 while true; do
   if [[ -f "$dir/.chameleon/profile.json" ]]; then
-    printf '🦎 chameleon │ %s' "$(basename "$dir")"
+    printf '🦎 chameleon │ %s' "$(basename "$dir")" || true
     exit 0
   fi
   parent="$(dirname "$dir")"

@@ -160,6 +160,36 @@ rescue StandardError
   nil
 end
 
+# Receiver/method pairs whose block form doesn't iterate -- it defines an
+# anonymous class and the block body is that class's method body, the same
+# shape as `Class.new(Base) do ... end` written out as `class Foo < Base`.
+DYNAMIC_CLASS_FACTORIES = { 'Data' => 'define', 'Struct' => 'new', 'Class' => 'new' }.freeze
+
+# True for `Data.define(...) do ... end` / `Struct.new(...) do ... end` /
+# `Class.new(...) do ... end`: a block-form call whose block is a class body,
+# not a plain iterator block. Defs inside belong to the class this call
+# returns, not whatever class lexically encloses the assignment.
+def dynamic_class_factory_call?(node)
+  return false unless node.is_a?(Prism::CallNode) && node.block.is_a?(Prism::BlockNode)
+
+  receiver = node.receiver
+  return false unless receiver.is_a?(Prism::ConstantReadNode)
+
+  DYNAMIC_CLASS_FACTORIES[receiver.name.to_s] == node.name.to_s
+end
+
+# `Class.new(Base) do ... end` names its superclass positionally, exactly like
+# `class Foo < Base`; `Struct.new`/`Data.define` take attribute names/symbols
+# in that position instead, so only Class.new has a superclass to recover.
+def dynamic_class_factory_superclass(node)
+  return nil unless node.receiver.is_a?(Prism::ConstantReadNode) && node.receiver.name.to_s == 'Class'
+
+  args = node.arguments&.arguments
+  return nil unless args && !args.empty?
+
+  constant_name(args[0])
+end
+
 # Structured parameter shape for one method header: each entry carries the
 # binding name, whether it can be dropped (optional/keyword-with-default/splat
 # all read as droppable), and its kind. Mirrors the TS extractor's param shape
@@ -384,6 +414,23 @@ def extract_file(file_path)
                          path: enclosing && enclosing[:path],
                          singleton: true })
       pushed_class = true
+    elsif (node.is_a?(Prism::ConstantWriteNode) || node.is_a?(Prism::ConstantPathWriteNode)) &&
+          dynamic_class_factory_call?(node.value)
+      # `AccountRow = Data.define(...) do ... end` binds an anonymous class to
+      # the constant on the left; defs in the block belong to that class, not
+      # whatever real class lexically encloses the assignment. Push a frame
+      # exactly like a literal `class AccountRow` would, so a locally-scoped
+      # wrapper's private interface never gets folded into the outer class's
+      # contract.
+      name = node.is_a?(Prism::ConstantWriteNode) ? node.name.to_s : constant_name(node.target)
+      class_stack.push({ name: name,
+                         superclass: dynamic_class_factory_superclass(node.value),
+                         path: name ? (nesting_stack + [name]).join('::') : nil })
+      pushed_class = true
+      if name
+        nesting_stack.push(name)
+        pushed_nesting = true
+      end
     end
 
     is_fn = is_function_like?(node)

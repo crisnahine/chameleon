@@ -249,6 +249,23 @@ function collectImportSymbols(node, out, sourceFile) {
 // the binding rather than the arrow itself. Anonymous callables (inline
 // callbacks, default-exported arrows) return null and are skipped: there is
 // no stable name to key a contract on.
+// Component higher-order wrappers whose result is bound to the component name:
+// `const X = forwardRef((props, ref) => {})`, `memo(...)`, `observer(...)`,
+// `connect(...)`. Restricted to this known set so an ordinary callback argument
+// (`const x = compute(() => {})`) is never mis-named after its binding.
+const WRAPPER_CALLEES = new Set(["forwardRef", "memo", "observer", "connect"]);
+
+function isWrapperCall(node) {
+  if (!node || node.kind !== ts.SyntaxKind.CallExpression) return false;
+  const e = node.expression;
+  if (!e) return false;
+  if (typeof e.text === "string" && WRAPPER_CALLEES.has(e.text)) return true; // forwardRef(...)
+  if (e.name && typeof e.name.text === "string" && WRAPPER_CALLEES.has(e.name.text)) {
+    return true; // React.forwardRef(...)
+  }
+  return false;
+}
+
 function callableNameOf(node) {
   if (node.kind === ts.SyntaxKind.Constructor) return "constructor";
   if (node.name && typeof node.name.text === "string") return node.name.text;
@@ -262,6 +279,23 @@ function callableNameOf(node) {
     typeof parent.name.text === "string"
   ) {
     return parent.name.text;
+  }
+  // `const X = forwardRef((props, ref) => {})` (and nested `memo(forwardRef(...))`):
+  // the callable is the argument of a wrapper call whose result is bound to X, so
+  // the name lives on the enclosing VariableDeclaration, not the arrow's parent.
+  let anc = parent;
+  while (isWrapperCall(anc)) {
+    anc = anc.parent;
+    if (anc && anc.kind === ts.SyntaxKind.ParenthesizedExpression) anc = anc.parent;
+  }
+  if (
+    anc &&
+    anc !== parent &&
+    anc.kind === ts.SyntaxKind.VariableDeclaration &&
+    anc.name &&
+    typeof anc.name.text === "string"
+  ) {
+    return anc.name.text;
   }
   return null;
 }

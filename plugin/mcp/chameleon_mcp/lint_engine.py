@@ -1273,6 +1273,32 @@ def _strip_string_escapes(body: str) -> str:
     return _ESCAPE_RE.sub(_decode_escape, body)
 
 
+# Numeric escapes ONLY (`\x41`, `A`, `\u{41}`, `\U00000041`). Unlike the
+# full _ESCAPE_RE, this never touches `\n`/`\t`/`\\` or a bare `\<char>`, so a
+# global decode of the raw content leaves line breaks intact and cannot shift a
+# hit's reported line number. Used to reconstruct a secret hidden as hex/unicode
+# escapes in a SINGLE literal, which the concat fold never reaches.
+_NUMERIC_ESCAPE_RE = re.compile(
+    r"\\(x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|u\{[0-9A-Fa-f]{1,6}\}|U[0-9A-Fa-f]{8})"
+)
+
+
+def _decode_numeric_escape(m: re.Match) -> str:
+    """Resolve one numeric backslash escape to its character; else leave as-is."""
+    e = m.group(1)
+    try:
+        if e[0] == "x":
+            return chr(int(e[1:], 16))
+        if e[0] == "u":
+            h = e[2:-1] if e[1] == "{" else e[1:]
+            return chr(int(h, 16))
+        if e[0] == "U":
+            return chr(int(e[1:], 16))
+    except (ValueError, OverflowError):
+        pass
+    return m.group(0)
+
+
 def _atom_body(atom: str) -> str:
     """Inner text of one `_STR_ATOM` match (prefix + quotes stripped, unescaped)."""
     i = 0
@@ -1452,21 +1478,38 @@ def _scan_with_concat_fold(content: str, scan_fn) -> list[dict]:
     """
     hits = scan_fn(content)
 
-    folded = _fold_string_concat(content)
-    if folded != content:
-        seen_types_lines = {
-            (h.get("type"), h.get("line_number")) for h in hits if h.get("line_number") is not None
-        }
-        seen_types = {h.get("type") for h in hits}
-        for fh in scan_fn(folded):
+    seen_types_lines = {
+        (h.get("type"), h.get("line_number")) for h in hits if h.get("line_number") is not None
+    }
+    seen_types = {h.get("type") for h in hits}
+
+    def _merge_derived(derived: str) -> None:
+        for fh in scan_fn(derived):
             key_line = (fh.get("type"), fh.get("line_number"))
             if fh.get("line_number") is not None and key_line in seen_types_lines:
                 continue
-            if fh.get("type") in seen_types and fh.get("line_number") is None:
+            if fh.get("line_number") is None and fh.get("type") in seen_types:
                 continue
             fh = dict(fh)
             fh["concat_folded"] = True
             hits.append(fh)
+            if fh.get("line_number") is not None:
+                seen_types_lines.add(key_line)
+            seen_types.add(fh.get("type"))
+
+    folded = _fold_string_concat(content)
+    if folded != content:
+        _merge_derived(folded)
+
+    # A secret hidden as hex/unicode escapes inside a SINGLE (non-concatenated)
+    # literal -- `KEY = "\x41\x4b\x49\x41..."` -- decodes to the real token only
+    # when the escapes are resolved. The fold path resolves escapes but only for
+    # literals it actually folds, so a lone escaped literal reached the scanner as
+    # raw `\x41...` bytes and never matched. Scan a numeric-escape-decoded copy
+    # too; decoding only \x/\u/\U (never \n/\t) keeps line numbers truthful.
+    descaped = _NUMERIC_ESCAPE_RE.sub(_decode_numeric_escape, content)
+    if descaped != content and descaped != folded:
+        _merge_derived(descaped)
 
     if hits:
         lines = content.splitlines()
@@ -3934,6 +3977,21 @@ def lint_conventions(
                 superclass_tail = superclass.rsplit("::", 1)[-1] if superclass else None
                 if superclass_tail in _RAILS_APP_ROOT_BASES:
                     continue
+                # A superclass namespaced under a module unrelated to the
+                # archetype's own base family and to this class's own namespace is a
+                # deliberate third-party/gem base (a Lookbook preview controller
+                # extending Lookbook::PreviewController, a Devise/Doorkeeper mount):
+                # a one-off integration, not a deviation onto the wrong in-house
+                # base. Steering it to the dominant base would break the gem.
+                if superclass and "::" in superclass:
+                    _sc_root = superclass.split("::", 1)[0]
+                    _known_roots = {b.split("::", 1)[0] for b in known_bases}
+                    _known_roots |= {t.split("::", 1)[0] for t in known_base_tails}
+                    if dominant_base:
+                        _known_roots.add(dominant_base.split("::", 1)[0])
+                    _class_root = class_name.split("::", 1)[0] if "::" in class_name else None
+                    if _sc_root not in _known_roots and _sc_root != _class_root:
+                        continue
                 if superclass is None or (
                     superclass not in known_bases
                     and superclass.rsplit("::", 1)[-1] not in known_base_tails

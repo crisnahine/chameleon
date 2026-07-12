@@ -50,6 +50,42 @@ class PythonUnavailableError(ExtractorUnavailableError):
     """
 
 
+def _is_workspace_coordinator(repo_root: Path) -> bool:
+    """True if ``repo_root`` is a JS/TS monorepo coordinator, not a codebase itself.
+
+    Mirrors the signal ``TypeScriptExtractor.can_handle`` already uses to bow
+    out of its own marker-less fallback at a coordinator root: a declared
+    ``pnpm-workspace.yaml`` / package.json ``"workspaces"`` key, or the
+    conventional ``apps``/``packages``/``services``/``workspaces`` layout with
+    nested package.json manifests. A coordinator root has member workspaces
+    that get their own bootstrap pass (and their own strong Python marker,
+    e.g. ``manage.py``, if one of them is a Django backend) -- so the
+    coordinator's own identity must come from a marker at its own root, never
+    from a member's nested ``*.py`` files.
+    """
+    if (repo_root / "pnpm-workspace.yaml").exists():
+        return True
+    package_json = repo_root / "package.json"
+    if package_json.exists():
+        try:
+            content = package_json.read_text(errors="replace")
+        except OSError:
+            content = ""
+        if '"workspaces"' in content:
+            return True
+    for parent in ("apps", "packages", "services", "workspaces"):
+        parent_dir = repo_root / parent
+        if not parent_dir.is_dir():
+            continue
+        try:
+            for child in parent_dir.iterdir():
+                if (child / "package.json").is_file():
+                    return True
+        except (OSError, PermissionError):
+            continue
+    return False
+
+
 class PythonExtractor:
     """Python AST extractor backed by the libcst_dump.py subprocess."""
 
@@ -64,10 +100,19 @@ class PythonExtractor:
             self._libcst_dump_script = libcst_dump_script
 
     def can_handle(self, repo_root: Path) -> bool:
-        """Detect Python via a project marker, or any ``*.py`` file in the tree."""
+        """Detect Python via a project marker, or any ``*.py`` file in the tree.
+
+        The marker-less fallback is skipped at a JS/TS monorepo coordinator
+        root (see ``_is_workspace_coordinator``): its unbounded scan would
+        otherwise find a member workspace's ``*.py`` files several levels
+        down and misclaim the whole coordinator as a Python repo, hiding
+        every sibling TS workspace behind one wrong language.
+        """
         for marker in _PYTHON_MARKERS:
             if (repo_root / marker).exists():
                 return True
+        if _is_workspace_coordinator(repo_root):
+            return False
         # No marker: claim the repo only if it actually contains Python. A
         # bounded scan -- the first match short-circuits, so a huge non-Python
         # tree never walks far.

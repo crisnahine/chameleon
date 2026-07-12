@@ -62,7 +62,9 @@ def test_trusted_ts_write_records_violation(tmp_path: Path):
 
     with (
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=repo),
-        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=_trusted_rec()),
+        patch(
+            "chameleon_mcp.profile.trust.trust_state_for", return_value=_trusted_rec()
+        ),
         patch("chameleon_mcp.tools._compute_repo_id", return_value="rid"),
         patch(
             "chameleon_mcp.tools.get_archetype",
@@ -81,7 +83,10 @@ def test_trusted_ts_write_records_violation(tmp_path: Path):
             return_value=[hard_v],
         ),
         patch("chameleon_mcp.violation_class.ignored_rules", return_value=None),
-        patch("chameleon_mcp.enforcement.record_violation", side_effect=_fake_record_violation),
+        patch(
+            "chameleon_mcp.enforcement.record_violation",
+            side_effect=_fake_record_violation,
+        ),
         patch("chameleon_mcp.enforcement.save_state") as save_state,
     ):
         _call_mark(f"cat > {target}", repo)
@@ -98,7 +103,9 @@ def test_untrusted_profile_is_skipped(tmp_path: Path):
 
     with (
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=repo),
-        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=_untrusted_rec()),
+        patch(
+            "chameleon_mcp.profile.trust.trust_state_for", return_value=_untrusted_rec()
+        ),
         patch("chameleon_mcp.tools._compute_repo_id", return_value="rid"),
         patch("chameleon_mcp.hook_helper._lint_file_in_process") as lint,
         patch("chameleon_mcp.enforcement.save_state") as save_state,
@@ -134,7 +141,9 @@ def test_non_ts_ruby_target_skipped_before_stat(tmp_path: Path):
 
     with (
         patch("chameleon_mcp.hook_helper._lint_file_in_process") as lint,
-        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=_trusted_rec()),
+        patch(
+            "chameleon_mcp.profile.trust.trust_state_for", return_value=_trusted_rec()
+        ),
     ):
         _call_mark(f"cat > {repo / 'out.log'}", repo)
 
@@ -166,7 +175,9 @@ def test_target_outside_repo_skipped(tmp_path: Path):
         # find_repo_root returns a DIFFERENT root than where the file lives, so
         # relative_to raises and the file is skipped.
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=repo),
-        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=_trusted_rec()),
+        patch(
+            "chameleon_mcp.profile.trust.trust_state_for", return_value=_trusted_rec()
+        ),
         patch("chameleon_mcp.tools._compute_repo_id", return_value="rid"),
         patch("chameleon_mcp.hook_helper._lint_file_in_process") as lint,
     ):
@@ -175,25 +186,35 @@ def test_target_outside_repo_skipped(tmp_path: Path):
     lint.assert_not_called()
 
 
-def test_no_violations_no_state_write(tmp_path: Path):
-    """A clean written file resolves an archetype but records nothing."""
+def test_clean_file_recorded_clean_for_crossfile(tmp_path: Path):
+    """A clean written file is recorded CLEAN (never as a violation).
+
+    The Stop crossfile-existence pass iterates state.files and re-reads content
+    live, so a Bash-written file that removed an export must be present there or
+    its break is invisible -- the Edit-tool path records clean files the same way.
+    Recording is clean: record_violation is never called, so nothing is armed.
+    """
     repo = tmp_path / "repo"
     target = _write_ts(repo, "src/a.ts")
 
     with (
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=repo),
-        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=_trusted_rec()),
+        patch(
+            "chameleon_mcp.profile.trust.trust_state_for", return_value=_trusted_rec()
+        ),
         patch("chameleon_mcp.tools._compute_repo_id", return_value="rid"),
         patch(
             "chameleon_mcp.tools.get_archetype",
             return_value={"data": {"archetype": "ts-service"}},
         ),
         patch("chameleon_mcp.hook_helper._lint_file_in_process", return_value=[]),
+        patch("chameleon_mcp.enforcement.record_violation") as record_violation,
         patch("chameleon_mcp.enforcement.save_state") as save_state,
     ):
         _call_mark(f"cat > {target}", repo)
 
-    save_state.assert_not_called()
+    save_state.assert_called()
+    record_violation.assert_not_called()
 
 
 def test_inline_ignore_clears_hard_class(tmp_path: Path):
@@ -201,7 +222,9 @@ def test_inline_ignore_clears_hard_class(tmp_path: Path):
     recorded violation is advisory (hard_class False)."""
     repo = tmp_path / "repo"
     target = _write_ts(
-        repo, "src/a.ts", body="// chameleon-ignore phantom-import\nexport const x = 1\n"
+        repo,
+        "src/a.ts",
+        body="// chameleon-ignore phantom-import\nexport const x = 1\n",
     )
     hard_v = {"rule": "phantom-import", "message": "x", "line": 1}
     recorded: dict = {}
@@ -211,7 +234,9 @@ def test_inline_ignore_clears_hard_class(tmp_path: Path):
 
     with (
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=repo),
-        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=_trusted_rec()),
+        patch(
+            "chameleon_mcp.profile.trust.trust_state_for", return_value=_trusted_rec()
+        ),
         patch("chameleon_mcp.tools._compute_repo_id", return_value="rid"),
         patch(
             "chameleon_mcp.tools.get_archetype",
@@ -222,7 +247,10 @@ def test_inline_ignore_clears_hard_class(tmp_path: Path):
             "chameleon_mcp.enforcement_calibration.active_block_rules",
             return_value={"phantom-import"},
         ),
-        patch("chameleon_mcp.enforcement.record_violation", side_effect=_fake_record_violation),
+        patch(
+            "chameleon_mcp.enforcement.record_violation",
+            side_effect=_fake_record_violation,
+        ),
         patch("chameleon_mcp.enforcement.save_state"),
     ):
         _call_mark(f"cat > {target}", repo)
@@ -238,7 +266,9 @@ def test_lint_exception_fails_open(tmp_path: Path):
 
     with (
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=repo),
-        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=_trusted_rec()),
+        patch(
+            "chameleon_mcp.profile.trust.trust_state_for", return_value=_trusted_rec()
+        ),
         patch("chameleon_mcp.tools._compute_repo_id", return_value="rid"),
         patch(
             "chameleon_mcp.tools.get_archetype",

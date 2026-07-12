@@ -21,9 +21,10 @@ from __future__ import annotations
 
 from chameleon_mcp._thresholds import threshold_int
 
-# Caller "names" that don't identify an actionable function: a chain that hops
-# into one reads as noise to the reviewer, so the walk stops at the last named
-# function instead of extending into them.
+# Caller "names" that don't identify an actionable function: the hop into one
+# is a real caller edge and must still be counted, but looking up ITS callers
+# would conflate unrelated anonymous/module scopes sharing the same
+# placeholder name, so the walk terminates there instead of recursing past it.
 _UNINFORMATIVE_CALLERS = frozenset({"<anonymous>", "<module>"})
 
 # The honesty note returned alongside every blast-radius result, so a consumer
@@ -55,7 +56,9 @@ def transitive_caller_chains(
     distinct paths (a DAG diamond) is preserved in BOTH chains -- a global
     visited set would silently drop one path and understate the impact. The
     ``total_nodes`` counter still hard-bounds total work. Anonymous / module-scope
-    callers are not extended into. Caller rows are sorted before expansion and the
+    callers terminate the chain there -- the edge into them is kept so the reach
+    count stays a superset of the direct-caller list, but they are never expanded
+    into their own callers. Caller rows are sorted before expansion and the
     chains sorted before returning, so the result is deterministic.
     """
     chains: list[list[tuple]] = []
@@ -68,13 +71,17 @@ def transitive_caller_chains(
     while stack:
         chain, seen = stack.pop()
         cur_path, cur_name, _line = chain[-1]
-        if len(chain) - 1 >= max_depth or nodes >= total_nodes:
+        if (
+            len(chain) - 1 >= max_depth
+            or nodes >= total_nodes
+            or cur_name in _UNINFORMATIVE_CALLERS
+        ):
             chains.append(chain)
             continue
         entry = index.callers_of(cur_path, cur_name)
         callers = (entry or {}).get("callers") if entry else None
         ordered = sorted(
-            (r for r in (callers or []) if r.get("caller") not in _UNINFORMATIVE_CALLERS),
+            (callers or []),
             key=lambda r: (
                 str(r.get("path") or ""),
                 str(r.get("caller") or ""),
@@ -92,7 +99,16 @@ def transitive_caller_chains(
                 # (the shallow-but-wide case). Mark it so `truncated` is honest.
                 fanout_clipped = True
                 break
-            key = (r.get("path"), r.get("caller"))
+            caller_name = r.get("caller")
+            if caller_name in _UNINFORMATIVE_CALLERS:
+                # The placeholder name doesn't identify one scope -- two
+                # "<module>" rows in the same file are two distinct anonymous
+                # scopes (e.g. separate ViewComponent slot lambdas), not the
+                # same caller invoked twice, so keep every call site instead of
+                # collapsing them under the shared name.
+                key = (r.get("path"), caller_name, r.get("line"))
+            else:
+                key = (r.get("path"), caller_name)
             if key in seen:  # a cycle within THIS chain
                 continue
             if key in expanded_keys:
@@ -129,9 +145,12 @@ def compute_blast_radius(index, file_rel: str, function_name: str, *, depth: int
     chain is a list of ``{"path", "name", "line"}`` hops root-first. Root-only
     chains (a symbol with no recorded callers along that branch) are dropped, so
     an empty ``chains`` means no deterministic callers were recorded. ``reached``
-    is the count of distinct caller ``(path, name)`` nodes; ``truncated`` is True
-    when the total-nodes cap bounded the walk. Returns raw (unsanitized) strings;
-    the read tool sanitizes before the model surface.
+    is the count of distinct caller ``(path, name)`` nodes -- except an
+    anonymous/module-scope node, which is counted per call SITE (``line``
+    included in its identity) since the placeholder name doesn't distinguish
+    separate scopes in the same file. ``truncated`` is True when the
+    total-nodes cap bounded the walk. Returns raw (unsanitized) strings; the
+    read tool sanitizes before the model surface.
     """
     fanout = threshold_int("JUDGE_TRANSITIVE_FANOUT_PER_NODE")
     total = threshold_int("JUDGE_TRANSITIVE_TOTAL_NODES")
@@ -144,8 +163,8 @@ def compute_blast_radius(index, file_rel: str, function_name: str, *, depth: int
         if len(c) < 2:
             continue  # root-only branch: no recorded caller here
         chains.append([{"path": p, "name": n, "line": ln} for (p, n, ln) in c])
-        for p, n, _ln in c[1:]:
-            reached.add((p, n))
+        for p, n, ln in c[1:]:
+            reached.add((p, n, ln) if n in _UNINFORMATIVE_CALLERS else (p, n))
     # Honest truncation: either the total-node cap bounded the walk, or a node's
     # callers exceeded the per-node fanout cap (the shallow-but-wide case that the
     # total-node count alone misses).

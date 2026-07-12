@@ -342,6 +342,15 @@ def select_canonicals(
         CanonicalSelectionResult with per-cluster selections + diagnostic lists
         for clusters that couldn't get a clean canonical.
     """
+    # Snapshot the clock ONCE for the whole pass. With now=None the per-file
+    # _file_recency_weight calls would each evaluate time.time() independently, so
+    # two files sharing a commit epoch get recency weights that differ by
+    # sub-millisecond jitter -- and because recency sorts ABOVE typicality, that
+    # jitter silently decided the witness instead of the typicality tiebreak the
+    # fresh-clone / single-commit case depends on. One snapshot makes tied epochs
+    # weigh exactly equally so typicality breaks the tie as documented.
+    effective_now = time.time() if now is None else now
+
     selections: dict[str, CanonicalSelection] = {}
     no_eligible: list[Cluster] = []
     only_failing: list[Cluster] = []
@@ -457,7 +466,7 @@ def select_canonicals(
                 pf,
                 _file_recency_weight(
                     pf.path,
-                    now=now,
+                    now=effective_now,
                     commit_epoch=(
                         commit_map.get(_rel_posix(pf.path, repo_root))
                         if commit_map is not None

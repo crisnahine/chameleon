@@ -16,7 +16,27 @@ if TYPE_CHECKING:
     from chameleon_mcp.extractors._base import ParsedFile
 
 CONVENTIONS_SCHEMA_VERSION = 1
-MIN_SAMPLE_SIZE = 10
+
+
+def _int_env(name: str, default: int) -> int:
+    """Read a positive-int env override; else the default.
+
+    For the "defaults ON for quality, opt out only for a reason" caps: the
+    default surfaces all real signal, and the env var lets a repo bound it.
+    """
+    try:
+        v = int(os.environ.get(name) or "")
+    except ValueError:
+        return default
+    return v if v > 0 else default
+
+
+# Floor below which an archetype's derivations (class_contract, inheritance,
+# error_handling, required_guards, method_calls) are too thin a sample to trust.
+# Env-overridable like the other sample-size floors (CALLABLE_SIGNATURE_MIN_FILES,
+# IMPORT_ORDERING_MIN_SAMPLE, ...) so a repo smaller than the default can still
+# derive these sections instead of getting {} on every archetype it has.
+MIN_SAMPLE_SIZE = _int_env("CHAMELEON_MIN_SAMPLE_SIZE", 10)
 MIN_SAMPLE_SIZE_NAMING = 5
 
 # Conventions sections keyed at the repo level rather than by archetype name.
@@ -1259,13 +1279,19 @@ def _contract_rec(by_name: dict[str, dict], cname: str) -> dict:
     """Get-or-create the per-class accumulator for ``cname`` within one file."""
     rec = by_name.get(cname)
     if rec is None:
-        rec = {"base": None, "decorators": set(), "macros": set(), "methods": set()}
+        rec = {
+            "base": None,
+            "decorators": set(),
+            "macros": set(),
+            "methods": set(),
+            "implements": set(),
+        }
         by_name[cname] = rec
     return rec
 
 
 def _collect_contract_classes(files: list[ParsedFile], *, language: str) -> list[dict]:
-    """One record per class: ``{base, decorators:set, macros:set, methods:set}``.
+    """One record per class: ``{base, decorators:set, macros:set, methods:set, implements:set}``.
 
     Records are per class (not per file) so a co-located helper/error/DTO class in
     the same file is its own record and never dilutes the primary class's contract.
@@ -1289,6 +1315,15 @@ def _collect_contract_classes(files: list[ParsedFile], *, language: str) -> list
             ext = shape.get("extends") or next(iter(shape.get("bases") or []), None)
             if ext:
                 rec["base"] = ext
+            # TS-only: the interfaces a class `implements`. This is the anchor a
+            # decorator or base cannot give -- @Injectable is shared by every
+            # NestJS provider, but `implements CanActivate`/`NestInterceptor`/
+            # `PipeTransform` is what actually distinguishes a guard/interceptor/
+            # pipe from a plain service. Absent for Ruby/Python dumps, which carry
+            # no such key, so this is a no-op for those languages.
+            for iface in shape.get("implements") or []:
+                if iface:
+                    rec["implements"].add(iface)
 
         for call in extras.get("class_body_calls", []) or []:
             name = call.get("name")
@@ -1352,6 +1387,14 @@ def _contract_from_cohort(cohort: list[dict], *, language: str) -> dict:
         :_CONTRACT_REQUIRED_METHODS_CAP
     ]
     bases = _dominant(Counter(c["base"] for c in cohort if c["base"]))
+    # `implements` is a TS-only heritage clause (Ruby/Python dumps never
+    # populate it), so restrict the dominance pass to that language the same
+    # way `macros` is restricted to Ruby.
+    implements = (
+        _dominant(Counter(i for c in cohort for i in c["implements"]))
+        if language == "typescript"
+        else []
+    )
 
     result: dict = {}
     freqs: dict[str, float] = {}
@@ -1367,8 +1410,16 @@ def _contract_from_cohort(cohort: list[dict], *, language: str) -> dict:
     if bases:
         result["base"] = bases[0][0]
         freqs.setdefault(bases[0][0], bases[0][1])
+    if implements:
+        result["implements"] = sorted(n for n, _ in implements)
+        freqs.update(dict(implements))
 
-    if not (result.get("dsl_macros") or result.get("decorators") or result.get("required_methods")):
+    if not (
+        result.get("dsl_macros")
+        or result.get("decorators")
+        or result.get("required_methods")
+        or result.get("implements")
+    ):
         return {}
 
     result["sample_size"] = total
@@ -1379,12 +1430,16 @@ def _contract_from_cohort(cohort: list[dict], *, language: str) -> dict:
 def extract_class_contract_conventions(files: list[ParsedFile], *, language: str) -> dict:
     """Derive an archetype's shared class-body contract from dump data.
 
-    Captures the shape a base class/decorator implies but that the inheritance and
-    method_calls conventions miss: the repo-specific DSL macros (Ruby), class
-    decorators (TS), and required methods. A contract requires a structural anchor —
-    a dominant base class or class decorator — and is measured ONLY over the cohort
-    of classes carrying that anchor, so a co-located helper class never dilutes or
-    pollutes it.
+    Captures the shape a base class/decorator/interface implies but that the
+    inheritance and method_calls conventions miss: the repo-specific DSL macros
+    (Ruby), class decorators (TS/Python), implemented interfaces (TS), and
+    required methods. A contract requires a structural anchor — a dominant base
+    class, class decorator, or implemented interface — and is measured ONLY over
+    the cohort of classes carrying that anchor, so a co-located helper class
+    never dilutes or pollutes it. The interface anchor matters most for TS
+    archetypes a decorator alone cannot tell apart: a NestJS guard/interceptor/
+    pipe all carry the same @Injectable() as every other provider, but only a
+    guard implements CanActivate.
     """
     if not _meets_class_sample_gate(files, language):
         return {}
@@ -1396,25 +1451,33 @@ def extract_class_contract_conventions(files: list[ParsedFile], *, language: str
     # The anchor must clear the dominance threshold against the member count, the
     # same reference inheritance uses, so a file with two classes can't halve it.
     anchor_min = _INHERITANCE_THRESHOLD * len(files)
-    # Count DISTINCT FILES carrying each base/decorator, not classes, so the gate
-    # shares anchor_min's file basis (and matches the per-file inheritance
-    # detector). Class-counting let a mixin concentrated in a few files clear a
-    # file-scaled bar it should have failed.
+    # Count DISTINCT FILES carrying each base/decorator/interface, not classes, so
+    # the gate shares anchor_min's file basis (and matches the per-file
+    # inheritance detector). Class-counting let a mixin concentrated in a few
+    # files clear a file-scaled bar it should have failed.
     _base_files: dict[str, set] = {}
     _dec_files: dict[str, set] = {}
+    _impl_files: dict[str, set] = {}
     for c in classes:
         if c["base"]:
             _base_files.setdefault(c["base"], set()).add(c["_file"])
         for d in c["decorators"]:
             _dec_files.setdefault(d, set()).add(c["_file"])
+        for i in c["implements"]:
+            _impl_files.setdefault(i, set()).add(c["_file"])
     base_counts = {b: len(fs) for b, fs in _base_files.items()}
     decorator_counts = {d: len(fs) for d, fs in _dec_files.items()}
+    implements_counts = {i: len(fs) for i, fs in _impl_files.items()}
 
     candidates: list[tuple[str, str]] = [
         ("base", b) for b, cnt in base_counts.items() if cnt >= anchor_min
     ]
     if language != "ruby":
         candidates += [("decorator", d) for d, cnt in decorator_counts.items() if cnt >= anchor_min]
+    if language == "typescript":
+        candidates += [
+            ("implements", i) for i, cnt in implements_counts.items() if cnt >= anchor_min
+        ]
     if not candidates:
         return {}
 
@@ -1430,8 +1493,10 @@ def extract_class_contract_conventions(files: list[ParsedFile], *, language: str
     for kind, value in candidates:
         if kind == "base":
             cohort = [c for c in classes if c["base"] == value]
-        else:
+        elif kind == "decorator":
             cohort = [c for c in classes if value in c["decorators"]]
+        else:
+            cohort = [c for c in classes if value in c["implements"]]
         materialized.append((kind, value, cohort))
     max_cohort = max(len(c) for _k, _v, c in materialized)
     best: tuple[tuple, dict] | None = None
@@ -1445,13 +1510,17 @@ def extract_class_contract_conventions(files: list[ParsedFile], *, language: str
             len(result.get("dsl_macros", []))
             + len(result.get("decorators", []))
             + len(result.get("required_methods", []))
+            + len(result.get("implements", []))
         )
         # Cohort size leads the rank so the dominant cohort always wins; richness
         # is only a tiebreak among equally-dominant anchors. Leading with richness
         # let a smaller cohort (a decorator carried by 6 of 14 classes) out-rank
         # the dominant base (carried by 9) and project its within-cohort
         # frequencies as an archetype-wide MUST -- the case the docstring forbids.
-        rank = (len(cohort), richness, kind == "decorator", value)
+        # `implements` shares the decorator/base tier of this tiebreak: it is a
+        # structural heritage clause exactly like a base class, just the second
+        # (interface) heritage list instead of the first.
+        rank = (len(cohort), richness, kind in ("decorator", "implements"), value)
         if best is None or rank > best[0]:
             best = (rank, result)
 
@@ -1780,19 +1849,6 @@ _RUBY_MODULE_NAME_RE = re.compile(r"^\s*module\s+([\w:]+)", re.MULTILINE)
 _RUBY_CONST_RE = re.compile(r"^[A-Z][A-Za-z0-9_]*$")
 
 
-def _int_env(name: str, default: int) -> int:
-    """Read a positive-int env override; else the default.
-
-    For the "defaults ON for quality, opt out only for a reason" caps: the
-    default surfaces all real signal, and the env var lets a repo bound it.
-    """
-    try:
-        v = int(os.environ.get(name) or "")
-    except ValueError:
-        return default
-    return v if v > 0 else default
-
-
 # Stored-artifact cap only: every prompt-side consumer re-caps downstream (the
 # SessionStart union to _MAX_CONVENTION_ITEMS, the stale-test advisory to its
 # own export cap), so this bounds conventions.json size, not context. Wide
@@ -2067,13 +2123,30 @@ def _collect_callable_signatures(files: list[ParsedFile]) -> list[tuple[Path, di
     return pairs
 
 
+def _param_identity(params: list) -> tuple:
+    """Literal (name, type) fingerprint of a param list, ignoring `optional`.
+
+    `optional` is already folded into the caller's arity/mask consensus; the
+    identity is only the part a mask match does NOT guarantee agrees: whether
+    the params are actually the same name and type, not just the same shape
+    (e.g. one required positional param) with a different DI type in every file.
+    """
+    return tuple((p.get("name"), p.get("type")) for p in params if isinstance(p, dict))
+
+
 def _consensus_param_shape(headers: list[dict]) -> dict:
     """Pick the representative parameter shape for one callable name.
 
     The most common positional-arity wins, and within that arity the most common
-    optional-mask. Returns the chosen header's param list plus how many of the
-    contributing headers matched it, so a consumer can tell a clean consensus
-    (all siblings agree) from a contested one (the LLM judge should be cautious).
+    optional-mask (``agreement``). ``params`` is filled from the mask group's
+    MOST COMMON literal (name, type) identity, not just whichever header the
+    scan reaches first, and ``params_agreement`` counts how many of that mask
+    group actually share that literal identity — so a consumer can tell a
+    genuine consensus (``params_agreement == agreement``: every sibling truly
+    has this same param) from a shape-only match (e.g. a controller
+    constructor's DI param that is a different service type per file, so
+    ``params`` is only one file's literal names/types representing an arity the
+    others share, not a value they all repeat).
     """
     by_arity: Counter[int] = Counter()
     for h in headers:
@@ -2081,24 +2154,29 @@ def _consensus_param_shape(headers: list[dict]) -> dict:
         if isinstance(params, list):
             by_arity[len(params)] += 1
     if not by_arity:
-        return {"params": [], "agreement": 0, "sample": len(headers)}
+        return {"params": [], "agreement": 0, "params_agreement": 0, "sample": len(headers)}
     dominant_arity, _ = by_arity.most_common(1)[0]
 
     masks: Counter[tuple[bool, ...]] = Counter()
-    representative: dict[tuple[bool, ...], list] = {}
+    identities: dict[tuple[bool, ...], Counter[tuple]] = defaultdict(Counter)
+    representative: dict[tuple[bool, ...], dict[tuple, list]] = defaultdict(dict)
     for h in headers:
         params = h.get("params") or []
         if not isinstance(params, list) or len(params) != dominant_arity:
             continue
         mask = tuple(bool(p.get("optional")) for p in params if isinstance(p, dict))
         masks[mask] += 1
-        representative.setdefault(mask, params)
+        identity = _param_identity(params)
+        identities[mask][identity] += 1
+        representative[mask].setdefault(identity, params)
     if not masks:
-        return {"params": [], "agreement": 0, "sample": len(headers)}
+        return {"params": [], "agreement": 0, "params_agreement": 0, "sample": len(headers)}
     dominant_mask, agreement = masks.most_common(1)[0]
+    dominant_identity, params_agreement = identities[dominant_mask].most_common(1)[0]
     return {
-        "params": representative[dominant_mask],
+        "params": representative[dominant_mask][dominant_identity],
         "agreement": agreement,
+        "params_agreement": params_agreement,
         "sample": len(headers),
     }
 
@@ -2157,6 +2235,14 @@ def extract_callable_signatures(files: list[ParsedFile]) -> dict:
             "kind": kinds.most_common(1)[0][0] if kinds else "function",
             "params": shape["params"],
             "agreement": shape["agreement"],
+            # How many of the `agreement` files also share `params`' literal
+            # name/type, not just its arity + optional-mask. Equal to
+            # `agreement` means every sibling genuinely has this same param;
+            # lower (e.g. a DI constructor where each file injects a different
+            # service) means `params` is only one file's representative shape
+            # for an arity/mask the rest merely happen to share, not a literal
+            # value repeated across the archetype.
+            "params_agreement": shape["params_agreement"],
             "file_count": file_count,
         }
         bases = base_by_name.get(name)
@@ -2911,19 +2997,26 @@ def _contract_summary(cc: dict) -> str:
     """One-line human summary of a class_contract entry, or '' if empty.
 
     Shared by the edit-time echo and the SessionStart block so both phrase the
-    contract identically: decorators, base, DSL macros, then required methods.
+    contract identically: decorators, base, implemented interfaces, DSL macros,
+    then required methods. `implements` sits right after `base` because both are
+    heritage-clause anchors (TS `extends`/`implements`); for an archetype like a
+    NestJS guard, the interface (CanActivate) is the one anchor here that a
+    shared decorator (@Injectable, common to every provider) cannot express.
     """
     if not isinstance(cc, dict):
         return ""
     bits: list[str] = []
     base = cc.get("base")
     decorators = cc.get("decorators") or []
+    implements = cc.get("implements") or []
     macros = cc.get("dsl_macros") or []
     methods = cc.get("required_methods") or []
     if decorators:
         bits.append("@" + "/@".join(str(d) for d in decorators[:3]))
     if base:
         bits.append(f"extends {base}")
+    if implements:
+        bits.append("implements " + ", ".join(str(i) for i in implements[:3]))
     if macros:
         bits.append("macros " + "/".join(str(m) for m in macros[:3]))
     if methods:

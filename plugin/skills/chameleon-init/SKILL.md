@@ -172,11 +172,14 @@ Handle this distinctly from plain `success`:
 - Per-edit guidance (PreToolUse/PostToolUse) resolves per FILE to its workspace,
   so editing a workspace file gets that workspace's conventions once its profile
   is trusted — that part works normally.
-- Caveat to state plainly: Claude Code launches at the repo ROOT, so the
-  turn-end Stop safety net (cross-file break detection, the once-per-session
-  idiom review, duplication/stale-test advisories, the session attestation)
-  resolves against the profile-less root and does not run for a pure-coordinator
-  root. The per-edit layer still applies; the turn-end aggregate does not.
+- Claude Code launches at the repo ROOT, but the turn-end Stop safety net
+  (cross-file break detection, the once-per-session idiom review,
+  duplication/stale-test advisories, the session attestation) still covers
+  the session: the multi-root Stop backstop discovers every workspace the
+  turn actually touched (from each edited file's own workspace-scoped
+  enforcement state, not the launch cwd) and gates it against its own
+  trusted profile, so a pure-coordinator root is not a turn-end dead spot.
+  Each workspace still needs its own `/chameleon-trust` for its gate to run.
 
 ## After success
 
@@ -262,12 +265,6 @@ If any of the three wirings is already present, say nothing — it is wired.
 
 - Languages other than TypeScript/JavaScript, Ruby, and Python — `failed_unsupported_language`.
   Future releases may add Go, etc.
-- Turn-end Stop coverage for a pure-coordinator monorepo root
-  (`success_workspaces_only`, see above): the per-workspace profiles ARE written
-  and per-edit guidance works, but the turn-end aggregate net resolves against the
-  profile-less root. Trusting each workspace does not restore it (Claude Code's
-  cwd is the root); this is a known limitation, not per-workspace bootstrapping
-  being unimplemented — that already happens.
 - Renaming archetypes outside the top-N by cluster size — the interview
   only surfaces the largest ones because the long tail is rarely worth
   retitling. Users can re-run /chameleon-init or edit `.chameleon/archetypes.json`

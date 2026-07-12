@@ -5,7 +5,7 @@
 This document describes how chameleon works as built. It is the reference for
 the bootstrap pipeline, the hook stack, the MCP tool surface, the enforcement
 and review gate, the profile schema, the state stores, and the security model.
-It tracks engine version **2.54.0** and profile **schema version 8**. When the
+It tracks engine version **3.0.2** and profile **schema version 8**. When the
 code and this document disagree, the code is right; please file an issue.
 
 ## Contents
@@ -538,8 +538,9 @@ their gate stay empty. All thresholds live in `_thresholds.py`.
 - **`callable_signatures`** the consensus positional shape of callable names an
   archetype shares (a name must appear in at least two members). Used only at
   PR-review with the LLM judge; no per-edit arity lint.
-- **`inheritance` and `method_calls`** Ruby-only: the archetype's dominant base
-  class and shared DSL macro calls.
+- **`inheritance`** Ruby and Python: the archetype's dominant base class (a
+  Rails controller's `ApplicationController`, a Django model cohort's
+  `models.Model`). **`method_calls`** Ruby-only: shared DSL macro calls.
 - **`required_guards`** Ruby controllers: the shared `before_action` guard
   symbols, accounting for `skip_before_action` and scoping. Advisory, because
   Rails authz is routinely inherited.
@@ -1006,6 +1007,22 @@ directive covers its own line; a directive on its own line covers that line and
 the one below. The directive must end its line, so prose that merely mentions
 one never activates it, and directives inside string literals are blanked before
 the scan so attacker-controllable text cannot switch a rule off.
+
+Line/line-below scoping requires the violation to report a line in the first
+place. Four rules never do — `import-preference-violation`,
+`naming-convention-violation`, `inheritance-convention-violation`, and
+`file-naming-convention-violation` — because their checks report a repo-wide or
+whole-file fact (a banned module used anywhere, an identifier's casing, a
+file's own name) rather than a single flagged line. A plain directive naming
+one of these falls back to file scope: it suppresses every occurrence of that
+rule in the file, the same as `chameleon-ignore-file`, not only the occurrence
+nearest the directive. This is what the PreToolUse import-preference deny, the
+`lint_conventions` naming/inheritance/file-naming checks, and the turn-end
+opt-out checks all read via the flat `ignored_rules()` view in
+`violation_class.py`, since those gates have no per-line granularity to filter
+against. The line-bearing rules above (secrets, `eval-call`) are unaffected —
+their violations carry a real line, so `is_violation_ignored` scopes a plain
+directive to it as described.
 
 The deterministic hard class is the exception: a hard-kind secret and an
 error-severity `eval-call` are never covered by the bare form. Suppressing one
@@ -1603,7 +1620,7 @@ subset and points there. Numeric tuning thresholds live in
 
 Engine versions stay in lockstep across six manifests, kept in sync by
 `scripts/bump-version.sh` (the plugin cache is version-keyed). The current
-engine is 2.54.0 and the current profile schema is 8.
+engine is 3.0.2 and the current profile schema is 8.
 
 **Compatibility contract for committed `.chameleon/`:** chameleon will not break
 a committed profile schema without a major version bump. An engine reads any

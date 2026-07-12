@@ -162,10 +162,22 @@ comment with no path has nothing to resolve; skip the call for it (Step 2 alread
 routes it to plain judgment). Then:
 - Reviewer says "remove this / this is unused / dead code" → call
   `get_callers(repo=<repo.id>, file_path=<abs>, function_name=<fn>)` and
-  `get_crossfile_context(repo=<repo.id>)`. Live callers or a high-confidence
-  importer are an evidence-backed PUSH BACK ("4 recorded callers: `a.ts:8` ..."). An
-  EMPTY `get_callers` is NOT proof of dead code (dynamic/unsupported call paths are
-  invisible) — never assert dead code from it.
+  `query_symbol_importers(repo=<repo.id>, file_path=<abs>)`. Live callers or a
+  live entry in `query_symbol_importers`'s `importers` list are an
+  evidence-backed PUSH BACK ("4 recorded callers: `a.ts:8` ..." or "still
+  imported at `readers/__init__.py:3`"). Check `query_symbol_importers`
+  whenever the flagged symbol is re-exported from a package `__init__`/index
+  file: `get_callers` only tracks actual call expressions, so a
+  barrel-re-exported function with no direct caller reads as callerless even
+  when it is live — `query_symbol_importers` is the tool that still sees it.
+  `get_crossfile_context(repo=<repo.id>)` does NOT ground this claim: it only
+  reports a symbol ALREADY gone from a module's current export set that an
+  importer still references, so it structurally cannot fire on a symbol that
+  still exists — reach for it when verifying whether the PR's OWN removal
+  broke a caller, not when adjudicating a reviewer's dead-code claim. An EMPTY
+  `get_callers` AND an empty `query_symbol_importers` importer list is still
+  NOT proof of dead code (dynamic/unsupported call paths are invisible to
+  both) — never assert dead code from either being empty.
 - Reviewer says "this is fine / no security issue" on a line → call
   `lint_file(repo=<repo.id>, archetype=<the archetype from get_pattern_context>, content=<the file content>, file_path=<abs>)`.
   When `get_pattern_context` returned a null/none archetype (no match), pass a
@@ -235,7 +247,7 @@ pushback on `trust_state == "trusted"`; if untrusted/stale/absent, fall back to
 plain technical judgment labeled "profile untrusted/absent" and suggest
 `/chameleon-trust`. Carry the `match_quality = none/fallback` caveat. The same
 `repo.id` feeds the repo-scoped tools (`lint_file`, `get_crossfile_context`,
-`get_callers`, `get_duplication_candidates`). Outcomes:
+`get_callers`, `query_symbol_importers`, `get_duplication_candidates`). Outcomes:
 reviewer ALIGNS with the convention (strong apply), reviewer CONTRADICTS the
 canonical (strong, evidence-backed pushback citing the witness), convention SILENT
 (plain technical judgment, labeled).
@@ -291,9 +303,10 @@ refuted rather than laundered:
 Each finding MUST carry a unique `id` (verdicts map back by `id`) and `file`/`line`
 (the refuter prefetches that excerpt; omit them and it silently degrades to the
 whole branch diff). TOOL-GROUNDED verdicts are EXEMPT — never send a pushback
-backed by `get_callers` / `get_crossfile_context` / `get_duplication_candidates` /
-a `lint_file` sink-or-secret hit to the refuter; verify those inline (the refuter
-sees one excerpt and cannot re-derive their cross-file backing). A
+backed by `get_callers` / `get_crossfile_context` / `query_symbol_importers` /
+`get_duplication_candidates` / a `lint_file` sink-or-secret hit to the refuter;
+verify those inline (the refuter sees one excerpt and cannot re-derive their
+cross-file backing). A
 contradicts-the-canonical pushback is NOT exempt — it is a model judgment
 (comparing the change against the witness), so it goes to the refuter like pr-review
 Step 4b treats canonical divergence; this matters most where the file IS the

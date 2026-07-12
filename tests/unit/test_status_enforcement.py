@@ -36,17 +36,36 @@ def make_trusted_repo(tmp_path):
         profile_dir = repo / ".chameleon"
         profile_dir.mkdir(parents=True, exist_ok=True)
         profile_dir.joinpath("config.json").write_text(
-            json.dumps({"enforcement": {"mode": mode, "stop_block_cap": stop_block_cap}}),
+            json.dumps(
+                {"enforcement": {"mode": mode, "stop_block_cap": stop_block_cap}}
+            ),
             encoding="utf-8",
         )
-        # A minimal COMMITTED profile: the enforcement panel's security-rule
-        # union (and _profile_unrenderable_status) key on profile.json presence
-        # plus the transaction sentinel.
+        # A COMMITTED, LOADABLE profile: bootstrap always writes the core trio
+        # (archetypes/canonicals/rules) atomically with a shared integer
+        # generation, so a real profile that get_status renders always has them.
+        # _profile_unrenderable_status reports corrupt on a missing/mismatched core
+        # artifact (a real full profile with one deleted), so the fixture writes a
+        # minimal-but-complete set at one generation.
+        _gen = 1
         profile_dir.joinpath("profile.json").write_text(
-            json.dumps({"schema_version": 1, "language": "typescript"}),
+            json.dumps(
+                {"schema_version": 1, "language": "typescript", "generation": _gen}
+            ),
             encoding="utf-8",
         )
-        profile_dir.joinpath("COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
+        profile_dir.joinpath("archetypes.json").write_text(
+            json.dumps({"generation": _gen, "archetypes": {}}), encoding="utf-8"
+        )
+        profile_dir.joinpath("canonicals.json").write_text(
+            json.dumps({"generation": _gen, "canonicals": {}}), encoding="utf-8"
+        )
+        profile_dir.joinpath("rules.json").write_text(
+            json.dumps({"generation": _gen, "rules": {}}), encoding="utf-8"
+        )
+        profile_dir.joinpath("COMMITTED").write_text(
+            "committed-at=1\npid=1\n", encoding="utf-8"
+        )
 
         data_dir = tmp_path / repo_id
         data_dir.mkdir(parents=True, exist_ok=True)
@@ -56,8 +75,12 @@ def make_trusted_repo(tmp_path):
 
         session_id = "s-status"
 
-        stack.enter_context(patch("chameleon_mcp.profile.loader.find_repo_root", return_value=repo))
-        stack.enter_context(patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id))
+        stack.enter_context(
+            patch("chameleon_mcp.profile.loader.find_repo_root", return_value=repo)
+        )
+        stack.enter_context(
+            patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id)
+        )
         stack.enter_context(
             patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path)
         )
@@ -252,7 +275,11 @@ def test_status_lists_security_rules_active_without_artifact(make_trusted_repo):
     write_block_rules(
         profile_dir,
         {
-            "secret-detected-in-content": {"active": False, "fp_rate": 0.0, "sampled": 0},
+            "secret-detected-in-content": {
+                "active": False,
+                "fp_rate": 0.0,
+                "sampled": 0,
+            },
             "eval-call": {"active": False, "fp_rate": 0.0, "sampled": 0},
         },
     )
@@ -260,7 +287,10 @@ def test_status_lists_security_rules_active_without_artifact(make_trusted_repo):
     enf = out["data"]["enforcement"]
     assert "secret-detected-in-content" in enf["active"]
     assert "eval-call" in enf["active"]
-    assert all(d["rule"] not in ("secret-detected-in-content", "eval-call") for d in enf["demoted"])
+    assert all(
+        d["rule"] not in ("secret-detected-in-content", "eval-call")
+        for d in enf["demoted"]
+    )
 
 
 def test_status_unprofiled_repo_lists_no_security_rules(make_trusted_repo):
@@ -272,8 +302,17 @@ def test_status_unprofiled_repo_lists_no_security_rules(make_trusted_repo):
     from chameleon_mcp.tools import get_status
 
     repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
-    (profile_dir / "profile.json").unlink()
-    (profile_dir / "COMMITTED").unlink()
+    # A genuinely UNPROFILED repo has no profile artifacts at all -- not a
+    # profile.json-less dir that still carries core artifacts (that is a corrupt
+    # partial, which _profile_unrenderable_status now reports as corrupt).
+    for _art in (
+        "profile.json",
+        "COMMITTED",
+        "archetypes.json",
+        "canonicals.json",
+        "rules.json",
+    ):
+        (profile_dir / _art).unlink(missing_ok=True)
 
     enf = get_status(str(repo))["data"]["enforcement"]
     assert "secret-detected-in-content" not in enf["active"]
@@ -328,7 +367,9 @@ def test_status_unrelated_section_typo_still_shows_enforce(make_trusted_repo):
     # (the gates still enforce via the isolated read), so config_malformed is
     # False and the mode is the real "enforce".
     profile_dir.joinpath("config.json").write_text(
-        json.dumps({"enforcement": {"mode": "enforce"}, "auto_refresh": {"enabled": "yes"}}),
+        json.dumps(
+            {"enforcement": {"mode": "enforce"}, "auto_refresh": {"enabled": "yes"}}
+        ),
         encoding="utf-8",
     )
     enf = get_status(str(repo))["data"]["enforcement"]

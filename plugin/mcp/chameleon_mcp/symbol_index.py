@@ -58,10 +58,19 @@ EXPORTS_INDEX_FILENAME = "exports_index.json"
 REVERSE_INDEX_FILENAME = "reverse_index.json"
 # v2: reverse-index importer rows may carry an optional ``via`` chain (the barrel
 # files a through-barrel edge was chased across at build time). Both index halves
-# share this constant, so a v1 artifact fails the load gate and refreshes on the
-# next engine-upgrade session; the read is fail-open, so the advisory simply does
-# not fire until then. Never a crash, never a false claim.
+# share this constant so they can never drift on the shape question that matters
+# (via support); it is what build_exports_index / build_reverse_index stamp on
+# every write.
 SCHEMA_VERSION = 2
+# A v1 artifact is still safe to READ under the current parser: v1 predates the
+# reverse-index ``via`` breadcrumb, and every row-level read already treats
+# ``via`` as optional (falls back to an empty tuple), so a v1 reverse index loads
+# with no barrel-chase attribution -- accurate, since it was built before that
+# feature existed. The exports-index payload never gained a v2-only field at all
+# (only reverse_index's row shape did), so a v1 exports index is byte-for-byte
+# readable as-is. Only a schema outside this set (a corrupt value, or a genuinely
+# newer engine's schema) is treated as unparseable.
+_READABLE_SCHEMA_VERSIONS = (1, SCHEMA_VERSION)
 # Profile languages whose extractors carry the named-export/import extras these
 # builders read, so bootstrap writes both index artifacts for them. Ruby has no
 # static export surface (its cross-file view is the constant index). Shared by
@@ -169,9 +178,11 @@ def load_exports_index(repo_root: Path | str | None) -> ExportsIndex | None:
     """Load the committed ``exports_index.json`` for ``repo_root``, or None.
 
     Returns None (no flag) on any ambiguity: no repo_root, no artifact, a corrupt
-    or future-schema payload, or any I/O error. The symbol check is purely
-    additive over the path check, so failing open here only means the check does
-    not fire -- never a crash and never a false positive.
+    or unreadable-schema payload, or any I/O error. A schema in
+    ``_READABLE_SCHEMA_VERSIONS`` (the current version and its safely-readable
+    predecessor) is NOT an ambiguity and loads normally. The symbol check is
+    purely additive over the path check, so failing open here only means the
+    check does not fire -- never a crash and never a false positive.
     """
     if repo_root is None:
         return None
@@ -206,7 +217,7 @@ def load_exports_index(repo_root: Path | str | None) -> ExportsIndex | None:
         data = json.loads(artifact.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if not isinstance(data, dict) or data.get("schema_version") != SCHEMA_VERSION:
+    if not isinstance(data, dict) or data.get("schema_version") not in _READABLE_SCHEMA_VERSIONS:
         return None
     raw_files = data.get("files")
     if not isinstance(raw_files, dict):
@@ -1008,9 +1019,13 @@ def load_reverse_index(repo_root: Path | str | None) -> ReverseIndex | None:
     """Load the committed ``reverse_index.json`` for ``repo_root``, or None.
 
     Returns None (no advisory, no finding) on any ambiguity: no repo_root, no
-    artifact, a corrupt or future-schema payload, or any I/O error. The reverse
-    index only ADDS cross-file context; failing open here means the advisory and
-    the existence query simply do not fire -- never a crash, never a false claim.
+    artifact, a corrupt or unreadable-schema payload, or any I/O error. A schema
+    in ``_READABLE_SCHEMA_VERSIONS`` (the current version and its safely-readable
+    predecessor) is NOT an ambiguity and loads normally -- a v1 artifact simply
+    carries no barrel-chase ``via`` breadcrumbs, since it predates that feature.
+    The reverse index only ADDS cross-file context; failing open here means the
+    advisory and the existence query simply do not fire -- never a crash, never a
+    false claim.
     """
     if repo_root is None:
         return None
@@ -1047,7 +1062,7 @@ def load_reverse_index(repo_root: Path | str | None) -> ReverseIndex | None:
         data = json.loads(artifact.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if not isinstance(data, dict) or data.get("schema_version") != SCHEMA_VERSION:
+    if not isinstance(data, dict) or data.get("schema_version") not in _READABLE_SCHEMA_VERSIONS:
         return None
     raw_targets = data.get("targets")
     if not isinstance(raw_targets, dict):

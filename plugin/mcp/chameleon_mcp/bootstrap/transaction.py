@@ -463,6 +463,19 @@ def cleanup_orphan_tmp_dirs(target_parent: Path, profile_dir_name: str = "chamel
         except OSError:
             pass
 
+    # Merge-driver atomic-write cruft: the 3-way merge writes
+    # ``<artifact>.chameleon-merge.tmp`` inside the profile dir and renames it into
+    # place; a SIGKILL mid-merge strands the tmp file. Git serializes merge-driver
+    # invocations per file, so a leftover here is orphaned debris, not a live
+    # write. The successful path always renames its own tmp away.
+    if target_dir.is_dir():
+        for merge_tmp in target_dir.glob("*.chameleon-merge.tmp"):
+            try:
+                merge_tmp.unlink()
+                handled += 1
+            except OSError:
+                pass
+
     # On POSIX the commit path flocks the parent-directory fd and creates no lock
     # file, so any *.rename.lock is legacy debris from chameleon <= 1.2.0; sweep
     # it. (The Windows sidecar is named .winlock and is left alone here.)

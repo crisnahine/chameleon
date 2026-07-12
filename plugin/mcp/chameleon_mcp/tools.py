@@ -982,6 +982,18 @@ def detect_repo(file_path: str) -> dict:
         except (OSError, ValueError):
             profile_corrupted = True
 
+    if profile_present and not (profile_corrupted or profile_unsupported_schema or profile_too_new):
+        # profile.json alone is not enough: a missing/corrupt/wrong-type core
+        # artifact (archetypes/canonicals/rules) or a generation mismatch makes
+        # load_profile_dir refuse and the hooks fail open, so detect_repo must not
+        # report profile_present/trusted -- matching get_pattern_context and
+        # get_status on the identical directory state.
+        _unrend = _profile_unrenderable_status(profile_dir)
+        if _unrend == "profile_corrupted":
+            profile_corrupted = True
+        elif _unrend == "profile_unsupported_schema_version":
+            profile_unsupported_schema = True
+
     if not profile_present or profile_corrupted or profile_unsupported_schema or profile_too_new:
         trust_state = "n/a"
     elif trust is None or not trust.grants_root(profile_dir.parent):
@@ -1115,10 +1127,18 @@ def _prefix_overlap_fallback(rel_str: str, archetypes: dict) -> tuple[str | None
     Returns (primary, alternatives). When no archetype shares at least one
     leading directory segment with the file, returns (None, []).
     """
+    from chameleon_mcp.signatures import python_role_for_path
+
     file_dir = rel_str.rsplit("/", 1)[0] if "/" in rel_str else ""
     file_segments = [s for s in file_dir.split("/") if s]
     file_ext = rel_str.rsplit(".", 1)[-1] if "." in rel_str.rsplit("/", 1)[-1] else ""
-    scored: list[tuple[int, int, str]] = []
+    # A framework role signal (blueprints/, routes/, models/, ...) beats raw
+    # cluster size as the tiebreak: a brand-new Flask blueprint under blueprints/
+    # must not fall to the largest "util" cluster just because it shares one
+    # leading dir segment. python_role_for_path returns None for non-Python files,
+    # so TS/Ruby scoring is unchanged.
+    file_role = python_role_for_path(rel_str)
+    scored: list[tuple[int, int, int, str]] = []
     for name, arch in archetypes.items():
         pattern = arch.get("paths_pattern", "")
         if not pattern:
@@ -1140,13 +1160,18 @@ def _prefix_overlap_fallback(rel_str: str, archetypes: dict) -> tuple[str | None
             continue
         if arch_ext and file_ext and arch_ext != file_ext:
             continue
+        role_match = 0
+        if file_role is not None:
+            arch_role = python_role_for_path(arch_dir.rstrip("/") + "/_probe.py")
+            if arch_role == file_role:
+                role_match = 1
         cluster_size = int(arch.get("cluster_size") or 0)
-        scored.append((-overlap, -cluster_size, name))
+        scored.append((-overlap, -role_match, -cluster_size, name))
     if not scored:
         return None, []
     scored.sort()
-    primary = scored[0][2]
-    alternatives = [name for _o, _c, name in scored[1:]]
+    primary = scored[0][3]
+    alternatives = [name for _o, _r, _c, name in scored[1:]]
     return primary, alternatives
 
 
@@ -5399,8 +5424,16 @@ def _profile_unrenderable_status(profile_dir: Path) -> str | None:
     """
     from chameleon_mcp.profile.loader import MAX_SUPPORTED_SCHEMA_VERSION
 
+    _core_artifacts = ("archetypes.json", "canonicals.json", "rules.json")
     pf = profile_dir / "profile.json"
     if not pf.exists():
+        # profile.json is the commit sentinel. If it is gone but core artifacts
+        # remain, the profile is damaged (load_profile_dir raises 'missing
+        # required artifact', hooks fail open) -- report corrupt, not a clean
+        # no-profile. A dir with no core artifacts either is a genuine no-profile
+        # (a different, caller-handled case).
+        if any((profile_dir / c).exists() for c in _core_artifacts):
+            return "profile_corrupted"
         return None
     try:
         from chameleon_mcp.bootstrap.transaction import is_committed
@@ -5428,10 +5461,14 @@ def _profile_unrenderable_status(profile_dir: Path) -> str | None:
     # .chameleon merge -- parses fine, but its generation no longer matches the
     # others, so load_profile_dir rejects it exactly as the refresh-side twin does).
     _core_objs: dict[str, dict] = {}
-    for _core in ("archetypes.json", "canonicals.json", "rules.json"):
+    for _core in _core_artifacts:
         _cp = profile_dir / _core
         if not _cp.exists():
-            continue
+            # A core artifact (archetypes/canonicals/rules) is REQUIRED:
+            # load_profile_dir raises 'missing required artifact' on its absence
+            # and the hooks fail open, so a missing one is unrenderable, not a
+            # skippable partial. (enforcement.json and friends stay optional.)
+            return "profile_corrupted"
         try:
             _obj = json.loads(_cp.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -5439,6 +5476,18 @@ def _profile_unrenderable_status(profile_dir: Path) -> str | None:
         if not isinstance(_obj, dict):
             return "profile_corrupted"
         _core_objs[_core] = _obj
+    # conventions.json is OPTIONAL (a repo may have none) but must PARSE if it is
+    # present: load_profile_dir rejects an unparseable conventions.json and the
+    # hooks fail open, so a corrupt one is unrenderable even though its absence is
+    # fine. principles.md is free-form and never blocks the load, so it is skipped.
+    _cv = profile_dir / "conventions.json"
+    if _cv.exists():
+        try:
+            _cvobj = json.loads(_cv.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return "profile_corrupted"
+        if not isinstance(_cvobj, dict):
+            return "profile_corrupted"
     # Generation parity mirrors load_profile_dir (profile/loader.py): when the
     # full core trio is present alongside profile.json, all four generations must
     # be equal integers or the profile is unloadable. Only checked when all are
@@ -5642,13 +5691,21 @@ def get_status(repo: str) -> dict:
     # mode=enforce with active rules beside a profile nothing can load.
     _unrenderable = _profile_unrenderable_status(profile_dir)
     if _unrenderable is not None:
+        # Remediation must match what refresh will actually do: refresh REBUILDS a
+        # corrupt profile but REFUSES a newer-schema one (it would downgrade a
+        # teammate's work), so pointing the user at /chameleon-refresh there is
+        # dead-end advice -- tell them to upgrade the engine instead.
+        _remedy = (
+            "Upgrade chameleon to read this profile (a newer engine wrote it)."
+            if _unrenderable == "profile_unsupported_schema_version"
+            else "Run /chameleon-refresh to regenerate it."
+        )
         return _envelope(
             {
                 "status": _unrenderable,
                 "error": (
-                    "profile.json is unreadable by this engine "
-                    f"({_unrenderable}); enforcement is OFF (hooks fail open). "
-                    "Run /chameleon-refresh to regenerate it."
+                    f"profile.json is unreadable by this engine ({_unrenderable}); "
+                    f"enforcement is OFF (hooks fail open). {_remedy}"
                 ),
             }
         )
@@ -7965,6 +8022,18 @@ def _refresh_repo_locked(repo_path, *, force: bool, analysis_root: Path | None =
     # a normal refresh. Re-derive fully to repair it. A full re-derive preserves
     # user-taught idioms.md.
     if _profile_needs_rederive(profile_dir):
+        return bootstrap_repo(
+            str(repo_path), force=True, paths_glob=persisted_pg, analysis_root=analysis_root
+        )
+
+    # A deleted idioms.md is the one user-authored artifact a noop refresh would
+    # silently leave gone: the production-pinned and working-tree noop paths below
+    # preserve artifacts verbatim, so without this a `rm idioms.md` + refresh
+    # reports noop and never recreates the template or warns. Re-derive once so the
+    # bootstrap idioms carry-forward path writes a fresh template AND surfaces the
+    # "idioms.md was missing; restore from git history" warning in the envelope.
+    # Fires only while idioms.md is absent, so it self-heals on the next refresh.
+    if not idioms_path.is_file():
         return bootstrap_repo(
             str(repo_path), force=True, paths_glob=persisted_pg, analysis_root=analysis_root
         )
@@ -10290,11 +10359,27 @@ def disable_session(repo: str, session_id: str, force: bool = False) -> dict:
 
 
 def _session_unseen_for_repo(repo_id: str, session_id: str) -> bool:
-    """True if `session_id` has never appeared in the exec_log for `repo_id`.
+    """True if `session_id` is unknown to chameleon for `repo_id`.
 
-    Best-effort: any error returns False (don't false-warn on a system
-    where exec_log isn't readable).
+    "Known" means either an exec-log entry (a Bash command ran) OR a persisted
+    per-session enforcement state (an Edit/Write was gated: advisory injected, a
+    block fired, or an override recorded). A session that only edited files writes
+    no exec-log, so checking exec-log alone false-warned on the common case.
+
+    Best-effort: any error returns False (don't false-warn on a system where the
+    state dirs aren't readable).
     """
+    # An edit-only session (no Bash) writes no exec-log but does persist an
+    # enforcement state the moment chameleon gates one of its edits, so that state
+    # is authoritative that the session is known.
+    try:
+        from chameleon_mcp.enforcement import _state_path
+        from chameleon_mcp.hook_helper import _plugin_data_dir
+
+        if _state_path(_plugin_data_dir() / repo_id, session_id).is_file():
+            return False
+    except Exception:
+        pass
     try:
         from chameleon_mcp.exec_log import _exec_log_dir
     except Exception:
@@ -10601,6 +10686,15 @@ _SUSPICIOUS_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         "system role injection",
         re.compile(r"(<\s*/?\s*system\s*>|\bsystem\s*:(?!:))", re.IGNORECASE),
     ),
+    # eval()/exec()/rm-rf (and os.system() below) are code-execution SINKS. This
+    # list scans PROSE, where an OFFENSIVE instruction ("always run eval(user)")
+    # is an injection but DEFENSIVE advice ("never call eval() on user input",
+    # "avoid rm -rf in deploy scripts") is exactly the guidance teams teach --
+    # flagging the latter silently dropped the whole idiom block from every
+    # injection path. _looks_suspicious exempts a sink match in a negated/advisory
+    # context (see _CODE_SINK_LABELS / _DEFENSIVE_CONTEXT) so only an imperative
+    # usage flags. Code artifacts get the unconditional check via
+    # `scan_for_dangerous_patterns` (poisoning_scanner.py).
     ("eval()", re.compile(r"\beval\s*\(", re.IGNORECASE)),
     ("exec()", re.compile(r"\bexec\s*\(", re.IGNORECASE)),
     ("rm -rf", re.compile(r"\brm\s+-rf\b", re.IGNORECASE)),
@@ -10760,10 +10854,26 @@ _SUSPICIOUS_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             re.IGNORECASE,
         ),
     ),
-    # os.system() shell sink, matched like the existing eval()/exec()/rm -rf bare
-    # sinks (same precedent, same one-time-trust exposure). Member access is
-    # excluded so an unrelated `.system(` object method is not flagged.
+    # os.system() shell sink, matched like the eval()/exec()/rm -rf sinks above
+    # (a code-execution SINK). Member access is excluded so an unrelated
+    # `.system(` object method is not flagged; _looks_suspicious exempts it in a
+    # negated/advisory context ("never call os.system(); use subprocess").
     ("os.system()", re.compile(r"\bos\.system\s*\(", re.IGNORECASE)),
+)
+
+
+# Code-execution SINK labels: flagged in an offensive/imperative context but
+# EXEMPT in defensive/advisory prose ("never call eval()", "avoid rm -rf").
+_CODE_SINK_LABELS = frozenset({"eval()", "exec()", "rm -rf", "os.system()"})
+# A negation/avoidance cue near a sink marks the prose as security ADVICE, not an
+# instruction to execute the sink. An offensive "always run eval(user)" carries
+# none of these, so it still flags.
+_DEFENSIVE_CONTEXT = re.compile(
+    r"\b(?:never|avoid|avoids|avoiding|don'?t|do\s+not|does\s+not|no|not|without|"
+    r"instead(?:\s+of)?|rather\s+than|prohibit(?:ed|s)?|ban(?:ned|s)?|"
+    r"forbid(?:den|s)?|disallow(?:ed|s)?|unsafe|dangerous|insecure|vulnerable|"
+    r"prefer|shouldn'?t|should\s+not|must\s+not|mustn'?t|cannot|can'?t|refuse)\b",
+    re.IGNORECASE,
 )
 
 
@@ -10775,10 +10885,22 @@ def _looks_suspicious(text: str) -> tuple[bool, str | None]:
     pattern (e.g., "ignore previous instructions"). It's surfaced in the
     `suspicious_input_reason` envelope field so consumers can route on
     the specific category of suspicion without parsing free text.
+
+    A code-execution sink (eval/exec/rm-rf/os.system) is flagged only in an
+    imperative context: a match wrapped in negated/advisory prose is security
+    guidance, not an injection, and blocking it silently dropped whole idiom
+    blocks from every injection path.
     """
     if not isinstance(text, str) or not text:
         return False, None
     for label, regex in _SUSPICIOUS_PATTERNS:
+        if label in _CODE_SINK_LABELS:
+            for m in regex.finditer(text):
+                lo = max(0, m.start() - 64)
+                hi = min(len(text), m.end() + 64)
+                if not _DEFENSIVE_CONTEXT.search(text[lo:hi]):
+                    return True, label
+            continue
         if regex.search(text):
             return True, label
     return False, None
@@ -11966,7 +12088,18 @@ def teach_competing_import(
     # and relative (`./…`) forms are NOT checked — resolving them needs tsconfig
     # path maps, and the target may legitimately be created later; a noisy warning
     # there would punish valid forward-looking teachings.
-    if not already:
+    # The npm/package.json check only makes sense for a TypeScript/JavaScript
+    # profile: a Ruby/Python repo that bundles a JS frontend or asset pipeline has
+    # a package.json, but a taught Ruby/Python wrapper preference is not an npm
+    # package and must not be warned as "missing from package.json".
+    _teach_lang: str | None = None
+    try:
+        _pj = _effective_profile_dir(repo_path) / "profile.json"
+        if _pj.exists():
+            _teach_lang = json.loads(_pj.read_text(encoding="utf-8")).get("language")
+    except Exception:
+        _teach_lang = None
+    if not already and _teach_lang in ("typescript", "javascript"):
         try:
             pkg_name = _npm_package_root(preferred)
             if pkg_name is not None and not _resolves_under_tsconfig_baseurl(preferred, repo_path):

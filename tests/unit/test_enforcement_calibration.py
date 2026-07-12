@@ -50,7 +50,12 @@ def test_clean_repo_activates_phantom(tmp_path):
     class _Loaded:
         canonicals = {
             "canonicals": {
-                "util": [{"witness": {"path": "src/a.ts"}, "normative_shape": {"ast_query": {}}}]
+                "util": [
+                    {
+                        "witness": {"path": "src/a.ts"},
+                        "normative_shape": {"ast_query": {}},
+                    }
+                ]
             }
         }
         conventions = {"conventions": {}}
@@ -71,7 +76,12 @@ def test_phantom_demoted_when_witness_has_dangling_import(tmp_path):
     class _Loaded:
         canonicals = {
             "canonicals": {
-                "util": [{"witness": {"path": "src/a.ts"}, "normative_shape": {"ast_query": {}}}]
+                "util": [
+                    {
+                        "witness": {"path": "src/a.ts"},
+                        "normative_shape": {"ast_query": {}},
+                    }
+                ]
             }
         }
         conventions = {"conventions": {}}
@@ -101,7 +111,12 @@ def test_phantom_demoted_when_sibling_has_dangling_import(tmp_path):
     class _Loaded:
         canonicals = {
             "canonicals": {
-                "util": [{"witness": {"path": "src/a.ts"}, "normative_shape": {"ast_query": {}}}]
+                "util": [
+                    {
+                        "witness": {"path": "src/a.ts"},
+                        "normative_shape": {"ast_query": {}},
+                    }
+                ]
             }
         }
         conventions = {"conventions": {}}
@@ -127,7 +142,12 @@ def test_witness_only_no_siblings_keeps_rule_active(tmp_path):
     class _Loaded:
         canonicals = {
             "canonicals": {
-                "util": [{"witness": {"path": "src/a.ts"}, "normative_shape": {"ast_query": {}}}]
+                "util": [
+                    {
+                        "witness": {"path": "src/a.ts"},
+                        "normative_shape": {"ast_query": {}},
+                    }
+                ]
             }
         }
         conventions = {"conventions": {}}
@@ -145,12 +165,19 @@ def test_sibling_sample_is_bounded(tmp_path, monkeypatch):
     (repo / "src").mkdir(parents=True)
     (repo / "src" / "a.ts").write_text("export const a = 1\n", encoding="utf-8")
     for i in range(20):
-        (repo / "src" / f"sib{i}.ts").write_text(f"export const s{i} = {i}\n", encoding="utf-8")
+        (repo / "src" / f"sib{i}.ts").write_text(
+            f"export const s{i} = {i}\n", encoding="utf-8"
+        )
 
     class _Loaded:
         canonicals = {
             "canonicals": {
-                "util": [{"witness": {"path": "src/a.ts"}, "normative_shape": {"ast_query": {}}}]
+                "util": [
+                    {
+                        "witness": {"path": "src/a.ts"},
+                        "normative_shape": {"ast_query": {}},
+                    }
+                ]
             }
         }
         conventions = {"conventions": {}}
@@ -253,12 +280,19 @@ def test_import_preference_demoted_when_witness_uses_over_module(tmp_path):
     class _Loaded:
         canonicals = {
             "canonicals": {
-                "util": [{"witness": {"path": "src/a.ts"}, "normative_shape": {"ast_query": {}}}]
+                "util": [
+                    {
+                        "witness": {"path": "src/a.ts"},
+                        "normative_shape": {"ast_query": {}},
+                    }
+                ]
             }
         }
         conventions = {
             "conventions": {
-                "imports": {"util": {"competing": [{"over": "lodash", "preferred": "ramda"}]}}
+                "imports": {
+                    "util": {"competing": [{"over": "lodash", "preferred": "ramda"}]}
+                }
             }
         }
         rules = {}
@@ -278,12 +312,19 @@ def test_import_preference_active_when_witness_uses_preferred(tmp_path):
     class _Loaded:
         canonicals = {
             "canonicals": {
-                "util": [{"witness": {"path": "src/a.ts"}, "normative_shape": {"ast_query": {}}}]
+                "util": [
+                    {
+                        "witness": {"path": "src/a.ts"},
+                        "normative_shape": {"ast_query": {}},
+                    }
+                ]
             }
         }
         conventions = {
             "conventions": {
-                "imports": {"util": {"competing": [{"over": "lodash", "preferred": "ramda"}]}}
+                "imports": {
+                    "util": {"competing": [{"over": "lodash", "preferred": "ramda"}]}
+                }
             }
         }
         rules = {}
@@ -299,7 +340,9 @@ def test_naming_demoted_when_sibling_breaks_interface_prefix(tmp_path):
     # own committed code and the rule must NOT be allowed to block.
     repo = tmp_path
     (repo / "src").mkdir(parents=True)
-    (repo / "src" / "a.ts").write_text("export interface IThing { id: number }\n", encoding="utf-8")
+    (repo / "src" / "a.ts").write_text(
+        "export interface IThing { id: number }\n", encoding="utf-8"
+    )
     (repo / "src" / "sibling.ts").write_text(
         "export interface Widget { id: number }\n", encoding="utf-8"
     )
@@ -307,12 +350,19 @@ def test_naming_demoted_when_sibling_breaks_interface_prefix(tmp_path):
     class _Loaded:
         canonicals = {
             "canonicals": {
-                "util": [{"witness": {"path": "src/a.ts"}, "normative_shape": {"ast_query": {}}}]
+                "util": [
+                    {
+                        "witness": {"path": "src/a.ts"},
+                        "normative_shape": {"ast_query": {}},
+                    }
+                ]
             }
         }
         conventions = {
             "conventions": {
-                "naming": {"util": {"interface_prefix": {"pattern": "I", "consistency": 1.0}}}
+                "naming": {
+                    "util": {"interface_prefix": {"pattern": "I", "consistency": 1.0}}
+                }
             }
         }
         rules = {}
@@ -325,7 +375,9 @@ def test_naming_demoted_when_sibling_breaks_interface_prefix(tmp_path):
 def test_naming_active_when_all_files_match_prefix(tmp_path):
     repo = tmp_path
     (repo / "src").mkdir(parents=True)
-    (repo / "src" / "a.ts").write_text("export interface IThing { id: number }\n", encoding="utf-8")
+    (repo / "src" / "a.ts").write_text(
+        "export interface IThing { id: number }\n", encoding="utf-8"
+    )
     (repo / "src" / "sibling.ts").write_text(
         "export interface IWidget { id: number }\n", encoding="utf-8"
     )
@@ -333,12 +385,19 @@ def test_naming_active_when_all_files_match_prefix(tmp_path):
     class _Loaded:
         canonicals = {
             "canonicals": {
-                "util": [{"witness": {"path": "src/a.ts"}, "normative_shape": {"ast_query": {}}}]
+                "util": [
+                    {
+                        "witness": {"path": "src/a.ts"},
+                        "normative_shape": {"ast_query": {}},
+                    }
+                ]
             }
         }
         conventions = {
             "conventions": {
-                "naming": {"util": {"interface_prefix": {"pattern": "I", "consistency": 1.0}}}
+                "naming": {
+                    "util": {"interface_prefix": {"pattern": "I", "consistency": 1.0}}
+                }
             }
         }
         rules = {}
@@ -448,13 +507,18 @@ def test_inheritance_demoted_when_witness_breaks_dominant_base(tmp_path):
         canonicals = {
             "canonicals": {
                 "model": [
-                    {"witness": {"path": "app/thing.rb"}, "normative_shape": {"ast_query": {}}}
+                    {
+                        "witness": {"path": "app/thing.rb"},
+                        "normative_shape": {"ast_query": {}},
+                    }
                 ]
             }
         }
         conventions = {
             "conventions": {
-                "inheritance": {"model": {"dominant_base": "ApplicationRecord", "frequency": 1.0}}
+                "inheritance": {
+                    "model": {"dominant_base": "ApplicationRecord", "frequency": 1.0}
+                }
             }
         }
         rules = {}
@@ -475,13 +539,18 @@ def test_inheritance_active_when_witness_uses_dominant_base(tmp_path):
         canonicals = {
             "canonicals": {
                 "model": [
-                    {"witness": {"path": "app/thing.rb"}, "normative_shape": {"ast_query": {}}}
+                    {
+                        "witness": {"path": "app/thing.rb"},
+                        "normative_shape": {"ast_query": {}},
+                    }
                 ]
             }
         }
         conventions = {
             "conventions": {
-                "inheritance": {"model": {"dominant_base": "ApplicationRecord", "frequency": 1.0}}
+                "inheritance": {
+                    "model": {"dominant_base": "ApplicationRecord", "frequency": 1.0}
+                }
             }
         }
         rules = {}
@@ -504,7 +573,12 @@ def test_block_eligible_rules_all_present_in_result(tmp_path):
     class _Loaded:
         canonicals = {
             "canonicals": {
-                "util": [{"witness": {"path": "src/a.ts"}, "normative_shape": {"ast_query": {}}}]
+                "util": [
+                    {
+                        "witness": {"path": "src/a.ts"},
+                        "normative_shape": {"ast_query": {}},
+                    }
+                ]
             }
         }
         conventions = {"conventions": {}}
@@ -533,7 +607,12 @@ def test_bootstrap_writes_enforcement_json(tmp_path, monkeypatch):
     class _Loaded:
         canonicals = {
             "canonicals": {
-                "util": [{"witness": {"path": "src/a.ts"}, "normative_shape": {"ast_query": {}}}]
+                "util": [
+                    {
+                        "witness": {"path": "src/a.ts"},
+                        "normative_shape": {"ast_query": {}},
+                    }
+                ]
             }
         }
         conventions = {"conventions": {}}
@@ -573,7 +652,9 @@ def test_partial_refresh_recalibrates_block_rules(tmp_path, monkeypatch):
     changed_rel = "src/comp0.ts"
 
     (profile_dir / "archetypes.json").write_text(
-        json.dumps({"schema_version": 8, "archetypes": {"util": {"cluster_id": cluster_id}}}),
+        json.dumps(
+            {"schema_version": 8, "archetypes": {"util": {"cluster_id": cluster_id}}}
+        ),
         encoding="utf-8",
     )
     (profile_dir / "canonicals.json").write_text(
@@ -583,7 +664,9 @@ def test_partial_refresh_recalibrates_block_rules(tmp_path, monkeypatch):
     (profile_dir / "profile.json").write_text(
         json.dumps({"schema_version": 8, "archetype_count": 1}), encoding="utf-8"
     )
-    (profile_dir / "rules.json").write_text(json.dumps({"schema_version": 8}), encoding="utf-8")
+    (profile_dir / "rules.json").write_text(
+        json.dumps({"schema_version": 8}), encoding="utf-8"
+    )
 
     # Only the first file's content sha drifts from prev_state; the rest match, so
     # exactly one file is "modified" (5% change ratio).
@@ -594,14 +677,20 @@ def test_partial_refresh_recalibrates_block_rules(tmp_path, monkeypatch):
 
     monkeypatch.setattr(t, "_content_sha_hint", _sha)
     monkeypatch.setattr(
-        t, "_reparse_changed_files", lambda _root, _paths: {changed_rel: (cluster_id, "changed")}
+        t,
+        "_reparse_changed_files",
+        lambda _root, _paths: {changed_rel: (cluster_id, "changed")},
     )
     monkeypatch.setattr(index_db, "upsert_file_clusters", lambda *a, **k: None)
-    monkeypatch.setattr(index_db, "delete_file_clusters_for_paths", lambda *a, **k: None)
+    monkeypatch.setattr(
+        index_db, "delete_file_clusters_for_paths", lambda *a, **k: None
+    )
     monkeypatch.setattr(index_db, "upsert_repo", lambda *a, **k: None)
 
     calibrated: list[Path] = []
-    monkeypatch.setattr(t, "_calibrate_block_rules_for_repo", lambda root: calibrated.append(root))
+    monkeypatch.setattr(
+        t, "_calibrate_block_rules_for_repo", lambda root: calibrated.append(root)
+    )
 
     envelope = t._attempt_partial_refresh(
         repo_root,
@@ -716,13 +805,22 @@ def test_language_gating_demotes_ts_only_rules_on_ruby_profile(tmp_path):
     result = calibrate_block_rules(repo, _Loaded())
     assert result["jsx-presence-mismatch"]["active"] is False
     assert result["jsx-presence-mismatch"]["inert_reason"] == "no-signal-for-language"
-    # Ruby-capable rules keep their measured state.
-    assert result["inheritance-convention-violation"]["active"] is True
+    # Empty conventions: like naming below, inheritance-convention-violation's
+    # 0.0 fp_rate is vacuous (no dominant_base to compare against), so it is inert
+    # for missing data, not certified active.
+    assert result["inheritance-convention-violation"]["active"] is False
+    assert (
+        result["inheritance-convention-violation"]["inert_reason"]
+        == "missing-convention-data"
+    )
     # This profile carries no naming sub-conventions at all, so the rule is
     # inert for missing data (not for language): the vacuous 0.0 must not
     # certify it active either.
     assert result["naming-convention-violation"]["active"] is False
-    assert result["naming-convention-violation"]["inert_reason"] == "missing-convention-data"
+    assert (
+        result["naming-convention-violation"]["inert_reason"]
+        == "missing-convention-data"
+    )
 
 
 def test_language_gating_demotes_ruby_only_rules_on_ts_profile(tmp_path):
@@ -734,7 +832,12 @@ def test_language_gating_demotes_ruby_only_rules_on_ts_profile(tmp_path):
         profile = {"language": "typescript"}
         canonicals = {
             "canonicals": {
-                "util": [{"witness": {"path": "src/a.ts"}, "normative_shape": {"ast_query": {}}}]
+                "util": [
+                    {
+                        "witness": {"path": "src/a.ts"},
+                        "normative_shape": {"ast_query": {}},
+                    }
+                ]
             }
         }
         conventions = {"conventions": {}}
@@ -742,7 +845,10 @@ def test_language_gating_demotes_ruby_only_rules_on_ts_profile(tmp_path):
 
     result = calibrate_block_rules(repo, _Loaded())
     assert result["inheritance-convention-violation"]["active"] is False
-    assert result["inheritance-convention-violation"]["inert_reason"] == "no-signal-for-language"
+    assert (
+        result["inheritance-convention-violation"]["inert_reason"]
+        == "no-signal-for-language"
+    )
     assert result["jsx-presence-mismatch"]["active"] is True
 
 
@@ -755,15 +861,29 @@ def test_language_gating_fails_open_when_language_unknown(tmp_path):
     class _Loaded:
         canonicals = {
             "canonicals": {
-                "util": [{"witness": {"path": "src/a.ts"}, "normative_shape": {"ast_query": {}}}]
+                "util": [
+                    {
+                        "witness": {"path": "src/a.ts"},
+                        "normative_shape": {"ast_query": {}},
+                    }
+                ]
             }
         }
         conventions = {"conventions": {}}
         rules = {}
 
     result = calibrate_block_rules(repo, _Loaded())
+    # jsx-presence-mismatch (TS-only) is NOT language-demoted when the language is
+    # unknown: gating fails open on missing positive knowledge.
     assert result["jsx-presence-mismatch"]["active"] is True
-    assert result["inheritance-convention-violation"]["active"] is True
+    # inheritance-convention-violation is not language-demoted either, but with an
+    # empty inheritance map it is inert for MISSING SIGNAL (not language) -- the
+    # same vacuous-0.0 gate naming uses.
+    assert result["inheritance-convention-violation"]["active"] is False
+    assert (
+        result["inheritance-convention-violation"]["inert_reason"]
+        == "missing-convention-data"
+    )
 
 
 def test_get_status_surfaces_inert_reason(tmp_path, monkeypatch):
@@ -776,13 +896,29 @@ def test_get_status_surfaces_inert_reason(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     cham = repo / ".chameleon"
     cham.mkdir(parents=True)
-    (cham / "profile.json").write_text(json.dumps({"generation": 1, "language": "ruby"}))
+    (cham / "profile.json").write_text(
+        json.dumps({"generation": 1, "language": "ruby"})
+    )
+    # Core trio: a real committed profile always carries these (bootstrap writes
+    # them atomically); get_status reports corrupt on a missing core artifact.
+    (cham / "archetypes.json").write_text(
+        json.dumps({"generation": 1, "archetypes": {}})
+    )
+    (cham / "canonicals.json").write_text(
+        json.dumps({"generation": 1, "canonicals": {}})
+    )
+    (cham / "rules.json").write_text(json.dumps({"generation": 1, "rules": {}}))
     (cham / "COMMITTED").touch()
     (cham / "enforcement.json").write_text(
         json.dumps(
             {
                 "block_rules": {
-                    "eval-call": {"active": True, "fp_rate": 0.0, "sampled": 10, "flagged": 0},
+                    "eval-call": {
+                        "active": True,
+                        "fp_rate": 0.0,
+                        "sampled": 10,
+                        "flagged": 0,
+                    },
                     "jsx-presence-mismatch": {
                         "active": False,
                         "fp_rate": 0.0,
@@ -861,7 +997,9 @@ def test_read_time_gate_fails_open_without_language(tmp_path):
     cham.mkdir()
     (cham / "profile.json").write_text(json.dumps({"generation": 1}))
     (cham / "enforcement.json").write_text(
-        json.dumps({"block_rules": {"jsx-presence-mismatch": {"active": True, "fp_rate": 0.0}}})
+        json.dumps(
+            {"block_rules": {"jsx-presence-mismatch": {"active": True, "fp_rate": 0.0}}}
+        )
     )
     _clear_block_rules_cache()
 
@@ -876,7 +1014,18 @@ def test_get_status_demotes_stale_active_rule_with_reason(tmp_path, monkeypatch)
     repo = tmp_path / "repo"
     cham = repo / ".chameleon"
     cham.mkdir(parents=True)
-    (cham / "profile.json").write_text(json.dumps({"generation": 1, "language": "ruby"}))
+    (cham / "profile.json").write_text(
+        json.dumps({"generation": 1, "language": "ruby"})
+    )
+    # Core trio: a real committed profile always carries these (bootstrap writes
+    # them atomically); get_status reports corrupt on a missing core artifact.
+    (cham / "archetypes.json").write_text(
+        json.dumps({"generation": 1, "archetypes": {}})
+    )
+    (cham / "canonicals.json").write_text(
+        json.dumps({"generation": 1, "canonicals": {}})
+    )
+    (cham / "rules.json").write_text(json.dumps({"generation": 1, "rules": {}}))
     (cham / "COMMITTED").touch()
     (cham / "enforcement.json").write_text(
         json.dumps(
@@ -916,7 +1065,18 @@ def _stale_naming_profile(tmp_path, *, naming_conventions):
     repo = tmp_path / "repo"
     cham = repo / ".chameleon"
     cham.mkdir(parents=True)
-    (cham / "profile.json").write_text(json.dumps({"generation": 1, "language": "ruby"}))
+    (cham / "profile.json").write_text(
+        json.dumps({"generation": 1, "language": "ruby"})
+    )
+    # Core trio: a real committed profile always carries these (bootstrap writes
+    # them atomically); get_status reports corrupt on a missing core artifact.
+    (cham / "archetypes.json").write_text(
+        json.dumps({"generation": 1, "archetypes": {}})
+    )
+    (cham / "canonicals.json").write_text(
+        json.dumps({"generation": 1, "canonicals": {}})
+    )
+    (cham / "rules.json").write_text(json.dumps({"generation": 1, "rules": {}}))
     (cham / "COMMITTED").write_text("committed-at=1\npid=1\n")
     (cham / "conventions.json").write_text(
         json.dumps(
@@ -953,8 +1113,12 @@ def test_naming_active_but_inert_gated_at_read_time(tmp_path):
     _repo, cham = _stale_naming_profile(
         tmp_path,
         naming_conventions={
-            "service": {"file_naming": {"casing": "snake_case", "casing_consistency": 1.0}},
-            "model": {"file_naming": {"casing": "snake_case", "casing_consistency": 1.0}},
+            "service": {
+                "file_naming": {"casing": "snake_case", "casing_consistency": 1.0}
+            },
+            "model": {
+                "file_naming": {"casing": "snake_case", "casing_consistency": 1.0}
+            },
         },
     )
     assert rule_inert_missing_signal("naming-convention-violation", cham) is True
@@ -998,7 +1162,9 @@ def test_get_status_reports_missing_convention_data(tmp_path, monkeypatch):
     repo, cham = _stale_naming_profile(
         tmp_path,
         naming_conventions={
-            "service": {"file_naming": {"casing": "snake_case", "casing_consistency": 1.0}},
+            "service": {
+                "file_naming": {"casing": "snake_case", "casing_consistency": 1.0}
+            },
         },
     )
 
@@ -1009,7 +1175,10 @@ def test_get_status_reports_missing_convention_data(tmp_path, monkeypatch):
     data = get_status(str(repo))["data"]["enforcement"]
     assert "naming-convention-violation" not in data["active"]
     demoted = {d["rule"]: d for d in data["demoted"]}
-    assert demoted["naming-convention-violation"]["inert_reason"] == "missing-convention-data"
+    assert (
+        demoted["naming-convention-violation"]["inert_reason"]
+        == "missing-convention-data"
+    )
     _ = _json  # keep the import shape parallel with the sibling test
 
 
@@ -1020,7 +1189,9 @@ def test_calibration_writes_missing_convention_inert_reason(tmp_path):
 
     repo = tmp_path / "repo"
     (repo / "app" / "models").mkdir(parents=True)
-    (repo / "app" / "models" / "user.rb").write_text("class User < ApplicationRecord\nend\n")
+    (repo / "app" / "models" / "user.rb").write_text(
+        "class User < ApplicationRecord\nend\n"
+    )
 
     class _Loaded:
         profile = {"language": "ruby"}
@@ -1035,7 +1206,12 @@ def test_calibration_writes_missing_convention_inert_reason(tmp_path):
         conventions = {
             "conventions": {
                 "naming": {
-                    "model": {"file_naming": {"casing": "snake_case", "casing_consistency": 1.0}}
+                    "model": {
+                        "file_naming": {
+                            "casing": "snake_case",
+                            "casing_consistency": 1.0,
+                        }
+                    }
                 }
             }
         }

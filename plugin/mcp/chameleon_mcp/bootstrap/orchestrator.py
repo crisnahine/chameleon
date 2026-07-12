@@ -2448,7 +2448,28 @@ def _bootstrap_single(
     canonicals_skipped_failed_scans = len(selection.clusters_with_only_failing_canonicals)
 
     generation = _generation_counter(now=started_at)
-    repo_id = _compute_repo_id(target_root)
+    # A no-remote repo's canonical id is keyed off a repo_uuid persisted in
+    # config.json (see repo_id.py's precedence: git remote > repo_uuid > path
+    # hash). On a from-scratch bootstrap that file does not exist yet, so
+    # _compute_repo_id would fall to the path-hash branch here and commit that
+    # transient id into profile_data below -- disagreeing with every later call
+    # once something stamps a repo_uuid in. Mint the uuid now and commit it as
+    # part of THIS SAME atomic transaction (below), so profile_data's own
+    # repo_id is correct from the first commit rather than only self-healing on
+    # a later refresh. A pre-existing profile dir means a persisted uuid (or its
+    # absence) already reflects reality, so this only fires once, ever, per repo.
+    new_repo_uuid: str | None = None
+    if not profile_dir.is_dir():
+        from chameleon_mcp.repo_id import _git_remote_url, _persisted_repo_uuid
+
+        if not _git_remote_url(target_root) and not _persisted_repo_uuid(target_root):
+            import hashlib
+            import secrets
+
+            new_repo_uuid = secrets.token_hex(16)
+            repo_id = hashlib.sha256(f"chameleon-uuid:{new_repo_uuid}".encode()).hexdigest()
+    if new_repo_uuid is None:
+        repo_id = _compute_repo_id(target_root)
 
     archetypes_data: dict = {
         "schema_version": PROFILE_SCHEMA_VERSION,
@@ -2771,6 +2792,11 @@ def _bootstrap_single(
         if "tsconfig" in tool_configs.parse_warnings:
             ts_rule["parse_warning"] = tool_configs.parse_warnings["tsconfig"]
         rules_data["rules"]["typescript"] = ts_rule
+    elif "tsconfig" in tool_configs.parse_warnings:
+        rules_data["rules"]["typescript"] = {
+            "source": tool_configs.sources.get("tsconfig", "tsconfig.json"),
+            "parse_warning": tool_configs.parse_warnings["tsconfig"],
+        }
     if tool_configs.eslint:
         eslint_rule: dict = {
             "source": tool_configs.sources.get("eslint", ".eslintrc"),
@@ -2871,6 +2897,24 @@ def _bootstrap_single(
         (txn_dir / "profile.json").write_text(
             json.dumps(profile_data, indent=2, sort_keys=True), encoding="utf-8"
         )
+        if new_repo_uuid is not None:
+            # Committed in the SAME transaction as profile.json (whose repo_id
+            # field is derived from this uuid above), so the two artifacts can
+            # never disagree even if the process is killed right after this
+            # commit. A pre-existing config.json is never reached here (the
+            # mint above only fires when profile_dir did not exist yet), so
+            # this cannot clobber a user's enforcement/production_ref settings.
+            from chameleon_mcp.profile.config import CURRENT_SCHEMA
+
+            (txn_dir / "config.json").write_text(
+                json.dumps(
+                    {"$schema": CURRENT_SCHEMA, "repo_uuid": new_repo_uuid},
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
         (txn_dir / "archetypes.json").write_text(
             json.dumps(archetypes_data, indent=2, sort_keys=True), encoding="utf-8"
         )
@@ -3124,6 +3168,16 @@ def _bootstrap_single(
     duration_ms = int((time.time() - started_at) * 1000)
 
     nested_warnings: list[str] = []
+    # Workspace dirs THIS run's own coordinator fan-out is about to (re)manage
+    # are not orphans -- excluded so a monorepo's live, just-refreshed
+    # sub-profiles never get flagged as the stale/unmanaged case this warning
+    # exists for (see the field's docstring on BootstrapReport).
+    _managed_ws_dirs: set[Path] = set()
+    for _ws_path in workspace.workspace_paths:
+        try:
+            _managed_ws_dirs.add(_ws_path.resolve())
+        except (OSError, RuntimeError):
+            continue
     for pat in (
         "apps/*/.chameleon",
         "packages/*/.chameleon",
@@ -3132,6 +3186,12 @@ def _bootstrap_single(
         "examples/*/.chameleon",
     ):
         for match in repo_root.glob(pat):
+            try:
+                ws_dir = match.parent.resolve()
+            except (OSError, RuntimeError):
+                ws_dir = match.parent
+            if ws_dir in _managed_ws_dirs:
+                continue
             try:
                 rel = str(match.relative_to(repo_root))
             except ValueError:

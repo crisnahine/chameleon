@@ -86,14 +86,23 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
     """
     pnpm_workspace = repo_root / "pnpm-workspace.yaml"
     if pnpm_workspace.exists():
-        exp = expand_workspace_globs_with_diagnostics(repo_root, _read_pnpm_globs(pnpm_workspace))
-        return WorkspaceInfo(
-            is_workspace=True,
-            manager="pnpm",
-            workspace_paths=exp.paths,
-            glob_warnings=exp.glob_warnings,
-            potential_workspace_paths=exp.potential_workspace_paths,
-        )
+        pnpm_globs = _read_pnpm_globs(pnpm_workspace)
+        if pnpm_globs:
+            exp = expand_workspace_globs_with_diagnostics(repo_root, pnpm_globs)
+            return WorkspaceInfo(
+                is_workspace=True,
+                manager="pnpm",
+                workspace_paths=exp.paths,
+                glob_warnings=exp.glob_warnings,
+                potential_workspace_paths=exp.potential_workspace_paths,
+            )
+        # No `packages:` key at all (as opposed to one whose glob matched zero
+        # dirs, handled above): modern pnpm (9/10) commonly repurposes this
+        # file for global settings (minimumReleaseAge, allowBuilds, overrides,
+        # onlyBuiltDependencies, patchedDependencies) with no packages
+        # declared. That shape is a single package, not a pnpm workspace, so
+        # fall through to the other markers instead of reporting is_workspace
+        # for a manager with zero resolvable packages.
 
     package_json = repo_root / "package.json"
     if package_json.exists():

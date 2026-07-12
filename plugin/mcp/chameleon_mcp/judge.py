@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from chameleon_mcp._thresholds import threshold_int
+from chameleon_mcp.blast_radius import _UNINFORMATIVE_CALLERS
 from chameleon_mcp.blast_radius import transitive_caller_chains as _transitive_caller_chains
 from chameleon_mcp.safe_open import is_forbidden_segment_path
 
@@ -703,7 +704,18 @@ def caller_facts_transitive_for_diffs(repo_root: Path, diffs: list[FileDiff], in
                     # honor a lowered depth override instead of silently emitting
                     # nothing. min_hops = min(2, depth); a chain has len-1 hops.
                     min_hops = min(2, depth)
-                    multi = [c for c in chains if len(c) - 1 >= min_hops]
+                    # The shared walker counts anonymous/module-scope caller EDGES
+                    # (for blast-radius parity) and terminates a chain at them, but
+                    # a literal "<anonymous>()"/"<module>()" hop is noise in the
+                    # advisory. Trim trailing placeholder hops; a chain trimmed
+                    # below the hop threshold drops out (the walker never surfaced
+                    # these to the judge before the parity fix either).
+                    trimmed = []
+                    for c in chains:
+                        while c and c[-1][1] in _UNINFORMATIVE_CALLERS:
+                            c = c[:-1]
+                        trimmed.append(c)
+                    multi = [c for c in trimmed if len(c) - 1 >= min_hops]
                     if not multi:
                         continue
                     listed_any = False

@@ -401,7 +401,12 @@ def path_pattern_bucket_for(
 
     parts = [p for p in file_path.split("/") if p and p not in (".", "..")]
     if len(parts) < 2:
-        return ("(root)", "")
+        bucket = "(root)"
+        if include_extension and parts:
+            ext = _extension_of(parts[-1])
+            if ext:
+                bucket = f"{bucket}:{ext}"
+        return (bucket, "")
 
     # Django role bucketing: a known role filename (models.py, views.py, ...)
     # buckets by ROLE across apps, not by app directory. The sub_bucket is empty

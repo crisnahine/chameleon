@@ -56,19 +56,30 @@ def _read_capped(path: Path, *, max_bytes: int | None = None) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
-def _load_toml(path: Path) -> dict:
-    """Parse a TOML config to a dict, or ``{}`` on any read/parse failure.
+def _load_toml(path: Path) -> tuple[dict, str | None]:
+    """Parse a TOML config to ``(dict, warning)``.
 
-    Bounded via ``_read_capped``; fail-open like the sibling JSON/YAML readers so
-    a malformed config contributes nothing rather than raising.
+    Bounded via ``_read_capped``. The data half fails open to ``{}`` on any
+    read/parse failure, same as before, so a malformed config still
+    contributes nothing to the merged rules. The warning half is new: it
+    names the failure (unlike the sibling JSON/YAML readers, TOML parsing
+    used to swallow it entirely) so a corrupt pyproject.toml/ruff.toml reads
+    as "config present but broken" rather than being indistinguishable from
+    "no config declared".
     """
     try:
         import tomllib
 
         data = tomllib.loads(_read_capped(path))
-    except (OSError, ValueError, ImportError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    except OSError as exc:
+        return {}, f"could not read {path.name}: {exc}"
+    except ImportError:
+        return {}, "tomllib unavailable; cannot parse TOML config"
+    except ValueError as exc:
+        return {}, f"malformed TOML in {path.name}: {exc}"
+    if not isinstance(data, dict):
+        return {}, f"{path.name} did not parse to a table"
+    return data, None
 
 
 @dataclass
@@ -215,26 +226,31 @@ def read_tool_configs(repo_root: Path) -> ToolConfigResult:
                 result.parse_warnings["rubocop"] = warning
             break
 
-    py_fmt, py_src = _read_python_format(repo_root)
+    py_fmt, py_src, py_warning = _read_python_format(repo_root)
     if py_fmt:
         result.python_format = py_fmt
         if py_src:
             result.sources["python_format"] = py_src
+    if py_warning:
+        result.parse_warnings["python_format"] = py_warning
 
     return result
 
 
 def _read_python_format(
     repo_root: Path, *, scan_subdirs: bool = True
-) -> tuple[dict | None, str | None]:
+) -> tuple[dict | None, str | None, str | None]:
     """Declared Python line-length + quote-style from black / ruff / flake8.
 
     Pure TOML/INI parse (no repo-code execution). Precedence for line length:
     ruff > black > flake8/pycodestyle. Quote style: ruff ``[tool.ruff.format]``
     quote-style first, else black (double unless string-normalization is
-    skipped). Returns ``({line_length?, quote_style?}, source)`` or ``(None,
-    None)`` when nothing is declared. Fails open: a malformed config contributes
-    nothing rather than raising.
+    skipped). Returns ``({line_length?, quote_style?}, source, warning)``,
+    with ``fmt``/``source`` ``None`` when nothing is declared. A malformed
+    config still contributes nothing to ``fmt`` (fail-open, like the sibling
+    JSON/YAML tool-config readers), but ``warning`` names the failure instead
+    of silently reading like "no config present" — matching the
+    tsconfig/eslint/rubocop parse_warnings contract.
 
     When the root declares nothing at all, a bounded subdirectory fallback
     probes conventional sub-project dirs (a monorepo-style ``backend/``
@@ -252,6 +268,7 @@ def _read_python_format(
     """
     fmt: dict = {}
     source: str | None = None
+    warnings: list[str] = []
 
     # Resolve the ruff config once: standalone .ruff.toml > ruff.toml >
     # pyproject [tool.ruff]. A standalone file's keys are already top-level, so
@@ -261,14 +278,18 @@ def _read_python_format(
     for name in (".ruff.toml", "ruff.toml"):
         p = repo_root / name
         if p.is_file():
-            ruff = _load_toml(p)
+            ruff, warning = _load_toml(p)
             ruff_source = name
+            if warning:
+                warnings.append(warning)
             break
 
     black: dict = {}
     pyproject = repo_root / "pyproject.toml"
     if pyproject.is_file():
-        data = _load_toml(pyproject)
+        data, warning = _load_toml(pyproject)
+        if warning:
+            warnings.append(warning)
         tool = data.get("tool") if isinstance(data, dict) else None
         tool = tool if isinstance(tool, dict) else {}
         # Only fall back to pyproject [tool.ruff] when no standalone ruff config
@@ -323,7 +344,8 @@ def _read_python_format(
 
                 cp = configparser.ConfigParser()
                 cp.read_string(_read_capped(p))
-            except (OSError, configparser.Error):
+            except (OSError, configparser.Error) as exc:
+                warnings.append(f"malformed config in {name}: {exc}")
                 continue
             for section in ("flake8", "pycodestyle"):
                 if cp.has_option(section, "max-line-length"):
@@ -335,11 +357,22 @@ def _read_python_format(
             if "line_length" in fmt:
                 break
 
+    warning = "; ".join(warnings) if warnings else None
+
     if fmt:
-        return fmt, source
+        return fmt, source, warning
     if scan_subdirs:
-        return _read_python_format_from_subdirs(repo_root)
-    return None, None
+        sub_fmt, sub_source, sub_warning = _read_python_format_from_subdirs(repo_root)
+        # A root-level parse failure is still worth surfacing even when a
+        # sub-project supplies the actual config — it means the root's own
+        # declaration (if any was attempted) is silently broken, not merely
+        # absent.
+        if warning and sub_warning and warning != sub_warning:
+            combined = f"{warning}; {sub_warning}"
+        else:
+            combined = warning or sub_warning
+        return sub_fmt, sub_source, combined
+    return None, None, warning
 
 
 # Vendored / build-output dirs the subdirectory config fallback must never
@@ -382,7 +415,9 @@ def _python_config_subdir_candidates(repo_root: Path) -> list[Path]:
     return candidates
 
 
-def _read_python_format_from_subdirs(repo_root: Path) -> tuple[dict | None, str | None]:
+def _read_python_format_from_subdirs(
+    repo_root: Path,
+) -> tuple[dict | None, str | None, str | None]:
     """Root-declared-nothing fallback: probe bounded sub-project dirs.
 
     Monorepo-style Python layouts (the FastAPI full-stack template's
@@ -390,18 +425,23 @@ def _read_python_format_from_subdirs(repo_root: Path) -> tuple[dict | None, str 
     ruff/black/flake8 config in a sub-project, so a root-only read derives no
     format conventions at all. Mirrors the TS workspace-config fallback: the
     first candidate that declares anything wins, its source is re-prefixed
-    repo-relative, and a broken candidate config contributes nothing (every
-    probe fails open).
+    repo-relative, and a broken candidate config contributes nothing to
+    ``fmt`` (every probe fails open). The first candidate's parse warning is
+    kept regardless of whether that candidate ultimately won, so a broken
+    sub-project config a later candidate happens to shadow is still visible.
     """
+    first_warning: str | None = None
     for child in _python_config_subdir_candidates(repo_root):
-        fmt, src = _read_python_format(child, scan_subdirs=False)
+        fmt, src, warning = _read_python_format(child, scan_subdirs=False)
+        if warning and first_warning is None:
+            first_warning = warning
         if fmt:
             try:
                 rel = child.relative_to(repo_root).as_posix()
             except ValueError:  # pragma: no cover — candidates are built under repo_root
                 rel = child.name
-            return fmt, f"{rel}/{src}" if src else rel
-    return None, None
+            return fmt, (f"{rel}/{src}" if src else rel), first_warning
+    return None, None, first_warning
 
 
 def _coerce_positive_int(value) -> int | None:

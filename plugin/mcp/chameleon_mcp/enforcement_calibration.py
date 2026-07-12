@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 from chameleon_mcp._thresholds import threshold_float, threshold_int
@@ -179,7 +180,27 @@ def rule_inert_for_language(rule: str, profile_dir: Path) -> bool:
 # never produces a violation, so it cannot make the rule fire either.
 _NAMING_MIN_CONSISTENCY = 0.60
 
-_NAMING_SIGNAL_CACHE: dict[str, tuple[tuple[int, int], bool]] = {}
+# Mirrors the lint engine's inheritance gate (Ruby and Python paths both
+# require dominant_base and frequency >= 0.60 before flagging anything —
+# see _python_inheritance_violations and its Ruby counterpart in
+# lint_engine.py). Below this floor the rule has no base to compare against.
+_INHERITANCE_MIN_FREQUENCY = 0.60
+
+# Signal cache keyed by (rule, resolved profile_dir) so rules with distinct
+# conventions.json sub-trees don't collide on one shared token.
+_SIGNAL_CACHE: dict[tuple[str, str], tuple[tuple[int, int], bool]] = {}
+
+
+def _num_or_zero(value: object) -> float:
+    """A numeric threshold value, or 0.0 for a missing/null/non-numeric one.
+
+    conventions.json is profile-derived and can be hand-edited or damaged (an
+    explicit ``null`` frequency/consistency), so a raw ``>=`` comparison would
+    raise TypeError and crash the read path (get_status). Coercing a non-number
+    to 0.0 fails open to 'no signal', preserving the docstring's fail-open
+    contract. ``bool`` is excluded so a stray ``true`` is not read as 1.0.
+    """
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
 
 
 def _naming_entry_drives_rule(entry: object) -> bool:
@@ -190,7 +211,7 @@ def _naming_entry_drives_rule(entry: object) -> bool:
     if (
         isinstance(ip, dict)
         and ip.get("pattern")
-        and ip.get("consistency", 0) >= (_NAMING_MIN_CONSISTENCY)
+        and _num_or_zero(ip.get("consistency")) >= _NAMING_MIN_CONSISTENCY
     ):
         return True
     for key, pattern in (
@@ -202,7 +223,7 @@ def _naming_entry_drives_rule(entry: object) -> bool:
         if (
             isinstance(sub, dict)
             and sub.get("pattern") == pattern
-            and sub.get("consistency", 0) >= _NAMING_MIN_CONSISTENCY
+            and _num_or_zero(sub.get("consistency")) >= _NAMING_MIN_CONSISTENCY
         ):
             return True
     return False
@@ -224,6 +245,44 @@ def _naming_rule_has_signal_from_conventions(conventions_doc: object) -> bool:
     return any(_naming_entry_drives_rule(entry) for entry in naming_by_arch.values())
 
 
+def _inheritance_entry_drives_rule(entry: object) -> bool:
+    """True when one archetype's inheritance map can produce inheritance-convention-violation."""
+    if not isinstance(entry, dict):
+        return False
+    return (
+        bool(entry.get("dominant_base"))
+        and _num_or_zero(entry.get("frequency")) >= _INHERITANCE_MIN_FREQUENCY
+    )
+
+
+def _inheritance_rule_has_signal_from_conventions(conventions_doc: object) -> bool:
+    """Whether any archetype carries an inheritance convention the rule reads.
+
+    inheritance-convention-violation (Ruby/Python only) fires only when an
+    archetype's dominant_base clears the same 60% frequency floor the lint
+    engine itself gates on. A repo whose classes never converge on one base
+    per archetype — an empty inheritance map, the common case for a small or
+    stylistically loose codebase — leaves the rule with nothing to compare
+    against.
+    """
+    if not isinstance(conventions_doc, dict):
+        return False
+    inheritance_by_arch = (conventions_doc.get("conventions") or {}).get("inheritance") or {}
+    if not isinstance(inheritance_by_arch, dict):
+        return False
+    return any(_inheritance_entry_drives_rule(entry) for entry in inheritance_by_arch.values())
+
+
+# Rules gated by rule_inert_missing_signal, paired with the check that reads
+# their driving sub-convention out of conventions.json. A rule absent from
+# this map has no such gate here — its evidentiary floor (if any) lives
+# elsewhere, e.g. the witness-count check in calibrate_block_rules.
+_SIGNAL_CHECKS: dict[str, Callable[[object], bool]] = {
+    "naming-convention-violation": _naming_rule_has_signal_from_conventions,
+    "inheritance-convention-violation": _inheritance_rule_has_signal_from_conventions,
+}
+
+
 def rule_inert_missing_signal(rule: str, profile_dir: Path) -> bool:
     """True when the rule's driving convention data is absent from the profile.
 
@@ -233,7 +292,8 @@ def rule_inert_missing_signal(rule: str, profile_dir: Path) -> bool:
     advertise a guarantee that cannot fire. Gates only on POSITIVE knowledge —
     an unreadable conventions.json keeps the measured behavior.
     """
-    if rule != "naming-convention-violation":
+    signal_check = _SIGNAL_CHECKS.get(rule)
+    if signal_check is None:
         return False
     path = profile_dir / "conventions.json"
     token = _cache_token(path)
@@ -243,9 +303,10 @@ def rule_inert_missing_signal(rule: str, profile_dir: Path) -> bool:
         key = str(profile_dir.resolve())
     except OSError:
         key = str(profile_dir)
+    cache_key = (rule, key)
 
     with _CACHE_LOCK:
-        cached = _NAMING_SIGNAL_CACHE.get(key)
+        cached = _SIGNAL_CACHE.get(cache_key)
         if cached is not None and cached[0] == token:
             return not cached[1]
 
@@ -253,10 +314,10 @@ def rule_inert_missing_signal(rule: str, profile_dir: Path) -> bool:
         doc = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    has_signal = _naming_rule_has_signal_from_conventions(doc)
+    has_signal = signal_check(doc)
 
     with _CACHE_LOCK:
-        _NAMING_SIGNAL_CACHE[key] = (token, has_signal)
+        _SIGNAL_CACHE[cache_key] = (token, has_signal)
     return not has_signal
 
 
@@ -504,9 +565,8 @@ def calibrate_block_rules(repo_root: Path, loaded) -> dict:
                 flagged[rule].add(rel)
 
     langs = _profile_languages(loaded)
-    naming_has_signal = _naming_rule_has_signal_from_conventions(
-        getattr(loaded, "conventions", {}) or {}
-    )
+    conventions_doc = getattr(loaded, "conventions", {}) or {}
+    rule_has_signal = {rule: check(conventions_doc) for rule, check in _SIGNAL_CHECKS.items()}
     result: dict = {}
     for rule in BLOCK_ELIGIBLE_RULES:
         hits = len(flagged[rule])
@@ -519,7 +579,7 @@ def calibrate_block_rules(repo_root: Path, loaded) -> dict:
         # Same principle one level deeper: a rule whose driving convention data
         # is absent measures a vacuous 0.0 fp_rate (it cannot flag anything),
         # which must not certify it active.
-        signal_ok = rule != "naming-convention-violation" or naming_has_signal
+        signal_ok = rule not in _SIGNAL_CHECKS or rule_has_signal[rule]
         if rule in SECURITY_BLOCK_RULES:
             # The security rules are exempt from the witness floor and the
             # fp gate: this pass runs no content scans, so n and fp_rate say

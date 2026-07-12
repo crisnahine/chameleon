@@ -13,7 +13,11 @@ from __future__ import annotations
 # (dummy AWS/GitHub/Stripe tokens) as literals so the detector and the concat
 # de-obfuscation fold can be exercised. None are real secrets. The named
 # file-scope directive is the sanctioned escape for exactly such fixtures.
-from chameleon_mcp.lint_engine import _fold_string_concat, scan_hard_secrets, scan_secrets
+from chameleon_mcp.lint_engine import (
+    _fold_string_concat,
+    scan_hard_secrets,
+    scan_secrets,
+)
 from chameleon_mcp.profile.secret_scanner import scan_for_secrets
 
 
@@ -161,7 +165,8 @@ class TestFoldRobustness:
         import time
 
         blob = (
-            'def f():\n    """doc "quoted" text over\n    many lines"""\n    x = "a" + "b"\n' * 1200
+            'def f():\n    """doc "quoted" text over\n    many lines"""\n    x = "a" + "b"\n'
+            * 1200
         )[:100_000]
         start = time.perf_counter()
         _fold_string_concat(blob)
@@ -194,18 +199,24 @@ class TestSplitSecretForms:
         for code in forms:
             assert self._denies(code), f"split form not folded to a hit: {code!r}"
 
+    def test_single_all_hex_literal_now_denied(self):
+        # A lone, non-concatenated string literal that is entirely hex/unicode
+        # escapes now decodes via the numeric-escape scan pass before the secret
+        # scanner (it never reached the concat fold). Previously a documented
+        # residual; now caught.
+        single_all_hex = (
+            r'k = "\x41\x4b\x49\x41\x41\x42\x43\x44\x45\x46'
+            r'\x47\x48\x49\x4a\x4b\x4c\x4d\x4e\x4f\x50"'
+        )
+        assert self._denies(single_all_hex)
+
     def test_known_limits_are_not_claimed_fixed(self):
         # Documented residuals of a lint-time regex heuristic (no taint analysis,
         # no runtime evaluation). These are NOT caught; the assertion pins the
         # boundary so a future change that DOES catch them updates this test
         # deliberately rather than by accident.
         data_flow = 'parts = ["AKIA", "ABCDEFGHIJKLMNOP"]\nk = "".join(parts)'
-        single_all_hex = (
-            r'k = "\x41\x4b\x49\x41\x41\x42\x43\x44\x45\x46'
-            r'\x47\x48\x49\x4a\x4b\x4c\x4d\x4e\x4f\x50"'
-        )
         assert not self._denies(data_flow)  # needs variable taint tracking
-        assert not self._denies(single_all_hex)  # single lone literal, never folded
 
     def test_legit_code_does_not_false_positive(self):
         clean = [

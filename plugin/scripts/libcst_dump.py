@@ -394,6 +394,13 @@ class _Collector(cst.CSTVisitor):
                 "kind": kind,
                 "params": params,
                 "is_default_export": False,
+                # `async def` vs `def` changes the caller's required syntax (an
+                # unawaited coroutine silently no-ops; `await` on a sync callable
+                # is a SyntaxError), so it must survive as its own field rather
+                # than folding into `kind` -- `kind` values are matched elsewhere
+                # (contract derivation, function_catalog) against a fixed
+                # function/method/staticmethod/classmethod set.
+                "is_async": node.asynchronous is not None,
                 "enclosing_class": enclosing["name"] if enclosing else None,
                 "enclosing_class_path": enclosing["path"] if enclosing else None,
                 "base_class": enclosing["base"] if enclosing else None,

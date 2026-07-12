@@ -26,7 +26,8 @@ class _FakeIndex:
 
     def callers_of(self, path: str, name: str):
         rows = [
-            {"path": p, "caller": c, "line": ln} for (p, c, ln) in self.graph.get((path, name), [])
+            {"path": p, "caller": c, "line": ln}
+            for (p, c, ln) in self.graph.get((path, name), [])
         ]
         if not rows:
             return None
@@ -45,7 +46,8 @@ def _write_calls_index(repo: Path, callees: dict) -> None:
     d = repo / ".chameleon"
     d.mkdir(parents=True, exist_ok=True)
     (d / "calls_index.json").write_text(
-        json.dumps({"schema_version": _CALLS_SCHEMA, "callees": callees}), encoding="utf-8"
+        json.dumps({"schema_version": _CALLS_SCHEMA, "callees": callees}),
+        encoding="utf-8",
     )
     # The caller-facts/transitive blocks now re-verify each cited caller against
     # the working tree (a deleted/no-longer-calling caller is dropped), so the
@@ -61,7 +63,9 @@ def _write_calls_index(repo: Path, callees: dict) -> None:
                 line = c.get("line")
                 ln = (
                     line
-                    if isinstance(line, int) and not isinstance(line, bool) and line >= 1
+                    if isinstance(line, int)
+                    and not isinstance(line, bool)
+                    and line >= 1
                     else 1
                 )
                 by_file.setdefault(path, {})[ln] = fn_name
@@ -70,7 +74,8 @@ def _write_calls_index(repo: Path, callees: dict) -> None:
         fp.parent.mkdir(parents=True, exist_ok=True)
         last = max(line_map)
         out = [
-            f"  return {line_map[i]}();" if i in line_map else "  // x" for i in range(1, last + 1)
+            f"  return {line_map[i]}();" if i in line_map else "  // x"
+            for i in range(1, last + 1)
         ]
         fp.write_text("\n".join(out) + "\n", encoding="utf-8")
 
@@ -109,7 +114,9 @@ def test_walk_is_cycle_safe():
     assert chains  # returned, did not hang
     # 'A' (the start) is never re-expanded: it appears once, as the root.
     for c in chains:
-        assert [h for h in c if (h[0], h[1]) == ("a.ts", "A")][:2] == [c[0]] or c[0] == (
+        assert [h for h in c if (h[0], h[1]) == ("a.ts", "A")][:2] == [c[0]] or c[
+            0
+        ] == (
             "a.ts",
             "A",
             None,
@@ -120,7 +127,9 @@ def test_walk_respects_total_nodes_cap():
     # A node with many callers, each with many callers; total cap must bound it.
     graph = {("root.ts", "f"): [(f"c{i}.ts", f"g{i}", i) for i in range(20)]}
     for i in range(20):
-        graph[(f"c{i}.ts", f"g{i}")] = [(f"d{i}_{j}.ts", f"h{i}_{j}", j) for j in range(20)]
+        graph[(f"c{i}.ts", f"g{i}")] = [
+            (f"d{i}_{j}.ts", f"h{i}_{j}", j) for j in range(20)
+        ]
     idx = _FakeIndex(graph)
     chains, _ = judge._transitive_caller_chains(
         idx, "root.ts", "f", max_depth=2, fanout=10, total_nodes=15
@@ -167,8 +176,12 @@ def test_walk_is_deterministic():
             ("z.ts", "Z"): [("n.ts", "N", 4)],
         }
     )
-    a = judge._transitive_caller_chains(idx, "repo.ts", "f", max_depth=2, fanout=10, total_nodes=50)
-    b = judge._transitive_caller_chains(idx, "repo.ts", "f", max_depth=2, fanout=10, total_nodes=50)
+    a = judge._transitive_caller_chains(
+        idx, "repo.ts", "f", max_depth=2, fanout=10, total_nodes=50
+    )
+    b = judge._transitive_caller_chains(
+        idx, "repo.ts", "f", max_depth=2, fanout=10, total_nodes=50
+    )
     assert a == b
 
 
@@ -184,7 +197,12 @@ def test_transitive_block_renders_impact_chain(tmp_path, monkeypatch):
             "repo.ts": {
                 "fetchUser": {
                     "callers": [
-                        {"path": "service.ts", "caller": "getUser", "line": 10, "grade": "import"}
+                        {
+                            "path": "service.ts",
+                            "caller": "getUser",
+                            "line": 10,
+                            "grade": "import",
+                        }
                     ],
                     "total": 1,
                     "truncated": False,
@@ -193,7 +211,12 @@ def test_transitive_block_renders_impact_chain(tmp_path, monkeypatch):
             "service.ts": {
                 "getUser": {
                     "callers": [
-                        {"path": "controller.ts", "caller": "handle", "line": 5, "grade": "import"}
+                        {
+                            "path": "controller.ts",
+                            "caller": "handle",
+                            "line": 5,
+                            "grade": "import",
+                        }
                     ],
                     "total": 1,
                     "truncated": False,
@@ -201,7 +224,9 @@ def test_transitive_block_renders_impact_chain(tmp_path, monkeypatch):
             },
         },
     )
-    monkeypatch.setattr(judge, "_parse_changed_file", lambda root, path: [_fn("fetchUser")])
+    monkeypatch.setattr(
+        judge, "_parse_changed_file", lambda root, path: [_fn("fetchUser")]
+    )
     block = judge.caller_facts_transitive_for_diffs(repo, [_diff("repo.ts")])
     assert block
     assert "fetchUser()" in block
@@ -220,7 +245,12 @@ def test_transitive_block_empty_when_only_one_hop(tmp_path, monkeypatch):
             "repo.ts": {
                 "fetchUser": {
                     "callers": [
-                        {"path": "service.ts", "caller": "getUser", "line": 10, "grade": "import"}
+                        {
+                            "path": "service.ts",
+                            "caller": "getUser",
+                            "line": 10,
+                            "grade": "import",
+                        }
                     ],
                     "total": 1,
                     "truncated": False,
@@ -228,7 +258,9 @@ def test_transitive_block_empty_when_only_one_hop(tmp_path, monkeypatch):
             }
         },
     )
-    monkeypatch.setattr(judge, "_parse_changed_file", lambda root, path: [_fn("fetchUser")])
+    monkeypatch.setattr(
+        judge, "_parse_changed_file", lambda root, path: [_fn("fetchUser")]
+    )
     block = judge.caller_facts_transitive_for_diffs(repo, [_diff("repo.ts")])
     assert block == ""
 
@@ -248,7 +280,10 @@ def test_config_judge_transitive_impact_defaults_true():
 
     assert EnforcementConfig().judge_transitive_impact is True
     assert _coerce_enforcement({}).judge_transitive_impact is True
-    assert _coerce_enforcement({"judge_transitive_impact": False}).judge_transitive_impact is False
+    assert (
+        _coerce_enforcement({"judge_transitive_impact": False}).judge_transitive_impact
+        is False
+    )
 
 
 def test_transitive_thresholds_present():
@@ -281,18 +316,28 @@ def test_walk_preserves_dag_diamond_paths():
     assert ("f", "B", "C") in deep  # the diamond's second path is kept
 
 
-def test_walk_skips_anonymous_and_module_callers():
+def test_walk_counts_anonymous_edges_but_does_not_expand_into_them():
+    # Anonymous/module-scope callers are real caller EDGES (get_blast_radius must
+    # count them for parity with get_callers), so the walk keeps them as terminal
+    # hops -- but it never expands INTO them, since their placeholder name does not
+    # identify one actionable scope.
     idx = _FakeIndex(
         {
             ("repo.ts", "f"): [("svc.ts", "getThing", 1)],
-            ("svc.ts", "getThing"): [("h.ts", "<anonymous>", 2), ("m.ts", "<module>", 3)],
+            ("svc.ts", "getThing"): [
+                ("h.ts", "<anonymous>", 2),
+                ("m.ts", "<module>", 3),
+            ],
+            # A caller OF the anonymous scope must NOT be reached: the walk stops.
+            ("h.ts", "<anonymous>"): [("deep.ts", "shouldNotAppear", 4)],
         }
     )
     chains, _ = judge._transitive_caller_chains(
         idx, "repo.ts", "f", max_depth=3, fanout=10, total_nodes=50
     )
     names = {h[1] for c in chains for h in c}
-    assert "<anonymous>" not in names and "<module>" not in names
+    assert "<anonymous>" in names and "<module>" in names
+    assert "shouldNotAppear" not in names
 
 
 def test_transitive_block_fanout_cap_bounds_rendered(tmp_path, monkeypatch):
@@ -303,7 +348,12 @@ def test_transitive_block_fanout_cap_bounds_rendered(tmp_path, monkeypatch):
         "repo.ts": {
             "f": {
                 "callers": [
-                    {"path": f"s{i}.ts", "caller": f"g{i}", "line": i, "grade": "import"}
+                    {
+                        "path": f"s{i}.ts",
+                        "caller": f"g{i}",
+                        "line": i,
+                        "grade": "import",
+                    }
                     for i in range(8)
                 ],
                 "total": 8,
@@ -314,7 +364,14 @@ def test_transitive_block_fanout_cap_bounds_rendered(tmp_path, monkeypatch):
     for i in range(8):
         callees[f"s{i}.ts"] = {
             f"g{i}": {
-                "callers": [{"path": f"c{i}.ts", "caller": f"h{i}", "line": i, "grade": "import"}],
+                "callers": [
+                    {
+                        "path": f"c{i}.ts",
+                        "caller": f"h{i}",
+                        "line": i,
+                        "grade": "import",
+                    }
+                ],
                 "total": 1,
                 "truncated": False,
             }
@@ -383,9 +440,15 @@ def test_transitive_skipped_no_index_telemetry(tmp_path, monkeypatch):
     p = repo / "a.ts"
     p.write_text("x\n", encoding="utf-8")
     events = []
-    monkeypatch.setattr(judge, "_spawn_reviewer_status", lambda *a, **k: (None, "spawn_timeout"))
+    monkeypatch.setattr(
+        judge, "_spawn_reviewer_status", lambda *a, **k: (None, "spawn_timeout")
+    )
     judge.run_correctness_judge(
-        repo, profile, [str(p)], lambda _p: None, event_sink=lambda k, d: events.append(k)
+        repo,
+        profile,
+        [str(p)],
+        lambda _p: None,
+        event_sink=lambda k, d: events.append(k),
     )
     assert "judge_transitive_skipped_no_index" in events
     assert "judge_transitive_skipped_no_chains" not in events
@@ -397,14 +460,21 @@ def test_transitive_skipped_disabled_telemetry(tmp_path, monkeypatch):
     profile = repo / ".chameleon"
     profile.mkdir()
     profile.joinpath("config.json").write_text(
-        json.dumps({"enforcement": {"judge_transitive_impact": False}}), encoding="utf-8"
+        json.dumps({"enforcement": {"judge_transitive_impact": False}}),
+        encoding="utf-8",
     )
     p = repo / "a.ts"
     p.write_text("x\n", encoding="utf-8")
     events = []
-    monkeypatch.setattr(judge, "_spawn_reviewer_status", lambda *a, **k: (None, "spawn_timeout"))
+    monkeypatch.setattr(
+        judge, "_spawn_reviewer_status", lambda *a, **k: (None, "spawn_timeout")
+    )
     judge.run_correctness_judge(
-        repo, profile, [str(p)], lambda _p: None, event_sink=lambda k, d: events.append(k)
+        repo,
+        profile,
+        [str(p)],
+        lambda _p: None,
+        event_sink=lambda k, d: events.append(k),
     )
     assert "judge_transitive_skipped_disabled" in events
 
@@ -425,7 +495,9 @@ def test_live_transitive_chain_truncates_at_stale_edge(tmp_path):
     # leaf <- mid [mid.ts:2] <- top [top.ts:2]; mid.ts is deleted, so the edge
     # leaf<-mid is stale and the chain truncates to just the root (then a caller
     # that drops below the hop threshold is dropped by the builder).
-    (tmp_path / "top.ts").write_text("return mid();\n", encoding="utf-8")  # top.ts exists, refs mid
+    (tmp_path / "top.ts").write_text(
+        "return mid();\n", encoding="utf-8"
+    )  # top.ts exists, refs mid
     # mid.ts intentionally NOT created -> the leaf<-mid edge cannot verify
     chain = [("leaf.ts", "leaf", None), ("mid.ts", "mid", 2), ("top.ts", "top", 2)]
     kept = judge._live_transitive_chain(tmp_path, chain)
@@ -433,7 +505,11 @@ def test_live_transitive_chain_truncates_at_stale_edge(tmp_path):
 
 
 def test_live_transitive_chain_keeps_fully_live_chain(tmp_path):
-    (tmp_path / "mid.ts").write_text("x\nreturn leaf();\n", encoding="utf-8")  # line 2 refs leaf
-    (tmp_path / "top.ts").write_text("y\nreturn mid();\n", encoding="utf-8")  # line 2 refs mid
+    (tmp_path / "mid.ts").write_text(
+        "x\nreturn leaf();\n", encoding="utf-8"
+    )  # line 2 refs leaf
+    (tmp_path / "top.ts").write_text(
+        "y\nreturn mid();\n", encoding="utf-8"
+    )  # line 2 refs mid
     chain = [("leaf.ts", "leaf", None), ("mid.ts", "mid", 2), ("top.ts", "top", 2)]
     assert judge._live_transitive_chain(tmp_path, chain) == chain

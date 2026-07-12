@@ -259,6 +259,150 @@ def _block_param_names(text: str, language: str | None) -> list[str]:
     return names
 
 
+_PY_DOCSTRING_LINE_RE = re.compile(
+    r'^\s*(?:"""(?:.*)"""|\'\'\'(?:.*)\'\'\'|"[^"\\]*"|\'[^\'\\]*\')\s*$'
+)
+_PY_DOCSTRING_OPEN_RE = re.compile(r"^\s*(\"\"\"|''')")
+
+
+def _strip_python_docstring(body_lines: list[str]) -> list[str]:
+    """Drop a docstring that opens a Python function body, if one is there.
+
+    A per-function docstring almost always names the specific thing the
+    function does (its own transform, its own field), so leaving it in the
+    hashed span defeats the exact-clone fallback for any documented Python
+    function the same way an un-dropped ``def`` line would: two functions
+    with identical logic but their own docstring text hash differently for a
+    reason that carries no semantic weight. Only a docstring that is the
+    SOLE content of the leading line(s) is dropped, mirroring how Python
+    itself recognizes one (a bare string literal as the first statement) —
+    a real first statement that merely evaluates to a bare string is
+    indistinguishable from a docstring at this level and is treated the same
+    way.
+    """
+    if not body_lines:
+        return body_lines
+    first = body_lines[0].strip()
+    if not first:
+        return body_lines
+    if _PY_DOCSTRING_LINE_RE.match(first):
+        return body_lines[1:]
+    opener = _PY_DOCSTRING_OPEN_RE.match(first)
+    if opener:
+        # A triple-quote opener whose OWN line has no closing triple-quote
+        # after it (the common `"""` on its own line, text below, `"""` to
+        # close style): scan forward for it. Checking for the closer only in
+        # what follows the opener -- not merely whether the line "ends with"
+        # the token -- matters because an opener-only line trivially ends
+        # with itself.
+        quote = opener.group(1)
+        if quote not in first[opener.end() :]:
+            for i in range(1, len(body_lines)):
+                if quote in body_lines[i]:
+                    return body_lines[i + 1 :]
+            # Unterminated within the recorded span -- leave the body
+            # untouched rather than guess at where it would have closed.
+    return body_lines
+
+
+_RUBY_DEF_NAME_RE = re.compile(r"^\s*def\s+(?:self\.)?[A-Za-z_]\w*(?:[?!]|=(?=\())?")
+_RUBY_ENDLESS_SEP_RE = re.compile(r"^\s*=(?!=)\s*")
+_PY_DEF_HEAD_RE = re.compile(r"^\s*(?:async\s+)?def\s+[A-Za-z_]\w*\s*\(")
+
+
+def _ruby_endless_body(line: str) -> str | None:
+    """Split a Ruby endless-method line (``def name(...) = expr``) at its ``=``.
+
+    Skips the method name and, if present, a single balanced parameter
+    parenthesis before hunting for the separating ``=`` -- a default
+    parameter value's own ``=`` inside those parens must not be mistaken for
+    it. Returns None for anything that does not scan as a plain endless
+    method (unbalanced parens, or no top-level ``=`` left after them), so an
+    unrecognized shape is never hashed with its name still attached.
+    """
+    m = _RUBY_DEF_NAME_RE.match(line)
+    if not m:
+        return None
+    rest = line[m.end() :]
+    stripped = rest.lstrip()
+    if stripped.startswith("("):
+        lead = len(rest) - len(stripped)
+        depth = 0
+        close = None
+        for i in range(lead, len(rest)):
+            if rest[i] == "(":
+                depth += 1
+            elif rest[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    close = i
+                    break
+        if close is None:
+            return None
+        rest = rest[close + 1 :]
+    sep = _RUBY_ENDLESS_SEP_RE.match(rest)
+    if not sep:
+        return None
+    return rest[sep.end() :]
+
+
+def _python_one_liner_body(line: str) -> str | None:
+    """Split a Python one-line ``def name(...): body`` at its top-level ``:``.
+
+    Scans past the balanced parameter parenthesis (so a default value's own
+    ``:`` in a dict literal, or a ``->`` return-type annotation, cannot be
+    mistaken for the signature/body separator) before taking the first
+    colon that follows. Returns None when the parens never balance or no
+    colon follows them.
+    """
+    m = _PY_DEF_HEAD_RE.match(line)
+    if not m:
+        return None
+    depth = 1
+    i = m.end()
+    while i < len(line) and depth:
+        if line[i] == "(":
+            depth += 1
+        elif line[i] == ")":
+            depth -= 1
+        i += 1
+    if depth != 0:
+        return None
+    colon = line.find(":", i)
+    if colon == -1:
+        return None
+    return line[colon + 1 :]
+
+
+def _single_line_body(line: str, language: str | None) -> str | None:
+    """Split a one-physical-line callable's signature head from its body.
+
+    A Ruby endless method, a TS/JS arrow one-liner (``const name = (...) =>
+    expr``), or a brace-bodied one-liner packs the whole callable onto its
+    ``def``/``function`` line, so there is no separate first line to drop the
+    way a multi-line span does. Returns None for a shape it cannot
+    confidently split (no recognized separator, or an unrecognized
+    language), matching this module's fail-open-to-None contract rather than
+    guessing wrong and hashing the signature -- name included -- along with
+    the body.
+    """
+    if language == "ruby":
+        return _ruby_endless_body(line)
+    if language == "typescript":
+        idx = line.find("=>")
+        if idx != -1:
+            return line[idx + 2 :]
+        # A brace-bodied one-liner (`function foo() { ... }` / method
+        # shorthand): only the head up to the opening brace is dropped, the
+        # closing brace stays -- the same "don't touch the tail" convention
+        # the multi-line span already follows for its last line.
+        idx = line.find("{")
+        return line[idx + 1 :] if idx != -1 else None
+    if language == "python":
+        return _python_one_liner_body(line)
+    return None
+
+
 def normalized_body_hash(
     source_lines: list[str],
     start_line: object,
@@ -276,6 +420,15 @@ def normalized_body_hash(
     bodies collide across half a codebase and would flood the candidate list
     with noise rather than reuse leads.
 
+    A single-physical-line span (``start_line == end_line``: a Ruby endless
+    method, a TS/JS arrow one-liner) has no separate first line to drop --
+    name and body share the one line -- so it is split with a ``language``-
+    aware head/body scan instead; an unrecognized shape fails open to None
+    the same as any other ambiguity here, rather than hashing the name along
+    with the body. With ``language`` set to ``"python"``, a docstring that
+    opens the (multi-line) body is dropped too, for the same reason the def
+    line itself is: it differs between a clone and its original by design.
+
     With ``param_names``, each parameter identifier is alpha-renamed to its
     positional slot before hashing, so a clone whose only difference is
     renamed parameters still pairs with its original. With ``language`` set
@@ -291,7 +444,17 @@ def normalized_body_hash(
         return None
     if start_line < 1 or end_line < start_line or start_line > len(source_lines):
         return None
-    body_lines = source_lines[start_line : min(end_line, len(source_lines))]
+    if start_line == end_line:
+        body_text = _single_line_body(source_lines[start_line - 1], language)
+        if body_text is None:
+            return None
+        body_lines = [body_text]
+    else:
+        body_lines = source_lines[start_line : min(end_line, len(source_lines))]
+        if not body_lines:
+            return None
+        if language == "python":
+            body_lines = _strip_python_docstring(body_lines)
     if not body_lines:
         return None
     normalized = " ".join("\n".join(body_lines).split())

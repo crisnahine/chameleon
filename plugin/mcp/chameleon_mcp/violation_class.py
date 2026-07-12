@@ -178,12 +178,17 @@ def ignored_rules(
     """Return the set of explicitly-ignored rule names, or None if there are none.
 
     The flat, file-scope view of the directives: the turn-end opt-out checks
-    (idioms review, stale-test, cochange, removed-export) and the
-    import-preference deny read this, since those gates have no per-line
-    granularity. Violation filters use ``build_ignore_index`` +
-    ``is_violation_ignored`` for line scoping. A bare ``chameleon-ignore`` (no
-    rule) contributes the empty string, which callers read as "ignore
-    everything".
+    (idioms review, stale-test, cochange, removed-export), the
+    import-preference deny, and lint_conventions' naming / inheritance /
+    file-naming checks all read this, since those violations report no line
+    (a repo-wide or whole-file fact, not a single flagged line) and their gates
+    have no per-line granularity to filter against. A plain directive naming
+    one of these rules therefore has the same file-wide reach as
+    ``chameleon-ignore-file`` — see docs/architecture.md's "Escape hatch"
+    section. Violation filters use ``build_ignore_index`` +
+    ``is_violation_ignored`` for line scoping where a violation does carry a
+    line (secrets, ``eval-call``). A bare ``chameleon-ignore`` (no rule)
+    contributes the empty string, which callers read as "ignore everything".
     """
     idx = build_ignore_index(content, file_path=file_path, language=language)
     if idx is None:

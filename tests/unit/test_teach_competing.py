@@ -20,6 +20,12 @@ def _setup_repo(tmp_path, monkeypatch):
     (repo / ".chameleon" / "conventions.json").write_text(
         json.dumps(empty_conventions(generation=1)), encoding="utf-8"
     )
+    # A TypeScript profile: the competing-import tests exercise npm-package
+    # preferences, and the "not in package.json" warning is gated to TS/JS
+    # profiles (a Ruby/Python repo's taught wrapper is not an npm package).
+    (repo / ".chameleon" / "profile.json").write_text(
+        json.dumps({"generation": 1, "language": "typescript"}), encoding="utf-8"
+    )
     return repo
 
 
@@ -71,7 +77,9 @@ def test_teach_competing_import_builds_counterexample(tmp_path, monkeypatch):
     # that line as the archetype's counterexample.
     src = repo / "src" / "httpClient.ts"
     src.parent.mkdir(parents=True)
-    src.write_text("import axios from 'axios';\nexport const c = axios;\n", encoding="utf-8")
+    src.write_text(
+        "import axios from 'axios';\nexport const c = axios;\n", encoding="utf-8"
+    )
 
     res = tools.teach_competing_import(
         str(repo), archetype="httpclient", preferred="@/lib/http", over="axios"
@@ -133,7 +141,9 @@ def test_two_teaches_one_archetype_keep_both_counterexamples(tmp_path, monkeypat
     repo = _setup_repo(tmp_path, monkeypatch)
     (repo / "src").mkdir(parents=True)
     (repo / "src" / "a.ts").write_text("import axios from 'axios';\n", encoding="utf-8")
-    (repo / "src" / "b.ts").write_text("import moment from 'moment';\n", encoding="utf-8")
+    (repo / "src" / "b.ts").write_text(
+        "import moment from 'moment';\n", encoding="utf-8"
+    )
     tools.teach_competing_import(
         str(repo), archetype="httpclient", preferred="@/lib/http", over="axios"
     )
@@ -161,13 +171,18 @@ def test_teach_caps_counterexample_rows_per_archetype(tmp_path, monkeypatch):
     (repo / "src").mkdir(parents=True)
     over = ce._MAX_ROWS_PER_ARCHETYPE + 3
     for n in range(over):
-        (repo / "src" / f"off{n}.ts").write_text(f"import x from 'badmod{n}';\n", encoding="utf-8")
-        tools.teach_competing_import(
-            str(repo), archetype="httpclient", preferred=f"@/lib/good{n}", over=f"badmod{n}"
+        (repo / "src" / f"off{n}.ts").write_text(
+            f"import x from 'badmod{n}';\n", encoding="utf-8"
         )
-    rows = json.loads((repo / ".chameleon" / "counterexamples.json").read_text())["archetypes"][
-        "httpclient"
-    ]
+        tools.teach_competing_import(
+            str(repo),
+            archetype="httpclient",
+            preferred=f"@/lib/good{n}",
+            over=f"badmod{n}",
+        )
+    rows = json.loads((repo / ".chameleon" / "counterexamples.json").read_text())[
+        "archetypes"
+    ]["httpclient"]
     # The append must not let the artifact grow past the cap (cap, not cap+1).
     assert len(rows) == ce._MAX_ROWS_PER_ARCHETYPE
 
@@ -185,9 +200,9 @@ def test_reteaching_same_over_does_not_duplicate_counterexample(tmp_path, monkey
     tools.teach_competing_import(
         str(repo), archetype="httpclient", preferred="@/lib/fetch", over="axios"
     )
-    rows = json.loads((repo / ".chameleon" / "counterexamples.json").read_text())["archetypes"][
-        "httpclient"
-    ]
+    rows = json.loads((repo / ".chameleon" / "counterexamples.json").read_text())[
+        "archetypes"
+    ]["httpclient"]
     assert len(rows) == 1 and rows[0]["over"] == "axios"
 
 
@@ -199,21 +214,27 @@ def test_teach_competing_import_rejects_bad_input(tmp_path, monkeypatch):
     # empty 'over'
     assert (
         _data(
-            tools.teach_competing_import(str(repo), archetype="httpclient", preferred="x", over="")
+            tools.teach_competing_import(
+                str(repo), archetype="httpclient", preferred="x", over=""
+            )
         )["status"]
         == "failed"
     )
     # preferred == over
     assert (
         _data(
-            tools.teach_competing_import(str(repo), archetype="httpclient", preferred="x", over="x")
+            tools.teach_competing_import(
+                str(repo), archetype="httpclient", preferred="x", over="x"
+            )
         )["status"]
         == "failed"
     )
     # invalid archetype name
     assert (
         _data(
-            tools.teach_competing_import(str(repo), archetype="Bad Name!", preferred="x", over="y")
+            tools.teach_competing_import(
+                str(repo), archetype="Bad Name!", preferred="x", over="y"
+            )
         )["status"]
         == "failed"
     )
@@ -286,7 +307,10 @@ def test_teach_competing_warns_when_preferred_package_absent(tmp_path, monkeypat
     repo = _setup_repo_with_package_json(tmp_path, monkeypatch, ["styled-components"])
     res = _data(
         tools.teach_competing_import(
-            str(repo), archetype="httpclient", preferred="styled-componentz", over="emotion"
+            str(repo),
+            archetype="httpclient",
+            preferred="styled-componentz",
+            over="emotion",
         )
     )
     assert res["status"] == "success"
@@ -294,13 +318,18 @@ def test_teach_competing_warns_when_preferred_package_absent(tmp_path, monkeypat
     assert "styled-componentz" in res["warning"]
 
 
-def test_teach_competing_no_warning_when_preferred_package_present(tmp_path, monkeypatch):
+def test_teach_competing_no_warning_when_preferred_package_present(
+    tmp_path, monkeypatch
+):
     from chameleon_mcp import tools
 
     repo = _setup_repo_with_package_json(tmp_path, monkeypatch, ["styled-components"])
     res = _data(
         tools.teach_competing_import(
-            str(repo), archetype="httpclient", preferred="styled-components", over="emotion"
+            str(repo),
+            archetype="httpclient",
+            preferred="styled-components",
+            over="emotion",
         )
     )
     assert res["status"] == "success"
@@ -324,7 +353,9 @@ def test_teach_competing_alias_preferred_never_warns_as_package(tmp_path, monkey
         assert "package.json" not in (res.get("warning") or "")
 
 
-def test_teach_competing_baseurl_bare_import_not_flagged_as_package(tmp_path, monkeypatch):
+def test_teach_competing_baseurl_bare_import_not_flagged_as_package(
+    tmp_path, monkeypatch
+):
     # A bare specifier resolved via tsconfig `baseUrl` (`lib/api-client` ->
     # `<repo>/lib/api-client.ts`) is a first-party module, not a missing npm
     # package. It must not be flagged, while a genuinely absent bare package still is.
@@ -335,7 +366,9 @@ def test_teach_competing_baseurl_bare_import_not_flagged_as_package(tmp_path, mo
         json.dumps({"compilerOptions": {"baseUrl": "."}}), encoding="utf-8"
     )
     (repo / "lib").mkdir(exist_ok=True)
-    (repo / "lib" / "api-client.ts").write_text("export const api = {};\n", encoding="utf-8")
+    (repo / "lib" / "api-client.ts").write_text(
+        "export const api = {};\n", encoding="utf-8"
+    )
 
     ok = _data(
         tools.teach_competing_import(
@@ -347,7 +380,10 @@ def test_teach_competing_baseurl_bare_import_not_flagged_as_package(tmp_path, mo
     # detection intact: a real missing bare package still warns
     bad = _data(
         tools.teach_competing_import(
-            str(repo), archetype="httpclient", preferred="totally-absent-pkg", over="fetch"
+            str(repo),
+            archetype="httpclient",
+            preferred="totally-absent-pkg",
+            over="fetch",
         )
     )
     assert "package.json" in (bad.get("warning") or "")

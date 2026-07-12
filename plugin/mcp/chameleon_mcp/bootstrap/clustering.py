@@ -524,10 +524,16 @@ def _shape_fuzzy_merge(clusters: list[Cluster]) -> list[Cluster]:
     env-overridable via ``CHAMELEON_CLUSTER_SHAPE_JACCARD_THRESHOLD``).
 
     The merged cluster:
-      - Takes the key of the SMALLEST-keyed original cluster (deterministic
-        across Python runs because ClusterKey is a frozen dataclass with
-        string fields, and Python tuples/strings have a stable total order
-        within a single run).
+      - Takes the key of the sub-cluster with the most members (the
+        dominant sub-cluster), falling back to the smallest-keyed original
+        cluster to break a tie deterministically (ClusterKey is a frozen
+        dataclass with string fields, and Python tuples/strings have a
+        stable total order within a single run). Sizing the pick by
+        membership keeps every field of the representative key, including
+        content_signal_match, consistent with the majority of files it now
+        describes, rather than letting an arbitrary field's alphabetical
+        order (e.g. "none" sorting before "use_client") override which
+        sub-cluster the merge is actually representing.
       - Carries ``cluster_tier="shape-merged"`` so consumers can
         distinguish it from tight (exact) or loose (sparse) clusters.
       - Retains the sparse_threshold from the first cluster in the group
@@ -589,6 +595,7 @@ def _shape_fuzzy_merge(clusters: list[Cluster]) -> list[Cluster]:
             representative_cluster = min(
                 (group[idx] for idx in indices),
                 key=lambda c: (
+                    -len(c.members),
                     c.key.path_pattern_bucket or "",
                     c.key.content_signal_match or "",
                     c.key.top_level_node_kinds,

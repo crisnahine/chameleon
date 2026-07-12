@@ -355,6 +355,15 @@ def _strip_chameleon_ignore_directives(content: str) -> str:
     return _CHAMELEON_IGNORE_DIRECTIVE_RE.sub("", content)
 
 
+# Rules whose inline-ignore override is recorded by the PreToolUse deny gate
+# (before the write lands). posttool_verify must not re-record these for the same
+# edit, or one override counts twice. See the three PreToolUse _record_overrides
+# call sites (secret / eval / import-preference).
+_PREWRITE_RECORDED_OVERRIDE_RULES: frozenset[str] = frozenset(
+    {"secret-detected-in-content", "eval-call", "import-preference-violation"}
+)
+
+
 def _record_overrides(
     repo_id: str | None,
     overridden: list[dict],
@@ -2736,7 +2745,9 @@ def _prewrite_dedup_section(
         return ""
 
 
-def _match_quality_lead(match_quality: str, archetype_name: str = "", sub_buckets: int = 0) -> str:
+def _match_quality_lead(
+    match_quality: str, archetype_name: str = "", sub_buckets: int = 0, confidence_band: str = ""
+) -> str:
     """Match-quality-calibrated directive that leads the witness region.
 
     A chameleon directive (not untrusted data), emitted OUTSIDE the spotlight. A
@@ -2773,6 +2784,16 @@ def _match_quality_lead(match_quality: str, archetype_name: str = "", sub_bucket
             "of varied concerns: treat the witness below as a loose reference, not a "
             "template -- prefer a same-directory sibling's shape. The team idioms are "
             "repo truth regardless of file shape.\n\n"
+        )
+    # A structural (exact/ast) match on a LOW-confidence archetype is thin
+    # evidence: the AST agreed but too few witnesses back the archetype to trust
+    # "mirror closely" (get_archetype reports the same low band). Downgrade to a
+    # loose reference so the block does not overstate its own confidence.
+    if match_quality in ("exact", "ast") and confidence_band == "low":
+        return (
+            "Structural match, but confidence is LOW (thin evidence for this "
+            "archetype): treat the witness below as a loose reference, not a "
+            "template. The team idioms are repo truth regardless of file shape.\n\n"
         )
     if match_quality in ("exact", "ast"):
         return (
@@ -3871,7 +3892,10 @@ def preflight_and_advise() -> int:
         # that contains no witness to mirror.
         if excerpt_content:
             block += _match_quality_lead(
-                match_quality, archetype_name or "", int(sub_buckets_count or 0)
+                match_quality,
+                archetype_name or "",
+                int(sub_buckets_count or 0),
+                confidence_band or "",
             )
         block += untrusted_region + "\n\n"
     # Pair the witness (the conforming form) with a real off-pattern the team has
@@ -4016,7 +4040,67 @@ _SED_OPERAND_RE = re.compile(
 # otherwise a secret file already blocked at its original path is laundered past
 # the turn-end gate (`mv leaked.ts ok.ts`). ln makes a hard link (same bytes at
 # both paths) and install copies, so both launder exactly like mv/cp.
-_MOVE_CMD_RE = re.compile(r"(?:git\s+)?(?:mv|cp|ln|install)\b")
+_MOVE_CMD_RE = re.compile(r"(?:git\s+)?(?:mv|cp|ln|install|rsync|scp)\b")
+# dd copies through `of=DEST` operands (not a positional last-operand), so the
+# generic move tail logic would mis-read `of=dest` as the literal target; its
+# destination is extracted separately.
+_DD_OF_RE = re.compile(r"""\bof=("[^"]*"|'[^']*'|[^\s;&|)}]+)""")
+# An interpreter one-liner (`python -c "..."`, `node -e "..."`, `ruby -e "..."`)
+# computes its write path inside its own runtime, invisible as shell argv, so a
+# `python -c "open('x','w').write(secret)"` launders a fresh secret to disk that
+# nothing arms. Detect the one-liner form and pull quoted path literals out of
+# the common write sinks so the destination is armed and re-scanned on disk, the
+# same as `echo secret > x`. Over-matching a read-sink path is harmless (the
+# recorder's is_file/detect_language filter drops non-source targets).
+_INTERP_ONELINER_RE = re.compile(
+    r"\b(?:python[0-9.]*|node|nodejs|ruby|perl|deno|bun|php)\b[^\n]*?\s-(?:c|e)\b"
+)
+_INTERP_WRITE_SINK_RE = re.compile(
+    r"""(?:open|writeFileSync|writeFile|appendFileSync|createWriteStream|write_text|"""
+    r"""write_bytes|File\.write|File\.open|IO\.write)\s*\(\s*("[^"]*"|'[^']*')"""
+)
+# A file DELETED via `rm`/`unlink`/`git rm` at a command position. A deleted
+# module whose importers still reference it is the strongest cross-file existence
+# break, but a fresh delete (no prior edit this turn) never enters enforcement
+# state, so the Stop crossfile advisory would miss it entirely.
+_RM_CMD_RE = re.compile(r"(?:git\s+)?(?:rm|unlink)\b")
+
+
+def _extract_bash_delete_targets(command: str) -> list[str]:
+    """Extract file paths a Bash command deletes via rm/unlink/git rm.
+
+    Same command-position guard and over-match-is-harmless contract as
+    _extract_bash_write_targets: only an rm at a command boundary (or after an
+    env/sudo modifier) counts, flags are dropped, and a bogus path contributes
+    nothing downstream (the deleted-module advisory drops a path that still
+    exists or has no importers). Never resolves or stats a path."""
+    if not command or not isinstance(command, str) or len(command) > 8192:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in _RM_CMD_RE.finditer(command):
+        pre = command[: m.start()].rstrip()
+        ok = False
+        if pre == "" or pre[-1] in ";&|(){}`=":
+            ok = True
+        else:
+            last = pre.rsplit(None, 1)[-1] if pre.split() else ""
+            if last in _CMD_MODIFIERS or _ASSIGNMENT_RE.search(last):
+                ok = True
+        if not ok:
+            continue
+        tail = command[m.end() :]
+        end = _TAIL_END_RE.search(tail)
+        if end is not None:
+            tail = tail[: end.start()]
+        for tok in _OPERAND_TOKEN_RE.findall(tail):
+            uq = _unquote_target(tok)
+            if uq and not uq.startswith("-") and uq not in seen:
+                seen.add(uq)
+                out.append(uq)
+    return out
+
+
 # Command modifiers that can precede the real command (`env mv`, `sudo mv`,
 # `time mv`, ...). A move command right after one of these -- or after a command
 # boundary / substitution opener / env-assignment -- is still a real relocation,
@@ -4171,14 +4255,15 @@ def _extract_bash_write_targets(command: str) -> list[str]:
                 if operands:
                     _add(operands[-1])
 
-    # mv/cp/ln/install: arm the DESTINATION so a rename/copy/link cannot launder a
-    # blocked secret file past the Stop backstop. The destination is the last
-    # operand (or the `-t DIR` argument); for the `mv f.ts dir/` form the file
-    # lands at dir/basename(f.ts), so that candidate is offered too and the
-    # recorder's own is_file filter keeps whichever exists. A directory or
-    # non-language dest contributes nothing downstream (detect_language / is_file
-    # reject it).
-    if any(tok in command for tok in ("mv", "cp", "ln", "install")):
+    # mv/cp/ln/install/rsync/scp: arm the DESTINATION so a rename/copy/link/sync
+    # cannot launder a blocked secret file past the Stop backstop. The destination
+    # is the last operand (or the `-t DIR` argument); for the `mv f.ts dir/` form
+    # the file lands at dir/basename(f.ts), so that candidate is offered too and
+    # the recorder's own is_file filter keeps whichever exists. rsync/scp share the
+    # positional `src... dest` shape; a remote scp dest (host:path) is dropped
+    # downstream. A directory or non-language dest contributes nothing downstream
+    # (detect_language / is_file reject it).
+    if any(tok in command for tok in ("mv", "cp", "ln", "install", "rsync", "scp")):
         for raw_tail in _iter_move_copy_tails(command):
             # Drop redirects so `>/dev/null 2>&1` is not read as the destination.
             tail = _REDIRECT_STRIP_RE.sub(" ", raw_tail)
@@ -4210,6 +4295,18 @@ def _extract_bash_write_targets(command: str) -> list[str]:
                 base = src.rstrip("/").rsplit("/", 1)[-1]
                 if base:
                     _add(dest.rstrip("/") + "/" + base)
+
+    # dd's destination is its `of=` operand, not a positional last argument, so
+    # `dd if=<blocked> of=<new>` relocates a blocked secret the same way mv/cp do.
+    if "dd" in command:
+        for m in _DD_OF_RE.finditer(command):
+            _add(_unquote_target(m.group(1)))
+
+    # Interpreter one-liner writes (`python -c "open('x','w')..."`): pull the
+    # quoted path out of the write sink so the file is armed and re-scanned on disk.
+    if _INTERP_ONELINER_RE.search(command):
+        for m in _INTERP_WRITE_SINK_RE.finditer(command):
+            _add(_unquote_target(m.group(1)))
 
     return targets
 
@@ -4347,8 +4444,8 @@ def _record_bash_write_mutations(
             try:
                 indep = _scan_archetype_independent(content, file_path)
             except Exception:
-                indep = []
-            if not indep:
+                # A scan ERROR contributes nothing (documented fail-open stance),
+                # unlike a clean scan which records below for crossfile visibility.
                 continue
             violations = indep
             record_archetype = _NO_ARCHETYPE_LABEL
@@ -4362,10 +4459,17 @@ def _record_bash_write_mutations(
                     content_truncated=_bw_truncated,
                 )
             except Exception:
-                violations = []
-            if not violations:
+                # Sub-lint error contributes nothing (fail-open), never a spurious
+                # clean record; a successful clean lint still records below.
                 continue
             record_archetype = archetype_name
+        # Even a CLEAN file (no violations) is recorded: the Stop crossfile-
+        # existence pass iterates state.files and re-reads content live, so a
+        # Bash-written file that removed an export must be present there or its
+        # break is invisible -- the Edit-tool path records clean files the same
+        # way. detect_language already gated this loop to ts/js/rb/py, which are
+        # exactly the crossfile-existence languages, so nothing extra is armed:
+        # record_clean below fires for a clean file (no blockable flag set).
 
         # Partition the hard (block-eligible) subset exactly as posttool_verify
         # does, so the cached blockable_unresolved flag the Stop backstop reads is
@@ -4435,6 +4539,68 @@ def _record_bash_write_mutations(
             save_state(state, repo_data_dir, session_id or "")
         except Exception:
             pass
+
+
+def _record_bash_delete_mutations(command: str, cwd: Path, session_id: str) -> None:
+    """Record a Bash-deleted TS/Python module so the Stop crossfile pass sees it.
+
+    A fresh `rm foo.ts` (no prior edit this turn) never enters enforcement state,
+    so the deleted-module advisory -- which iterates state.files and the pruned
+    deletions -- would miss the strongest existence break there is. Recording the
+    gone path into state.files does two jobs: it materializes the session's
+    enforcement state so the Stop root discovery finds this repo, and the Stop
+    prune (which drops now-missing state.files entries into deleted_paths) then
+    hands the path to the crossfile advisory, where each importer is live-
+    rechecked (a same-turn move that repointed the importer drops out -- no false
+    break). Ruby is excluded: the deleted-module advisory covers ts/python only.
+    Fails open throughout."""
+    targets = _extract_bash_delete_targets(command)
+    if not targets:
+        return
+
+    from chameleon_mcp.enforcement import FileState, load_state, record_clean, save_state
+    from chameleon_mcp.lint_engine import detect_language
+    from chameleon_mcp.profile.loader import find_repo_root
+
+    now = time.time()
+    for target in targets:
+        try:
+            p = Path(target)
+            if not p.is_absolute():
+                p = cwd / p
+            p = p.expanduser()
+        except (OSError, ValueError):
+            continue
+        if detect_language(p.name) not in ("typescript", "python"):
+            continue
+        try:
+            # A path that still exists is not a deletion (rm of one of several
+            # args that failed, or a directory arg the module lived under).
+            if p.exists():
+                continue
+        except OSError:
+            continue
+        try:
+            # The file is gone but its parent dir survives; resolve the repo from
+            # it so the pending-deletion key matches the Stop consumer's repo_id.
+            repo_root = find_repo_root(p.parent)
+            if repo_root is None:
+                continue
+            from chameleon_mcp.tools import _compute_repo_id
+
+            repo_id = _compute_repo_id(repo_root)
+        except Exception:
+            continue
+        try:
+            repo_data_dir = _plugin_data_dir() / repo_id
+            state = load_state(repo_data_dir, session_id or "")
+            key = str(p)
+            if key not in state.files:
+                state.files[key] = FileState()
+                record_clean(state.files[key], now=now)
+            save_state(state, repo_data_dir, session_id or "")
+        except Exception:
+            continue
 
 
 def posttool_recorder() -> int:
@@ -4513,6 +4679,7 @@ def posttool_recorder() -> int:
 
             if is_chameleon_suppressed(cwd, repo_id, session_id) is None:
                 _record_bash_write_mutations(command, cwd, session_id)
+                _record_bash_delete_mutations(command, cwd, session_id)
         except Exception:
             pass
 
@@ -5018,9 +5185,11 @@ def _proposed_hard_secret_violations(
     Returns ``(violations, named_suppressed)``: the surviving deny-candidate
     rows, plus whether a rule-NAMED directive suppressed at least one
     otherwise-denying hit (the caller records that bypass as an auditable
-    override). The scan is capped at PREWRITE_SECRET_SCAN_MAX_CHARS — the same
-    100KB ceiling the on-disk lint reads use; content past the cap is left to
-    the PostToolUse/Stop scans of the written file. Only NAMED directives can
+    override). The proposed content is scanned via ``_deny_scan_content``, which
+    reads it IN FULL up to a large multiple of PREWRITE_DENY_SCAN_MAX_CHARS (so a
+    secret padded to the middle of an over-cap write is not blanked out); only a
+    write past that hard ceiling falls back to a head+tail window. Only NAMED
+    directives can
     clear a hit: the deterministic hard class is blanket-immune (see
     ``violation_class.is_violation_ignored``).
 
@@ -5819,6 +5988,18 @@ def posttool_verify() -> int:
                     # separately because it downgrades every rule at once
                     # rather than annotating one intentional deviation.
                     blanket = "" in idx.all_rules()
+                    # The pre-write deny gate (PreToolUse) already recorded an
+                    # override for the rules it denies BEFORE the write landed
+                    # (secret/eval/import-preference); posttool_verify only runs on
+                    # an Edit/Write/NotebookEdit, which always passed that gate, so
+                    # re-recording those here double-counts one override and inflates
+                    # the rule's calibration override rate. Record only the rules the
+                    # pre-write gate does not.
+                    overridden = [
+                        v
+                        for v in overridden
+                        if v.get("rule") not in _PREWRITE_RECORDED_OVERRIDE_RULES
+                    ]
                     _record_overrides(
                         repo_id,
                         overridden,

@@ -28,6 +28,7 @@ Run the chameleon-mcp `doctor` action (via the `chameleon_telemetry` dispatcher)
      - `mcp_server_launcher` error: neither `uvx` nor `uv` is on PATH, so the bundled MCP server cannot launch and every MCP tool (`/chameleon-init`, `refresh`, `status`, and the codebase queries) is dead even if the hooks resolve a Python. Install `uv` (which provides `uvx`): https://docs.astral.sh/uv/getting-started/installation/.
      - `bash_on_path` error: install bash or ensure it is on `$PATH` for the hooks to work.
      - `plugin_data_writable` error: check directory permissions for the chameleon data dir shown in `detail`.
+     - `config_json` error: `.chameleon/config.json` is present but malformed (invalid/unsafe JSON); `detail` carries the parse error. Every config.json feature (production_ref lock, auto_refresh, trust auto-preserve) falls back to its built-in default until the file is fixed — correct the JSON or delete the file to reset to defaults.
      - `hook_*` error: re-install the plugin or run `chmod +x` on the listed hook script.
 4. Always include the platform info and chameleon_version from `data` for copy-paste when filing a bug.
 

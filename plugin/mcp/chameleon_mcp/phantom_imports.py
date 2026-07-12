@@ -461,12 +461,22 @@ def _py_target_stale(root: Path | None, key: str | None, index_mtime: float | No
         return False
 
 
-def _load_tsconfig_paths(repo_root_str: str) -> tuple[str, tuple[tuple[str, tuple[str, ...]], ...]]:
+def _load_tsconfig_paths(
+    repo_root_str: str,
+) -> tuple[str | None, tuple[tuple[str, tuple[str, ...]], ...]]:
     """(baseUrl, ((pattern, (targets,...)),...)) from tsconfig/jsconfig.
 
     Reads the repo-root tsconfig directly so alias resolution works even when the
     caller's profile rules carry no `paths` (e.g. calibration runs against a
-    fresh checkout). Returns the empty default when no config or no paths.
+    fresh checkout).
+
+    ``baseUrl`` is ``None`` when neither config file is present or readable --
+    distinct from a config that exists and simply omits ``baseUrl`` (which
+    defaults to ``"."``, the project root, per tsconfig semantics). A caller
+    resolving a bare specifier against baseUrl must be able to tell "no
+    baseUrl was ever configured" from "baseUrl is the project root": both are
+    falsy vs. truthy only if the no-config case does NOT also collapse to
+    ``"."``.
 
     Read fresh each call (no cache) so a tsconfig edited mid-session is picked up
     immediately, matching the cache-free filesystem walk in _nearest_tsconfig_dir.
@@ -489,7 +499,7 @@ def _load_tsconfig_paths(repo_root_str: str) -> tuple[str, tuple[tuple[str, tupl
         paths = paths if isinstance(paths, dict) else {}
         norm = tuple((k, tuple(v)) for k, v in paths.items() if isinstance(v, list))
         return base, norm
-    return ".", ()
+    return None, ()
 
 
 def _resolves_via_alias(
@@ -551,9 +561,41 @@ def _py_resolves(base: Path) -> bool:
         return True
 
 
+def _py_first_party_top(top: str, src_roots: list[Path]) -> Path | None:
+    """The source root under which ``top`` (an absolute import's leading dotted
+    segment) exists as a package directory or a single-file module, or None.
+
+    Deliberately looser than ``_py_resolves``: a PEP 420 namespace package has
+    no ``__init__.py`` to key on, so this checks plain directory presence
+    rather than requiring one. It answers a narrower question than resolution
+    does -- not "does the full spec resolve" but "does the repo own this
+    top-level name at all" -- which is what separates a first-party absolute
+    import from an external dependency or stdlib module, both of which have no
+    directory here to find.
+    """
+    for src_root in src_roots:
+        try:
+            if (
+                (src_root / top).is_dir()
+                or (src_root / f"{top}.py").is_file()
+                or (src_root / f"{top}.pyi").is_file()
+            ):
+                return src_root
+        except OSError:
+            continue
+    return None
+
+
 def _safe_is_dir(p: Path) -> bool:
     try:
         return p.is_dir()
+    except OSError:
+        return False
+
+
+def _safe_is_file(p: Path) -> bool:
+    try:
+        return p.is_file()
     except OSError:
         return False
 
@@ -884,15 +926,18 @@ def lint_phantom_imports(
                     for nm in _py_imported_names(names_clause):
                         if nm not in entry.names:
                             violations.append(_symbol_violation(nm, spec))
-        # Absolute first-party `from pkg.mod import name`. The module itself is
-        # never flagged (an unresolvable spec may be stdlib or a dependency,
-        # both invisible to the repo), but a spec resolving to a real in-repo
-        # module whose CLOSED export set lacks a bound name is the
-        # highest-frequency hallucination shape — and a repo whose own idiom is
-        # absolute imports (most Flask/Django apps) previously got no symbol
-        # check at all, because only relative forms were scanned.
+        # Absolute first-party `from pkg.mod import name`. An unresolvable spec
+        # whose top-level segment is NOT one of the repo's own source roots is
+        # never flagged (it may be stdlib or a dependency, both invisible to the
+        # repo); but one whose top-level segment IS a first-party root package
+        # is a phantom MODULE, and a spec resolving to a real in-repo module
+        # whose CLOSED export set lacks a bound name is a phantom SYMBOL — the
+        # highest-frequency hallucination shape, and a repo whose own idiom is
+        # absolute imports (most Flask/Django apps) previously got no check at
+        # all for either, because only relative forms were scanned.
         if symbol_check_on:
             _resolve_abs = None
+            _first_party_roots: list[Path] = []
             for m in _PY_ABSOLUTE_IMPORT_RE.finditer(scan):
                 if len(seen_py) >= _MAX_SPECS:
                     break
@@ -907,11 +952,32 @@ def lint_phantom_imports(
                     # Built on first need: construction scans the repo root's
                     # top-level dirs for Python source roots, a cost an edit
                     # with no absolute imports must not pay.
-                    from chameleon_mcp.symbol_index import make_module_resolver
+                    from chameleon_mcp.symbol_index import (
+                        _python_source_roots,
+                        make_module_resolver,
+                    )
 
                     _resolve_abs = make_module_resolver(root, "python")
+                    _first_party_roots = _python_source_roots(root)
                 key = _resolve_abs(module, file_dir)
                 if key is None:
+                    top = module.split(".", 1)[0]
+                    match_root = _py_first_party_top(top, _first_party_roots)
+                    if match_root is not None:
+                        # A first-party top-level segment is necessary but NOT
+                        # sufficient: the resolver returns None for a real PEP 420
+                        # namespace subpackage too (a directory with no
+                        # __init__.py, e.g. readthedocs/proxito/views/), which is a
+                        # valid import target, not a phantom. Only flag when the
+                        # FULL dotted path resolves to no directory or module file.
+                        rel_mod = Path(module.replace(".", "/"))
+                        mod_path = match_root / rel_mod
+                        if not (
+                            _safe_is_dir(mod_path)
+                            or _safe_is_file(mod_path.with_suffix(".py"))
+                            or _safe_is_file(mod_path.with_suffix(".pyi"))
+                        ):
+                            violations.append(_violation(module, match_root / rel_mod.parent, root))
                     continue
                 entry = exports_index.lookup(key)
                 if entry is None or entry.open:
