@@ -932,9 +932,10 @@ Five places can stop work, all gated by trust, mode, and `CHAMELEON_ENFORCE`.
    only hardens the directive text; it does not spawn a model. Set it false to
    restore the blanket self-review directive. The review governs SOURCE edits
    only: a file counts as idiom-governed only when it has a recognized source
-   language (`detect_language`), so a turn that touched only markdown/config
-   files (e.g. `/chameleon-init`'s own `CLAUDE.local.md` consent edit) never
-   fires the review and never burns the once-per-session marker. The rendering
+   language (`detect_language`, with a notebook `.ipynb` counting as python),
+   so a turn that touched only markdown/config files (e.g. `/chameleon-init`'s
+   own `CLAUDE.local.md` consent edit) never fires the review and never burns
+   the once-per-session marker. The rendering
    is **terse by default** (kill switch `CHAMELEON_STOP_IDIOM_TERSE=0` restores
    the legacy full dump of every idiom plus the principles text): the review is
    scoped to the edited archetypes' idioms plus untagged general ones, idioms

@@ -19,9 +19,11 @@ at full text because nothing scoped it.
   and the renderer's cannot-scope fallback dumped the full text of every
   not-yet-seen idiom — including a `Language: ruby` service idiom for a
   markdown edit. A file now counts as idiom-governed only when
-  `detect_language` recognizes it; a turn with no governed file skips the
-  review (check-event reason `no_governed_files`) without burning the
-  once-per-session marker. `_idiom_review_gate` in `hook_helper.py`.
+  `detect_language` recognizes it, with a notebook `.ipynb` counting as python
+  source (it keeps its review and now participates in the test-run nudge like
+  any python file); a turn with no governed file skips the review (check-event
+  reason `no_governed_files`) without burning the once-per-session marker.
+  `_idiom_review_gate` in `hook_helper.py`.
 - **Language-scoped idiom filtering at the Stop review.** An idiom whose
   `Language:` tag names a recognized language (`typescript`/`ruby`/`python`)
   the turn did not edit is dropped from the review; untagged, `Language: any`,

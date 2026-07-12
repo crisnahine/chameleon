@@ -165,6 +165,10 @@ def test_idiom_block_reason_mentions_edited_file(make_trusted_repo):
     )
     assert out.get("decision") == "block"
     assert Path(file_path).name in out.get("reason", "")
+    # The block message surfaces the durable per-repo off-switch so a user hit
+    # by the review in every new session can find the fix where the pain is.
+    assert '"idiom_review": false' in out.get("reason", "")
+    assert ".chameleon/config.json" in out.get("reason", "")
 
 
 def test_principles_only_no_block_in_terse_but_blocks_in_legacy(make_trusted_repo):
