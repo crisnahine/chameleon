@@ -68,6 +68,18 @@ def test_language_filter_composes_with_archetype_filter():
     assert "svc-rb" not in out
 
 
+def test_language_line_inside_fenced_example_does_not_tag_untagged_block():
+    # An untagged idiom whose fenced example contains a column-start
+    # `Language: ruby` line must survive: only the metadata region before the
+    # first fence is sniffed for the tag.
+    text = (
+        "### untagged-with-fence\nStatus: active\nFront matter looks like this.\n"
+        "Example:\n```\nLanguage: ruby\ntitle: post\n```\n"
+    )
+    out = _render_stop_idioms(text, [], set(), edited_languages=["typescript"], **CAPS)
+    assert "untagged-with-fence" in out
+
+
 def test_seen_language_scoped_block_still_summarized_when_kept():
     # The language filter runs before seen/unseen: a kept, already-seen idiom
     # renders as its one-line summary, not full text.

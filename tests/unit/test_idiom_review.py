@@ -538,3 +538,34 @@ def test_all_idioms_language_scoped_out_no_block_no_marker(make_trusted_repo):
     )
     assert out2.get("decision") == "block"
     assert "ts-imports" in out2.get("reason", "")
+
+
+def test_secondary_language_hint_keeps_primary_tagged_idioms(make_trusted_repo):
+    # In a rails-with-frontend single-profile repo, teach tags EVERY idiom with
+    # the profile's primary language, so a frontend idiom carries
+    # Language: ruby. The primary tag cannot discriminate there: a
+    # typescript-only turn must still review primary-tagged idioms.
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
+    profile_dir.joinpath("profile.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "language": "ruby",
+                "language_hint": {"secondary_detected": "typescript"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    _touch_edited_file(file_path, data_dir, sid)  # Widget.ts -> typescript
+    _write_idioms(
+        profile_dir,
+        "### frontend-fetch-wrapper\nLanguage: ruby\nStatus: active\n"
+        "Frontend requests go through the shared api client.\n",
+    )
+
+    out = _run_stop(
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
+        env={"CHAMELEON_ENFORCE": "1"},
+    )
+    assert out.get("decision") == "block"
+    assert "frontend-fetch-wrapper" in out.get("reason", "")

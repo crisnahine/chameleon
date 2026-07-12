@@ -46,8 +46,9 @@ new chats):
 - `"enforcement": {"stop_backstop": false}` — turn off the ENTIRE Stop
   turn-end pipeline (relint block, idiom review, correctness judge, all
   turn-end advisories). Per-edit hooks stay live.
-- `"enforcement": {"stop_block_cap": 0}` — keep every turn-end advisory but
-  never let Stop BLOCK.
+- `"enforcement": {"stop_block_cap": 0}` — never let Stop BLOCK; most
+  turn-end advisories still run (the idiom review's own advisory rides the
+  block budget, so it goes quiet too).
 
 When the user asks to disable chameleon because of the turn-end idiom text
 specifically, offer `idiom_review: false` first — it solves the recurring

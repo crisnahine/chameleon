@@ -7144,6 +7144,20 @@ def _idiom_review_gate(
             return None
         edited_languages = sorted({_governed_language(p) for p in governed})
 
+        # In a single-profile repo with a declared secondary language (the
+        # rails-with-frontend shape), teach tags every idiom with the profile's
+        # PRIMARY language -- a frontend idiom carries Language: ruby -- so the
+        # primary tag cannot discriminate there and must never language-drop an
+        # idiom: treat the primary as always edited. Fail open to no expansion.
+        try:
+            profile_raw = json.loads((profile_dir / "profile.json").read_text(encoding="utf-8"))
+            hint = profile_raw.get("language_hint") or {}
+            primary = profile_raw.get("language")
+            if hint.get("secondary_detected") and isinstance(primary, str) and primary:
+                edited_languages = sorted({*edited_languages, primary})
+        except Exception:
+            pass
+
         # Test-run signal: when the turn touched real source (not a pure
         # test/docs edit) and no passing test runner was observed this session,
         # the self-review directive is worth strengthening with a "run the

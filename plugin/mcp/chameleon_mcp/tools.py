@@ -1918,7 +1918,10 @@ def _render_stop_idioms(
     if langs:
         scoped = []
         for b in blocks:
-            m = _IDIOM_LANGUAGE_LINE_RE.search(b[2])
+            # Sniff only the metadata region before the first fence: a
+            # `Language:` line inside a fenced Example is example code, and
+            # matching it would drop an untagged idiom that must survive.
+            m = _IDIOM_LANGUAGE_LINE_RE.search(b[2].split("```", 1)[0])
             tag = m.group(1).strip().lower() if m else None
             if tag in _IDIOM_SCOPED_LANGUAGES and tag not in langs:
                 continue

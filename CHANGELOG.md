@@ -25,10 +25,17 @@ at full text because nothing scoped it.
 - **Language-scoped idiom filtering at the Stop review.** An idiom whose
   `Language:` tag names a recognized language (`typescript`/`ruby`/`python`)
   the turn did not edit is dropped from the review; untagged, `Language: any`,
-  and unrecognized tags fail open to shown. Composes with the existing
-  archetype filter, so a mixed-language repo's review no longer dumps
-  other-language idioms when archetype resolution comes up empty.
-  `_render_stop_idioms` in `tools.py`.
+  and unrecognized tags fail open to shown, and only the metadata region
+  before the first fence is sniffed (a `Language:` line inside a fenced
+  example is example code). Composes with the existing archetype filter, so a
+  mixed-language repo's review no longer dumps other-language idioms when
+  archetype resolution comes up empty. In a single-profile repo with a
+  declared secondary language (`language_hint.secondary_detected`, the
+  rails-with-frontend shape) the primary-language tag cannot discriminate —
+  teach stamps every idiom with the profile's primary language — so
+  primary-tagged idioms are never language-dropped there.
+  `_render_stop_idioms` in `tools.py`, `_idiom_review_gate` in
+  `hook_helper.py`.
 
 ### Changed
 
