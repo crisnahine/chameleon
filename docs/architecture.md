@@ -925,16 +925,25 @@ Five places can stop work, all gated by trust, mode, and `CHAMELEON_ENFORCE`.
 5. **Idiom review.** When the turn edited files governed by idioms or
    principles and no lint block stood, the Stop hook blocks once per session to
    force a self-review against `idioms.md`/`principles.md`. Gated by
-   `enforcement.idiom_review` (default on). `enforcement.idiom_judge` (default on)
+   `enforcement.idiom_review` (default on) — setting it `false` in
+   `.chameleon/config.json` is the durable per-repo off-switch for this review
+   (committed → team-wide; the block message itself names it), leaving every
+   other hook surface live. `enforcement.idiom_judge` (default on)
    only hardens the directive text; it does not spawn a model. Set it false to
-   restore the blanket self-review directive. The rendering is **terse by
-   default** (kill switch `CHAMELEON_STOP_IDIOM_TERSE=0` restores the legacy
-   full dump of every idiom plus the principles text): the review is scoped to
-   the edited archetypes' idioms plus untagged general ones, idioms the model
-   already saw this session are summarized to one line each, and full text is
-   shown only for in-scope idioms not yet surfaced — so an idiom the model
-   never saw is never reduced to a name. "Seen" is tracked per idiom name in
-   the enforcement state's `idioms_shown_names`, computed from the `###`
+   restore the blanket self-review directive. The review governs SOURCE edits
+   only: a file counts as idiom-governed only when it has a recognized source
+   language (`detect_language`), so a turn that touched only markdown/config
+   files (e.g. `/chameleon-init`'s own `CLAUDE.local.md` consent edit) never
+   fires the review and never burns the once-per-session marker. The rendering
+   is **terse by default** (kill switch `CHAMELEON_STOP_IDIOM_TERSE=0` restores
+   the legacy full dump of every idiom plus the principles text): the review is
+   scoped to the edited archetypes' idioms plus untagged general ones, idioms
+   whose `Language:` tag names a recognized language the turn did not edit are
+   dropped (untagged, `any`, and unrecognized tags fail open to shown), idioms
+   the model already saw this session are summarized to one line each, and full
+   text is shown only for in-scope idioms not yet surfaced — so an idiom the
+   model never saw is never reduced to a name. "Seen" is tracked per idiom name
+   in the enforcement state's `idioms_shown_names`, computed from the `###`
    headers that actually survived the char-capped Tier-2 block, so an idiom
    truncated out of that block (or one from the deny path, which emits no
    idioms) still renders full. Principles become a one-line pointer to
@@ -1596,7 +1605,7 @@ under `enforcement` are tolerated for forward compatibility; unknown keys under
 | `enforcement.mode` | `"enforce"` | `off` / `shadow` / `enforce`. |
 | `enforcement.stop_backstop` | `true` | Stop-hook enforcement backstop. |
 | `enforcement.stop_block_cap` | `3` | Max Stop blocks per session. |
-| `enforcement.idiom_review` | `true` | Once-per-session idiom self-review. |
+| `enforcement.idiom_review` | `true` | Once-per-session idiom self-review. `false` is the durable per-repo silence for the turn-end "you edited X ... verify ... team idioms" text (everything else stays live). |
 | `enforcement.idiom_judge` | `true` | Harden the idiom-review directive. |
 | `enforcement.correctness_judge` | `true` | Turn-end correctness reviewer. |
 | `enforcement.duplication_review` | `true` | Turn-end duplication advisory. |

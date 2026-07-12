@@ -29,6 +29,32 @@ Use the most-temporary option that solves the immediate need. Revert by:
 - `CHAMELEON_DISABLE=1` → unset the env var
 - `.chameleon/.skip` → remove the file from the repo
 
+## Silencing ONE surface durably (keep the rest of chameleon)
+
+The full opt-outs above are usually the wrong tool when the complaint is a
+single recurring surface. The frequent case: the turn-end Stop text
+("chameleon: you edited X this turn ... verify ... team idioms") that re-fires
+in every NEW session — session-scoped disables cannot stop it durably. These
+`.chameleon/config.json` keys can (per-repo, committed → team-wide, survive
+new chats):
+
+- `"enforcement": {"idiom_review": false}` — turn off exactly the
+  once-per-session Stop idiom/principles self-review (the block AND its
+  shadow-mode advisory). Per-edit guidance, denies, and every other turn-end
+  check stay live. This is the answer to "stop the Stop-hook idiom text, but
+  keep chameleon".
+- `"enforcement": {"stop_backstop": false}` — turn off the ENTIRE Stop
+  turn-end pipeline (relint block, idiom review, correctness judge, all
+  turn-end advisories). Per-edit hooks stay live.
+- `"enforcement": {"stop_block_cap": 0}` — keep every turn-end advisory but
+  never let Stop BLOCK.
+
+When the user asks to disable chameleon because of the turn-end idiom text
+specifically, offer `idiom_review: false` first — it solves the recurring
+annoyance without giving up the per-edit layer. Editing `.chameleon/config.json`
+is a repo file change: make the edit, tell the user it applies from the next
+turn, and let them commit it when they want it team-wide.
+
 ## Prerequisites
 
 `disable_session` requires a trust grant. If the repo has no `.trust` record, the tool returns `status: failed` with a message to run `/chameleon-trust` first.
@@ -47,5 +73,6 @@ Use the most-temporary option that solves the immediate need. Revert by:
 - Latency is too high → run `/chameleon-doctor` to check health
 - One archetype's canonical is bad → edit `.chameleon/canonicals.json` directly OR use `/chameleon-refresh`
 - Profile drift is causing churn → `/chameleon-refresh`
+- The turn-end Stop idiom text keeps coming back in new sessions → `"enforcement": {"idiom_review": false}` in `.chameleon/config.json` (see above)
 
 Disable is the escape hatch for situations where chameleon legitimately isn't useful in the moment, not a tool for fixing other problems.
