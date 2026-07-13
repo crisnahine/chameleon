@@ -4,7 +4,39 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.1.0] - 2026-07-13
+## [3.1.1] - 2026-07-13
+
+Hardens the delivery-faithful wiring detector behind the 3.1.0 memory-channel
+features. Post-ship adversarial QA found markdown shapes where a QUOTED
+`@.chameleon/conventions.md` line read as live wiring (false "delivered"), the
+one direction the design must never err in: a false positive lets the Stop
+review gist idioms the session never received and lets the SessionStart dedup
+drop the conventions injection while the memory channel delivers nothing.
+
+### Fixed
+
+- **Nine false-"delivered" classes in the wiring scan** (`_blank_code_regions`
+  in `hook_helper.py`, rewritten CommonMark-faithful): (1) a content line
+  carrying extra fence characters ("``` ```") no longer closes an open fence
+  (a closer is one run of the opener's character, at least its length,
+  followed only by whitespace); (2) indented code blocks (>= 4 columns, tab =
+  4-column stops) are blanked, while 0-3 column imports stay wired; (3) fences
+  behind blockquote and list-item prefixes open real fences whose prefixed
+  contents are blanked; (4) inline code spans pair backtick strings of equal
+  length, so ``double``-delimited spans blank; (5) spans crossing a soft line
+  break blank; (6) indented code nested inside a blockquote or list item is
+  blanked (the threshold applies to the container-stripped remainder); (7) a
+  >= 4-column lazy-continuation line stays in its paragraph so span pairing
+  crosses it, with the line's own output blanked; (8) an ordered-list marker
+  not starting at 1 cannot interrupt a paragraph, so a "2) ```" line after
+  prose is lazy text, not a fence; (9) line splitting now honors only
+  LF/CRLF/CR, so an embedded U+2028/form-feed byte cannot fabricate a closing
+  fence. Over-blanking stays the safe direction throughout: ambiguous shapes
+  read as unwired, which keeps the full push-based delivery. Also fixes a
+  pre-existing over-blank (a list fence's indented closer was misread as a new
+  opener, hiding a legitimate import after the list). 41 new unit tests pin
+  the closer rule, the indent boundary, container chains, span pairing, and
+  the line-ending model.
 
 Quiet-powerful turn-end review: the taught rules move onto the high-authority
 CLAUDE.md memory channel (10/10 adherence in the published migration A/B vs

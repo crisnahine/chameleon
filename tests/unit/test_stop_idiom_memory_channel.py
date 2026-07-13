@@ -325,6 +325,20 @@ class TestSnapshotMirrorIdioms:
         assert _mirror_idiom_names(repo_data, "sess-3") == {"wrap-fetches"}
 
 
+def _is_wired(tmp_path, claude_md: str) -> bool:
+    """Build a repo whose CLAUDE.md is claude_md and ask if the mirror wires."""
+    repo = tmp_path / "repo"
+    profile = repo / ".chameleon"
+    profile.mkdir(parents=True)
+    (repo / "CLAUDE.md").write_text(claude_md, encoding="utf-8")
+    (profile / "conventions.md").write_text(_MIRROR_MD, encoding="utf-8")
+    _clear_cache()
+    return "TEAM IDIOMS" in _wired_mirror_text(repo)
+
+
+_IMP = "@.chameleon/conventions.md"
+
+
 class TestBlankCodeRegionsFenceRules:
     def test_mixed_fence_nesting_stays_blanked(self, tmp_path):
         # CommonMark: a ``` inside an open ~~~ block is literal content, not a
@@ -362,3 +376,161 @@ class TestBlankCodeRegionsFenceRules:
         (profile / "conventions.md").write_text(_MIRROR_MD, encoding="utf-8")
         hh._WIRED_MIRROR_CACHE.clear()
         assert "TEAM IDIOMS" in _wired_mirror_text(repo)
+
+
+class TestFenceCloserRule:
+    """A closing fence is ONE run of the opener's char followed only by
+    whitespace; a content line carrying extra fence chars never closes."""
+
+    def test_fence_char_pair_content_line_is_not_a_closer(self, tmp_path):
+        assert not _is_wired(tmp_path, f"```\n``` ```\n{_IMP}\n```\nprose\n")
+
+    def test_single_fence_char_after_run_is_not_a_closer(self, tmp_path):
+        assert not _is_wired(tmp_path, f"```\n``` `\n{_IMP}\n```\nprose\n")
+
+    def test_tilde_pair_content_line_is_not_a_closer(self, tmp_path):
+        assert not _is_wired(tmp_path, f"~~~\n~~~ ~~~\n{_IMP}\n~~~\nprose\n")
+
+    def test_closer_with_trailing_whitespace_still_closes(self, tmp_path):
+        assert _is_wired(tmp_path, f"```\ncode\n```   \n\n{_IMP}\n")
+
+    def test_longer_same_char_run_still_closes(self, tmp_path):
+        assert _is_wired(tmp_path, f"```\ncode\n`````\n{_IMP}\n")
+
+    def test_shorter_run_does_not_close_longer_opener(self, tmp_path):
+        assert not _is_wired(tmp_path, f"````\n```\n{_IMP}\n````\nprose\n")
+
+    def test_tilde_info_string_line_is_not_a_closer(self, tmp_path):
+        assert not _is_wired(tmp_path, f"~~~\n~~~ruby\n{_IMP}\n~~~\nprose\n")
+
+    def test_indented_opener_unindented_closer_still_closes(self, tmp_path):
+        assert _is_wired(tmp_path, f"   ```\n   code\n```\n\n{_IMP}\n")
+
+    def test_unicode_line_separator_does_not_fabricate_closer(self, tmp_path):
+        # U+2028 is not a markdown line ending; the run after it is fence
+        # content, not a closer, so the fence stays open to EOF.
+        assert not _is_wired(tmp_path, f"```\ncode\u2028```\n{_IMP}\n")
+
+    def test_form_feed_does_not_fabricate_closer(self, tmp_path):
+        assert not _is_wired(tmp_path, f"```\ncode\x0c```\n{_IMP}\n")
+
+    def test_lone_carriage_return_is_a_line_ending(self, tmp_path):
+        assert _is_wired(tmp_path, f"```\rcode\r```\r\r{_IMP}\r")
+
+
+class TestIndentedCodeBlocks:
+    """A line indented >=4 columns (tab = 4) is indented code, never wiring;
+    0-3 columns of indent is plain prose Claude Code delivers."""
+
+    def test_four_space_indented_import_after_blank_is_not_wired(self, tmp_path):
+        assert not _is_wired(tmp_path, f"Example wiring:\n\n    {_IMP}\n\nMore prose.\n")
+
+    def test_tab_indented_import_is_not_wired(self, tmp_path):
+        assert not _is_wired(tmp_path, f"\t{_IMP}\n")
+
+    def test_two_space_indented_import_stays_wired(self, tmp_path):
+        assert _is_wired(tmp_path, f"  {_IMP}\n")
+
+    def test_three_space_indented_import_stays_wired(self, tmp_path):
+        assert _is_wired(tmp_path, f"   {_IMP}\n")
+
+    def test_import_after_indented_block_ends_stays_wired(self, tmp_path):
+        assert _is_wired(tmp_path, f"    code sample\n\n{_IMP}\n")
+
+    def test_blockquoted_indented_import_is_not_wired(self, tmp_path):
+        assert not _is_wired(tmp_path, f"> Add this to CLAUDE.md:\n>\n>     {_IMP}\n")
+
+    def test_nested_blockquote_indented_import_is_not_wired(self, tmp_path):
+        assert not _is_wired(tmp_path, f"> > note\n> >\n> >     {_IMP}\n")
+
+    def test_list_item_indented_code_import_is_not_wired(self, tmp_path):
+        assert not _is_wired(tmp_path, f"-      {_IMP}\n")
+
+
+class TestContainerFences:
+    """Fence markers behind blockquote / list-item prefixes open real fences;
+    the prefixed contents are code, not wiring."""
+
+    def test_blockquoted_fence_is_not_wired(self, tmp_path):
+        assert not _is_wired(tmp_path, f"> ```\n> {_IMP}\n> ```\n")
+
+    def test_list_item_fence_is_not_wired(self, tmp_path):
+        assert not _is_wired(tmp_path, f"- ```\n  {_IMP}\n  ```\n")
+
+    def test_ordered_list_fence_is_not_wired(self, tmp_path):
+        assert not _is_wired(tmp_path, f"1. ```\n   {_IMP}\n   ```\n")
+
+    def test_unclosed_blockquoted_fence_blanks_its_lines(self, tmp_path):
+        assert not _is_wired(tmp_path, f"> ```\n> {_IMP}\n")
+
+    def test_plain_blockquoted_import_stays_wired(self, tmp_path):
+        # A bare blockquoted import with no fence counts as wired; only
+        # fenced/indented/span regions are blanked.
+        assert _is_wired(tmp_path, f"> {_IMP}\n")
+
+    def test_import_after_closed_list_fence_stays_wired(self, tmp_path):
+        assert _is_wired(tmp_path, f"- ```\n  code\n  ```\n\n{_IMP}\n")
+
+    def test_container_drop_mid_fence_returns_to_prose(self, tmp_path):
+        # A non-blank line that drops the blockquote prefix ends the container
+        # and its fence; the line itself is prose again.
+        assert _is_wired(tmp_path, f"> ```\n{_IMP}\n")
+
+    def test_import_after_closed_blockquote_fence_stays_wired(self, tmp_path):
+        assert _is_wired(tmp_path, f"> ```\n> code\n> ```\n\n{_IMP}\n")
+
+    def test_nested_list_blockquote_fence_is_not_wired(self, tmp_path):
+        assert not _is_wired(tmp_path, f"- > ```\n  > {_IMP}\n  > ```\n")
+
+
+class TestInlineSpanPairing:
+    """Backtick strings pair with the next run of EQUAL length; spans may
+    cross a soft line break but never a blank line, and unpaired runs are
+    literal text."""
+
+    def test_double_backtick_span_is_not_wired(self, tmp_path):
+        assert not _is_wired(tmp_path, f"Wire it with ``{_IMP}`` in CLAUDE.md.\n")
+
+    def test_triple_backtick_inline_span_is_not_wired(self, tmp_path):
+        assert not _is_wired(tmp_path, f"Use ```{_IMP}``` here.\n")
+
+    def test_multiline_span_is_not_wired(self, tmp_path):
+        assert not _is_wired(tmp_path, f"see `quoted\n{_IMP} still quoted` end\n")
+
+    def test_span_does_not_cross_blank_line(self, tmp_path):
+        assert _is_wired(tmp_path, f"a `stray opener\n\n{_IMP} tail`\n")
+
+    def test_unpaired_backtick_leaves_import_live(self, tmp_path):
+        assert _is_wired(tmp_path, f"a lone ` here and {_IMP}\n")
+
+    def test_unequal_runs_do_not_pair_across_import(self, tmp_path):
+        assert not _is_wired(tmp_path, f"mix `a`` {_IMP} ``b` end\n")
+
+    def test_span_pairs_across_lazy_indented_line(self, tmp_path):
+        # An indented line inside a paragraph is a lazy continuation, not a
+        # code block; the span around it still pairs and blanks the import.
+        assert not _is_wired(tmp_path, f"see `code\n    filler\n{_IMP}` here\n")
+
+    def test_lazy_line_backtick_runs_still_pair(self, tmp_path):
+        # A lazy line's own backtick runs take part in pairing; dropping them
+        # would shift later pairs and leave the import live.
+        assert not _is_wired(tmp_path, f"a ` b\n    ` c\n`{_IMP}` end\n")
+
+    def test_span_closer_on_lazy_line_blanks_import(self, tmp_path):
+        assert not _is_wired(tmp_path, f"`{_IMP}\n    x`\nend\n")
+
+    def test_span_opener_on_lazy_line_blanks_import(self, tmp_path):
+        assert not _is_wired(tmp_path, f"prose\n    `x\n{_IMP}` end\n")
+
+    def test_blockquoted_lazy_closer_blanks_import(self, tmp_path):
+        assert not _is_wired(tmp_path, f"> `{_IMP}\n>     x`\n> end\n")
+
+    def test_ordered_non_one_fence_is_lazy_text(self, tmp_path):
+        # "2)" cannot interrupt a paragraph, so its fence marker is paragraph
+        # text and the surrounding span still pairs.
+        assert not _is_wired(tmp_path, f"text `span\n2) ```\n{_IMP}` end\n")
+
+    def test_import_outside_spans_after_lazy_line_stays_wired(self, tmp_path):
+        # Pairing consumes the dangling opener across the lazy line, leaving
+        # the later import outside any span - plain prose, so wired.
+        assert _is_wired(tmp_path, f"dangling ` here\n    x\nalso `{_IMP}` tail\n")

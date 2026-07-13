@@ -7023,56 +7023,255 @@ _STOP_IDIOM_FULLTEXT_CHAR_CAP = 3000
 # target does not exist is documentation, not wiring.
 _CONVENTIONS_IMPORT_RE = re.compile(r"@(\S*\.chameleon[/\\]conventions\.md)\b")
 
-# Inline code spans: Claude Code does NOT evaluate @imports inside them, so
-# the wired scan blanks them before matching — a doc that QUOTES the import
-# line (this repo's own rules file does) is not wiring. Fenced blocks get the
-# same treatment via the line-walk in _blank_code_regions.
-_INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
+# Backtick strings, the building block of inline code spans: Claude Code does
+# NOT evaluate @imports inside a code span, so the wired scan blanks spans
+# before matching — a doc that QUOTES the import line (this repo's own rules
+# file does) is not wiring. Per CommonMark a run of N backticks pairs with the
+# NEXT run of exactly N; a span may cross a soft line break but never a blank
+# line, so pairing is scoped to the paragraph (see _blank_inline_spans).
+_BACKTICK_RUN_RE = re.compile(r"`+")
+
+# List-item marker: bullet (-, *, +) or ordered (1. / 1)) followed by
+# whitespace — the container shapes that can carry a fence opener.
+_LIST_MARKER_RE = re.compile(r"([-*+]|\d{1,9}[.)])[ \t]")
+
+# Leading ordered-list marker with its number captured: an ordered list can
+# interrupt a paragraph only when it starts at 1.
+_ORDERED_MARKER_RE = re.compile(r" {0,3}(\d{1,9})[.)][ \t]")
+
+
+def _indent_width(ln: str) -> int:
+    """Leading-whitespace width in columns, tabs advancing to 4-column stops."""
+    w = 0
+    for ch in ln:
+        if ch == " ":
+            w += 1
+        elif ch == "\t":
+            w += 4 - w % 4
+        else:
+            break
+    return w
+
+
+def _fence_marker(s: str) -> tuple[str, int, str] | None:
+    """Parse a fence marker: <=3 columns of indent, then a run of >=3 backticks
+    or tildes. Returns (fence char, run length, text after the run) or None.
+
+    The text after the run is an info string on an opener; a CLOSER requires it
+    to be whitespace-only (the caller checks), so a line carrying anything
+    after the run — prose or a second fence-char run — can never close.
+    """
+    if _indent_width(s) > 3:
+        return None
+    t = s.lstrip(" \t")
+    c = t[:1]
+    if c not in ("`", "~"):
+        return None
+    n = len(t) - len(t.lstrip(c))
+    if n < 3:
+        return None
+    return (c, n, t[n:])
+
+
+def _strip_container_markers(ln: str) -> tuple[list[tuple[str, int]], str]:
+    """Strip leading blockquote and list-item markers from a line.
+
+    Returns the consumed marker chain — ("bq", 0) per `>` marker, ("li", width)
+    per list marker with the item's content column — plus the remaining text,
+    so a fence opener behind the markers ("> ```", "- ```") is detectable.
+    """
+    chain: list[tuple[str, int]] = []
+    rest = ln
+    while True:
+        indent = len(rest) - len(rest.lstrip(" "))
+        if indent > 3:
+            break
+        s = rest[indent:]
+        if s.startswith(">"):
+            chain.append(("bq", 0))
+            rest = s[2:] if s[1:2] == " " else s[1:]
+            continue
+        m = _LIST_MARKER_RE.match(s)
+        if m is not None:
+            chain.append(("li", indent + m.end()))
+            rest = s[m.end() :]
+            continue
+        break
+    return chain, rest
+
+
+def _consume_container_chain(ln: str, chain: tuple[tuple[str, int], ...]) -> str | None:
+    """Consume an open fence's container prefixes from a continuation line.
+
+    A blockquote element needs its `>` marker again (<=3 spaces of indent, one
+    optional space after); a list element needs at least its content column of
+    whitespace. Returns the text after the prefixes, or None when the line no
+    longer sits inside the containers — which ends the container and any fence
+    it was carrying.
+    """
+    rest = ln
+    for kind, width in chain:
+        if kind == "bq":
+            indent = len(rest) - len(rest.lstrip(" "))
+            if indent > 3:
+                return None
+            s = rest[indent:]
+            if not s.startswith(">"):
+                return None
+            rest = s[2:] if s[1:2] == " " else s[1:]
+        else:
+            w = i = 0
+            while i < len(rest) and w < width:
+                if rest[i] == " ":
+                    w += 1
+                elif rest[i] == "\t":
+                    w += 4 - w % 4
+                else:
+                    break
+                i += 1
+            if w < width:
+                return None
+            rest = rest[i:]
+    return rest
+
+
+def _blank_inline_spans(para: str) -> str:
+    """Blank inline code spans in one paragraph by pairing backtick strings.
+
+    A run of N backticks opens a span closed by the NEXT run of exactly N;
+    runs of other lengths in between are span content. Spans may cross the
+    paragraph's soft line breaks (newlines are preserved so line structure
+    survives); an unpaired run stays literal text.
+    """
+    runs = list(_BACKTICK_RUN_RE.finditer(para))
+    if not runs:
+        return para
+    chars = list(para)
+    i = 0
+    while i < len(runs):
+        n = runs[i].end() - runs[i].start()
+        j = next((k for k in range(i + 1, len(runs)) if runs[k].end() - runs[k].start() == n), None)
+        if j is None:
+            i += 1
+            continue
+        for p in range(runs[i].start(), runs[j].end()):
+            if chars[p] != "\n":
+                chars[p] = " "
+        i = j + 1
+    return "".join(chars)
 
 
 def _blank_code_regions(text: str) -> str:
-    """Blank fenced code blocks and inline code spans before import matching.
+    """Blank code regions before import matching: Claude Code resolves an
+    @import only in plain prose, so fenced code blocks, indented code blocks,
+    and inline code spans are erased first.
 
-    Line-walk fence model rather than a paired regex: it handles indented
-    fences (up to 3 leading spaces, the shape the init skill's own docs use),
-    tilde fences, and — critically — an UNCLOSED fence, whose tail a markdown
-    renderer treats as code to EOF (a paired regex would leave it live and
-    count a quoted import as wiring). The close rule follows CommonMark: only
-    a marker of the SAME fence character, at least the opener's length, with
-    nothing else on the line — so an opposite-type marker or a ``` with an
-    info string inside an open block stays literal content and cannot
-    prematurely un-blank a quoted import. Over-blanking is the safe
-    direction: a missed real import just keeps the push-based delivery.
+    Line-walk block model rather than a paired regex, following CommonMark:
+
+    - A fence opens on a run of >=3 backticks or tildes at <=3 columns of
+      indent (info string allowed) and closes ONLY on a line that is one run
+      of the SAME character, at least the opener's length, followed by nothing
+      but whitespace. An opposite-character run, a run carrying an info string
+      or prose, or a line with a second fence-char run ("``` ```") is content,
+      and an unclosed fence blanks to EOF.
+    - A fence marker behind blockquote (>) or list-item (-, *, +, 1.) prefixes
+      opens a fence whose contents are the lines still carrying a compatible
+      prefix; a non-blank line that drops the prefix ends the container and
+      the fence with it and is re-read as prose.
+    - A non-blank line indented >=4 columns (tab = 4-column stops) outside any
+      fence is indented code; the same threshold applies to what remains of a
+      line behind blockquote/list prefixes (">     x" is indented code inside
+      the quote). Lines at 0-3 columns stay prose — an import there is real,
+      delivered wiring and must not be over-blanked. Inside a paragraph the
+      indented line is a lazy continuation: its backtick runs still take part
+      in span pairing (the paragraph is not split), but the line's own output
+      is blanked.
+    - An ordered-list marker not starting at 1 cannot interrupt a paragraph,
+      so a "2) ```" line after prose is lazy paragraph text, not a fence.
+    - Inline code spans pair backtick strings of equal length within a
+      paragraph (see _blank_inline_spans), so ``double``-delimited and
+      multi-line spans blank too; a blank line ends the paragraph and any
+      span candidate with it.
+
+    Over-blanking is the safe direction: a missed real import just keeps the
+    push-based delivery, while a false "wired" would strip the session's
+    conventions entirely.
     """
-
-    def _marker(stripped: str) -> tuple[str, int] | None:
-        c = stripped[:1]
-        if c not in ("`", "~"):
-            return None
-        n = len(stripped) - len(stripped.lstrip(c))
-        return (c, n) if n >= 3 else None
-
     out: list[str] = []
-    fence: tuple[str, int] | None = None
-    for ln in text.splitlines():
-        stripped = ln.lstrip()
-        marker = _marker(stripped) if len(ln) - len(stripped) <= 3 else None
-        if fence is None:
-            if marker is not None:
-                fence = marker
-                out.append("")
-                continue
-            out.append(_INLINE_CODE_RE.sub("", ln))
+    para: list[str] = []
+    para_blank: set[int] = set()
+    fence: tuple[str, int, tuple[tuple[str, int], ...]] | None = None
+
+    def _flush() -> None:
+        if para:
+            spanned = _blank_inline_spans("\n".join(para)).split("\n")
+            out.extend("" if n in para_blank else s for n, s in enumerate(spanned))
+            para.clear()
+            para_blank.clear()
+
+    def _lazy_code_line(ln: str) -> None:
+        # A >=4-column line inside a paragraph is a lazy continuation: keep it
+        # in the paragraph so its backtick runs still pair, but blank its own
+        # output — the line's content is never wiring.
+        if para:
+            para_blank.add(len(para))
+            para.append(ln)
         else:
-            closes = (
-                marker is not None
-                and marker[0] == fence[0]
-                and marker[1] >= fence[1]
-                and stripped.strip(fence[0]).strip() == ""
-            )
-            if closes:
-                fence = None
             out.append("")
+
+    # CommonMark line endings only (LF, CRLF, lone CR). splitlines() would
+    # also split on VT/FF/NEL/U+2028/U+2029, letting an embedded separator
+    # fabricate a closing-fence line no markdown renderer sees.
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+        if fence is not None:
+            rest = _consume_container_chain(ln, fence[2])
+            if rest is None and ln.strip():
+                fence = None  # container ended mid-fence; re-read the line as prose
+            else:
+                if rest is not None:
+                    mk = _fence_marker(rest)
+                    if (
+                        mk is not None
+                        and mk[0] == fence[0]
+                        and mk[1] >= fence[1]
+                        and not mk[2].strip()
+                    ):
+                        fence = None
+                out.append("")
+                i += 1
+                continue
+        if not ln.strip():
+            _flush()
+            out.append(ln)
+        elif (mk := _fence_marker(ln)) is not None:
+            _flush()
+            fence = (mk[0], mk[1], ())
+            out.append("")
+        elif _indent_width(ln) >= 4:
+            _lazy_code_line(ln)
+        else:
+            chain, rest = _strip_container_markers(ln)
+            mk = _fence_marker(rest) if chain else None
+            if mk is not None:
+                om = _ORDERED_MARKER_RE.match(ln)
+                if para and om is not None and int(om.group(1)) != 1:
+                    # An ordered marker not starting at 1 cannot interrupt a
+                    # paragraph; the "fence" is lazy paragraph text.
+                    para.append(ln)
+                else:
+                    _flush()
+                    fence = (mk[0], mk[1], tuple(chain))
+                    out.append("")
+            elif chain and _indent_width(rest) >= 4:
+                # Indented code nested in a blockquote or list item.
+                _lazy_code_line(ln)
+            else:
+                para.append(ln)
+        i += 1
+    _flush()
     return "\n".join(out)
 
 
