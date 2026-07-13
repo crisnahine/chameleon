@@ -26,6 +26,7 @@ from chameleon_mcp.tools import (
     get_pattern_context,
     get_rules,
     lint_file,
+    pause_session,
 )
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "plugin"  # the installed-plugin surface
@@ -127,6 +128,35 @@ def test_get_pattern_context_keeps_idioms_when_trusted(tmp_path, monkeypatch):
     assert data["repo"]["trust_state"] == "trusted"
     assert "apiClient" in data["idioms"]
     assert data["rules"]  # rules.json flows for trusted
+
+
+# --- get_pattern_context pause gate (pa01-17) ----------------------------------
+
+
+def test_get_pattern_context_blanks_guidance_when_paused(tmp_path, monkeypatch):
+    # A direct MCP call bypassed pause_session's suppression entirely -- only
+    # the PreToolUse hook checked it before calling this tool, so a paused
+    # session got identical guidance through a direct call.
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    repo = _build_repo(tmp_path)
+    grant_trust(_compute_repo_id(repo), repo / ".chameleon")
+
+    before = get_pattern_context(str(repo / WITNESS))["data"]
+    assert before["repo"]["paused"] is False
+    assert "apiClient" in before["idioms"]
+
+    pause_res = pause_session(str(repo), 15)["data"]
+    assert pause_res["status"] == "success"
+
+    after = get_pattern_context(str(repo / WITNESS))["data"]
+    assert after["repo"]["paused"] is True
+    assert after["idioms"] == ""
+    assert after["canonical_excerpt"]["content"] == ""
+    assert after["canonical_excerpt"]["redacted_reason"] == "paused"
+    assert after["rules"] == []
+    # trust_state is unaffected by pause -- it is a separate axis.
+    assert after["repo"]["trust_state"] == "trusted"
 
 
 # --- SessionStart conventions/principles injection -----------------------------

@@ -11,9 +11,15 @@ Grades:
 - ``same_file`` - callee defined in the caller's own file: bare calls to a
   file-local callable, and this./self. calls to a member of any class
   defined in the same file (call sites carry no enclosing-class field, so
-  per-class scoping is impossible). The member lookup is file-scoped: a
-  this-call whose method lives on a base class in another file yields no
-  edge rather than a guess (cross-file inheritance is out of scope).
+  per-class scoping is impossible). Because of that, a member name defined
+  by MORE THAN ONE class in the file is ambiguous -- there is no way to
+  tell which class's call site belongs to which class's method -- so it is
+  dropped from same-file resolution entirely rather than merging both
+  classes' call sites into one fabricated edge; only a name owned by
+  exactly one class in the file (or a module-level callable, immune to the
+  class collision) resolves. The member lookup is file-scoped: a this-call
+  whose method lives on a base class in another file yields no edge rather
+  than a guess (cross-file inheritance is out of scope).
 - ``import`` - TypeScript and Python: a bare or new call of a named import
   (matched on its LOCAL binding name -- ``import { x as y }`` binds ``y`` --
   with the edge recorded under the EXPORTED name it resolves to), or
@@ -157,14 +163,15 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
 
     # Pass 1: per-file fact tables. A rel appearing twice merges, mirroring
     # the reverse index's dedupe stance.
-    callables: dict[str, set[str]] = {}
     # rel -> names defined at MODULE level (no enclosing class). The
-    # module_attribute grade gates on this set, not `callables`: `mod.name()`
-    # dispatches on the module object, so a name that exists only as a class
-    # member inside `mod` is unreachable through it (AttributeError at
-    # runtime) and must not produce an edge. `callables` keeps class members
-    # because the same-file bare grade needs them (a bare call inside a Ruby
-    # class body is real self-dispatch).
+    # module_attribute grade gates on this set: `mod.name()` dispatches on
+    # the module object, so a name that exists only as a class member inside
+    # `mod` is unreachable through it (AttributeError at runtime) and must
+    # not produce an edge. The same-file bare grade also starts from this
+    # set (a bare call inside a Ruby class body is real self-dispatch), then
+    # adds single-class members computed from `class_members` below -- never
+    # a raw union of every class's members, which would let two different
+    # classes sharing a member name fabricate a merged edge.
     module_callables: dict[str, set[str]] = {}
     # rel -> class name -> member name -> kinds recorded for that member.
     # Kinds matter to the constant_receiver grade only: Const.method can
@@ -216,7 +223,6 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
             name = row.get("name")
             if not isinstance(name, str) or not name:
                 continue
-            callables.setdefault(rel, set()).add(name)
             # Ruby dumps carry the fully qualified class path (module nesting
             # joined with "::"); keying on it stops a short class name from
             # matching across namespaces. Rows without it (old dumps, TS) fall
@@ -344,10 +350,25 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
             _add(final_rel, final_name, caller_rel, caller_fn, line, "import", tuple(via))
 
     for rel, sites in sites_by_rel.items():
-        own_callables = callables.get(rel) or set()
-        own_members: set[str] = set()
+        # A this/self (and file-local bare) call site carries no
+        # enclosing-class field, so a member name owned by TWO OR MORE
+        # distinct classes in this file cannot be attributed to either one:
+        # asserting an edge would silently merge two unrelated classes' call
+        # sites into a single fabricated answer. Count how many distinct
+        # classes define each name in this file and keep only the
+        # unambiguous ones (owned by exactly one class) as same-file
+        # resolvable members; an ambiguous name yields no edge here, same as
+        # any other unresolvable same_file lookup.
+        name_class_count: dict[str, int] = {}
         for members in (class_members.get(rel) or {}).values():
-            own_members |= members.keys()
+            for member_name in members:
+                name_class_count[member_name] = name_class_count.get(member_name, 0) + 1
+        own_members = {n for n, count in name_class_count.items() if count == 1}
+        # Bare calls may resolve to a module-level callable (never ambiguous,
+        # since it isn't tied to any class) or to the same unambiguous
+        # single-class members as above; an ambiguous class-only name is
+        # excluded here too.
+        own_callables = (module_callables.get(rel) or set()) | own_members
         own_imports = import_map.get(rel) or {}
         own_aliases = ns_aliases.get(rel) or {}
         fdir = file_dir[rel]

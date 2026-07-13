@@ -1391,3 +1391,56 @@ def test_get_canonical_excerpt_flags_degraded_profile(trusted_repo, monkeypatch)
     assert data["status"] == "degraded"
     assert data["reason"] == "profile_unavailable"
     assert data["content"] == ""
+
+
+def _build_untrusted_clone(tmp_path, name: str):
+    repo = tmp_path / name
+    cham = repo / ".chameleon"
+    cham.mkdir(parents=True)
+    (cham / "profile.json").write_text(json.dumps({"generation": 1, "language": "typescript"}))
+    (cham / "archetypes.json").write_text(
+        json.dumps({"generation": 1, "archetypes": {ARCH: {"summary": "service objects"}}})
+    )
+    (cham / "rules.json").write_text(
+        json.dumps({"generation": 1, "rules": {"no-default-export": {"severity": "warn"}}})
+    )
+    (cham / "canonicals.json").write_text(
+        json.dumps(
+            {
+                "generation": 1,
+                "canonicals": {ARCH: [{"witness": {"path": WITNESS, "sha_hint": "deadbeef"}}]},
+            }
+        )
+    )
+    (cham / "conventions.json").write_text(json.dumps({"generation": 1, "conventions": {}}))
+    (cham / "COMMITTED").touch()
+    (repo / WITNESS).write_text("export function makeService() {\n  return 1;\n}\n")
+    return repo
+
+
+def test_get_canonical_excerpt_surfaces_resolved_repo_root_on_id_collision(tmp_path, monkeypatch):
+    # Two physical checkouts of the same git remote share one repo_id; the
+    # by-id resolver picks ONE of them deterministically but previously gave
+    # the caller no way to tell which -- the envelope must now carry the
+    # actually-resolved repo_root so a mismatch against the intended clone
+    # is detectable.
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    from chameleon_mcp import index_db
+
+    monkeypatch.setattr(index_db, "_INDEX_CONN", None)
+
+    clone_a = _build_untrusted_clone(tmp_path, "clone_a")
+    clone_b = _build_untrusted_clone(tmp_path, "clone_b")
+    shared_id = "f" * 64
+
+    monkeypatch.setattr(tools, "_compute_repo_id", lambda root: shared_id)
+    grant_trust(shared_id, clone_b / ".chameleon")
+    index_db.upsert_repo(shared_id, str(clone_a.resolve()), last_seen_at="2020-01-01T00:00:00Z")
+    index_db.upsert_repo(shared_id, str(clone_b.resolve()), last_seen_at="2030-01-01T00:00:00Z")
+
+    out = tools.get_canonical_excerpt(shared_id, ARCH)["data"]
+    assert out.get("repo_root") == str(clone_b.resolve())
+
+    rules_out = tools.get_rules(shared_id)["data"]
+    assert rules_out.get("repo_root") == str(clone_b.resolve())

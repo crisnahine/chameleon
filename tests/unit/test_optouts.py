@@ -269,6 +269,30 @@ def test_write_pause_creates_file(tmp_path: Path):
     assert not pause_path.with_suffix(".tmp").exists()
 
 
+def test_write_pause_never_expires_before_requested_duration(tmp_path: Path):
+    """The written expiry must be >= the exact requested instant.
+
+    strftime formats to whole seconds; flooring the fractional part would
+    make every pause's honored window a hair shorter than `minutes * 60`.
+    Bracket the call with time.time() before/after and require the parsed
+    expiry to be no earlier than the earliest possible requested instant.
+    """
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    repo_id = "test-repo"
+    minutes = 15
+
+    with patch.dict(os.environ, {"CHAMELEON_PLUGIN_DATA": str(data_dir)}):
+        from chameleon_mcp.optouts import write_pause
+
+        before = time.time()
+        expiry_iso = write_pause(repo_id, minutes=minutes)
+
+    parsed = datetime.fromisoformat(expiry_iso.replace("Z", "+00:00"))
+    requested_min = before + minutes * 60
+    assert parsed.timestamp() >= requested_min
+
+
 def test_reap_stale_session_markers(tmp_path, monkeypatch):
     """Stale .session_disabled.<sid> markers (no SessionEnd cleanup exists) are
     reaped; fresh ones from a live session are kept."""

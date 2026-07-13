@@ -140,16 +140,26 @@ def main(argv: list[str] | None = None) -> int:
 
     results_root = Path(args.results_dir).resolve()
     results_root.mkdir(parents=True, exist_ok=True)
-    ctx = build_context(plugin_root=_PLUGIN_DIR, results_root=results_root, repo_root=_REPO_ROOT)
-    print(f"run_dir: {ctx.run_dir}", file=sys.stderr)
 
+    # Acquire the concurrent-runner lock BEFORE creating this invocation's own
+    # uniquely-timestamped run_dir: build_context() creates run_dir exclusively
+    # (mkdir exist_ok=False), so a lock taken only afterward could never
+    # actually detect a second, overlapping invocation -- each one would just
+    # create its own distinct run_dir and never contend. Preflight's other
+    # checks are cheap and order-independent, so folding them into this same
+    # try/except (rather than running them only after the lock) costs nothing.
     try:
-        pf = preflight.run_all(repo_root=_REPO_ROOT, run_dir=ctx.run_dir, plugin_dir=_PLUGIN_DIR)
+        pf = preflight.run_all(
+            repo_root=_REPO_ROOT, results_root=results_root, plugin_dir=_PLUGIN_DIR
+        )
     except preflight.PreflightError as e:
         print(f"PREFLIGHT FAILED: {e}", file=sys.stderr)
         return 2
 
     print(f"preflight ok: claude={pf['claude']}, git={pf['git_version']}", file=sys.stderr)
+
+    ctx = build_context(plugin_root=_PLUGIN_DIR, results_root=results_root, repo_root=_REPO_ROOT)
+    print(f"run_dir: {ctx.run_dir}", file=sys.stderr)
 
     for name, seed_path in pf["fixtures"].items():
         try:

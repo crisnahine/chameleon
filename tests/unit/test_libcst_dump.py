@@ -381,9 +381,19 @@ def test_no_return_type_when_unannotated(tmp_path):
 
 
 def test_class_shapes_extends_mirrors_first_base(tmp_path):
-    rec = _dump(_write(tmp_path, "c.py", "class V(models.Model, Mixin):\n    pass\n"))
+    rec = _dump(_write(tmp_path, "c.py", "class V(models.Model):\n    pass\n"))
     shape = next(c for c in rec["class_shapes"] if c["name"] == "V")
     assert shape["extends"] == "models.Model"
+    assert shape["bases"] == ["models.Model"]
+
+
+def test_class_shapes_extends_marks_dropped_bases(tmp_path):
+    # A class with multiple bases must not silently lose the extras: `bases`
+    # keeps the full list, and `extends` (the single-string summary) marks
+    # how many more there are instead of rendering only the first.
+    rec = _dump(_write(tmp_path, "c.py", "class V(models.Model, Mixin):\n    pass\n"))
+    shape = next(c for c in rec["class_shapes"] if c["name"] == "V")
+    assert shape["extends"] == "models.Model (+1 more)"
     assert shape["bases"] == ["models.Model", "Mixin"]
 
 

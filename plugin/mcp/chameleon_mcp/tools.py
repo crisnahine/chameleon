@@ -507,6 +507,148 @@ def _persist_repo_uuid_if_no_remote(repo_root: Path) -> None:
         pass
 
 
+def _orphaned_uuid_trust_hint(repo_root: Path, repo_id: str) -> dict | None:
+    """Detect an orphaned no-remote trust/history grant left by a lost repo_uuid.
+
+    A no-remote repo's identity falls back to config.json's ``repo_uuid``, then
+    to the raw resolved-path hash (see ``_compute_repo_id``). If that uuid is
+    lost -- deletion, a bad merge, a restored old backup -- while the repo
+    still has no git remote, the freshly computed repo_id silently shifts to
+    the path-hash branch with zero diagnostic, unlike the engine-changed-the-
+    hash-algorithm case (``_legacy_path_repo_id``), which surfaces
+    ``legacy_trust_hint``. This mirrors that mechanism for the uuid-loss case:
+    scan the plugin data root for another repo_id's ``.trust`` record whose OWN
+    ``repo_root`` resolves to this same working tree. A match under a
+    DIFFERENT id than the one just computed means that prior grant (and its
+    drift/review history) is now orphaned.
+
+    Fails open (``None``) on any read error, when a git remote exists (the
+    uuid branch never applied), or when nothing matches. Bounded by
+    ``ORPHANED_TRUST_SCAN_CAP`` so a plugin data dir holding many repos cannot
+    make the scan unbounded.
+    """
+    from chameleon_mcp._thresholds import threshold_int
+    from chameleon_mcp.profile.trust import plugin_data_dir, trust_state_for
+
+    try:
+        if _git_remote_url(repo_root):
+            return None
+        cfg_path = repo_root / ".chameleon" / "config.json"
+        raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict) or raw.get("repo_uuid"):
+            return None
+        # A persisted `production_ref` is only ever auto-stamped for an
+        # origin-backed repo (a local-only repo never auto-locks -- see
+        # docs/architecture.md "Production-ref derivation"), so its presence
+        # here -- alongside no remote existing right now -- is evidence this
+        # repo HAD a remote and lost it, not that it lost a repo_uuid it never
+        # needed while remote-identified. Attributing the orphaned grant to a
+        # missing repo_uuid in that case would be a wrong diagnosis pointing
+        # at the wrong remediation (there is no uuid to restore), so bail out
+        # rather than guess between two indistinguishable-from-the-hash causes.
+        if raw.get("production_ref") is not None:
+            return None
+        current = str(repo_root.resolve())
+    except (OSError, ValueError):
+        return None
+
+    try:
+        candidate_ids = [d.name for d in plugin_data_dir().iterdir() if d.is_dir()]
+    except OSError:
+        return None
+
+    cap = threshold_int("ORPHANED_TRUST_SCAN_CAP")
+    for candidate_id in candidate_ids[:cap]:
+        if candidate_id == repo_id:
+            continue
+        try:
+            rec = trust_state_for(candidate_id)
+        except Exception:
+            continue
+        if rec is None:
+            continue
+        if rec.repo_root == current or current in rec.repo_root_specific_hashes:
+            return {
+                "reason": (
+                    "This repo has no git remote; its identity derives from "
+                    "config.json's repo_uuid, which is now missing. Trust and "
+                    "drift/review history were recorded under a different "
+                    "(uuid-derived) repo_id for this same working tree."
+                ),
+                "orphaned_repo_id": candidate_id,
+                "current_repo_id": repo_id,
+                "recommended_action": (
+                    "Restore repo_uuid in .chameleon/config.json if you still "
+                    "have it, or re-run /chameleon-trust to grant the new repo_id"
+                ),
+            }
+    return None
+
+
+def _coordinator_production_ref_path(toplevel: Path) -> Path:
+    """Off-profile home for a coordinator-only monorepo's resolved production_ref.
+
+    A coordinator-only bootstrap (status ``success_workspaces_only``) never
+    gets its own ``.chameleon/`` -- the root has no language signal of its
+    own, so ``_persist_production_ref``'s usual ``.chameleon/config.json``
+    target does not exist there and a resolved lock has nowhere to land.
+    Mirrors WP-C5's cross-workspace index (``cross_reverse_index.json``):
+    a small file keyed by the toplevel's own repo_id, off the trust-hashed
+    profile surface, so it survives even though the coordinator root itself
+    carries no profile.
+    """
+    from chameleon_mcp.profile.trust import repo_data_dir
+
+    return repo_data_dir(_compute_repo_id(toplevel)) / "production_ref.json"
+
+
+def _persisted_coordinator_production_ref(toplevel: Path) -> str | None:
+    """Read the coordinator-scoped production_ref lock, if one was persisted.
+
+    Fail-open: any read/parse error, or no lock ever having been persisted,
+    returns None -- callers then fall back to their normal no-lock behavior.
+    """
+    try:
+        raw = _coordinator_production_ref_path(toplevel).read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    ref = data.get("production_ref")
+    if isinstance(ref, str) and ref.strip():
+        return ref.strip()
+    return None
+
+
+def _persist_coordinator_production_ref(toplevel: Path, branch: str) -> None:
+    """Stamp the coordinator-scoped production_ref lock (best-effort).
+
+    Same read-modify-write shape as ``_persist_production_ref``, just
+    targeting the plugin-data file instead of a (nonexistent) root
+    ``.chameleon/config.json``.
+    """
+    try:
+        path = _coordinator_production_ref_path(toplevel)
+        existing: dict = {}
+        if path.is_file():
+            try:
+                parsed = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(parsed, dict):
+                    existing = parsed
+            except (OSError, json.JSONDecodeError, ValueError):
+                existing = {}
+        if existing.get("production_ref") == branch:
+            return
+        existing["production_ref"] = branch
+        text = json.dumps(existing, indent=2, sort_keys=True) + "\n"
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)
+    except Exception:
+        pass
+
+
 def _persisted_production_ref(repo_root: Path) -> str | None:
     """Read ``.chameleon/config.json``'s ``production_ref`` if present.
 
@@ -866,7 +1008,7 @@ def detect_repo(file_path: str) -> dict:
                      exists but the profile hash changed since grant; the user
                      re-confirms via /chameleon-trust. Unreachable by default
 
-    Two distinct ``legacy_trust_hint`` surfaces are emitted, mutually
+    Three distinct ``legacy_trust_hint`` surfaces are emitted, mutually
     exclusive by trigger:
 
     1. **Earlier path-id migration** (string hint + ``legacy_repo_id``):
@@ -887,6 +1029,15 @@ def detect_repo(file_path: str) -> dict:
        inside the profile". Genuine in-place stale (recorded_repo_root
        matches current_repo_root) deliberately does NOT surface the hint
        — that branch is already covered by the standard stale messaging.
+
+    3. **Orphaned repo_uuid hint** (dict, ``_orphaned_uuid_trust_hint``):
+       fires when a no-remote repo's ``config.json`` lost its ``repo_uuid``
+       (deletion, bad merge, restored old backup), silently shifting the
+       computed repo_id to the path-hash branch. Declines (returns nothing)
+       when ``config.json`` carries a persisted ``production_ref`` — that
+       key is only ever auto-stamped for an origin-backed repo, so its
+       presence alongside "no remote right now" means this repo more likely
+       lost its git remote than a repo_uuid it never needed.
     """
     from chameleon_mcp.profile.loader import find_repo_root_with_refusal
     from chameleon_mcp.profile.trust import is_material_change, trust_state_for
@@ -1044,6 +1195,12 @@ def detect_repo(file_path: str) -> dict:
         )
         legacy_repo_id_value = legacy_id
 
+    if trust is None and legacy_trust_hint_value is None:
+        # A no-remote repo whose repo_uuid vanished shifts silently to the
+        # path-hash repo_id with no diagnostic at all, unlike the migration
+        # case just above -- check for that orphaned uuid-derived grant too.
+        legacy_trust_hint_value = _orphaned_uuid_trust_hint(repo_root, repo_id)
+
     current_repo_root_str = str(repo_root)
     if (
         trust is not None
@@ -1123,6 +1280,14 @@ def detect_repo(file_path: str) -> dict:
                 and not _production_ref_explicitly_disabled(_toplevel)
             ):
                 locked_branch = _persisted_production_ref(_toplevel)
+                if locked_branch is None:
+                    # A coordinator-only toplevel (no language of its own,
+                    # bootstrap status success_workspaces_only) never gets a
+                    # root .chameleon/config.json to carry the lock, so the
+                    # check above always misses -- fall back to the
+                    # coordinator-scoped plugin-data lock bootstrap persisted
+                    # there instead.
+                    locked_branch = _persisted_coordinator_production_ref(_toplevel)
         if locked_branch:
             from chameleon_mcp.production_ref import resolve_production_ref
 
@@ -2453,12 +2618,31 @@ def get_pattern_context(file_path: str) -> dict:
         arch_data.pop("summary", None)
         rules_out = []
 
+    # Pause gate. pause_session's ``.pause_until`` marker is meant to quiet
+    # chameleon's advisory guidance for the requested window, but only the
+    # PreToolUse hook checked it before calling this tool -- a direct call
+    # here (bypassing the hook) got the exact same guidance, active pause or
+    # not. Blank the same guidance-bearing fields the untrusted gate blanks;
+    # metadata (archetype name, witness_path, trust_state) still flows so a
+    # caller can tell "paused" from "no guidance available". Session-scoped
+    # disable is intentionally not checked here (this tool carries no
+    # session_id); repo_skip / CHAMELEON_DISABLE stay hook-only by design.
+    from chameleon_mcp.optouts import is_chameleon_suppressed
+
+    paused = is_chameleon_suppressed(repo_root, repo_id) == "pause"
+    if paused:
+        canonical_data = {**canonical_data, "content": "", "redacted_reason": "paused"}
+        idioms_text = ""
+        arch_data.pop("summary", None)
+        rules_out = []
+
     return _envelope(
         {
             "repo": {
                 "id": repo_id,
                 "profile_status": "profile_present",
                 "trust_state": trust_state_str,
+                "paused": paused,
             },
             "archetype": arch_data,
             "canonical_excerpt": canonical_data,
@@ -2581,12 +2765,25 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
             }
         )
 
+    def _with_repo_root(env: dict) -> dict:
+        """Attach the physical repo_root actually resolved and served from.
+
+        A bare repo_id argument can resolve to any of several physical
+        checkouts sharing that id (e.g. two local clones of the same git
+        remote) -- ``_resolve_repo_root_by_id`` picks one deterministically
+        but silently, with no way for the caller to tell it apart from a
+        single-clone result. Surfacing the resolved root lets a caller
+        detect a mismatch against the checkout it actually meant.
+        """
+        env.setdefault("repo_root", str(repo_root))
+        return _envelope(env)
+
     # Explicit-path / by-id resolution bypasses find_repo_root, so re-apply the
     # unsafe-root guard here: a profile planted under /tmp or a world-writable
     # dir by another local user must not be served to the model surface.
     _unsafe = _unsafe_root_refusal(repo_root)
     if _unsafe is not None:
-        return _envelope(
+        return _with_repo_root(
             {
                 "status": "failed",
                 "error": _unsafe,
@@ -2603,7 +2800,7 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
         # Distinguish "profile failed to load" from the legitimate "archetype
         # has no witness" empty result, which returns this same shape minus
         # the degraded flag; without it corruption reads as a benign no-op.
-        return _envelope(
+        return _with_repo_root(
             {
                 "status": "degraded",
                 "reason": "profile_unavailable",
@@ -2632,7 +2829,7 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
             except Exception:
                 continue
         if not found_in_workspace:
-            return _envelope(
+            return _with_repo_root(
                 {
                     "status": "failed",
                     "error": "archetype not found",
@@ -2653,7 +2850,7 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
     # contract is never-raise / fail-open, and this crash sits BEFORE the trust
     # gate below, so an untrusted attacker-controllable profile must not crash it.
     if not isinstance(canonicals, list) or not canonicals:
-        return _envelope(
+        return _with_repo_root(
             {
                 "status": "no_witness",
                 "reason": (
@@ -2684,7 +2881,7 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
     _raw_sha = witness.get("sha_hint")
     _safe_sha = sanitize_for_chameleon_context(str(_raw_sha)) if _raw_sha is not None else None
     if not witness_rel:
-        return _envelope(
+        return _with_repo_root(
             {
                 "status": "no_witness",
                 "reason": (
@@ -2717,7 +2914,7 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
         # string from it: witness_rel / sha_hint come straight from canonicals.json
         # and could carry ANSI / newline / injection prose to the model surface.
         # Withhold them (null), matching the sibling read tools' untrusted contract.
-        return _envelope(
+        return _with_repo_root(
             {
                 "status": "untrusted",
                 "reason": "profile is not trusted for this user; grant with /chameleon-trust",
@@ -2741,7 +2938,7 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
     except FileTooLargeError:
         # Over the 5 MB ceiling: flag it (truncated/oversize) instead of an empty
         # success, so an explicit agent pull still learns the witness exists.
-        return _envelope(
+        return _with_repo_root(
             {
                 "status": "oversize",
                 "content": "",
@@ -2754,7 +2951,7 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
         # Witness deleted or never created on this working tree. Flag it so
         # callers can tell the user to refresh rather than silently degrading
         # to an empty excerpt with no signal.
-        return _envelope(
+        return _with_repo_root(
             {
                 "content": "",
                 "witness_path": witness_rel,
@@ -2766,7 +2963,7 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
     except UnsafeFileError as e:
         if isinstance(e.__cause__, FileNotFoundError):
             # safe_open wraps FileNotFoundError; treat it the same way.
-            return _envelope(
+            return _with_repo_root(
                 {
                     "content": "",
                     "witness_path": witness_rel,
@@ -2776,7 +2973,7 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
                 }
             )
         # Security rejection (traversal, symlink, etc.): leave content empty.
-        return _envelope(
+        return _with_repo_root(
             {
                 "content": "",
                 "witness_path": witness_rel,
@@ -2786,7 +2983,7 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
         )
     except OSError:
         # Read error or other I/O failure: leave content empty.
-        return _envelope(
+        return _with_repo_root(
             {
                 "content": "",
                 "witness_path": witness_rel,
@@ -2803,7 +3000,7 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
         from chameleon_mcp.bootstrap.canonical_scanner import is_safe_canonical
 
         if not is_safe_canonical(content):
-            return _envelope(
+            return _with_repo_root(
                 {
                     "status": "no_witness",
                     "reason": (
@@ -2822,7 +3019,7 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
         pass
 
     content = sanitize_for_chameleon_context(content)
-    return _envelope(
+    return _with_repo_root(
         {
             "content": content,
             "witness_path": witness_rel,
@@ -2904,6 +3101,19 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
             env["deprecation"] = deprecation_note
         return _envelope(env)
 
+    def _with_repo_root(env: dict) -> dict:
+        """Attach the physical repo_root actually resolved and served from.
+
+        A bare repo_id argument can resolve to any of several physical
+        checkouts sharing that id (e.g. two local clones of the same git
+        remote) -- ``_resolve_repo_root_by_id`` picks one deterministically
+        but silently, with no way for the caller to tell it apart from a
+        single-clone result. Surfacing the resolved root lets a caller
+        detect a mismatch against the checkout it actually meant.
+        """
+        env.setdefault("repo_root", str(repo_root))
+        return _envelope(env)
+
     # Trust gate: rules.json is derived from committed (attacker-controllable)
     # eslint/rubocop/tsconfig config. This tool is model-callable, so withhold
     # it for an untrusted profile. Stale still flows (trusted once).
@@ -2914,7 +3124,7 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
         env = {"status": "untrusted", "rules": []}
         if deprecation_note:
             env["deprecation"] = deprecation_note
-        return _envelope(env)
+        return _with_repo_root(env)
 
     try:
         loaded = load_profile_dir(_effective_profile_dir(repo_root))
@@ -2925,7 +3135,7 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
         env = {"rules": [], "status": "degraded", "reason": "profile_unavailable"}
         if deprecation_note:
             env["deprecation"] = deprecation_note
-        return _envelope(env)
+        return _with_repo_root(env)
 
     rules_dict = loaded.rules.get("rules", {}) or {}
     # _loads_hardened validates only the top-level object shape, so a corrupt
@@ -2964,13 +3174,13 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
         env = _with_warnings({"rules": _sanitize_rule_items(list(rules_dict.items()))})
         if deprecation_note:
             env["deprecation"] = deprecation_note
-        return _envelope(env)
+        return _with_repo_root(env)
 
     if source in rules_dict:
         env = _with_warnings({"rules": _sanitize_rule_items([(source, rules_dict[source])])})
         if deprecation_note:
             env["deprecation"] = deprecation_note
-        return _envelope(env)
+        return _with_repo_root(env)
 
     if source in loaded.archetype_names:
         sources = sorted(rules_dict.keys())
@@ -2987,13 +3197,13 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
         }
         if deprecation_note:
             env["deprecation"] = deprecation_note
-        return _envelope(env)
+        return _with_repo_root(env)
 
     filtered = [(k, v) for k, v in rules_dict.items() if source in str(k)]
     env = {"rules": _sanitize_rule_items(filtered)}
     if deprecation_note:
         env["deprecation"] = deprecation_note
-    return _envelope(env)
+    return _with_repo_root(env)
 
 
 def lint_file(
@@ -4313,29 +4523,48 @@ def search_codebase(repo: str, query: str, limit: int = 10) -> dict:
         from chameleon_mcp.symbol_signatures import load_symbol_signatures
 
         _ss_path = _pr / ".chameleon" / "symbol_signatures.json"
-        if load_symbol_signatures(_pr) is None and _ss_path.is_file():
-            # Distinguish a schema-stale index (repaired by /chameleon-refresh,
-            # same as calls-index-stale below) from genuine corruption, instead
-            # of a flat "(corrupt)" for both -- mirrors the calls-index label
-            # this same function already routes through the shared reason.
-            _ss_reason = "corrupt"
-            try:
-                _ss_obj = json.loads(_ss_path.read_text(encoding="utf-8"))
-                if isinstance(_ss_obj, dict) and _ss_obj.get("schema_version") != _SS_SV:
-                    _ss_reason = "symbol-index-stale"
-            except (OSError, ValueError):
-                pass
+        if load_symbol_signatures(_pr) is None:
+            # Distinguish three states: never built (missing -- previously
+            # silent, the identical situation the present-but-corrupt case
+            # already flagged), genuine corruption, and a schema-stale index
+            # (repaired by /chameleon-refresh, same as calls-index-stale
+            # below). "Stale" requires SOME evidence this is a real
+            # prior-schema artifact -- the expected "files" shape, or a
+            # present (if out-of-range) int schema_version -- not merely a
+            # missing/None schema_version on an otherwise-garbage payload.
+            if not _ss_path.is_file():
+                _ss_reason = "missing"
+            else:
+                _ss_reason = "corrupt"
+                try:
+                    _ss_obj = json.loads(_ss_path.read_text(encoding="utf-8"))
+                    if isinstance(_ss_obj, dict):
+                        _ss_sv = _ss_obj.get("schema_version")
+                        _ss_has_shape = isinstance(_ss_obj.get("files"), dict)
+                        _ss_has_versioned = (
+                            isinstance(_ss_sv, int)
+                            and not isinstance(_ss_sv, bool)
+                            and _ss_sv != _SS_SV
+                        )
+                        if _ss_has_shape or _ss_has_versioned:
+                            _ss_reason = "symbol-index-stale"
+                except (OSError, ValueError):
+                    pass
             _reasons.append(f"symbol index unavailable ({_ss_reason})")
     # A present-but-corrupt calls_index zeroes every `callers` count and re-ranks
     # NON-empty results, so check it regardless of whether results is empty --
     # otherwise a successful-looking search silently reports callers=0 everywhere.
+    # Likewise a MISSING calls_index must not stay silent just because it never
+    # existed -- the identical zeroed-callers situation the present-but-corrupt
+    # case already flags.
     from chameleon_mcp.calls_index import load_calls_index
 
-    if load_calls_index(_pr) is None and (_pr / ".chameleon" / "calls_index.json").is_file():
+    if load_calls_index(_pr) is None:
         # Route through the same helper get_callers / get_blast_radius /
         # query_symbol_importers already use, so a schema-stale index reads
-        # as "calls-index-stale" everywhere -- not a hardcoded "(corrupt)"
-        # here and a different label on every sibling comprehension tool.
+        # as "calls-index-stale" and a never-built one as "no-calls-index"
+        # everywhere -- not a hardcoded "(corrupt)" here and a different
+        # label on every sibling comprehension tool.
         _reasons.append(
             f"call index unavailable ({_calls_index_unavailable_reason(_pr)}); "
             "caller counts may be zero"
@@ -6006,13 +6235,19 @@ def get_status(repo: str) -> dict:
     # edits) are two distinct axes, not the same number: a rule can read
     # fp_rate=0.000 and still be overridden on most edits. Fail-open: a missing
     # drift.db / metrics log degrades to no section rather than crashing status.
+    # build_override_audit never returns None on success -- a repo with zero
+    # recorded activity still gets the {"rules": {}, ...} empty shape -- so
+    # "no exception" alone is not "there is history"; only a non-empty
+    # per-rule dict counts as real drift.db override history.
     overrides = None
     try:
         from chameleon_mcp.review_ledger import build_override_audit
 
         _repo_path, repo_id = _resolve_repo_arg(repo)
         if repo_id is not None:
-            overrides = build_override_audit(repo_id)
+            _audit = build_override_audit(repo_id)
+            if _audit.get("rules"):
+                overrides = _audit
     except Exception:
         overrides = None
 
@@ -6328,6 +6563,26 @@ def get_review_history(
         return _envelope(
             {"status": "no_repo", "repo_id": None, "records": [], "total": 0, "unverified": 0}
         )
+
+    # Trust gate: the ledger's verdict/findings text and attestation records
+    # are derived from this repo's own reviewed commits and profile, so they
+    # must not disclose one checkout's review/security history to a caller
+    # whose OWN checkout was never granted trust for this repo_id (mirrors
+    # get_rules / get_contract_breaks / the other model-callable read tools).
+    if _repo_path is not None:
+        from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
+
+        _gate_rec = _trust_state_for(repo_id)
+        if _gate_rec is None or not _gate_rec.grants_root(_repo_path):
+            return _envelope(
+                {
+                    "status": "untrusted",
+                    "repo_id": repo_id,
+                    "records": [],
+                    "total": 0,
+                    "unverified": 0,
+                }
+            )
 
     try:
         from chameleon_mcp.review_ledger import read_review_history
@@ -6656,6 +6911,26 @@ def explain_edit(repo: str, file_path: str) -> dict:
     repo_path, repo_id = _resolve_repo_arg(repo)
     if repo_id is None:
         return _envelope({"status": "no_repo"})
+
+    # Trust gate: the replayed decision (archetype, match_quality, confidence_band,
+    # blockable-rule list) is derived from THIS repo_id's own committed profile, so
+    # it must not be replayed to a caller whose own checkout was never granted
+    # trust for this repo_id (mirrors get_rules / get_review_history / the other
+    # model-callable read tools).
+    if repo_path is not None:
+        from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
+
+        _gate_rec = _trust_state_for(repo_id)
+        if _gate_rec is None or not _gate_rec.grants_root(repo_path):
+            return _envelope(
+                {
+                    "status": "untrusted",
+                    "repo_id": repo_id,
+                    "found": False,
+                    "decision": None,
+                    "classification": None,
+                }
+            )
 
     rel_path = _normalize_decision_rel_path(repo_path, file_path)
 
@@ -7994,6 +8269,22 @@ def _profile_needs_rederive(profile_dir) -> bool:
         if not isinstance(obj, dict):
             return True
         parsed_artifacts[name] = obj
+    # conventions.json content-shape check: valid, parseable JSON whose
+    # "conventions" sub-object is missing one of the top-level derived
+    # sections (e.g. a hand-edit or bad merge that strips "naming" while
+    # leaving the rest of the file intact) is corruption the parseability/dict
+    # checks above don't catch. Every conventions.json extract_all_conventions
+    # writes starts from empty_conventions(), so every section key is always
+    # present -- possibly as an empty {} when nothing was derived -- so a
+    # narrow field missing entirely means it was stripped after the fact.
+    from chameleon_mcp.conventions import empty_conventions as _empty_conventions
+
+    conv_sections = parsed_artifacts["conventions.json"].get("conventions")
+    if not isinstance(conv_sections, dict):
+        return True
+    expected_sections = _empty_conventions(generation=0)["conventions"].keys()
+    if not set(expected_sections) <= set(conv_sections.keys()):
+        return True
     # The manifest itself (profile.json) must exist, parse, and carry a schema
     # version this engine supports. A corrupt or unsupported-schema (too-new /
     # non-int) manifest is rejected at READ time, but a plain refresh would
@@ -8325,6 +8616,15 @@ def _refresh_repo_locked(repo_path, *, force: bool, analysis_root: Path | None =
             pass
         else:
             inherited = _persisted_production_ref(toplevel) if is_subdir else None
+            if inherited is None and is_subdir:
+                # A coordinator-only toplevel (no language of its own) never
+                # gets a root .chameleon/config.json, so the check above
+                # always misses even though the toplevel DID resolve+lock a
+                # production_ref at bootstrap -- check the coordinator-scoped
+                # plugin-data lock before falling to a live re-detect, so an
+                # explicit/auto-locked coordinator decision is never silently
+                # overwritten by this workspace's own independent detection.
+                inherited = _persisted_coordinator_production_ref(toplevel)
             if inherited:
                 _persist_production_ref(repo_root, inherited)
                 prod_branch = inherited
@@ -9664,6 +9964,23 @@ def _bootstrap_repo_unlocked(
                 index_db.delete_all_file_clusters(repo_id)
                 if file_cluster_rows:
                     index_db.upsert_file_clusters(repo_id, file_cluster_rows)
+        elif (
+            report.status == "success_workspaces_only"
+            and prod_state.persist
+            and prod_state.locked
+            and prod_state.branch
+        ):
+            # A coordinator-only root (no language signal of its own) never
+            # gets its own .chameleon/, so _persist_production_ref's usual
+            # config.json target does not exist here and the toplevel's
+            # resolved lock would otherwise vanish -- persist it to the
+            # coordinator-scoped plugin-data file instead, so detect_repo's
+            # walk-up and refresh_repo's inheritance fallback (both keyed
+            # off git_toplevel) can find it for every workspace underneath.
+            from chameleon_mcp.production_ref import git_toplevel
+
+            _coord_toplevel = git_toplevel(repo_root) or repo_root
+            _persist_coordinator_production_ref(_coord_toplevel, prod_state.branch)
         # Index successfully-bootstrapped workspaces regardless of the root's
         # status: a coordinator-only root (non-standard package dir, no own
         # language) still produces working workspace profiles above.
@@ -14038,6 +14355,14 @@ def doctor(repo: str | None = None) -> dict:
 
             cutoff = _dt.now(_UTC) - _td(hours=72)
             ts_re = _re.compile(r"^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z\]")
+            # Matches both prose-injection-drop stderr prints (safe_prose_text's
+            # "<name> dropped from context: contains a prompt-injection pattern"
+            # and load_profile_dir's "idioms.md dropped from context: contains a
+            # prompt-injection, secret, or dangerous pattern") regardless of which
+            # artifact name fills the middle.
+            _injection_drop_re = _re.compile(
+                r"chameleon: \S+ dropped from context: contains a prompt-injection"
+            )
             # Group lines into ENTRIES (one timestamped anchor line plus every
             # continuation line up to the next anchor), then window/slice by
             # entry, not by raw line. The previous line-based approach kept a
@@ -14049,8 +14374,9 @@ def doctor(repo: str | None = None) -> dict:
             # continuation (e.g. a benign first-run-setup banner) while the
             # anchor line of the real recent error it displaced fell outside
             # the slice entirely.
+            raw_lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
             entries: list[list[str] | None] = []
-            for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+            for line in raw_lines:
                 m = ts_re.match(line)
                 if m:
                     try:
@@ -14069,12 +14395,13 @@ def doctor(repo: str | None = None) -> dict:
                     entries[-1].append(line)
             recent_entries = [e for e in entries if e]
             tail = [ln for e in recent_entries[-5:] for ln in e]
+
+            from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _san
+
             if tail:
                 # Log lines can embed repo-derived text (an exception message
                 # carrying a symbol name, a path from a hostile fixture), and
                 # this detail reaches the model surface — sanitize each line.
-                from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _san
-
                 tail = [_san(ln) for ln in tail]
                 # The log is installation-wide: entries may come from other
                 # repos (deleted QA fixtures included). Say so, or a fresh-repo
@@ -14089,6 +14416,30 @@ def doctor(repo: str | None = None) -> dict:
                         "name": "recent_hook_errors",
                         "status": "ok",
                         "detail": "no errors in the last 72h",
+                    }
+                )
+
+            # Prose-injection-drop warnings (loader.safe_prose_text /
+            # load_profile_dir's idioms.md guard) are plain stderr prints with NO
+            # leading `[timestamp]` anchor -- the hook wrappers redirect a hook's
+            # raw stderr straight into this same log (`2>>"${LOG_FILE}"`), so this
+            # warning class never matches ts_re and the anchor-grouping pass above
+            # drops it silently (an unanchored line "has nothing to attach to").
+            # That is exactly the ONE diagnostic doctor exists to surface: a live
+            # poisoning event correctly blocked at the read path must leave a
+            # trace here. Scan the raw lines independently of the anchor grouping
+            # (they carry no timestamp to window against) and surface the most
+            # recent ones regardless of the 72h window.
+            injection_drops = [_san(ln) for ln in raw_lines if _injection_drop_re.search(ln)][-5:]
+            if injection_drops:
+                checks.append(
+                    {
+                        "name": "prose_injection_drops",
+                        "status": "warn",
+                        "detail": [
+                            "prose artifact(s) dropped for prompt-injection at the read path:"
+                        ]
+                        + injection_drops,
                     }
                 )
         except Exception as exc:

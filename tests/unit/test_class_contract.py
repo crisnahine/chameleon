@@ -80,6 +80,43 @@ def test_ts_nest_contract():
     assert "dsl_macros" not in out  # TS has no DSL-macro key
 
 
+def test_python_multi_base_extends_marker_does_not_fragment_dominance():
+    # Regression: libcst_dump.py's `extends` field carries a display-oriented
+    # "(+N more)" suffix for a multi-base Python class (e.g. "models.Model
+    # (+1 more)"), distinct per class depending on how many extra bases it
+    # has. Using that string as the dominance-grouping key (instead of the
+    # plain `bases[0]`) fragments a shared primary base into several distinct
+    # Counter buckets -- 5 single-base classes on "models.Model" plus 5
+    # two-base classes on "models.Model (+1 more)" must still count as ONE
+    # dominant base (10/10), not two buckets each below the 60% floor.
+    def f(i, *, mixin):
+        cls = f"Model{i}"
+        bases = ["models.Model", "TimestampMixin"] if mixin else ["models.Model"]
+        extends = "models.Model (+1 more)" if mixin else "models.Model"
+        return _pf(
+            f"app/models_{i}.py",
+            extras={
+                "class_shapes": [
+                    {
+                        "name": cls,
+                        "decorators": ["dataclass"],
+                        "bases": bases,
+                        "extends": extends,
+                        "implements": [],
+                    },
+                ],
+                "callable_signatures": [
+                    {"name": "save", "kind": "method", "enclosing_class": cls},
+                ],
+            },
+        )
+
+    files = [f(i, mixin=False) for i in range(5)] + [f(i, mixin=True) for i in range(5)]
+    out = extract_class_contract_conventions(files, language="python")
+    assert out["base"] == "models.Model"
+    assert out["sample_size"] == 10
+
+
 def test_minority_rich_anchor_does_not_beat_dominant_cohort():
     # Flask-shaped: many classes per file. A niche decorator carried by 4 of 12
     # classes clears the file-count anchor gate (4 >= 0.6 * 5 files) and yields

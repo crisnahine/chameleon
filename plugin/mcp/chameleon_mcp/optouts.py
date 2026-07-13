@@ -15,6 +15,7 @@ matching reason for diagnostic logging.
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import time
 from datetime import datetime, timezone
@@ -182,9 +183,15 @@ def write_session_disable(repo_id: str, session_id: str) -> Path:
 
 
 def write_pause(repo_id: str, minutes: int = 15) -> str:
-    """Write a .pause_until file with expiry = now + minutes. Returns ISO timestamp."""
+    """Write a .pause_until file with expiry = now + minutes. Returns ISO timestamp.
+
+    The expiry is rounded UP to the next whole second before formatting: the
+    ISO format is second-precision, and flooring the fractional part would
+    make the honored pause window always a hair shorter than requested.
+    Ceiling ensures the caller-requested duration is never under-delivered.
+    """
     expiry = datetime.now(UTC).timestamp() + minutes * 60
-    expiry_iso = datetime.fromtimestamp(expiry, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    expiry_iso = datetime.fromtimestamp(math.ceil(expiry), tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     pause_path = repo_data_dir(repo_id) / ".pause_until"
     tmp = pause_path.with_suffix(".tmp")
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

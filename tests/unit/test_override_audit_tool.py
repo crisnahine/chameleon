@@ -88,11 +88,11 @@ def test_get_status_carries_override_panel(repo_with_overrides):
     assert enf["overrides"]["total_overrides"] == 5
 
 
-def test_get_status_override_panel_empty_when_no_overrides(repo_with_overrides):
+def test_get_status_omits_override_panel_when_no_overrides(repo_with_overrides):
     from chameleon_mcp.tools import get_status
 
     out = get_status(str(repo_with_overrides))
     enf = out["data"]["enforcement"]
-    # Panel present but empty: no drift.db override rows.
-    assert enf["overrides"]["rules"] == {}
-    assert enf["overrides"]["total_overrides"] == 0
+    # Panel omitted entirely: no drift.db override history at all, matching
+    # the documented conditional-presence contract -- not "present but empty".
+    assert "overrides" not in enf

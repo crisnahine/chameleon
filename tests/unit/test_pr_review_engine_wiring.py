@@ -255,6 +255,16 @@ def test_record_review_verdict_tool_roundtrips_to_get_review_history(tmp_path, m
         ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
     ).stdout.strip()
 
+    # get_review_history is trust-gated (the ledger's verdict/findings text is
+    # derived from this repo_id's own reviewed commits); this fixture has no
+    # language signal for a real bootstrap, so grant trust directly against a
+    # minimal profile dir instead.
+    from chameleon_mcp.profile.trust import grant_trust
+
+    (repo / ".chameleon").mkdir(parents=True, exist_ok=True)
+    repo_id = tools._compute_repo_id(repo)
+    grant_trust(repo_id, repo / ".chameleon")
+
     written = tools.record_review_verdict(
         str(repo), "BLOCK", findings_count=3, commit_sha=sha, pr_id="42"
     )["data"]
@@ -270,6 +280,43 @@ def test_record_review_verdict_tool_roundtrips_to_get_review_history(tmp_path, m
     assert rec["findings"] == {"total": 3}
     assert rec["pr_id"] == "42"
     assert rec["verified"] is True
+
+
+def test_get_review_history_untrusted_repo_withholds_records(tmp_path, monkeypatch):
+    # Regression: get_review_history disclosed another checkout's PR-review
+    # ledger (verdict text, commit_sha, profile hash, reviewer) to ANY caller
+    # with zero trust gating. An UNGRANTED repo_id must get an untrusted
+    # envelope, not the real records.
+    import subprocess
+
+    from chameleon_mcp import tools
+
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_HMAC_KEY_PATH", str(tmp_path / "hmac.key"))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "a.txt").write_text("x", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    # Record a real verdict but deliberately never grant trust for this repo_id.
+    written = tools.record_review_verdict(
+        str(repo), "BLOCK", findings_count=3, commit_sha=sha, pr_id="42"
+    )["data"]
+    assert written["status"] == "ok"
+
+    history = tools.get_review_history(str(repo))["data"]
+    assert history["status"] == "untrusted"
+    assert history["records"] == []
+    assert history["total"] == 0
 
 
 def test_record_review_verdict_fails_open_on_unresolvable_repo():

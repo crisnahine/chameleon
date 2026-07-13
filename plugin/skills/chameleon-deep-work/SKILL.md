@@ -256,11 +256,16 @@ dependency (contract rule 2c), stated in one line.
   checked-out branch.
 - Make it runnable, then baseline it. A fresh linked worktree shares the
   repo's history, not its installed state: run the repo's own dependency
-  setup first (the lockfile's install command). Then run the gates for the
-  surface you are about to touch once, BEFORE the first edit. A pre-existing
-  failure found now is inherited, not yours to fix - note it for the Step 7
-  report (scope holds) and keep building. The baseline is what keeps Step 6
-  attributable: any new failure after it is yours.
+  setup first (the lockfile's install command). No lockfile present -
+  a vendored-dependency repo, a stdlib-only script collection - means
+  there is no install step: confirm the gates run at all (import the
+  entry point, invoke the linter) before treating the tree as ready,
+  rather than assuming "no lockfile" means "nothing to set up". Then run
+  the gates for the surface you are about to touch once, BEFORE the
+  first edit. A pre-existing failure found now is inherited, not yours
+  to fix - note it for the Step 7 report (scope holds) and keep
+  building. The baseline is what keeps Step 6 attributable: any new
+  failure after it is yours.
 - Chameleon follows you in. A linked worktree inherits the main checkout's
   profile and trust (`worktree.py` resolves the profile root through the
   `.git` file pointer), so the per-edit injection, the deny gates, and the

@@ -769,31 +769,60 @@ _ENFORCE_THRESHOLD = 0.95
 _STRONG_THRESHOLD = 0.60
 
 
-_RUBY_SNAKE_NAME_RE = re.compile(r"[a-z_][a-z0-9_]*\Z")
-_RUBY_PASCAL_SEGMENT_RE = re.compile(r"[A-Z][a-zA-Z0-9]*\Z")
-_RUBY_SCREAMING_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*\Z")
+# Unicode-aware (PEP 3131 for Python; Ruby's own source encoding is UTF-8 by
+# default too), so a name is classified by its actual letter case rather than
+# an ASCII character range: a caseless script (CJK, etc.) carries no case at
+# all and never trips an uppercase/lowercase check, while a mixed-script name
+# (``calc_café``) is judged the same way an all-ASCII one is. These back both
+# the Ruby in-source casing derivation and the shared Python naming lint
+# (`_python_naming_violations` in lint_engine.py reuses them), so an ASCII-only
+# check here would misclassify a genuinely-conforming unicode identifier in
+# either language as a violation.
+def _is_snake_case_word(word: str) -> bool:
+    """Legal identifier, no uppercase letter anywhere (any script)."""
+    return bool(word) and word.isidentifier() and not any(ch.isupper() for ch in word)
+
+
+def _is_camel_case_word(word: str) -> bool:
+    """Legal identifier, lowercase-led, no separator character."""
+    return bool(word) and word.isidentifier() and "_" not in word and word[0].islower()
+
+
+def _is_pascal_case_word(word: str) -> bool:
+    """Legal identifier, uppercase-led, no separator character."""
+    return bool(word) and word.isidentifier() and "_" not in word and word[0].isupper()
+
+
+def _is_screaming_snake_word(word: str) -> bool:
+    """Legal identifier, uppercase-led, no lowercase letter anywhere."""
+    return (
+        bool(word)
+        and word.isidentifier()
+        and word[0].isupper()
+        and not any(ch.islower() for ch in word)
+    )
 
 
 def _classify_ruby_method_casing(name: str) -> str:
     base = name.rstrip("!?=")
-    if _RUBY_SNAKE_NAME_RE.fullmatch(base):
+    if _is_snake_case_word(base):
         return "snake_case"
-    if re.fullmatch(r"[a-z][a-zA-Z0-9]*", base):
+    if _is_camel_case_word(base):
         return "camelCase"
     return "other"
 
 
 def _classify_ruby_class_casing(name: str) -> str:
     segments = name.split("::")
-    if all(_RUBY_PASCAL_SEGMENT_RE.fullmatch(s) for s in segments):
+    if all(_is_pascal_case_word(s) for s in segments):
         return "PascalCase"
     return "other"
 
 
 def _classify_ruby_constant_casing(name: str) -> str:
-    if _RUBY_SCREAMING_NAME_RE.fullmatch(name):
+    if _is_screaming_snake_word(name):
         return "SCREAMING_SNAKE_CASE"
-    if _RUBY_PASCAL_SEGMENT_RE.fullmatch(name):
+    if _is_pascal_case_word(name):
         # `Result = Struct.new(...)` — a class alias, not a value constant.
         return "PascalCase"
     return "other"
@@ -892,6 +921,16 @@ _SNAKE_RE = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$")
 _CAMEL_RE = re.compile(r"^[a-z][a-z0-9]*[A-Z][a-zA-Z0-9]*$")
 _PASCAL_RE = re.compile(r"^[A-Z][a-zA-Z0-9]*$")
 
+# A stem that mixes an underscore separator with an embedded uppercase letter
+# (``test_BadCasing``, ``user_APIClient``) matches none of the four buckets
+# above — snake requires all-lowercase, Pascal/camel forbid the separator — but
+# unlike a bare lowercase word it is NOT ambiguous: it is unambiguously not
+# kebab, snake, camel, or Pascal. Falling through to None would silently drop
+# it from both the consistency tally and the lint rule (which only flags a
+# non-None, non-matching casing), letting exactly the kind of filename that
+# most obviously breaks a repo's casing convention escape detection entirely.
+_MIXED_UNDERSCORE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+$")
+
 
 def _split_compound_suffix(basename: str) -> tuple[str, str | None]:
     """Split ``basename`` into (stem, compound_suffix).
@@ -912,13 +951,18 @@ def _split_compound_suffix(basename: str) -> tuple[str, str | None]:
 
 
 def _classify_casing(stem: str) -> str | None:
-    """Bucket a basename stem into kebab/snake/camel/Pascal, or None if unclear.
+    """Bucket a basename stem into kebab/snake/camel/Pascal/mixed, or None if unclear.
 
     Order matters: a separator-bearing stem is kebab or snake first; an
     upper-initial word is Pascal; a lower-initial word with an internal capital
-    is camel. A bare single lowercase word, index/entry files, and dot-prefixed
-    config stems carry no distinguishing casing signal, so they return None and
-    are excluded from the consistency tally.
+    is camel. A stem that carries an underscore separator together with an
+    embedded uppercase letter (``test_BadCasing``) conforms to none of those
+    four and is classified as ``mixed_case`` — a distinct, unambiguously
+    non-conforming shape, counted against consistency and flagged by the lint
+    rule rather than silently excluded. A bare single lowercase word,
+    index/entry files, and dot-prefixed config stems carry no distinguishing
+    casing signal at all, so they return None and are excluded from the
+    consistency tally.
     """
     if not stem or not stem[0].isalnum():
         return None
@@ -930,6 +974,8 @@ def _classify_casing(stem: str) -> str | None:
         return "PascalCase"
     if _CAMEL_RE.match(stem):
         return "camelCase"
+    if _MIXED_UNDERSCORE_RE.match(stem):
+        return "mixed_case"
     return None
 
 
@@ -970,7 +1016,15 @@ def extract_file_naming_convention(*, basenames: list[str]) -> dict:
     if casing_sample < threshold("FILE_NAMING_MIN_SAMPLE"):
         return {}
 
-    dominant_casing, casing_hits = casing_counts.most_common(1)[0]
+    # mixed_case is a non-conforming shape recorded ONLY to count against
+    # consistency (a real convention's denominator) -- it must never win the
+    # dominance vote itself, or a plurality of mixed-case files would make
+    # "mixed_case" the archetype's own declared convention and then flag its
+    # genuinely-conforming siblings as violators.
+    conforming_counts = Counter({k: v for k, v in casing_counts.items() if k != "mixed_case"})
+    if not conforming_counts:
+        return {}
+    dominant_casing, casing_hits = conforming_counts.most_common(1)[0]
     casing_consistency = casing_hits / casing_sample
     if casing_consistency < _STRONG_THRESHOLD:
         return {}
@@ -1309,12 +1363,20 @@ def _collect_contract_classes(files: list[ParsedFile], *, language: str) -> list
             for dec in shape.get("decorators", []) or []:
                 if dec:
                     rec["decorators"].add(dec)
-            # TS class_shapes carry the base under `extends` (a string); the
-            # libcst dump carries it under `bases` (a list). Read either so a
-            # Python class's base reaches the contract, not just TS's.
-            ext = shape.get("extends") or next(iter(shape.get("bases") or []), None)
-            if ext:
-                rec["base"] = ext
+            # TS class_shapes carry the base under `extends` (a plain string,
+            # single inheritance only). The libcst dump carries the full list
+            # under `bases`, and (for display only) a possibly-decorated
+            # `extends` summary -- e.g. "Alpha (+2 more)" for a multi-base
+            # class. Prefer the plain `bases[0]` when present: `extends` here
+            # is a dominance/grouping KEY (Counter'd across a cohort and
+            # rendered as the archetype's single declared base), and the
+            # "(+N more)" marker varies per-class even when every class
+            # shares the same primary base, which would fragment the
+            # dominance count and could flip the winning base entirely.
+            # `extends` is the fallback for TS, which never populates `bases`.
+            base = next(iter(shape.get("bases") or []), None) or shape.get("extends")
+            if base:
+                rec["base"] = base
             # TS-only: the interfaces a class `implements`. This is the anchor a
             # decorator or base cannot give -- @Injectable is shared by every
             # NestJS provider, but `implements CanActivate`/`NestInterceptor`/
@@ -2666,7 +2728,7 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
             if consistency >= _ENFORCE_THRESHOLD:
                 naming_lines.append(f"- Name {plural} in {pattern} ({pct}, enforced)")
             else:
-                naming_lines.append(f"- Name {type_name}s in {pattern} ({pct})")
+                naming_lines.append(f"- Name {plural} in {pattern} ({pct})")
         # File-naming is per-archetype (a service folder may be kebab while a
         # component folder is Pascal), so it stays keyed by archetype rather
         # than deduped on the convention key alone.

@@ -74,6 +74,16 @@ class TestClassifyCasing:
         assert _classify_casing("") is None
         assert _classify_casing("123abc") is None
 
+    def test_underscore_plus_embedded_uppercase_is_a_distinct_bucket(self):
+        # Mixing a snake separator with an embedded uppercase letter conforms
+        # to none of the four buckets, but it is unambiguously non-conforming
+        # (unlike a bare lowercase word), so it must not silently vanish as
+        # None — it needs its own distinct, non-canonical label.
+        for stem in ("test_BadCasing", "user_APIClient", "my_Widget"):
+            got = _classify_casing(stem)
+            assert got is not None, stem
+            assert got not in ("kebab-case", "snake_case", "camelCase", "PascalCase"), stem
+
 
 class TestExtractFileNaming:
     def test_dominant_kebab_with_suffix(self):
@@ -113,6 +123,28 @@ class TestExtractFileNaming:
         out = extract_file_naming_convention(basenames=names)
         assert out["file_naming"]["casing"] == "snake_case"
         assert out["file_naming"]["suffix"] == "_job.rb"
+
+    def test_mixed_underscore_uppercase_files_count_against_consistency(self):
+        # 6 real snake_case files + 4 mixed-shape (underscore + embedded
+        # uppercase) files: the mixed files must be tallied (not silently
+        # excluded like a no-signal basename), pulling consistency below the
+        # 100% it would otherwise report.
+        names = [f"thing_{i}.py" for i in range(6)] + [f"thing_Bad{i}.py" for i in range(4)]
+        out = extract_file_naming_convention(basenames=names)
+        assert out["file_naming"]["casing"] == "snake_case"
+        assert out["file_naming"]["sample_size"] == 10
+        assert out["file_naming"]["casing_consistency"] == 0.6
+
+    def test_mixed_case_never_wins_the_dominance_vote(self):
+        # Regression: mixed_case is a non-conforming shape that must only
+        # count against consistency, never become the declared convention
+        # itself even when it is the largest single bucket. A plurality of
+        # mixed-shape files (6) outnumbering a real snake_case majority (4)
+        # must not report casing="mixed_case" -- that would flag every
+        # genuinely-conforming sibling as a violator of a fabricated rule.
+        names = [f"thing_Bad{i}.py" for i in range(6)] + [f"thing_{i}.py" for i in range(4)]
+        out = extract_file_naming_convention(basenames=names)
+        assert out == {}, f"mixed_case must never win the dominance vote, got {out}"
 
 
 class TestExtractAllConventionsWiring:
@@ -166,6 +198,28 @@ class TestFileNamingLintRule:
         assert "file-naming-convention-violation" in rules
         casing_v = [v for v in out if v.expected == "kebab-case"]
         assert casing_v and casing_v[0].actual == "camelCase"
+
+    def test_underscore_plus_embedded_uppercase_fires_against_snake_convention(self):
+        # This shape used to classify as None (no signal) and so was silently
+        # excluded from the rule entirely, even though it obviously breaks a
+        # snake_case convention.
+        conv = {
+            "naming": {
+                "file_naming": {
+                    "casing": "snake_case",
+                    "casing_consistency": 0.97,
+                    "sample_size": 40,
+                }
+            }
+        }
+        out = lint_conventions(
+            "def foo():\n    pass\n",
+            conv,
+            language="python",
+            file_path="app/services/test_BadCasing.py",
+        )
+        casing_v = [v for v in out if v.rule == "file-naming-convention-violation"]
+        assert casing_v and casing_v[0].actual == "mixed_case"
 
     def test_missing_suffix_violation(self):
         out = lint_conventions(

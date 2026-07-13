@@ -58,6 +58,7 @@ import hmac
 import json
 import os
 import re
+import sqlite3
 import time
 from pathlib import Path
 
@@ -75,12 +76,15 @@ def build_override_audit(
     - ``window_days`` — the lookback applied.
     - ``total_overrides`` — sum of override events across all rules in the
       window, the headline number ("overridden in N edits").
-    - ``rules`` — per rule (sorted): ``overrides``, ``would_blocks``,
-      ``blanket`` (bare-directive overrides), ``distinct_files``,
-      ``distinct_sessions``, ``override_rate`` (overrides / (overrides +
-      would_blocks), or None below the min-events floor), ``high_override_rate``
-      (rate at or above the threshold over enough events), and ``blanket_abuse``
-      (the override share that came from bare directives is high).
+    - ``rules`` — per rule (sorted): ``overrides``, ``would_blocks`` (shadow
+      would-block metrics PLUS real enforce-mode blocks from decision_log, see
+      ``_would_block_counts`` — a purely shadow-sourced count reads an
+      actively-enforced rule's evidence as zero), ``blanket`` (bare-directive
+      overrides), ``distinct_files``, ``distinct_sessions``, ``override_rate``
+      (overrides / (overrides + would_blocks), or None below the min-events
+      floor), ``high_override_rate`` (rate at or above the threshold over
+      enough events), and ``blanket_abuse`` (the override share that came from
+      bare directives is high).
     - ``flagged`` — rule names with ``high_override_rate`` or ``blanket_abuse``
       set, the subset a lead should reconcile via refresh/teach.
 
@@ -169,21 +173,90 @@ def _override_counts(repo_id: str, window_days: int) -> dict[str, dict]:
         return {}
 
 
-def _would_block_counts(repo_id: str, window_days: int) -> dict[str, int]:
-    """Per-rule would-block counts from the shadow metrics log.
+def _real_block_counts(repo_id: str, window_days: int) -> dict[str, int]:
+    """Per-rule real block tallies from decision_log's ``blocked`` outcome rows.
 
-    Reuses the shadow report's aggregation so the override rate is measured
-    against the same would-block numbers the shadow surface shows. Empty on any
-    failure.
+    Shadow mode emits a would_block metric row per rule per violation instance;
+    enforce mode never does — it records the real block straight to
+    decision_log instead (see ``_record_edit_decision`` call sites in
+    hook_helper.py). Reading only the shadow side leaves an actively-enforced
+    rule's contribution to the override-rate denominator at zero, so a rule
+    correctly blocking most of its triggers with no overrides reads as
+    undefined, and one blocking most triggers with a handful of overrides reads
+    as a false 100%. This reads the enforce-mode evidence the shadow side
+    misses. ``blockable_rules`` is comma-joined and may repeat a rule (one entry
+    per violation instance, the same per-instance granularity the shadow
+    would_block metric uses), so every occurrence is counted.
+
+    Opens drift.db read-only via the shared hardening helper, the same pattern
+    ``index_db.py`` uses for a sibling sqlite store. Fail-open: a missing
+    drift.db or any sqlite/OS error returns {}.
     """
+    from chameleon_mcp.drift.sqlite_config import open_hardened
+    from chameleon_mcp.profile.trust import plugin_data_dir
+
+    db_path = plugin_data_dir() / repo_id / "drift.db"
+    if not db_path.is_file():
+        return {}
+    cutoff = int(time.time()) - window_days * 86_400
+    try:
+        conn = open_hardened(db_path, read_only=True)
+    except (sqlite3.Error, OSError):
+        return {}
+    try:
+        rows = conn.execute(
+            "SELECT blockable_rules FROM decision_log WHERE outcome = ? AND observed_at >= ?",
+            ("blocked", cutoff),
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    counts: dict[str, int] = {}
+    for row in rows:
+        for rule in (row[0] or "").split(","):
+            rule = rule.strip()
+            if rule:
+                counts[rule] = counts.get(rule, 0) + 1
+    return counts
+
+
+def _would_block_counts(repo_id: str, window_days: int) -> dict[str, int]:
+    """Per-rule would-block counts: shadow metrics PLUS real enforce-mode blocks.
+
+    The two sources never double-count the same instance: a rule accrues a
+    shadow row only while the repo is in shadow mode, and a decision_log
+    ``blocked`` row only while it is in enforce mode, so summing them over the
+    same rule/window adds disjoint evidence rather than inflating one event
+    twice. See ``_real_block_counts`` for why the enforce-mode half is needed
+    at all — without it, an actively-enforced rule's override_rate is computed
+    against zero would-blocks regardless of how well it is actually holding.
+
+    Reuses the shadow report's aggregation for the shadow half so that number
+    still matches the shadow surface exactly. Empty on any failure.
+    """
+    counts: dict[str, int] = {}
     try:
         from chameleon_mcp.shadow_report import build_shadow_report
 
         report = build_shadow_report(repo_id, window_days)
         rules = report.get("rules") or {}
-        return {rule: int(meta.get("would_blocks", 0)) for rule, meta in rules.items()}
+        for rule, meta in rules.items():
+            counts[rule] = counts.get(rule, 0) + int(meta.get("would_blocks", 0))
     except Exception:
-        return {}
+        pass
+
+    try:
+        for rule, n in _real_block_counts(repo_id, window_days).items():
+            counts[rule] = counts.get(rule, 0) + n
+    except Exception:
+        pass
+
+    return counts
 
 
 # --- PR-review ledger ----------------------------------------------------------

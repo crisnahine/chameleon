@@ -53,11 +53,13 @@ rationale: Prefer useCustomQuery over useQuery for shared retry + error handling
 example: const { data } = useCustomQuery({ key: 'foo' });
 counterexample: const { data } = useQuery({ key: 'foo' });
 archetype: react-component
+source: reviewer feedback on PR #482
 ```
 
 Each field is one line (or a fenced code block for example/counterexample).
-`archetype` and `status` are optional. If the user provides AT LEAST `slug:`
-+ `rationale:`, use the structured path; otherwise fall back to free-form.
+`archetype`, `status`, and `source` are optional. If the user provides AT
+LEAST `slug:` + `rationale:`, use the structured path; otherwise fall back
+to free-form.
 
 ## The free-form flow (original)
 
@@ -66,13 +68,26 @@ Each field is one line (or a fenced code block for example/counterexample).
    - **What was generated** (the off-pattern code)
    - **What should have been generated** (the team's idiom)
    - **Why** (one sentence — the reason the team adopted this convention)
+   - **Where it came from** (a PR/review comment, a doc, a file:line — see
+     Honesty Rules; skip the line if the user has no provenance to give)
 3. Write the idiom in this format:
 
    ```markdown
    ### <slug>
    Status: active (added YYYY-MM-DD)
+   Source: <path:line, PR/review reference, or short provenance note>
    <what should be done; one to three sentences>
    Reason: <why; one sentence>
+   ```
+
+   For example, an idiom captured from live review feedback:
+
+   ```markdown
+   ### use-custom-query
+   Status: active (added 2026-05-10)
+   Source: reviewer feedback on PR #482
+   Use `useCustomQuery` from `~/hooks/useCustomQuery`, not `useQuery` directly.
+   Reason: shared retry + error handling; useQuery bypasses both.
    ```
 
 4. Call `chameleon-mcp::chameleon_lifecycle(action="teach_profile", params={"repo": <repo_path>, "feedback": <formatted idiom>})`.
@@ -84,9 +99,11 @@ Each field is one line (or a fenced code block for example/counterexample).
 
 1. Confirm the user is in a repo with `.chameleon/profile.json` present.
 2. Parse the user's request into `slug`, `rationale`, `example`,
-   `counterexample`, optional `archetype`, optional `status`. Strip fenced
-   code blocks of their fences when extracting example/counterexample
-   bodies (you want the raw code, not the ``` markers).
+   `counterexample`, optional `archetype`, optional `status`, optional
+   `source` (a `source:` line — a path:line, a git ref, or a short
+   provenance note). Strip fenced code blocks of their fences when
+   extracting example/counterexample bodies (you want the raw code, not
+   the ``` markers).
 3. Call:
 
    ```
@@ -100,6 +117,25 @@ Each field is one line (or a fenced code block for example/counterexample).
        "counterexample": <counterexample or None>,
        "archetype": <archetype or None>,
        "status": <status or "active">,
+       "source": <source or None>,
+     },
+   )
+   ```
+
+   For example, capturing an idiom sourced from a review comment:
+
+   ```
+   chameleon-mcp::chameleon_lifecycle(
+     action="teach_profile_structured",
+     params={
+       "repo": "/Users/dev/repo",
+       "slug": "use-custom-query",
+       "rationale": "Prefer useCustomQuery over useQuery for shared retry + error handling.",
+       "example": "const { data } = useCustomQuery({ key: 'foo' });",
+       "counterexample": "const { data } = useQuery({ key: 'foo' });",
+       "archetype": "react-component",
+       "status": "active",
+       "source": "reviewer feedback on PR #482",
      },
    )
    ```
@@ -161,6 +197,7 @@ place (flock-serialized). The profile hash changes, so tell the user to run
 ### use-custom-query
 Status: active (added 2026-05-10)
 Archetype: react-component
+Source: reviewer feedback on PR #482
 Use `useCustomQuery` from `~/hooks/useCustomQuery`, not `useQuery` directly.
 
 Example:
@@ -179,6 +216,7 @@ const { data } = useQuery({ key: 'foo' });
 ```markdown
 ### lodash-method-scope
 Status: active (added 2026-05-10)
+Source: reviewer feedback on PR #418
 Import lodash methods individually: `import { debounce } from 'lodash/debounce'`.
 Never `import _ from 'lodash'` (whole-library import).
 Reason: bundle size; tree-shaking doesn't work with namespace imports.

@@ -125,6 +125,73 @@ def test_detect_repo_surfaces_legacy_hint_after_case_normalization(tmp_path, mon
     assert "legacy_trust_hint" in res
 
 
+def test_detect_repo_surfaces_orphaned_uuid_hint_after_lost_repo_uuid(tmp_path):
+    # A no-remote repo's repo_id derives from config.json's repo_uuid; losing
+    # that uuid (deletion, bad merge, restored old backup) silently shifts the
+    # repo_id to the path-hash branch with zero diagnostic today, orphaning
+    # the prior trust/history grant -- unlike the engine-hash-change case just
+    # above, which surfaces legacy_trust_hint.
+    from chameleon_mcp.profile.trust import grant_trust
+
+    repo = tmp_path / "no_remote_repo"
+    cham = repo / ".chameleon"
+    cham.mkdir(parents=True)
+    (cham / "profile.json").write_text(json.dumps({"schema_version": 7, "generation": 1}))
+    (cham / "config.json").write_text(
+        json.dumps({"$schema": "chameleon-config-0.8.0", "repo_uuid": "fixed-uuid-456"})
+    )
+
+    old_id = tools._compute_repo_id(repo)
+    grant_trust(old_id, cham)
+
+    # Simulate the lost uuid: config.json survives, minus repo_uuid.
+    (cham / "config.json").write_text(json.dumps({"$schema": "chameleon-config-0.8.0"}))
+    tools._clear_repo_id_cache()
+
+    new_id = tools._compute_repo_id(repo)
+    assert new_id != old_id
+
+    res = tools.detect_repo(str(cham / "profile.json"))["data"]
+    assert res["repo_id"] == new_id
+    hint = res.get("legacy_trust_hint")
+    assert isinstance(hint, dict)
+    assert hint["orphaned_repo_id"] == old_id
+    assert hint["current_repo_id"] == new_id
+
+
+def test_orphaned_uuid_hint_declines_when_production_ref_present(tmp_path):
+    # Regression: a persisted `production_ref` in config.json is only ever
+    # auto-stamped for an origin-backed repo (a local-only repo never
+    # auto-locks). Its presence alongside "no remote right now" is evidence
+    # this repo HAD a remote and lost it -- not that it lost a repo_uuid it
+    # never needed while remote-identified. The orphaned-uuid hint must not
+    # misattribute that case: there is no uuid to restore, and telling the
+    # user to look for one is the wrong remediation.
+    from chameleon_mcp.profile.trust import grant_trust
+
+    repo = tmp_path / "lost_remote_repo"
+    cham = repo / ".chameleon"
+    cham.mkdir(parents=True)
+    (cham / "profile.json").write_text(json.dumps({"schema_version": 7, "generation": 1}))
+    # Simulates the post-bootstrap state of a repo that HAD an origin remote
+    # (production_ref auto-locked) and never had a repo_uuid (remote-derived
+    # repos never get one). Some OTHER repo_id (the old remote-derived one)
+    # holds the trust grant for this same working tree.
+    (cham / "config.json").write_text(
+        json.dumps({"$schema": "chameleon-config-0.9.0", "production_ref": "main"})
+    )
+    old_id = "a" * 64  # stand-in for the since-lost remote-derived repo_id
+    grant_trust(old_id, cham)
+
+    tools._clear_repo_id_cache()
+    new_id = tools._compute_repo_id(repo)
+    assert new_id != old_id
+
+    res = tools.detect_repo(str(cham / "profile.json"))["data"]
+    assert res["repo_id"] == new_id
+    assert res.get("legacy_trust_hint") is None
+
+
 # ---- _compute_repo_id: persisted repo_uuid survives a move ----
 
 

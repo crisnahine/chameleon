@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from chameleon_mcp.drift import observations as obs
-from chameleon_mcp.drift.observations import record_override
+from chameleon_mcp.drift.observations import record_decision, record_override
 from chameleon_mcp.metrics import emit_hook_metric
 from chameleon_mcp.review_ledger import build_override_audit
 
@@ -139,6 +139,68 @@ def test_override_only_rule_appears():
     assert rule["would_blocks"] == 0
     assert rule["override_rate"] == 1.0
     assert rule["high_override_rate"] is True
+
+
+def _real_block(rule: str, repo_id: str = REPO_A) -> None:
+    """Record one real enforce-mode ``blocked`` decision_log row for ``rule``."""
+    record_decision(
+        repo_id,
+        "f.ts",
+        archetype="widget",
+        match_quality="ast",
+        confidence_band="high",
+        violations_raised=1,
+        blockable_rules=[rule],
+        outcome="blocked",
+    )
+
+
+def test_would_blocks_include_real_enforce_mode_blocks():
+    # A rule actively enforcing in "enforce" mode never emits a shadow
+    # would_block metric -- it records straight to decision_log instead. 30
+    # real blocks against only 8 overrides is a healthy ~21% rate; reading
+    # would_blocks from shadow metrics alone would leave the denominator at 0
+    # and misreport this as a 100% override rate.
+    for _ in range(30):
+        _real_block("no-bare-except")
+    for i in range(8):
+        record_override(REPO_A, "no-bare-except", rel_path=f"f{i}.ts")
+
+    audit = build_override_audit(REPO_A)
+    rule = audit["rules"]["no-bare-except"]
+    assert rule["would_blocks"] == 30
+    assert rule["overrides"] == 8
+    assert rule["override_rate"] == round(8 / 38, 4)
+    assert rule["high_override_rate"] is False
+    assert "no-bare-except" not in audit["flagged"]
+
+
+def test_would_blocks_sum_shadow_and_real_without_double_counting():
+    # Shadow would-blocks (recorded while the rule was in shadow mode) and real
+    # decision_log blocks (recorded once it moved to enforce) both count
+    # toward the same rule's denominator, additively.
+    for _ in range(2):
+        _would_block("no-bare-except")
+    for _ in range(3):
+        _real_block("no-bare-except")
+
+    rule = build_override_audit(REPO_A)["rules"]["no-bare-except"]
+    assert rule["would_blocks"] == 5
+
+
+def test_failopen_on_corrupt_decision_log(monkeypatch):
+    # A decision_log read failure degrades to the shadow-only count, not a
+    # crash -- the sibling would-block source stays intact.
+    for _ in range(4):
+        _would_block("import-preference-violation")
+
+    def _boom(*a, **k):
+        raise RuntimeError("bad drift.db")
+
+    monkeypatch.setattr("chameleon_mcp.drift.sqlite_config.open_hardened", _boom)
+
+    audit = build_override_audit(REPO_A)
+    assert audit["rules"]["import-preference-violation"]["would_blocks"] == 4
 
 
 def test_failopen_on_corrupt_metrics(monkeypatch, tmp_path: Path):

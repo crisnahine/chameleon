@@ -35,6 +35,16 @@ _CANDIDATE_REPOS = [
 
 _CHAMELEON_REPO = Path(__file__).resolve().parent.parent
 
+# Extensions to search per profile-declared language, most-specific first.
+# Falls back to this same TS-leaning order when the profile's language is
+# missing or unrecognized, matching the prior (pre-language-aware) behavior.
+_LANGUAGE_EXTENSIONS: dict[str, tuple[str, ...]] = {
+    "typescript": ("tsx", "ts", "jsx", "js", "mjs", "cjs"),
+    "ruby": ("rb",),
+    "python": ("py", "pyi"),
+}
+_DEFAULT_EXTENSIONS = ("tsx", "ts", "rb")
+
 
 def _find_profiled_repo() -> Path | None:
     for p in _CANDIDATE_REPOS:
@@ -137,7 +147,7 @@ def main():
 
     target_file: str | None = None
     if profiled_repo:
-        for ext in ("tsx", "ts", "rb"):
+        for ext in _LANGUAGE_EXTENSIONS.get(lang, _DEFAULT_EXTENSIONS):
             candidates = list(profiled_repo.glob(f"**/*.{ext}"))
             candidates = [c for c in candidates if "node_modules" not in str(c)]
             if candidates:

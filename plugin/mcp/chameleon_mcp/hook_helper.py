@@ -1973,6 +1973,19 @@ _ENFORCEMENT_MALFORMED_BANNER = (
     "/chameleon-doctor to confirm enforcement is restored.\n\n"
 )
 
+# Shared between the Tier-1 (short pointer) and Tier-2 (full) per-edit render
+# paths: CHAMELEON_TRUST_REVALIDATE=1 re-checks staleness on every call, so a
+# repeat edit to an already-seen archetype (Tier-1) detects staleness exactly
+# as reliably as a first-in-archetype edit (Tier-2) -- the banner must render
+# on both, not only where the block happens to carry the fuller layout.
+_STALE_TRUST_BANNER = (
+    "**Trust is stale**: a recent /chameleon-refresh, /chameleon-teach, "
+    "or manual edit changed the committed profile after the trust grant. "
+    "Trust is tied to the profile sha, so the grant no longer covers the "
+    "current profile. Suggest /chameleon-trust to re-confirm. Do not block "
+    "the edit; chameleon advisory is provided below for reference only.\n\n"
+)
+
 # The once-per-session "profile present, untrusted" prompt. Emitted from both the
 # archetype-resolved path and the no-archetype early exit (a config/data/new file
 # in an untrusted repo), because the prompt gates on trust state, not on a shape
@@ -3699,6 +3712,23 @@ def preflight_and_advise() -> int:
                                 session_id=session_id,
                                 blanket="" in ign,
                             )
+                            # Also log the decision_log row itself (the audit
+                            # channel /chameleon-explain replays), not just the
+                            # override counter above: a bypass here is otherwise
+                            # invisible to post-incident replay, exactly like an
+                            # unrecorded block would be.
+                            _record_edit_decision(
+                                repo_id,
+                                repo_root_path,
+                                file_path,
+                                archetype=archetype_name,
+                                match_quality=match_quality,
+                                confidence_band=confidence_band,
+                                violations_raised=len(raw_banned),
+                                blockable_rules=["import-preference-violation"],
+                                outcome="overridden",
+                                session_id=session_id,
+                            )
                     if banned and not suppressed_by_ignore:
                         from chameleon_mcp.profile.config import (
                             load_config_enforcement_only,
@@ -3728,6 +3758,22 @@ def preflight_and_advise() -> int:
                                 f"({_ignore_hint(file_path, 'import-preference-violation')}) "
                                 "only if your human partner explicitly approved keeping the "
                                 "old import; never because existing files still use it."
+                            )
+                            # The write is denied here, so PostToolUse never runs
+                            # for this attempt -- record the block now (like the
+                            # secret / eval-call denies above) or it is invisible
+                            # to /chameleon-explain's post-incident replay.
+                            _record_edit_decision(
+                                repo_id,
+                                repo_root_path,
+                                file_path,
+                                archetype=archetype_name,
+                                match_quality=match_quality,
+                                confidence_band=confidence_band,
+                                violations_raised=len(banned),
+                                blockable_rules=["import-preference-violation"],
+                                outcome="blocked",
+                                session_id=session_id,
                             )
                             return 0
                         if mode == "shadow":
@@ -3816,6 +3862,8 @@ def preflight_and_advise() -> int:
             block += _CONFIG_MALFORMED_BANNER
         if _enf_malformed:
             block += _ENFORCEMENT_MALFORMED_BANNER
+        if trust_state == "stale":
+            block += _STALE_TRUST_BANNER
         if summary:
             block += f"{sanitize_for_chameleon_context(summary)}\n"
         conv_echo = ""
@@ -3881,13 +3929,7 @@ def preflight_and_advise() -> int:
     if _enf_malformed:
         block += _ENFORCEMENT_MALFORMED_BANNER
     if trust_state == "stale":
-        block += (
-            "**Trust is stale**: a recent /chameleon-refresh, /chameleon-teach, "
-            "or manual edit changed the committed profile after the trust grant. "
-            "Trust is tied to the profile sha, so the grant no longer covers the "
-            "current profile. Suggest /chameleon-trust to re-confirm. Do not block "
-            "the edit; chameleon advisory is provided below for reference only.\n\n"
-        )
+        block += _STALE_TRUST_BANNER
     # Archetype-scoped facts (the class contract this archetype implements + the
     # symbols it already exports) lead the block as a chameleon directive, OUTSIDE
     # the imitate-spotlight: "what to implement / what to reuse" is sharper on the
@@ -6464,6 +6506,56 @@ def _sync_verify_stop_findings(repo_root: Path, findings):
         return stop_verify.VerifyResult(
             list(findings or []), ["unverified"] * n, 0, 0, n, False, "sync verify error"
         )
+
+
+def _fold_intent_into_claims(findings: list[dict], intent_tokens: list[str]) -> dict[int, str]:
+    """Temporarily append captured intent context onto each finding's claim.
+
+    The refuter (``stop_verify`` / ``refuter.py``) only ever sees a finding's
+    claim text plus a source-only excerpt -- never the ``intent_tokens`` the
+    correctness judge itself was given -- so a finding citing an intent-vs-code
+    constant mismatch (e.g. "user asked for 7, code sets 5") is unverifiable
+    from the excerpt alone, and the refuter prompt commands it to refute on
+    exactly that "cannot tell" case. Folding the captured tokens into the claim
+    the refuter reads lets it corroborate the mismatch instead.
+
+    Mutates ``findings`` in place (so identity-based membership checks against
+    the VERIFY result keep working) and returns the original claim text keyed by
+    ``id(finding)``, for ``_restore_claims`` to undo once the refuter call
+    returns -- the augmentation must never reach the ledger fingerprint or the
+    user-facing render. Fails open to no mutation on any error.
+    """
+    originals: dict[int, str] = {}
+    if not intent_tokens:
+        return originals
+    try:
+        from chameleon_mcp.judge import _INTENT_CHAR_CAP
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+        joined = ", ".join(sanitize_for_chameleon_context(t) for t in intent_tokens)
+        joined = joined[:_INTENT_CHAR_CAP]
+        if not joined:
+            return originals
+        for f in findings:
+            if not isinstance(f, dict):
+                continue
+            originals[id(f)] = f.get("claim")
+            f["claim"] = (
+                f"{f.get('claim') or ''}\n\n"
+                f"The user's request specified these values/identifiers: {joined}"
+            )
+    except Exception:
+        return {}
+    return originals
+
+
+def _restore_claims(findings: list[dict], originals: dict[int, str]) -> None:
+    """Undo :func:`_fold_intent_into_claims` before persistence or rendering."""
+    if not originals:
+        return
+    for f in findings:
+        if isinstance(f, dict) and id(f) in originals:
+            f["claim"] = originals[id(f)]
 
 
 def _ledger_persist(repo_id, session_id, repo_root: Path, lens: str, findings) -> None:
@@ -10859,7 +10951,15 @@ def _multi_lens_review_lines(
         verdict_by_key: dict = {}
         verify = None
         if verify_eligible:
-            verify = _sync_verify_stop_findings(repo_root, verify_eligible)
+            # The refuter otherwise sees only the claim text + a source-only
+            # excerpt, never the captured intent_tokens the judge itself used to
+            # raise an intent-vs-code mismatch finding -- fold them into the
+            # claim for this call only, then restore before persist/render.
+            _intent_originals = _fold_intent_into_claims(verify_eligible, intent_tokens)
+            try:
+                verify = _sync_verify_stop_findings(repo_root, verify_eligible)
+            finally:
+                _restore_claims(verify_eligible, _intent_originals)
             if verify.ran:
                 # Identity-based membership: dict equality would alias two
                 # identical findings and drop both when one was refuted.

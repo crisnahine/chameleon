@@ -64,6 +64,17 @@ def test_numerals_single_digit_assignment_shaped_captured():
     assert out["numerals"] == ["7", "3", "5"]
 
 
+def test_numerals_fraction_numerator_excluded_no_space():
+    # "retries=1/3" is a ratio, not an assignment of the standalone constant 1.
+    out = extract_assertions("retries=1/3")
+    assert out["numerals"] == []
+
+
+def test_numerals_fraction_numerator_excluded_after_to():
+    out = extract_assertions("the ratio is set to 1/2")
+    assert out["numerals"] == []
+
+
 # --- extract_assertions: identifiers ------------------------------------------
 
 
@@ -92,6 +103,18 @@ def test_identifiers_slash_path_prose_not_captured():
     # A single prose slash carries no leading "/" and must not match.
     out = extract_assertions("use this and/or that, it runs 24/7, status: n/a")
     assert out["identifiers"] == []
+
+
+def test_identifiers_relative_repo_path_captured():
+    # The overwhelmingly common form a user actually types: no leading "/",
+    # and the leading segment plus the extension must both survive.
+    out = extract_assertions("update src/config/settings.ts to fix the bug")
+    assert "src/config/settings.ts" in out["identifiers"]
+
+
+def test_identifiers_relative_repo_path_single_dir_captured():
+    out = extract_assertions("see utils/helpers.py for the retry logic")
+    assert "utils/helpers.py" in out["identifiers"]
 
 
 def test_identifiers_plain_word_not_captured():

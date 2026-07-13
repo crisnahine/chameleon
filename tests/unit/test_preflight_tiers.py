@@ -236,3 +236,31 @@ def test_tier2_for_archetype_with_violations(tmp_path):
     hook_output = result.get("hookSpecificOutput", {})
     ctx = hook_output.get("additionalContext", "")
     assert "REQUIRED:" in ctx or "Canonical witness" in ctx
+
+
+def test_tier1_pointer_surfaces_stale_trust_banner(tmp_path):
+    """sc01 regression: a repeat edit to an already-seen archetype takes the
+    Tier-1 short-pointer path, which must still surface the stale-trust
+    banner when trust_state resolves stale -- the CHAMELEON_TRUST_REVALIDATE=1
+    re-check detects staleness for this call exactly as reliably as it does on
+    the Tier-2 (first-in-archetype) path, so the banner must not be dropped
+    just because this edit took the short-pointer branch.
+    """
+    daemon_result = _make_pattern_context_result("component", trust_state="stale")
+    # Mirrors _run_preflight_second_edit, but with a stale (not trusted)
+    # daemon_result so this test controls trust_state directly.
+    from chameleon_mcp.enforcement import EnforcementState, save_state
+
+    repo_id = daemon_result["data"]["repo"]["id"]
+    data_dir = tmp_path / "chameleon_data"
+    repo_data_dir = data_dir / repo_id
+    repo_data_dir.mkdir(parents=True, exist_ok=True)
+    state = EnforcementState(archetypes_seen={"component"})
+    save_state(state, repo_data_dir, "test-session")
+
+    result = _run_preflight_with_context(tmp_path, "component", daemon_result=daemon_result)
+    hook_output = result.get("hookSpecificOutput", {})
+    ctx = hook_output.get("additionalContext", "")
+    # Confirms this is genuinely the Tier-1 path (no witness body).
+    assert "Canonical witness" not in ctx
+    assert "Trust is stale" in ctx

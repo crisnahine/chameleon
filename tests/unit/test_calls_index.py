@@ -132,6 +132,52 @@ class TestSameFile:
         idx = build_calls_index([pf], tmp_path, "typescript")
         assert idx["callees"] == {}
 
+    def test_this_call_ambiguous_across_two_classes_yields_no_edge(self, tmp_path):
+        # Two DISTINCT classes in one file each define `process`, each called
+        # via `this.process()` from an unrelated method. This/self call sites
+        # carry no enclosing-class field, so there is no way to tell doA's
+        # call from doB's -- asserting either would fabricate a merged edge
+        # claiming doB calls A's process (or vice versa). Fails open instead.
+        pf = FakeParsed(
+            tmp_path / "src" / "handlers.ts",
+            {
+                "callable_signatures": [
+                    _sig("process", enclosing_class="A"),
+                    _sig("doA", enclosing_class="A"),
+                    _sig("process", enclosing_class="B"),
+                    _sig("doB", enclosing_class="B"),
+                ],
+                "call_sites": [
+                    _site("process", "this", "this", 5, "doA"),
+                    _site("process", "this", "this", 50, "doB"),
+                ],
+            },
+        )
+        idx = build_calls_index([pf], tmp_path, "typescript")
+        assert idx["callees"] == {}
+
+    def test_bare_call_to_module_level_name_beside_ambiguous_classes(self, tmp_path):
+        # A module-level `helper` coexists with two DIFFERENT classes that
+        # also each define `helper`. The module-level definition is never
+        # ambiguous (it isn't tied to any class), so the bare call still
+        # resolves to the same-file edge despite the class-name collision.
+        pf = FakeParsed(
+            tmp_path / "src" / "mix.ts",
+            {
+                "callable_signatures": [
+                    _sig("helper"),
+                    _sig("helper", enclosing_class="A"),
+                    _sig("helper", enclosing_class="B"),
+                ],
+                "call_sites": [_site("helper", None, "bare", 10, "run")],
+            },
+        )
+        idx = build_calls_index([pf], tmp_path, "typescript")
+        entry = idx["callees"]["src/mix.ts"]["helper"]
+        assert entry["callers"] == [
+            {"path": "src/mix.ts", "caller": "run", "line": 10, "grade": "same_file"}
+        ]
+
     def test_ruby_self_call_to_same_file_member(self, tmp_path):
         pf = FakeParsed(
             tmp_path / "app" / "models" / "user.rb",

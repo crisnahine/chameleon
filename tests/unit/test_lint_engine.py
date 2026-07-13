@@ -1252,6 +1252,34 @@ class TestRubyNamingConventionLint:
         assert v[0].rule == "inheritance-convention-violation"
 
 
+class TestPythonNamingConventionLintUnicode:
+    """PEP 3131 unicode identifiers must be classified by their own script's
+    casing, not misclassified as a violation by an ASCII-only check."""
+
+    SNAKE_CONV = {
+        "naming": {
+            "method_casing": {
+                "pattern": "snake_case",
+                "consistency": 0.95,
+                "sample_size": 40,
+            },
+        },
+    }
+
+    def test_unicode_snake_case_function_not_flagged(self):
+        content = "def calc_café(x):\n    return x + 1\n"
+        violations = lint_conventions(content, self.SNAKE_CONV, language="python")
+        naming = [v for v in violations if v.rule == "naming-convention-violation"]
+        assert naming == []
+
+    def test_ascii_camel_case_function_still_flagged(self):
+        content = "def fetchData(x):\n    return x + 1\n"
+        violations = lint_conventions(content, self.SNAKE_CONV, language="python")
+        naming = [v for v in violations if v.rule == "naming-convention-violation"]
+        assert len(naming) == 1
+        assert naming[0].actual == "fetchData"
+
+
 class TestRubyHeredocStrip:
     """The heredoc blanker must be O(n) and precise.
 

@@ -175,7 +175,14 @@ def test_needs_rederive_index_checks(tmp_path):
     # profile has them present and equal.
     for name in ("archetypes.json", "canonicals.json", "rules.json"):
         (cham / name).write_text(json.dumps({"generation": 1}), encoding="utf-8")
-    (cham / "conventions.json").write_text("{}", encoding="utf-8")
+    # A real bootstrap always emits every top-level conventions section (even
+    # empty), so a complete fixture must carry the full shape too -- the
+    # repair predicate checks for it, not just JSON-object parseability.
+    from chameleon_mcp.conventions import empty_conventions
+
+    (cham / "conventions.json").write_text(
+        json.dumps(empty_conventions(generation=1)), encoding="utf-8"
+    )
     # The generated indexes must carry the schema version their loader accepts:
     # each loader hard-rejects a foreign schema_version, so the repair predicate
     # mirrors that gate (a parseable-but-old-schema index is dead data the noop
@@ -414,16 +421,17 @@ def test_needs_rederive_missing_conventions_md_mirror(tmp_path, monkeypatch):
     cham.mkdir(parents=True)
     for name in ("archetypes.json", "canonicals.json", "rules.json"):
         (cham / name).write_text(json.dumps({"generation": 1}), encoding="utf-8")
-    conv = {
-        "generation": 1,
-        "conventions": {
-            "imports": {
-                "service": {
-                    "preferred": [],
-                    "competing": [{"preferred": "./httpClient", "over": "./http"}],
-                }
-            }
-        },
+    # A real bootstrap always emits every top-level conventions section (even
+    # empty); this fixture keeps the real "imports" content it needs for the
+    # mirror-render assertion below but must carry the full section shape too.
+    from chameleon_mcp.conventions import empty_conventions
+
+    conv = empty_conventions(generation=1)
+    conv["conventions"]["imports"] = {
+        "service": {
+            "preferred": [],
+            "competing": [{"preferred": "./httpClient", "over": "./http"}],
+        }
     }
     (cham / "conventions.json").write_text(json.dumps(conv), encoding="utf-8")
     for name, sv in (

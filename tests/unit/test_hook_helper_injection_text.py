@@ -40,16 +40,26 @@ def test_rules_pointer_does_not_call_get_rules_with_archetype():
 
 
 def test_stale_trust_banner_is_cause_agnostic():
-    src = _preflight_source()
-    # Pull the staleness banner string literal.
-    assert "Trust is stale" in src
-    banner_region = src[src.index("Trust is stale") :]
+    # The banner is a shared module-level constant (both the Tier-1 short
+    # pointer and the Tier-2 full render use it), not a literal inlined into
+    # preflight_and_advise's own source.
+    banner = hook_helper._STALE_TRUST_BANNER
+    assert "Trust is stale" in banner
+    banner_region = banner[banner.index("Trust is stale") :]
     banner_region = banner_region[: banner_region.index("\n\n")]
     lowered = banner_region.lower()
     # A teach also de-trusts (idioms.md is hashed), so the wording must admit it.
     assert "teach" in lowered
     # It must not pin the cause to profile.json alone.
     assert "`.chameleon/profile.json`" not in banner_region
+
+
+def test_stale_trust_banner_wired_on_both_tiers():
+    # sc01 regression: the Tier-1 (short pointer) branch must render the SAME
+    # shared banner constant as Tier-2, not just check for staleness and drop
+    # it -- see test_preflight_tiers.py for the end-to-end behavioral version.
+    src = _preflight_source()
+    assert src.count("_STALE_TRUST_BANNER") >= 2
 
 
 # --- Trust persistence: the Tier-1 echo screens principles for injection -----

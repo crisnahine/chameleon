@@ -49,8 +49,15 @@ def repo(tmp_path):
     stack = ExitStack()
     r = tmp_path / "repo"
     (r / "src").mkdir(parents=True, exist_ok=True)
+    (r / ".chameleon").mkdir(parents=True, exist_ok=True)
     stack.enter_context(patch("chameleon_mcp.profile.loader.find_repo_root", return_value=r))
     stack.enter_context(patch("chameleon_mcp.tools._compute_repo_id", return_value=REPO_ID))
+    # explain_edit is trust-gated (it replays this repo_id's own committed
+    # decision log to the caller); grant trust so these tests exercise the
+    # real replay logic, not the untrusted-withheld branch.
+    from chameleon_mcp.profile.trust import grant_trust
+
+    grant_trust(REPO_ID, r / ".chameleon")
     try:
         yield r
     finally:
@@ -73,6 +80,27 @@ def _record(rel_path, *, match_quality, outcome, violations=0, rules=None):
 def test_bad_repo_arg():
     out = explain_edit("", "src/a.ts")
     assert out["data"]["status"] == "failed"
+
+
+def test_untrusted_repo_withholds_the_decision_replay(tmp_path):
+    # Regression: explain_edit replayed another checkout's archetype/
+    # confidence/blockable-rule classification to ANY caller with zero trust
+    # gating. A repo_id that was never granted trust must get an untrusted
+    # envelope, not the real decision row.
+    stack = ExitStack()
+    r = tmp_path / "untrusted-repo"
+    (r / "src").mkdir(parents=True, exist_ok=True)
+    stack.enter_context(patch("chameleon_mcp.profile.loader.find_repo_root", return_value=r))
+    stack.enter_context(patch("chameleon_mcp.tools._compute_repo_id", return_value=REPO_ID))
+    try:
+        _record("src/a.ts", match_quality="ast", outcome="advised", violations=1)
+        out = explain_edit(str(r), "src/a.ts")
+        assert out["data"]["status"] == "untrusted"
+        assert out["data"]["found"] is False
+        assert out["data"]["decision"] is None
+        assert out["data"]["classification"] is None
+    finally:
+        stack.close()
 
 
 def test_missing_file_arg(repo):

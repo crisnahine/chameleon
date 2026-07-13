@@ -224,6 +224,84 @@ def test_inline_ignore_records_override_at_deny_gate(tmp_path: Path):
     assert "import-preference-violation" in rules
 
 
+def test_banned_import_deny_records_decision_log(tmp_path: Path):
+    # ex01-15: a real PreToolUse deny never reaches PostToolUse (the write is
+    # denied, so the tool never runs), so the deny gate itself must log the
+    # block to decision_log -- the audit /chameleon-explain replays -- exactly
+    # like the sibling secret-detected-in-content and eval-call denies do.
+    import sqlite3
+
+    from chameleon_mcp.drift import observations as obs
+
+    repo, repo_id = _build_repo(tmp_path, mode="enforce")
+    write_block_rules(
+        repo / ".chameleon",
+        {"import-preference-violation": {"active": True, "fp_rate": 0.0, "sampled": 3}},
+    )
+    out = _run_preflight(
+        repo=repo,
+        repo_id=repo_id,
+        tmp_path=tmp_path,
+        file_path=str(repo / "src/Widget.ts"),
+        content=LODASH_CONTENT,
+        session_id="s-deny-log",
+        env={"CHAMELEON_ENFORCE": "1"},
+    )
+    assert out.get("hookSpecificOutput", {}).get("permissionDecision") == "deny"
+    # Drop any cached write-connection so the read sees the committed row.
+    for conn in list(obs._DRIFT_CONN.values()):
+        conn.close()
+    obs._DRIFT_CONN.clear()
+    db = tmp_path / repo_id / "drift.db"
+    assert db.is_file(), "the block should have created drift.db"
+    con = sqlite3.connect(str(db))
+    try:
+        rows = con.execute("SELECT rel_path, outcome, blockable_rules FROM decision_log").fetchall()
+    finally:
+        con.close()
+    assert any(r[1] == "blocked" and "import-preference-violation" in (r[2] or "") for r in rows), (
+        f"missing blocked decision_log row: {rows}"
+    )
+
+
+def test_inline_ignore_records_decision_log_too(tmp_path: Path):
+    # The override (bypass) path must ALSO log to decision_log, not just the
+    # rule_overrides counter tested above -- explain_edit's classification
+    # (blocked/overridden vs advised/coverage-gap) reads decision_log only.
+    import sqlite3
+
+    from chameleon_mcp.drift import observations as obs
+
+    repo, repo_id = _build_repo(tmp_path, mode="enforce")
+    write_block_rules(
+        repo / ".chameleon",
+        {"import-preference-violation": {"active": True, "fp_rate": 0.0, "sampled": 3}},
+    )
+    out = _run_preflight(
+        repo=repo,
+        repo_id=repo_id,
+        tmp_path=tmp_path,
+        file_path=str(repo / "src/Widget.ts"),
+        content=IGNORED_CONTENT,
+        session_id="s-ovr-log",
+        env={"CHAMELEON_ENFORCE": "1"},
+    )
+    assert out.get("hookSpecificOutput", {}).get("permissionDecision") != "deny"
+    for conn in list(obs._DRIFT_CONN.values()):
+        conn.close()
+    obs._DRIFT_CONN.clear()
+    db = tmp_path / repo_id / "drift.db"
+    assert db.is_file(), "the override should have created drift.db"
+    con = sqlite3.connect(str(db))
+    try:
+        rows = con.execute("SELECT rel_path, outcome, blockable_rules FROM decision_log").fetchall()
+    finally:
+        con.close()
+    assert any(
+        r[1] == "overridden" and "import-preference-violation" in (r[2] or "") for r in rows
+    ), f"missing overridden decision_log row: {rows}"
+
+
 def test_clean_import_not_denied(tmp_path: Path):
     repo, repo_id = _build_repo(tmp_path, mode="enforce")
     write_block_rules(

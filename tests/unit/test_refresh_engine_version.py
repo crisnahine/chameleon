@@ -77,8 +77,13 @@ def _seed_repo(tmp_path: Path, monkeypatch, engine_version: str, schema_version:
     }
     (pd / "profile.json").write_text(json.dumps(stamp), encoding="utf-8")
     (pd / "archetypes.json").write_text(json.dumps(stamp), encoding="utf-8")
+    # A real bootstrap always emits every top-level conventions section (even
+    # empty), so a noop-eligible fixture must carry the full shape too --
+    # the repair guard now checks for it, not just JSON-parseability.
+    from chameleon_mcp.conventions import empty_conventions
+
     (pd / "conventions.json").write_text(
-        json.dumps({"schema_version": 8, "rules": {}}), encoding="utf-8"
+        json.dumps(empty_conventions(generation=1)), encoding="utf-8"
     )
     # all core artifacts present + complete so the repair guard doesn't force a
     # rebuild on the noop path (the generated indexes are part of that set)
@@ -295,16 +300,21 @@ def _complete_profile(tmp_path):
         pd.joinpath(name).write_text(
             json.dumps({"generation": 1, "schema_version": 8}), encoding="utf-8"
         )
-    # conventions is validated as a JSON object only; the generated index
+    # conventions.json must carry every top-level section key a real bootstrap
+    # always emits (empty_conventions()'s shape) -- the repair gate now checks
+    # for that, not just JSON-object parseability. The generated index
     # artifacts must carry the schema their loader currently reads -- the repair
     # gate mirrors each loader's schema check, so a foreign version reads as
     # dead data and correctly forces a rebuild.
     from chameleon_mcp.calls_index import SCHEMA_VERSION as _calls_sv
+    from chameleon_mcp.conventions import empty_conventions
     from chameleon_mcp.counterexamples import SCHEMA_VERSION as _cex_sv
     from chameleon_mcp.function_catalog import SCHEMA_VERSION as _catalog_sv
     from chameleon_mcp.symbol_signatures import SCHEMA_VERSION as _sigs_sv
 
-    pd.joinpath("conventions.json").write_text(json.dumps({"schema_version": 8}), encoding="utf-8")
+    pd.joinpath("conventions.json").write_text(
+        json.dumps(empty_conventions(generation=1)), encoding="utf-8"
+    )
     for name, sv in (
         ("calls_index.json", _calls_sv),
         ("function_catalog.json", _catalog_sv),
@@ -352,6 +362,19 @@ def test_profile_needs_rederive_on_missing_core_artifact(tmp_path):
 def test_profile_needs_rederive_on_corrupt_json(tmp_path):
     pd = _complete_profile(tmp_path)
     pd.joinpath("archetypes.json").write_text("STALE not json\n", encoding="utf-8")
+    assert t._profile_needs_rederive(pd) is True
+
+
+def test_profile_needs_rederive_on_conventions_section_stripped(tmp_path):
+    # A hand-edit or bad merge that strips one top-level derived section (e.g.
+    # "naming") while leaving the rest of conventions.json intact is still
+    # valid, parseable JSON -- the parseability/dict checks alone don't catch
+    # it, so the noop refresh would preserve the corruption forever.
+    pd = _complete_profile(tmp_path)
+    assert t._profile_needs_rederive(pd) is False
+    conv = json.loads(pd.joinpath("conventions.json").read_text(encoding="utf-8"))
+    del conv["conventions"]["naming"]
+    pd.joinpath("conventions.json").write_text(json.dumps(conv), encoding="utf-8")
     assert t._profile_needs_rederive(pd) is True
 
 

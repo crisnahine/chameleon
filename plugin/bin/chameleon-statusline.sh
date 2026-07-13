@@ -19,6 +19,59 @@ if [[ -z "$project_dir" ]]; then
 fi
 [[ -z "$project_dir" ]] && project_dir="${CLAUDE_PROJECT_DIR:-$PWD}"
 
+# Surface an active /chameleon-pause-15m window. While `.pause_until` is in
+# the future, PreToolUse silently skips BOTH advisory injection AND the
+# security-deny gates (secret-in-content, eval-call, import-preference), so a
+# live pause is a security-relevant state the user should be able to see
+# without guessing. Reads the exact same `${PLUGIN_DATA}/<repo_id>/.pause_until`
+# file the hooks check (`is_chameleon_suppressed` in optouts.py) rather than a
+# separate cache, so this can never drift from what the hooks actually honor.
+pause_suffix=""
+if [[ "${CHAMELEON_STATUSLINE_PAUSE:-}" != "0" ]]; then
+  plugin_data_dir="${CHAMELEON_PLUGIN_DATA:-$HOME/.local/share/chameleon}"
+  # A depth-capped `find` is a handful of stat() calls and lets the
+  # overwhelmingly common no-pause render skip repo_id derivation entirely --
+  # `_compute_repo_id` may shell out to `git config`, too costly to pay on
+  # every render when no pause exists anywhere on the machine. A pause is
+  # deliberately short-lived (<=240 minutes), so the heavier path below only
+  # runs during that bounded window.
+  if [[ -n "$(find "$plugin_data_dir" -maxdepth 2 -name '.pause_until' -print -quit 2>/dev/null)" ]]; then
+    pause_root="$project_dir"
+    while true; do
+      [[ -f "$pause_root/.chameleon/profile.json" ]] && break
+      pause_parent="$(dirname "$pause_root")"
+      if [[ "$pause_parent" == "$pause_root" ]]; then
+        pause_root=""
+        break
+      fi
+      pause_root="$pause_parent"
+    done
+    if [[ -n "$pause_root" ]]; then
+      pause_suffix=$(CHAMELEON_STATUSLINE_ROOT="$pause_root" \
+        CHAMELEON_STATUSLINE_MCP_DIR="${CLAUDE_PLUGIN_ROOT:-${0%/*}/..}/mcp" \
+        python3 -c "
+import os, sys, time
+from datetime import datetime
+sys.path.insert(0, os.environ['CHAMELEON_STATUSLINE_MCP_DIR'])
+try:
+    from pathlib import Path
+    from chameleon_mcp.repo_id import _compute_repo_id
+    repo_id = _compute_repo_id(Path(os.environ['CHAMELEON_STATUSLINE_ROOT']))
+    data_dir = os.environ.get('CHAMELEON_PLUGIN_DATA') or os.path.join(os.path.expanduser('~'), '.local', 'share', 'chameleon')
+    with open(os.path.join(data_dir, repo_id, '.pause_until'), encoding='utf-8') as f:
+        expiry_iso = f.read().strip()
+    expiry = datetime.fromisoformat(expiry_iso.replace('Z', '+00:00'))
+    remaining = expiry.timestamp() - time.time()
+    if remaining > 0:
+        mins = int(remaining // 60) + (1 if remaining % 60 else 0)
+        print(f' │ ⏸ paused — {mins}m left')
+except Exception:
+    pass
+" 2>/dev/null || true)
+    fi
+  fi
+fi
+
 cache_file="$project_dir/.claude/.chameleon-statusline-cache"
 if [[ -f "$cache_file" ]]; then
   if command -v jq &>/dev/null; then
@@ -81,7 +134,7 @@ if [[ -f "$cache_file" ]]; then
       # script with a nonzero exit -- the fail-open contract this statusline
       # holds everywhere else (see the jq-miss guard above) requires exit 0
       # regardless of what happened to the fd we tried to write to.
-      printf '🦎 chameleon │ %s' "$parts" || true
+      printf '🦎 chameleon │ %s%s' "$parts" "$pause_suffix" || true
       exit 0
     fi
   else
@@ -118,10 +171,10 @@ if ps:
                         break
             except: pass
         if _cv and _cv!=upd: parts+=' │ ⬆ v'+upd+' ready — /reload-plugins or reopen session'
-    print(f'🦎 chameleon │ {parts}')
+    print(parts)
 " 2>/dev/null || true)
     if [[ -n "$result" ]]; then
-      printf '%s' "$result" || true
+      printf '🦎 chameleon │ %s%s' "$result" "$pause_suffix" || true
       exit 0
     fi
   fi
@@ -130,7 +183,7 @@ fi
 dir="$project_dir"
 while true; do
   if [[ -f "$dir/.chameleon/profile.json" ]]; then
-    printf '🦎 chameleon │ %s' "$(basename "$dir")" || true
+    printf '🦎 chameleon │ %s%s' "$(basename "$dir")" "$pause_suffix" || true
     exit 0
   fi
   parent="$(dirname "$dir")"

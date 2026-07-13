@@ -36,11 +36,11 @@ def _capture_lenses(monkeypatch):
     return seen
 
 
-def _route(spawn=True, fresh=None):
+def _route(spawn=True, fresh=None, intent_tokens=None):
     return {
         "spawn": spawn,
         "fresh": fresh if fresh is not None else ["/repo/app/x.rb"],
-        "intent_tokens": [],
+        "intent_tokens": intent_tokens if intent_tokens is not None else [],
         "digests": {},
         "turn_key": "tk",
         "reason": "edited",
@@ -240,6 +240,57 @@ def test_verify_drops_refuted_lone_correctness_finding(tmp_path, monkeypatch):
     assert "[duplication] [confirmed]" not in body
     assert "1 refuted and dropped, 1 confirmed" in body
     assert "flagged 2 possible issue" in lines[0]  # header counts survivors
+
+
+def test_verify_folds_intent_tokens_into_refuter_claim(tmp_path, monkeypatch):
+    """ic01-26: the refuter otherwise sees only the claim text plus a
+    source-only excerpt, never the captured intent_tokens the judge itself
+    used to raise an intent-vs-code mismatch finding -- so per its own prompt
+    ("if you cannot tell from the excerpt, refute"), it would refute a
+    correct, well-evidenced finding. VERIFY must fold the intent context into
+    the claim sent to the refuter, and must restore the original claim before
+    the finding is persisted/rendered (the augmentation is refuter-input only)."""
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "x.rb").write_text("retries = 5\n", encoding="utf-8")
+    _fresh_budget(monkeypatch)
+
+    seen_claims = {}
+
+    def fake_run_batch(repo_root, findings, excerpts, *, model, timeout, max_spawns, **kw):
+        for f in findings:
+            seen_claims[f.get("id")] = f.get("claim")
+        return [{"id": f.get("id"), "verdict": "confirmed"} for f in findings[:max_spawns]]
+
+    import chameleon_mcp.refuter as refuter
+
+    monkeypatch.setattr(refuter, "refuter_cli_absent", lambda: None)
+    monkeypatch.setattr(refuter, "run_batch", fake_run_batch)
+    _surfaced(
+        monkeypatch,
+        [
+            {
+                "file": "app/x.rb",
+                "line": 1,
+                "claim": "sets retries to 5, but the user asked for a different value",
+                "lenses": ["correctness"],
+                "confidence": 0.9,
+                "surface": True,
+            }
+        ],
+    )
+    lines = _call(
+        tmp_path,
+        cfg=_cfg(),
+        route=_route(intent_tokens=["set the retry limit to 7"]),
+    )
+    body = "\n".join(lines)
+    # The refuter's copy of the claim carries the intent context...
+    assert "set the retry limit to 7" in seen_claims["0"]
+    # ...but the rendered, user-facing claim does not: the augmentation is
+    # restored to the original text before persist/render.
+    assert "set the retry limit to 7" not in body
+    assert "sets retries to 5, but the user asked for a different value" in body
+    assert "[confirmed]" in body
 
 
 def test_verify_exempts_cross_lens_agreement(tmp_path, monkeypatch):

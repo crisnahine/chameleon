@@ -42,24 +42,31 @@ _QUOTED_RE = re.compile(r"\"([^\"\n]{2,80})\"|'([^'\n]{2,80})'|`([^`\n]{2,80})`"
 # ":" the way "set the retry limit to 7" or "retries=3" reads -- since that
 # context is exactly the checkable-constant case a bare count like "2 bugs"
 # never has. Quoted single digits still capture via the quoted-string pattern.
+# Each assignment-shaped single-digit alternative also excludes a digit
+# immediately followed by "/<digit>" -- a fraction or ratio numerator
+# ("retries=1/3", "set to 1/2") is not a standalone checkable constant.
 _NUMERAL_RE = re.compile(
     r"(?<![\w.])\d{2,}(?:\.\d+)?(?![\w.])"
     r"|(?<![\w.])\d\.\d+(?![\w.])"
-    r"|(?<=\bto )\d(?![\w.])"
-    r"|(?<=[=:]\s)\d(?![\w.])"
-    r"|(?<=[=:])\d(?![\w.])"
+    r"|(?<=\bto )\d(?![\w.])(?!/\d)"
+    r"|(?<=[=:]\s)\d(?![\w.])(?!/\d)"
+    r"|(?<=[=:])\d(?![\w.])(?!/\d)"
 )
 
 # Code-shaped identifiers only: dotted/underscored compounds, camelCase,
-# CONSTANT_CASE, and slash-delimited path segments (e.g. "/api/v2/sync").
-# The path form requires a leading slash and 2+ segments so it never fires on
-# ordinary prose slashes ("and/or", "24/7", "n/a"), which carry no leading "/".
-# Plain English words never match.
+# CONSTANT_CASE, and slash-delimited path segments -- both the absolute form
+# (e.g. "/api/v2/sync") and the far more common relative repo-path form a
+# user actually types (e.g. "src/config/settings.ts"). The absolute form
+# requires a leading slash and 2+ segments; the relative form requires 1+
+# directory segments AND a dotted extension on the final segment, so it never
+# fires on ordinary prose slashes ("and/or", "24/7", "n/a"), none of which end
+# in a file extension. Plain English words never match.
 _IDENTIFIER_RE = re.compile(
     r"\b[A-Za-z_][A-Za-z0-9]*(?:[._][A-Za-z0-9]+)+\b"
     r"|\b[a-z][a-z0-9]*(?:[A-Z][a-z0-9]+)+\b"
     r"|\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b"
     r"|/[\w\-]+(?:/[\w\-]+)+"
+    r"|\b(?:[\w\-]+/)+[\w\-]+\.[A-Za-z0-9]+\b"
 )
 
 

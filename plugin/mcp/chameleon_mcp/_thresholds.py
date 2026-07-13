@@ -643,6 +643,12 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # hops covers realistic barrel nesting (feature index -> package index ->
     # impl) with margin. Build-time only, never a hook hot path.
     "REEXPORT_CHASE_MAX_HOPS": 3,
+    # Cap on the plugin-data-dir scan detect_repo runs to find an orphaned
+    # trust/history grant left behind by a lost repo_uuid (a no-remote repo
+    # whose config.json repo_uuid vanished). Only reached in that narrow,
+    # already-untrusted case, but bounded so an installation with many
+    # profiled repos cannot make the scan unbounded.
+    "ORPHANED_TRUST_SCAN_CAP": 200,
 }
 
 

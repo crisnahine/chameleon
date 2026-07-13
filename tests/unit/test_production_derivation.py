@@ -399,6 +399,86 @@ class TestWorkspaceMappingUnderPinning:
         assert "prodtree" not in json.dumps(data)
 
 
+class TestCoordinatorOnlyMonorepoLock:
+    """A coordinator-only root (bootstrap status success_workspaces_only --
+    declares workspaces but has no first-class source of its own) never gets
+    a root .chameleon/ to persist the toplevel's resolved production_ref
+    lock into. Without a coordinator-scoped fallback, detect_repo reports
+    locked:false for every workspace even though its profile really was
+    derived from the locked branch, and refresh_repo's inheritance fallback
+    silently re-detects (and persists) an independent branch into the
+    workspace's own config instead of the toplevel's actual decision."""
+
+    def _make_coordinator_only_source(self, root: Path) -> Path:
+        root.mkdir(parents=True, exist_ok=True)
+        _git(root, "init", "-q", "-b", "main")
+        _git(root, "config", "user.email", "t@example.com")
+        _git(root, "config", "user.name", "tester")
+        _git(root, "config", "commit.gpgsign", "false")
+        (root / ".gitignore").write_text(".chameleon/\n", encoding="utf-8")
+        (root / "package.json").write_text(
+            json.dumps({"name": "mono-root", "private": True, "workspaces": ["packages/*"]}),
+            encoding="utf-8",
+        )
+        pdir = root / "packages" / "api"
+        (pdir / "src" / "services").mkdir(parents=True)
+        (pdir / "package.json").write_text(json.dumps({"name": "api"}), encoding="utf-8")
+        for name in ("One", "Two", "Three", "Four", "Five", "Six"):
+            (pdir / "src" / "services" / f"api{name}Service.ts").write_text(
+                _SERVICE_BODY.format(name=f"Api{name}"), encoding="utf-8"
+            )
+        _git(root, "add", "-A")
+        _git(root, "commit", "-qm", "coordinator-only baseline")
+        return root
+
+    def _clone(self, tmp_path: Path, source: Path) -> Path:
+        clone = tmp_path / "clone"
+        subprocess.run(
+            ["git", "clone", "-q", str(source), str(clone)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return clone
+
+    def test_detect_repo_reports_locked_for_workspace(self, tmp_path: Path) -> None:
+        source = self._make_coordinator_only_source(tmp_path / "src")
+        clone = self._clone(tmp_path, source)
+
+        env = tools.bootstrap_repo(str(clone))
+        data = env["data"]
+        assert data["status"] == "success_workspaces_only"
+        assert not (clone / ".chameleon").exists()
+
+        ws_file = clone / "packages" / "api" / "src" / "services" / "apiOneService.ts"
+        det = tools.detect_repo(str(ws_file))["data"]
+        assert det["production_branch"]["locked"] is True
+        assert det["production_branch"]["branch"] == "main"
+
+    def test_refresh_inherits_coordinator_lock_not_live_redetect(self, tmp_path: Path) -> None:
+        source = self._make_coordinator_only_source(tmp_path / "src")
+        _git(source, "checkout", "-q", "-b", "release")
+        _git(source, "checkout", "-q", "main")
+        clone = self._clone(tmp_path, source)
+        _git(clone, "fetch", "-q", "origin", "release:release")
+
+        env = tools.bootstrap_repo(str(clone), production_ref="release")
+        data = env["data"]
+        assert data["status"] == "success_workspaces_only"
+        assert data["production_ref"]["branch"] == "release"
+        assert not (clone / ".chameleon").exists()
+
+        ws_root = clone / "packages" / "api"
+        ws_cfg = ws_root / ".chameleon" / "config.json"
+        assert not ws_cfg.exists()
+
+        out = tools.refresh_repo(str(ws_root))
+        assert out["data"]["status"] in ("noop", "success", "partial_refresh")
+        # Must inherit the coordinator's EXPLICIT lock ("release"), not
+        # silently re-detect+persist origin/HEAD's "main" instead.
+        assert _config_json(ws_root)["production_ref"] == "release"
+
+
 class TestSurfacing:
     def _locked_repo_with_moved_tip(self, tmp_path: Path) -> tuple[Path, str]:
         repo = _make_production_repo(tmp_path / "repo")

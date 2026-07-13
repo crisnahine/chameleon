@@ -4,6 +4,149 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.3] - 2026-07-14
+
+Second whole-plugin real-invocation QA round against the released v3.1.2,
+weighted toward Python/Ruby framework depth, less-covered skills, and this
+project's own newest code paths. 30 findings confirmed via independent
+adversarial re-verification, resulting in 25 code and doc fixes across 15
+files (several confirmed findings shared one root cause). As with the prior
+round, the fix pass itself was independently re-verified per finding; that
+pass caught two fix-introduced regressions (both in `conventions.py`, both
+repaired with real two-scenario regression tests — see "Fixed").
+
+### Fixed
+
+- **A same-turn fix from the prior round crashed the SessionStart/conventions.md
+  render entirely on a real Ruby repo (high).** The casing-convention rendering
+  added in v3.1.2 raised `UnboundLocalError` whenever a method/class/constant
+  casing convention was "strong but not enforced" (60-95% consistency) — the
+  exact tier that feature exists for — silently dropping the WHOLE conventions
+  block, not just the casing line, and deleting a pre-existing
+  `.chameleon/conventions.md` mirror outright. `conventions.py`.
+- **Trust bypass: `explain_edit` and `get_review_history` had zero trust gating
+  (P1).** Either tool replayed one checkout's archetype classification,
+  match_quality, blockable-rule list, or PR-review verdict history — including
+  free-text findings, commit SHAs, and reviewer usernames — to a caller whose
+  own checkout was never granted trust for that repo_id. Both now gate on
+  `trust_state_for(repo_id).grants_root(repo_root)` before serving content,
+  mirroring every other model-callable read tool. `tools.py`.
+- **`get_canonical_excerpt`/`get_rules` could silently serve a DIFFERENT
+  physical clone's content** when a repo_id collided across two local
+  checkouts of the same remote, with no way to detect the mismatch. The
+  resolved `repo_root` now rides in the envelope. `tools.py`.
+- **PR-review auto-pass's `override_rate` was computed from shadow-mode
+  would-blocks only, never real enforce-mode blocks** — an actively-enforcing,
+  well-behaved rule could read as a 100% override rate and get flagged
+  `high_override_rate` with zero real sample evidence. `review_ledger.py`.
+- **`get_callers`/`get_callees`/`get_blast_radius` merged distinct same-named
+  methods from different classes in one file into a single answer**,
+  contradicting the tools' own "fails open on any ambiguity" contract;
+  `get_blast_radius` could compose a fabricated multi-hop chain from two
+  unrelated methods that happened to share a name. `calls_index.py`.
+- **The multi-lens VERIFY/refuter stage refuted correct, well-evidenced
+  intent-vs-code mismatch findings** because it was never given the captured
+  `intent_tokens` the correctness judge itself used to raise them — only a
+  source-only excerpt, which its own prompt instructs it to refute on when it
+  "cannot tell." The tokens are now folded into the refuter's copy of the
+  claim for that call only, then restored before persistence/render.
+  `hook_helper.py`.
+- **A real block or inline override of `import-preference-violation` was
+  invisible to `/chameleon-explain`'s post-incident replay** — the only
+  PreToolUse deny branch that never called `_record_edit_decision`, unlike its
+  secret-detected-in-content and eval-call siblings. `hook_helper.py`.
+- **Monorepo coordinator-only bootstraps had nowhere to persist a resolved
+  `production_ref` lock**, so `detect_repo` silently reported `locked: false`
+  for a workspace whose profile really was derived from a locked branch, and
+  `refresh_repo`'s inheritance fallback could silently overwrite an explicit
+  lock with a freshly re-detected branch. The coordinator's resolution is now
+  persisted off the trust-hashed surface and read by both paths. `tools.py`.
+- **A no-git-remote repo that lost its `repo_uuid`** (deletion, bad merge, a
+  restored old backup) silently shifted `repo_id` to the path-hash branch,
+  orphaning the prior trust/drift/review-history grant with no diagnostic.
+  `detect_repo` now surfaces a `legacy_trust_hint`, mirroring the existing
+  engine-hash-change case — but declines when `config.json` carries a
+  persisted `production_ref` (only ever auto-stamped for an origin-backed
+  repo), since that combination means the repo more likely lost its git
+  remote, not a `repo_uuid` it never needed; misattributing that case pointed
+  at the wrong remediation (a caught-and-fixed regression in this same fix).
+  `tools.py`.
+- **`refresh_repo`'s default (`force=False`) path didn't detect a
+  `conventions.json` whose derived section (e.g. naming) was stripped** while
+  the surrounding JSON stayed valid — reported noop and left the corruption in
+  place indefinitely. `tools.py`.
+- **Pausing chameleon only silenced the auto-injected PreToolUse hook path** —
+  a model calling `get_pattern_context` directly during an active pause still
+  got full guidance. The pause state is now checked inside the tool itself,
+  blanking canonical/idiom/rule content with a `paused` reason like the
+  untrusted gate does. **Pausing was also invisible everywhere a user could
+  check it** (statusline, `/chameleon-status`, `/chameleon-doctor`) — the
+  statusline now surfaces the active window. `tools.py`, `chameleon-statusline.sh`.
+- **`doctor`'s hook-error log scan silently discarded the exact warning that
+  signals a prose artifact (idioms.md/principles.md/conventions.md) was
+  dropped for prompt injection** — a live, correctly-blocked poisoning event
+  left no trace in the one diagnostic tool meant to surface it. `tools.py`.
+- **`get_status`'s `enforcement.overrides` block was documented as
+  conditionally present but the code always included it**, even with zero
+  override history ever. `tools.py`.
+- **The symbol-index stale-vs-corrupt classifier treated ANY schema_version
+  mismatch as "stale"**, including a schema_version-absent garbage payload
+  bearing no resemblance to a real prior-schema artifact — now requires actual
+  shape evidence before calling it stale rather than corrupt. `tools.py`.
+- **`search_codebase` silently reported zeroed results with no degraded flag
+  when `calls_index.json`/`symbol_signatures.json` were entirely MISSING**,
+  even though the identical present-but-corrupt case correctly flagged
+  degraded. Both now surface a reason. `tools.py`.
+- **`_classify_casing`'s four casing buckets left a gap**: a file stem mixing
+  an underscore separator with an embedded uppercase letter (`test_BadCasing`)
+  matched none of kebab/snake/camel/Pascal and returned no signal, so the
+  file-naming-violation rule silently never fired on exactly the shape that
+  most obviously breaks a repo's casing convention. Added a `mixed_case`
+  bucket that counts against consistency — and, caught by this same round's
+  independent review, a follow-up fix so `mixed_case` can never itself win the
+  dominance vote and become the archetype's own declared "convention" (which
+  would have flagged every genuinely-conforming sibling as a violator).
+  `conventions.py`.
+- **The Python naming-convention lint check was ASCII-only**, misclassifying
+  every legal PEP-3131 unicode identifier as a casing violation even when
+  genuinely conforming in its own script — on a `BLOCK_ELIGIBLE` rule, capable
+  of hard-blocking a correct edit. Casing classification is now based on
+  actual letter case (`str.isupper()`/`isupper()` semantics), not an
+  ASCII character-range regex. `conventions.py`.
+- **A multi-base Python class's `extends` display marker (`"Base (+1 more)"`)
+  was reused as a dominance-grouping key**, fragmenting a shared primary base
+  across single- and multi-base classes into separate Counter buckets and
+  potentially defeating a real, unanimous base-class contract — caught by this
+  round's independent review of the libcst_dump.py fix that introduced the
+  marker. Dominance grouping now uses the plain first base; the display marker
+  is TS/Python-render-only. `conventions.py`.
+- **The journey harness's "no concurrent runner" lock could never actually
+  detect a concurrent invocation** — `build_context()` created the exclusive,
+  uniquely-timestamped `run_dir` one call before the lock was ever acquired, so
+  two overlapping invocations just created two different run_dirs and never
+  contended; a real race crashed with an unhandled `FileExistsError` instead of
+  the documented clean `PreflightError`. The lock now scopes to (and is
+  acquired against) the shared results root BEFORE any run_dir is created.
+  `preflight.py`, `runner.py`.
+- **The new slash-path intent-capture regex required a leading `/`**, silently
+  truncating the far more common relative repo-path form a user actually types
+  (`src/config/settings.ts`) instead of capturing it whole. **The new
+  single-digit numeral rules didn't exclude a following `/`**, so a fraction
+  or ratio (`retries=1/3`) captured its numerator as a standalone checkable
+  constant. `intent_capture.py`.
+- **`chameleon-teach/SKILL.md` documented zero working examples of the
+  `Source:` provenance line** for either capture mode, despite the doc's own
+  cap description, validation-error table, and Honesty Rules section assuming
+  it was in use. **`chameleon-deep-work/SKILL.md`'s dependency-baseline step
+  assumed a lockfile always exists**, with no guidance for a lockfile-less
+  repo. Both docs updated.
+- **`tests/bench_hot_path.py`'s target-file selection ignored the profiled
+  repo's own declared language**, always preferring `.tsx`/`.ts` over `.rb`,
+  so a Ruby repo with any frontend TypeScript file silently benched an
+  unmatched-archetype degraded path instead of the intended Ruby hot path.
+
+Full unit suite green (5634 passed, 3 skipped), ruff clean.
+
 ## [3.1.2] - 2026-07-13
 
 Whole-plugin from-scratch real-invocation QA campaign: 36 parallel testers

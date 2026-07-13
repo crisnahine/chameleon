@@ -99,6 +99,22 @@ def _base_names(class_node: cst.ClassDef) -> list[str]:
     return out
 
 
+def _extends_display(bases: list[str]) -> str | None:
+    """Single-string heritage summary for a class's ``extends`` field.
+
+    Mirrors ts_dump's single-base string for the common single-inheritance
+    case, but Python classes can carry multiple bases (unlike TS/JS
+    ``extends``), so a class with more than one base keeps the first and
+    appends a ``(+N more)`` marker rather than silently dropping the rest.
+    The full list survives separately in the ``bases`` field.
+    """
+    if not bases:
+        return None
+    if len(bases) == 1:
+        return bases[0]
+    return f"{bases[0]} (+{len(bases) - 1} more)"
+
+
 # Cap on captured class-body attribute names per class -- a presence signal, not
 # an inventory, so a generated megaclass cannot bloat the record.
 _MAX_CLASS_ATTRS = 50
@@ -318,8 +334,11 @@ class _Collector(cst.CSTVisitor):
                         "start_line": self._line(node),
                         "bases": bases,
                         # `extends` mirrors ts_dump's single-base string so consumers
-                        # that read the TS-shaped class_shapes pick up the base too.
-                        "extends": bases[0] if bases else None,
+                        # that read the TS-shaped class_shapes pick up the base too;
+                        # a class with more than one base keeps the full list in
+                        # `bases` and gets a `(+N more)` marker here so multiple
+                        # inheritance is never silently reduced to one name.
+                        "extends": _extends_display(bases),
                         "decorators": _decorator_targets(node.decorators),
                         # Presence of class-level config attributes (e.g. DRF's
                         # permission_classes) -- target names only, no values.

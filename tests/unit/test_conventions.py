@@ -248,6 +248,16 @@ class TestRubyNamingConventions:
         result = extract_naming_conventions(declarations={"method": ["a_b", "c_d"]})
         assert result == {}
 
+    def test_unicode_snake_case_methods_not_misclassified(self):
+        # A legal PEP 3131 identifier that mixes ASCII with non-ASCII letters
+        # but carries no uppercase letter is genuinely snake_case in its own
+        # script; an ASCII-only casing check would wrongly count it as
+        # non-conforming and tank the derived consistency.
+        names = ["calc_café", "fetch_naïve_result", "procesar_dados", "cache_key", "save_state"]
+        result = extract_naming_conventions(declarations={"method": names})
+        assert result["method_casing"]["pattern"] == "snake_case"
+        assert result["method_casing"]["consistency"] == 1.0
+
 
 class TestExtractAllConventions:
     def test_produces_conventions_dict(self):
@@ -358,6 +368,22 @@ class TestFormatConventionsForSession:
         assert "Name methods in snake_case" in text
         assert "Name classes in PascalCase" in text
         assert "Name constants in SCREAMING_SNAKE_CASE" in text
+
+    def test_formats_ruby_casing_conventions_strong_but_not_enforced(self):
+        # Regression: a consistency in [_STRONG_THRESHOLD, _ENFORCE_THRESHOLD)
+        # takes the NOT-enforced branch, which raised UnboundLocalError on
+        # `type_name` (a leftover reference from before the plural-tuple
+        # rewrite) -- crashing format_conventions_for_session entirely and
+        # silently dropping the whole SessionStart conventions block, not just
+        # the casing line. The prior test above only ever exercised the
+        # enforced (>=95%) branch.
+        conventions = empty_conventions(generation=1)
+        conventions["conventions"]["naming"]["service"] = {
+            "method_casing": {"pattern": "snake_case", "consistency": 0.75, "sample_size": 100},
+        }
+        text = format_conventions_for_session(conventions)
+        assert "Name methods in snake_case (75%)" in text
+        assert "enforced" not in text.split("NAMING:")[1].split("\n\n")[0]
 
     def test_empty_conventions_with_principles(self):
         conventions = empty_conventions(generation=1)

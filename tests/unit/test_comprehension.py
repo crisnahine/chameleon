@@ -214,6 +214,53 @@ def test_search_codebase_limit_clamped(profiled_repo):
     assert len(data["results"]) == 1
 
 
+def test_search_codebase_flags_missing_calls_index(profiled_repo):
+    # tg01-29: a MISSING calls_index.json must degrade the same way a
+    # present-but-corrupt one does -- silently zeroing every caller count
+    # with no reason was an honesty-invariant violation.
+    (profiled_repo / ".chameleon" / "calls_index.json").unlink()
+    data = _data(tools.search_codebase(str(profiled_repo), "make_service"))
+    assert data["found"] is True
+    assert data.get("degraded") is True
+    assert "no-calls-index" in data["reason"]
+
+
+def test_search_codebase_flags_missing_symbol_index(profiled_repo):
+    # tg01-29: a MISSING symbol_signatures.json must degrade an empty result
+    # the same way a present-but-corrupt one does.
+    (profiled_repo / ".chameleon" / "symbol_signatures.json").unlink()
+    data = _data(tools.search_codebase(str(profiled_repo), "no_such_symbol_zzz"))
+    assert data["found"] is True
+    assert data["results"] == []
+    assert data.get("degraded") is True
+    assert "symbol index unavailable (missing)" in data["reason"]
+
+
+def test_search_codebase_garbage_symbol_index_reads_corrupt_not_stale(profiled_repo):
+    # si01: a schema_version-absent/garbage-shaped payload has no evidence of
+    # being a real prior-schema artifact, so it must read as "corrupt" -- not
+    # "symbol-index-stale", which previously fired on ANY schema_version
+    # mismatch including a missing/None one.
+    (profiled_repo / ".chameleon" / "symbol_signatures.json").write_text(
+        json.dumps({"unrelated": "garbage", "nothing": [1, 2, 3]})
+    )
+    data = _data(tools.search_codebase(str(profiled_repo), "no_such_symbol_zzz"))
+    assert data.get("degraded") is True
+    assert "symbol index unavailable (corrupt)" in data["reason"]
+
+
+def test_search_codebase_shape_evidence_symbol_index_reads_stale(profiled_repo):
+    # si01: a payload carrying the real "files" shape (just missing/older
+    # schema_version) IS evidence of a genuine prior-schema artifact, so it
+    # must still read as "symbol-index-stale" (repaired by /chameleon-refresh).
+    (profiled_repo / ".chameleon" / "symbol_signatures.json").write_text(
+        json.dumps({"files": {"svc.py": {"make_service": {}}}})
+    )
+    data = _data(tools.search_codebase(str(profiled_repo), "no_such_symbol_zzz"))
+    assert data.get("degraded") is True
+    assert "symbol-index-stale" in data["reason"]
+
+
 def test_describe_codebase_tool(profiled_repo):
     data = _data(tools.describe_codebase(str(profiled_repo)))
     assert data["found"] is True

@@ -10,7 +10,6 @@ Checked:
 
 from __future__ import annotations
 
-import os
 import shutil
 from pathlib import Path
 
@@ -19,6 +18,12 @@ from tests.journey.harness.fixtures import check_git_version
 
 class PreflightError(Exception):
     pass
+
+
+# Advisory-lock context managers held for this process's lifetime (see
+# acquire_lock below). Kept alive here so GC never closes the generator and
+# releases the flock early.
+_HELD_LOCKS: list = []
 
 
 def claude_on_path() -> Path:
@@ -67,20 +72,48 @@ def fixtures_present(
     return found
 
 
-def acquire_lock(run_dir: Path) -> Path:
-    """Acquire an exclusive lock for the current run_dir. Returns path."""
-    lock_path = run_dir / ".lock"
-    if lock_path.exists():
-        raise PreflightError(f"another runner has acquired {lock_path}; aborting")
-    lock_path.write_text(str(os.getpid()), encoding="utf-8")
+def acquire_lock(results_root: Path) -> Path:
+    """Acquire an exclusive, cross-invocation lock. Returns the lock path.
+
+    Scoped to the shared results root, not a per-invocation run_dir -- a
+    run_dir is already uniquely timestamped per invocation, so a lock file
+    living inside one could never actually be contended by a second runner.
+    Takes results_root directly (not a run_dir to derive it from) so the lock
+    can be acquired BEFORE a run_dir is created: the caller must acquire this
+    lock first and only then create its run_dir, or a second invocation
+    racing to create ITS OWN uniquely-timestamped run_dir would never trip
+    this lock at all. Uses the repo's own flock-based advisory lock
+    (chameleon_mcp.locks) rather than a plain exists()-then-write check, so a
+    crashed prior runner's hold is released by the OS at process exit instead
+    of leaving a stale marker file that would wedge every later invocation.
+    """
+    from chameleon_mcp.locks import LockHeldError, acquire_advisory_lock
+
+    lock_path = results_root / ".journey_runner.lock"
+    cm = acquire_advisory_lock(lock_path)
+    try:
+        cm.__enter__()
+    except LockHeldError as e:
+        raise PreflightError(f"another runner has acquired {lock_path}: {e}") from e
+    # Held for this process's entire lifetime, deliberately never __exit__'d:
+    # the point is to block a concurrent runner for as long as this run is in
+    # progress, not just for the instant of this check. The OS releases the
+    # underlying flock when the process exits (including a crash), so a dead
+    # runner never wedges a later one. Keep a reference so GC never closes the
+    # generator-backed context manager and releases the lock early.
+    _HELD_LOCKS.append(cm)
     return lock_path
 
 
-def run_all(repo_root: Path, run_dir: Path, plugin_dir: Path | None = None) -> dict:
+def run_all(repo_root: Path, results_root: Path, plugin_dir: Path | None = None) -> dict:
     """Run every preflight check. Returns a dict of resolved paths.
 
     ``repo_root`` locates the committed fixtures under tests/; ``plugin_dir``
-    locates the MCP venv and defaults to ``repo_root / "plugin"``.
+    locates the MCP venv and defaults to ``repo_root / "plugin"``. ``results_root``
+    is the shared results directory the lock is scoped to -- call this BEFORE
+    creating a per-invocation run_dir under it, so a genuinely concurrent
+    invocation trips the lock instead of each one silently creating its own
+    uniquely-timestamped run_dir and never contending.
     """
     if plugin_dir is None:
         plugin_dir = repo_root / "plugin"
@@ -89,5 +122,5 @@ def run_all(repo_root: Path, run_dir: Path, plugin_dir: Path | None = None) -> d
         "git_version": check_git_version((2, 28)),
         "python_venv": python_venv_present(plugin_dir),
         "fixtures": fixtures_present(repo_root),
-        "lock_path": acquire_lock(run_dir),
+        "lock_path": acquire_lock(results_root),
     }
