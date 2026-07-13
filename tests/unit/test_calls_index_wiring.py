@@ -296,7 +296,12 @@ def test_amend_root_profile_preserves_calls_index(tmp_path, monkeypatch):
 
     cham = tmp_path / ".chameleon"
     cham.mkdir(parents=True)
-    for name in ("archetypes.json", "canonicals.json", "rules.json", "conventions.json"):
+    for name in (
+        "archetypes.json",
+        "canonicals.json",
+        "rules.json",
+        "conventions.json",
+    ):
         (cham / name).write_text("{}", encoding="utf-8")
     (cham / "profile.json").write_text(json.dumps({"language": "typescript"}), encoding="utf-8")
     (cham / "principles.md").write_text("p\n", encoding="utf-8")
@@ -308,7 +313,14 @@ def test_amend_root_profile_preserves_calls_index(tmp_path, monkeypatch):
 
     _amend_root_profile_with_workspaces(
         cham,
-        [{"workspace_path": "apps/web", "repo_id": "x", "profile_dir": "d", "status": "success"}],
+        [
+            {
+                "workspace_path": "apps/web",
+                "repo_id": "x",
+                "profile_dir": "d",
+                "status": "success",
+            }
+        ],
     )
 
     amended = json.loads((cham / "profile.json").read_text(encoding="utf-8"))
@@ -378,9 +390,9 @@ def test_bootstrap_writes_calls_index_ruby(tmp_path):
 
 
 def test_needs_rederive_missing_conventions_md_mirror(tmp_path, monkeypatch):
-    # conventions.md (the CLAUDE.md-channel mirror) is generated content the
-    # noop path would preserve-by-absence: when the profile's conventions
-    # render non-empty and the mirror is missing, refresh must re-derive.
+    # conventions.md (the CLAUDE.md-channel mirror) renders entirely from
+    # on-disk artifacts, so a missing mirror must NOT force a full re-derive:
+    # the refresh noop path self-heals it via _sync_conventions_md_from_disk.
     from chameleon_mcp.calls_index import SCHEMA_VERSION as CALLS_SV
     from chameleon_mcp.counterexamples import SCHEMA_VERSION as CEX_SV
     from chameleon_mcp.function_catalog import SCHEMA_VERSION as CATALOG_SV
@@ -417,16 +429,19 @@ def test_needs_rederive_missing_conventions_md_mirror(tmp_path, monkeypatch):
     (cham / "principles.md").write_text("anti-hallucination protocol\n", encoding="utf-8")
     (cham / "COMMITTED").write_text("ok\n", encoding="utf-8")
 
-    # renderable conventions + missing mirror -> repair
-    assert tools._profile_needs_rederive(cham) is True
-    # mirror present -> complete
-    (cham / "conventions.md").write_text("mirror\n", encoding="utf-8")
+    # renderable conventions + missing mirror -> no forced re-derive ...
     assert tools._profile_needs_rederive(cham) is False
-    # kill switch honored: absent mirror does not force when disabled
-    (cham / "conventions.md").unlink()
+    # ... because the noop-path self-heal regenerates it from disk, complete
+    # with the principles the profile carries.
+    tools._sync_conventions_md_from_disk(cham)
+    mirror = cham / "conventions.md"
+    assert mirror.is_file()
+    text = mirror.read_text(encoding="utf-8")
+    assert "./httpClient, not ./http" in text
+    # kill switch honored: no write when disabled
+    mirror.unlink()
     monkeypatch.setenv("CHAMELEON_CONVENTIONS_MD", "0")
+    tools._sync_conventions_md_from_disk(cham)
+    assert not mirror.exists()
     assert tools._profile_needs_rederive(cham) is False
     monkeypatch.delenv("CHAMELEON_CONVENTIONS_MD")
-    # nothing renderable -> absence is legitimate, no forced rebuild
-    (cham / "conventions.json").write_text("{}", encoding="utf-8")
-    assert tools._profile_needs_rederive(cham) is False

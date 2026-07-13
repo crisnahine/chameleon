@@ -4,6 +4,60 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] - 2026-07-13
+
+Quiet-powerful turn-end review: the taught rules move onto the high-authority
+CLAUDE.md memory channel (10/10 adherence in the published migration A/B vs
+4/10 as hook context), and the hook surfaces shrink to match — the Stop idiom
+review drops from ~3.5KB of pushed text to gist lines on wired repos, and
+SessionStart stops double-delivering the conventions block.
+
+### Added
+
+- **Taught idioms and principles ride the conventions.md mirror.**
+  `render_conventions_md` now emits a TEAM IDIOMS section (one
+  `- name: first-sentence directive` line per active idiom, 30 idioms / 280
+  chars per gist, deprecated excluded — `render_idiom_gists` in `tools.py`)
+  and the principles sections, making the mirror the complete
+  session-conventions content. Synced everywhere idioms.md or conventions.json
+  change: bootstrap/refresh transactions, teach/unteach, the deprecate paths
+  (previously never re-synced), the partial-refresh commit (previously served
+  a stale mirror), and a noop refresh now self-heals a missing or older-format
+  mirror from disk instead of forcing a full re-derive.
+- **Memory-channel-aware Stop idiom gists** (`CHAMELEON_STOP_IDIOM_GIST=0` to
+  disable; `--toggle stop_idiom_gist`). When the repo imports
+  `.chameleon/conventions.md` (CLAUDE.md / CLAUDE.local.md /
+  `.claude/rules/*.md`) and the DELIVERED mirror carries an idiom's gist, the
+  Stop self-review renders that idiom as a one-line gist plus one shared
+  "Full text for any you have not applied: .chameleon/idioms.md" pointer
+  instead of re-dumping the full block. Delivery is verified the way Claude
+  Code resolves imports — code fences and inline code spans are ignored (a
+  doc that quotes the import line is not wiring), the path resolves relative
+  to its containing file, and the target must exist — so a linked worktree
+  with an unmaterialized target reads as undelivered. Idioms with no delivery
+  channel keep the v3.0.3 full-text escalation — an idiom the model never saw
+  is still never reduced to a name; detection fails open to "no channel".
+- **SessionStart memory-channel dedup** (`CHAMELEON_MEMORY_CHANNEL_DEDUP=0` to
+  disable; `--toggle memory_channel_dedup`). A wired repo's session no longer
+  receives the conventions block twice: the hook injection collapses to a
+  one-line pointer at the higher-authority import. Lossless-gated at line
+  granularity — the swap happens only when every non-empty line the block
+  would inject already appears in the text the import actually delivers, so
+  pre-3.1.0 mirrors (no principles sections), content-stale mirrors, and
+  unmaterialized worktree targets all keep the full injection; untrusted
+  repos are unchanged.
+
+### Changed
+
+- **Stop idiom-review boilerplate halved.** The enforce-mode directive,
+  principles pointer, and confirm/skip/off-switch tail compress from ~570 to
+  ~310 chars (the durable `enforcement.idiom_review: false` off-switch is
+  still named); the shadow advisory is compressed the same way.
+- **Idiom gists survive long parentheticals.** A summary that runs over its
+  cap now elides long `(...)` enumerations first (`_elide_long_parens`), so a
+  directive like the atomic-commit idiom's keeps its verbs instead of being
+  cut mid-artifact-list; short call-syntax parens are kept verbatim.
+
 ## [3.0.3] - 2026-07-12
 
 Field feedback: the turn-end Stop idiom self-review read as a recurring "hook

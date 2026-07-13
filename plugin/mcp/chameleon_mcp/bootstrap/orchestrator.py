@@ -2924,29 +2924,38 @@ def _bootstrap_single(
         (txn_dir / "conventions.json").write_text(
             serialize_conventions(conventions_data), encoding="utf-8"
         )
+        _principles_md = ""
         try:
             from chameleon_mcp.principles import generate_principles
 
-            (txn_dir / "principles.md").write_text(
-                generate_principles(
-                    language=extractor.language,
-                    framework=framework,
-                    conventions=conventions_data,
-                    archetypes=archetypes_data,
-                ),
-                encoding="utf-8",
+            _principles_md = generate_principles(
+                language=extractor.language,
+                framework=framework,
+                conventions=conventions_data,
+                archetypes=archetypes_data,
             )
+            (txn_dir / "principles.md").write_text(_principles_md, encoding="utf-8")
         except Exception:
-            pass
+            _principles_md = ""
         # conventions.md: the CLAUDE.md-channel mirror of the conventions block
-        # (a repo's CLAUDE.md imports it via @.chameleon/conventions.md). Local
+        # (a repo's CLAUDE.md imports it via @.chameleon/conventions.md). It
+        # carries the principles and the taught-idiom gists too, so the memory
+        # channel delivers the complete session-conventions content. Local
         # file write only -> default-ON with a kill switch. Best-effort like
         # principles.md: a render failure must not abort the profile commit.
         if os.environ.get("CHAMELEON_CONVENTIONS_MD") != "0":
             try:
                 from chameleon_mcp.conventions import render_conventions_md
+                from chameleon_mcp.idiom_coverage import has_idiom_content
 
-                _conv_md = render_conventions_md(conventions_data)
+                _mirror_idioms = idioms_content if idioms_raw_bytes is None else ""
+                if not has_idiom_content(_mirror_idioms):
+                    _mirror_idioms = ""
+                _conv_md = render_conventions_md(
+                    conventions_data,
+                    _principles_md or None,
+                    _mirror_idioms or None,
+                )
                 if _conv_md:
                     (txn_dir / "conventions.md").write_text(_conv_md, encoding="utf-8")
             except Exception:

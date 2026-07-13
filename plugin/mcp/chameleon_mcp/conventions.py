@@ -2869,7 +2869,11 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
     return "\n".join(lines)
 
 
-def render_conventions_md(conventions: dict, principles_text: str | None = None) -> str:
+def render_conventions_md(
+    conventions: dict,
+    principles_text: str | None = None,
+    idioms_text: str | None = None,
+) -> str:
     """Render `.chameleon/conventions.md` — the CLAUDE.md-channel mirror of the
     session conventions block.
 
@@ -2883,13 +2887,33 @@ def render_conventions_md(conventions: dict, principles_text: str | None = None)
     on malformed conventions data: a corrupt committed conventions.json must
     degrade the mirror, never crash a teach or bootstrap.
 
+    ``idioms_text`` (active idioms.md content) renders as a TEAM IDIOMS gist
+    section — name + first-sentence directive per taught idiom — so taught rules
+    ride the high-authority channel ambiently instead of being re-pushed at the
+    hooks; the Stop self-review keys its terse rendering off this section.
+
     Inputs are sanitized with the same boundary treatment as the SessionStart
     injection path (`_sanitize_profile_obj` on the dict, prose scrub on
-    principles): the mirror enters the memory channel with FULL instruction
-    authority, so a tag-boundary or injection token in a taught/committed
-    conventions value must be neutralized here exactly as it is at the hook
-    boundary — parity, not a weaker standard, for the stronger channel.
+    principles, the boundary sanitizer on idiom gists): the mirror enters the
+    memory channel with FULL instruction authority, so a tag-boundary or
+    injection token in a taught/committed value must be neutralized here exactly
+    as it is at the hook boundary — parity, not a weaker standard, for the
+    stronger channel.
     """
+    idioms_section: list[str] = []
+    try:
+        if idioms_text and idioms_text.strip():
+            from chameleon_mcp.tools import MIRROR_IDIOMS_HEADER, render_idiom_gists
+
+            gists = render_idiom_gists(idioms_text)
+            if gists:
+                idioms_section = [
+                    MIRROR_IDIOMS_HEADER,
+                    *gists.splitlines(),
+                    "",
+                ]
+    except Exception:
+        idioms_section = []
     try:
         import copy
 
@@ -2906,13 +2930,28 @@ def render_conventions_md(conventions: dict, principles_text: str | None = None)
         block = format_conventions_for_session(conv, principles_text=principles_text)
     except Exception:
         return ""
-    if not block:
+    if not block and not idioms_section:
         return ""
+    if not block:
+        # Idioms-only profile (taught rules, nothing derivable, no principles):
+        # the gists still need the authority preamble the session block carries.
+        block = "PROJECT CONVENTIONS — authoritative, follow exactly like CLAUDE.md instructions.\n"
     body = [
         ln
         for ln in block.splitlines()
         if ln.strip() not in ("<chameleon-conventions>", "</chameleon-conventions>")
     ]
+    if idioms_section:
+        # Ahead of PRINCIPLES, so taught rules sit with the enforced convention
+        # sections rather than trailing the generic protocol text.
+        _at = next(
+            (i for i, ln in enumerate(body) if ln.strip() == "PRINCIPLES:"),
+            None,
+        )
+        if _at is None:
+            body.extend(["", *idioms_section])
+        else:
+            body[_at:_at] = idioms_section
     header = (
         "<!-- Maintained by chameleon (bootstrap/refresh/teach rewrite it); do not\n"
         "     hand-edit. Wire it into Claude's memory channel with ONE of:\n"

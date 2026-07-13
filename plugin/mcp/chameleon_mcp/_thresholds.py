@@ -170,6 +170,18 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # cannot turn the on-demand mine into an unbounded read.
     "PROSE_RULE_MAX_DOCS": 60,
     "PROSE_RULE_MAX_DOC_BYTES": 200_000,
+    # conventions.md mirror idiom digest bounds (render-time: bootstrap/teach/
+    # refresh, never a hook hot path). The digest loads into EVERY session via
+    # the CLAUDE.md channel, so it stays gist-sized; a team with many taught
+    # idioms can widen either cap without a code edit.
+    "MIRROR_IDIOM_MAX_ITEMS": 30,
+    "MIRROR_IDIOM_GIST_CHARS": 280,
+    # Wired-import detection bounds (SessionStart dedup + Stop idiom gists;
+    # memoized per hook process). Bytes read per memory-channel file when
+    # scanning for the @conventions.md import, and how many .claude/rules/*.md
+    # files are scanned; a repo with a huge rules tree can widen these.
+    "MEMORY_CHANNEL_FILE_READ_CAP": 256_000,
+    "MEMORY_CHANNEL_RULES_FILE_CAP": 50,
     # Comprehension surface (tool-time queries over the committed indexes, never a
     # hook hot path). Cap on search results returned, and on the god-symbol
     # (most-called) overview list, so a query over a huge monorepo's index stays a

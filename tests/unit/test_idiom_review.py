@@ -573,3 +573,56 @@ def test_secondary_language_hint_keeps_primary_tagged_idioms(make_trusted_repo):
     )
     assert out.get("decision") == "block"
     assert "frontend-fetch-wrapper" in out.get("reason", "")
+
+
+def _wire_memory_channel(repo: Path, profile_dir: Path, *, gist_names: list[str]):
+    """CLAUDE.local.md import + a mirror whose TEAM IDIOMS section carries gists."""
+    (repo / "CLAUDE.local.md").write_text("@.chameleon/conventions.md\n", encoding="utf-8")
+    lines = "\n".join(f"- {n}: gist of {n}." for n in gist_names)
+    profile_dir.joinpath("conventions.md").write_text(
+        "PROJECT CONVENTIONS — authoritative.\n\n"
+        "TEAM IDIOMS (taught; follow on every edit — full text with examples in "
+        f".chameleon/idioms.md):\n{lines}\n",
+        encoding="utf-8",
+    )
+
+
+def test_mirror_carried_idiom_renders_gist_not_full_text(make_trusted_repo):
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
+    _touch_edited_file(file_path, data_dir, sid)
+    _write_idioms(
+        profile_dir,
+        "### wrap-fetches\nAlways wrap fetches in the apiClient helper.\n\n"
+        "Example:\n```\napiClient.get('/x')\n```\n",
+    )
+    _wire_memory_channel(repo, profile_dir, gist_names=["wrap-fetches"])
+
+    out = _run_stop(
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
+        env={"CHAMELEON_ENFORCE": "1"},
+    )
+    assert out.get("decision") == "block"
+    reason = out.get("reason", "")
+    assert "- wrap-fetches: Always wrap fetches in the apiClient helper." in reason
+    assert "apiClient.get" not in reason  # full block not re-dumped
+    assert "Full text for any you have not applied: .chameleon/idioms.md" in reason
+
+
+def test_mirror_gist_kill_switch_restores_full_text(make_trusted_repo):
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
+    _touch_edited_file(file_path, data_dir, sid)
+    _write_idioms(
+        profile_dir,
+        "### wrap-fetches\nAlways wrap fetches in the apiClient helper.\n\n"
+        "Example:\n```\napiClient.get('/x')\n```\n",
+    )
+    _wire_memory_channel(repo, profile_dir, gist_names=["wrap-fetches"])
+
+    out = _run_stop(
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
+        env={"CHAMELEON_ENFORCE": "1", "CHAMELEON_STOP_IDIOM_GIST": "0"},
+    )
+    assert out.get("decision") == "block"
+    reason = out.get("reason", "")
+    assert "### wrap-fetches" in reason
+    assert "apiClient.get" in reason

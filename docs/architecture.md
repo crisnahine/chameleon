@@ -236,7 +236,7 @@ All JSON artifacts carry `schema_version`, `engine_min_version`, and a
 | `canonicals.json` | Per-archetype canonical: the witness (path + sha hint), normative shape (AST query + callable signatures), normative idioms (comments), and the secret/injection/poisoning scan verdicts. |
 | `conventions.json` | Per-archetype derived conventions (imports, naming, error handling, body shape, doc coverage, test pairing, inheritance and method calls for Ruby, class contract, key exports) plus repo-level layering. |
 | `principles.md` | Data-backed prose principles generated from conventions. |
-| `conventions.md` | The CLAUDE.md-channel mirror: the rendered conventions block, for wiring into Claude's memory channel via a one-line `.claude/rules/chameleon-conventions.md`, `CLAUDE.local.md`, or a `CLAUDE.md` import (init offers all three, consent-gated; none edits an existing file by default). Rewritten by bootstrap/refresh, re-synced by teach/unteach, repaired by refresh when missing; absent when nothing renders. Kill switch `CHAMELEON_CONVENTIONS_MD=0`. Motive: memory-channel delivery measured 100% rule adherence vs 40% for the same content as a hook advisory (results-published/migration-ab-2026-07-11.md). |
+| `conventions.md` | The CLAUDE.md-channel mirror: the rendered conventions block PLUS the principles sections and a TEAM IDIOMS gist section (one `- name: first-sentence directive` line per taught idiom), for wiring into Claude's memory channel via a one-line `.claude/rules/chameleon-conventions.md`, `CLAUDE.local.md`, or a `CLAUDE.md` import (init offers all three, consent-gated; none edits an existing file by default). Rewritten by bootstrap/refresh, re-synced by teach/unteach after every conventions.json or idioms.md mutation, self-healed from disk on a noop refresh when missing or older-format; absent when nothing renders. Kill switch `CHAMELEON_CONVENTIONS_MD=0`. Motive: memory-channel delivery measured 100% rule adherence vs 40% for the same content as a hook advisory (results-published/migration-ab-2026-07-11.md). Because the mirror is the complete session-conventions content, a wired import lets SessionStart skip its duplicate hook injection (`CHAMELEON_MEMORY_CHANNEL_DEDUP`) and lets the Stop idiom review render mirror-carried idioms as gists instead of full text (`CHAMELEON_STOP_IDIOM_GIST`). |
 | `rules.json` | Tool-derived rules keyed by source: prettier, tsconfig compiler options, eslint, editorconfig, rubocop. |
 | `idioms.md` | Human-authored team idioms. Carried forward byte-identical across refresh; never regenerated. |
 | `profile.summary.md` | Human-readable summary for PR review and the trust prompt. |
@@ -673,7 +673,14 @@ banner and the other hooks fail open silently and log a `no-interpreter` line.
   carries explicit anti-majority framing — a rule buried after ~14k chars of
   mechanics measurably loses authority, and a model otherwise dismisses a
   taught rule that contradicts the sibling-file majority as "inverted";
-  results-published/migration-ab-2026-07-11.md), appends a drift banner when
+  results-published/migration-ab-2026-07-11.md). When the repo already imports
+  `.chameleon/conventions.md` into the memory channel — detected
+  delivery-faithfully: code fences/inline code spans are ignored and the
+  import path must resolve (relative to its containing file) to an existing
+  mirror — the block is replaced by a one-line pointer instead of being
+  injected twice, gated on every line of the would-be block already appearing
+  in the delivered text; kill switch
+  `CHAMELEON_MEMORY_CHANNEL_DEDUP=0`. It appends a drift banner when
   warranted, runs the default-on auto-refresh, and
   fires the advisor daemon asynchronously. It also wires the status line: when
   neither the project's `settings.json` nor the global `~/.claude/settings.json`
@@ -941,9 +948,15 @@ Five places can stop work, all gated by trust, mode, and `CHAMELEON_ENFORCE`.
    scoped to the edited archetypes' idioms plus untagged general ones, idioms
    whose `Language:` tag names a recognized language the turn did not edit are
    dropped (untagged, `any`, and unrecognized tags fail open to shown), idioms
-   the model already saw this session are summarized to one line each, and full
-   text is shown only for in-scope idioms not yet surfaced — so an idiom the
-   model never saw is never reduced to a name. "Seen" is tracked per idiom name
+   the model already saw this session — or already receives every session
+   through a wired `conventions.md` memory-channel import whose TEAM IDIOMS
+   section carries their gist (`CHAMELEON_STOP_IDIOM_GIST=0` disables this
+   layer) — are summarized to one line each, and full text is shown only for
+   in-scope idioms with no delivery channel at all — so an idiom the model
+   never saw is never reduced to a name. Mirror-carried idioms not otherwise
+   surfaced this session get one shared "Full text for any you have not
+   applied: .chameleon/idioms.md" pointer instead of a re-dump. "Seen" is
+   tracked per idiom name
    in the enforcement state's `idioms_shown_names`, computed from the `###`
    headers that actually survived the char-capped Tier-2 block, so an idiom
    truncated out of that block (or one from the deny path, which emits no

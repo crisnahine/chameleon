@@ -1762,6 +1762,44 @@ def session_start() -> int:
                     _sanitize_profile_obj(conv_data),
                     principles_text=sanitize_for_chameleon_context(pr_text),
                 )
+                # Memory-channel dedup: when the repo already imports the
+                # conventions.md mirror (CLAUDE.md / CLAUDE.local.md /
+                # .claude/rules), the identical content arrives through the
+                # HIGHER-authority channel at session load — re-injecting it
+                # here doubles several KB of context for a strictly weaker
+                # delivery (migration A/B 2026-07-11: 10/10 via the memory
+                # channel vs 4/10 as hook context). Replace the block with a
+                # one-line pointer, but ONLY when the swap is lossless: every
+                # non-empty line this block would inject must already appear
+                # in the text the import ACTUALLY delivers (resolved the way
+                # Claude Code resolves it), so a pre-3.1.0 mirror missing the
+                # principles sections, a content-stale mirror, or a worktree
+                # whose import target is not materialized all keep the full
+                # injection. The non-empty guard keeps an empty line set from
+                # vacuously passing. Fail-open: any doubt keeps the full
+                # injection.
+                try:
+                    if (
+                        conventions_block
+                        and os.environ.get("CHAMELEON_MEMORY_CHANNEL_DEDUP", "1") != "0"
+                        and repo_root is not None
+                    ):
+                        _delivered = _wired_mirror_text(repo_root)
+                        _lines = [
+                            ln.strip()
+                            for ln in conventions_block.splitlines()
+                            if ln.strip()
+                            and ln.strip()
+                            not in ("<chameleon-conventions>", "</chameleon-conventions>")
+                        ]
+                        if _delivered.strip() and _lines and all(ln in _delivered for ln in _lines):
+                            conventions_block = (
+                                "Project conventions, principles, and team idioms "
+                                "load through your @.chameleon/conventions.md "
+                                "import; follow them as project instructions."
+                            )
+                except Exception:
+                    pass
     except Exception:
         pass
 
@@ -6973,6 +7011,116 @@ _STOP_IDIOM_SUMMARY_MAX_CHARS = 160
 # idioms.md.
 _STOP_IDIOM_FULLTEXT_CHAR_CAP = 3000
 
+# A CLAUDE.md-channel import of the conventions mirror: `@` immediately followed
+# by a path ending in .chameleon/conventions.md (any relative prefix, either
+# path separator). The path is CAPTURED so the target can be resolved the way
+# Claude Code resolves it (relative to the containing file); a match whose
+# target does not exist is documentation, not wiring.
+_CONVENTIONS_IMPORT_RE = re.compile(r"@(\S*\.chameleon[/\\]conventions\.md)\b")
+
+# Fenced code blocks and inline code spans: Claude Code does NOT evaluate
+# @imports inside either, so the wired scan must blank them before matching —
+# a doc that QUOTES the import line (this repo's own rules file does) is not
+# wiring. The span pattern is non-greedy and single-line, mirroring markdown.
+_FENCED_BLOCK_RE = re.compile(r"^```.*?^```", re.MULTILINE | re.DOTALL)
+_INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
+
+# Delivered-mirror resolution, memoized per hook process: a Stop under the
+# multi-root backstop gates up to 16 roots, and the answer cannot change
+# mid-invocation.
+_WIRED_MIRROR_CACHE: dict[str, str] = {}
+
+
+def _wired_mirror_text(repo_root: Path) -> str:
+    """Content of the conventions mirror the memory channel ACTUALLY delivers.
+
+    Scans the layouts the mirror header documents — CLAUDE.md / CLAUDE.local.md
+    at the repo root and `.claude/rules/*.md` (bounded) — for a live
+    `@...chameleon/conventions.md` import, with code fences and inline code
+    spans blanked first (Claude Code does not evaluate imports inside them).
+    Each match's path is resolved the way Claude Code resolves it: `~`
+    expanded, relative paths against the CONTAINING file's directory — so a
+    linked worktree whose import points at a file that is not materialized
+    there correctly reads as undelivered, even when the main checkout has a
+    mirror. Returns the first resolved target's injection-scanned text, or ""
+    (fail-closed: no wiring / missing target / any error), so callers keep
+    their push-based delivery.
+    """
+    key = str(repo_root)
+    if key in _WIRED_MIRROR_CACHE:
+        return _WIRED_MIRROR_CACHE[key]
+    text_out = ""
+    try:
+        from chameleon_mcp._thresholds import threshold_int
+        from chameleon_mcp.profile.loader import safe_prose_text
+
+        read_cap = threshold_int("MEMORY_CHANNEL_FILE_READ_CAP")
+        candidates: list[Path] = [
+            repo_root / "CLAUDE.md",
+            repo_root / "CLAUDE.local.md",
+        ]
+        rules_dir = repo_root / ".claude" / "rules"
+        if rules_dir.is_dir():
+            try:
+                rules = sorted(p for p in rules_dir.iterdir() if p.suffix == ".md")
+                candidates.extend(rules[: threshold_int("MEMORY_CHANNEL_RULES_FILE_CAP")])
+            except OSError:
+                pass
+        for path in candidates:
+            try:
+                if not path.is_file():
+                    continue
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    text = f.read(read_cap)
+            except OSError:
+                continue
+            text = _FENCED_BLOCK_RE.sub("", text)
+            text = _INLINE_CODE_RE.sub("", text)
+            for m in _CONVENTIONS_IMPORT_RE.finditer(text):
+                try:
+                    target = Path(os.path.expanduser(m.group(1)))
+                    if not target.is_absolute():
+                        target = path.parent / target
+                    if not target.is_file():
+                        continue
+                    delivered = safe_prose_text(target)
+                    if delivered.strip():
+                        text_out = delivered
+                        break
+                except OSError:
+                    continue
+            if text_out:
+                break
+    except Exception:
+        text_out = ""
+    _WIRED_MIRROR_CACHE[key] = text_out
+    return text_out
+
+
+def _mirror_idiom_names(repo_root: Path) -> set[str]:
+    """Idiom names whose gists the wired conventions mirror already delivers.
+
+    The Stop self-review treats these like session-seen idioms (gist line, not a
+    full-text re-dump): their directive is ambient in every session through the
+    memory channel, the higher-authority channel per the 2026-07-11 migration
+    A/B. Names are parsed by the grammar's owner (`parse_idiom_gist_names`,
+    exported next to the renderer that emits the section) from the DELIVERED
+    mirror text, and are compared against idioms.md block names downstream — a
+    name the mirror lacks keeps full-text escalation. Fail-open to the empty
+    set: no wiring, undelivered target, a pre-idioms-format mirror, or any read
+    error all mean "no channel", never a hidden idiom.
+    Kill switch: CHAMELEON_STOP_IDIOM_GIST=0.
+    """
+    try:
+        if os.environ.get("CHAMELEON_STOP_IDIOM_GIST", "1") == "0":
+            return set()
+        from chameleon_mcp.tools import parse_idiom_gist_names
+
+        return parse_idiom_gist_names(_wired_mirror_text(repo_root))
+    except Exception:
+        return set()
+
+
 # Judged-digest marker namespace for the correctness gate, kept disjoint from
 # the duplication gate's default ".dup_judged." namespace.
 _CORR_JUDGED_PREFIX = ".corr_judged."
@@ -7249,11 +7397,13 @@ def _idiom_review_gate(
 
         if terse:
             # A + B + C + E. Scope idioms to the edited archetypes (B), summarize the
-            # ones the model already saw this session (C), and show full text only
-            # for unseen ones (E). Principles were injected at SessionStart (when
-            # trusted) and live in the repo, so a one-line pointer replaces the full
-            # re-dump (A) -- keyed on the honest per-idiom idioms_shown_names signal
-            # (the actual `### ` names a Tier-2 block rendered), not archetypes_seen.
+            # ones the model already saw this session (C) OR already receives every
+            # session through the wired conventions.md memory channel, and show full
+            # text only for idioms with no channel at all (E). Principles were
+            # injected at SessionStart (when trusted) and live in the repo, so a
+            # one-line pointer replaces the full re-dump (A) -- keyed on the honest
+            # per-idiom idioms_shown_names signal (the actual `### ` names a Tier-2
+            # block rendered), not archetypes_seen.
             from chameleon_mcp.tools import _render_stop_idioms
 
             idioms_rendered = _render_stop_idioms(
@@ -7264,10 +7414,11 @@ def _idiom_review_gate(
                 max_terse=_STOP_IDIOM_MAX_TERSE,
                 summary_max_chars=_STOP_IDIOM_SUMMARY_MAX_CHARS,
                 edited_languages=edited_languages,
+                mirror_idiom_names=_mirror_idiom_names(repo_root),
             )
             if idioms_rendered:
                 body.append("")
-                body.append("Team idioms in scope for what you edited - re-check each:")
+                body.append("Idioms in scope - re-check each:")
                 body.append(idioms_rendered)
                 surfaced_review = True
             # Principles ride on an idiom review, they do not trigger one on their
@@ -7278,10 +7429,7 @@ def _idiom_review_gate(
             # keeps the old idioms-OR-principles trigger.
             if surfaced_review and principles_text.strip():
                 body.append("")
-                body.append(
-                    "Also re-check your edits against the team principles in "
-                    "`.chameleon/principles.md`."
-                )
+                body.append("Also re-check the team principles (.chameleon/principles.md).")
         else:
             legacy_idioms = idioms_text
             if edited_archetypes:
@@ -7365,9 +7513,9 @@ def _idiom_review_gate(
             _emit_check_event(repo_id, session_id, "idiom_review", "ran")
             advisory = [
                 "[🦎 chameleon: idiom self-review (advisory)]",
-                f"You edited {names} this turn. Review those changes against the "
-                "team idioms/principles below and fix any clear violation in your "
-                "next action. This is advisory; the turn ends normally.",
+                f"You edited {names}. Re-check those edits against the idioms below "
+                "and fix any clear violation in your next action. Advisory; the "
+                "turn ends normally.",
                 *body,
             ]
             return {
@@ -7380,9 +7528,8 @@ def _idiom_review_gate(
             }
 
         parts = [
-            f"chameleon: you edited {names} this turn. Before ending, verify those "
-            "changes comply with the team idioms/principles below. Fix any clear "
-            "violation; otherwise you may end.",
+            f"chameleon: you edited {names} this turn. Re-check those edits against "
+            "the team idioms below and fix any clear violation before ending.",
             *body,
         ]
         if cfg.idiom_judge:
@@ -7394,10 +7541,10 @@ def _idiom_review_gate(
             )
         parts.append("")
         parts.append(
-            "Ending again confirms the review is done. To skip this check, add "
-            f"{_ignore_hint(governed[:5], 'idioms')} in a file you touched. To turn "
-            "this once-per-session review off for this repo durably, set "
-            '"enforcement": {"idiom_review": false} in .chameleon/config.json.'
+            "End again to confirm the review is done. Skip once: add "
+            f"{_ignore_hint(governed[:5], 'idioms')} in a file you touched. Off "
+            'durably for this repo: "enforcement": {"idiom_review": false} in '
+            ".chameleon/config.json."
         )
 
         # Charge the same reconciled per-workspace counter the cap check read, so

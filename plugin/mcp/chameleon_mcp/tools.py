@@ -140,12 +140,19 @@ def _write_idioms_atomic(idioms_path: Path, new_content: str) -> None:
     A tmp write + os.replace makes the swap atomic, matching the conventions.json
     write path. The caller already holds .idioms.lock, which serializes writers
     but does nothing for crash-atomicity.
+
+    The memory-channel mirror carries per-idiom gists, so EVERY idioms.md write
+    re-syncs it here — structurally, not per call site, so a future write path
+    cannot forget. Best-effort and content-compared: an unchanged active set
+    (e.g. a direct-to-deprecated append) renders identical text and skips the
+    mirror rewrite.
     """
     import os as _os
 
     _tmp = idioms_path.with_suffix(idioms_path.suffix + ".tmp")
     _tmp.write_text(new_content, encoding="utf-8")
     _os.replace(_tmp, idioms_path)
+    _sync_conventions_md_from_disk(idioms_path.parent)
 
 
 def _sanitize_rule_items(items: list) -> list:
@@ -1863,8 +1870,40 @@ def _summarize_idiom_block(block_text: str, *, max_chars: int) -> str:
     m = re.search(r"^(.*?[.!?])(?:\s|$)", text)
     summary = m.group(1) if m else text
     if len(summary) > max_chars:
-        summary = summary[:max_chars].rstrip() + "..."
+        # Idiom directives often lead with a long parenthetical enumeration
+        # ("Write every derived profile artifact (a.json, b.json, ...) only
+        # inside ..."): a hard cut inside that list would drop the verbs the
+        # summary exists to carry, so elide long parentheticals first and cut
+        # only if the sentence is still over budget.
+        summary = _elide_long_parens(summary)
+        if len(summary) > max_chars:
+            summary = summary[:max_chars].rstrip() + "..."
     return summary
+
+
+# Parenthetical spans this long carry enumerations/asides, not operators like
+# ``threshold_int("X")`` — only these are elided when a summary runs over cap.
+# A span may contain earlier-pass ``(...)`` markers (so a long outer aside
+# around an elided inner one still collapses), but never any other paren.
+_PAREN_SPAN_RE = re.compile(r"\((?:[^()]|\(\.\.\.\)){20,}\)")
+
+
+def _elide_long_parens(text: str) -> str:
+    """Replace long ``(...)`` spans with a literal ``(...)`` marker.
+
+    Innermost-first with a bounded pass count, so nested parentheticals converge
+    to a single marker; the bare 3-char marker itself never re-matches. Short
+    spans (call syntax, one-word asides) are kept verbatim. Invariant the tests
+    pin: the marker's inner ``...`` must stay shorter than the regex's span
+    floor, or the marker would re-collapse forever (bounded only by the pass
+    count) — shrink the floor below 5 only together with a new marker.
+    """
+    for _ in range(4):
+        new = _PAREN_SPAN_RE.sub("(...)", text)
+        if new == text:
+            return new
+        text = new
+    return text
 
 
 def _render_stop_idioms(
@@ -1876,6 +1915,7 @@ def _render_stop_idioms(
     max_terse: int,
     summary_max_chars: int,
     edited_languages=None,
+    mirror_idiom_names=None,
 ) -> str:
     """Render idioms.md for the turn-end self-review: filter, summarize, escalate.
 
@@ -1889,10 +1929,14 @@ def _render_stop_idioms(
       plus untagged/general blocks; drop other-archetype blocks (they do not govern
       what was edited this turn). No archetype resolved -> keep all (cannot scope).
     - Summarize (C): a block whose NAME is in ``seen_idiom_names`` -- i.e. this exact
-      idiom was actually rendered in a Tier-2 block this session -- renders as one
-      ``- name: summary`` line.
-    - Escalate (E): a block whose name is NOT in ``seen_idiom_names`` renders as its
-      FULL text, so an idiom the model has not seen is never reduced to a name. The
+      idiom was actually rendered in a Tier-2 block this session -- OR in
+      ``mirror_idiom_names`` -- i.e. its gist is already delivered every session
+      through the wired ``.chameleon/conventions.md`` memory channel, the higher-
+      authority channel per the 2026-07-11 migration A/B -- renders as one
+      ``- name: summary`` line. Mirror-carried idioms the session has not otherwise
+      surfaced get one shared pointer line to idioms.md instead of a full re-dump.
+    - Escalate (E): a block whose name is in NEITHER set renders as its FULL text,
+      so an idiom the model has no channel for is never reduced to a name. The
       seen set is per-idiom-name, computed from the char-capped text a Tier-2 block
       actually showed, so an idiom truncated out of that block is correctly treated
       as unseen (full) even when other idioms of the same archetype were shown.
@@ -1905,6 +1949,7 @@ def _render_stop_idioms(
 
     wanted = {a.strip().lower() for a in (edited_archetypes or []) if a and a.strip()}
     seen = {n.strip() for n in (seen_idiom_names or []) if n and n.strip()}
+    mirrored = {n.strip() for n in (mirror_idiom_names or []) if n and n.strip()}
     preamble, blocks = _parse_idiom_blocks(idioms_text)
     if not blocks:
         # Non-standard idioms.md (no '### ' headers): fall back to a whole-text cap
@@ -1937,9 +1982,13 @@ def _render_stop_idioms(
 
     terse: list[tuple[str, str]] = []
     full: list[str] = []
+    mirror_only = False
     for name, _arch, text in kept:
-        if name.strip() in seen:
+        nm = name.strip()
+        if nm in seen or nm in mirrored:
             terse.append((name, _summarize_idiom_block(text, max_chars=summary_max_chars)))
+            if nm not in seen:
+                mirror_only = True
         else:
             full.append(text)
 
@@ -1951,6 +2000,11 @@ def _render_stop_idioms(
         overflow = len(terse) - len(shown)
         if overflow > 0:
             out.append(f"- (+{overflow} more; see idioms.md)")
+        if mirror_only:
+            # These gists ride the memory channel every session, but this session
+            # may not have read the full blocks: one shared pointer replaces the
+            # per-idiom full-text re-dump.
+            out.append("Full text for any you have not applied: .chameleon/idioms.md")
     if full:
         rendered: list[str] = []
         total = 0
@@ -1973,6 +2027,77 @@ def _render_stop_idioms(
             out.append(f"\n(+{dropped} more; see idioms.md)")
 
     return sanitize_for_chameleon_context("\n".join(out).strip())
+
+
+# Header line of the mirror's idiom-digest section. Owned here, next to the
+# producer (render_idiom_gists) and the consumer (parse_idiom_gist_names), so
+# the section grammar cannot drift between the renderer and the Stop gate.
+MIRROR_IDIOMS_HEADER = (
+    "TEAM IDIOMS (taught; follow on every edit — full text with examples in .chameleon/idioms.md):"
+)
+
+
+def parse_idiom_gist_names(mirror_text: str) -> set[str]:
+    """Idiom names carried by a rendered mirror's TEAM IDIOMS section.
+
+    Inverse of :func:`render_idiom_gists`' line grammar (``- name: gist``,
+    ``- (+N more; ...)`` overflow tail), scoped to the section under
+    ``MIRROR_IDIOMS_HEADER`` because other mirror sections also use colon list
+    lines. A name containing a colon parses truncated and simply fails to match
+    downstream — the safe direction (that idiom keeps full-text escalation).
+    Empty set on no section / no names.
+    """
+    names: set[str] = set()
+    in_section = False
+    for ln in mirror_text.splitlines():
+        if ln.startswith("TEAM IDIOMS"):
+            in_section = True
+            continue
+        if not in_section:
+            continue
+        if ln.startswith("- "):
+            if ln.startswith("- (+"):
+                continue  # the "+N more" overflow tail is not a name
+            names.add(ln[2:].split(":", 1)[0].strip())
+        elif ln.strip():
+            break  # next section header ends the idiom list
+    return {n for n in names if n}
+
+
+def render_idiom_gists(idioms_text: str) -> str:
+    """One ``- name: gist`` line per active idiom, for the conventions.md mirror.
+
+    The mirror rides the CLAUDE.md memory channel (materially higher instruction
+    authority than hook injection — migration A/B 2026-07-11), so carrying each
+    taught idiom's name + first-sentence directive there makes the rule ambient in
+    every session without any per-turn injection; the Stop self-review can then
+    reference these idioms by gist instead of re-dumping full text. Deprecated
+    blocks are excluded (``_parse_idiom_blocks`` is fed active-only text), output
+    is sanitized at the boundary, and ``""`` means "no section" to the caller.
+    """
+    from chameleon_mcp._thresholds import threshold_int
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+    if not idioms_text or not idioms_text.strip():
+        return ""
+    _pre, blocks = _parse_idiom_blocks(idioms_text)
+    if not blocks:
+        return ""
+    max_items = threshold_int("MIRROR_IDIOM_MAX_ITEMS")
+    gist_chars = threshold_int("MIRROR_IDIOM_GIST_CHARS")
+    lines: list[str] = []
+    for name, _arch, text in blocks[:max_items]:
+        nm = name.strip()
+        if not nm:
+            continue
+        gist = _summarize_idiom_block(text, max_chars=gist_chars)
+        lines.append(f"- {nm}: {gist}" if gist else f"- {nm}")
+    if not lines:
+        return ""
+    overflow = len(blocks) - max_items
+    if overflow > 0:
+        lines.append(f"- (+{overflow} more; see .chameleon/idioms.md)")
+    return sanitize_for_chameleon_context("\n".join(lines))
 
 
 def get_pattern_context(file_path: str) -> dict:
@@ -6996,6 +7121,12 @@ def _attempt_partial_refresh(
     duration_ms = int((time.time() - started_at) * 1000)
     files_processed = len(unchanged) + len(modified) + len(added)
 
+    # The txn carried conventions.md forward verbatim (it is not a protocol
+    # file), so a partial refresh that rewrote conventions.json/principles.md
+    # must re-render the memory-channel mirror or it serves the pre-refresh
+    # content until the next teach.
+    _sync_conventions_md_from_disk(profile_dir)
+
     # The partial path rewrites canonicals.json (the witness set), so the
     # block-rule verdict in enforcement.json must be re-measured against the
     # new profile; otherwise it stays pinned to the pre-refresh witnesses.
@@ -7898,25 +8029,11 @@ def _profile_needs_rederive(profile_dir) -> bool:
         return True
     if not summary_text.strip():
         return True
-    # conventions.md (the CLAUDE.md-channel mirror) is generated content the
-    # noop path preserves-by-absence: a profile whose conventions RENDER
-    # non-empty but whose mirror file is missing (pre-mirror profile that
-    # somehow kept this engine's version stamp, or a deleted/lost file) would
-    # otherwise never regain it. Only forces when the render is non-empty —
-    # a repo with nothing renderable legitimately has no mirror — and honors
-    # the mirror's kill switch.
-    if os.environ.get("CHAMELEON_CONVENTIONS_MD") != "0":
-        if not (profile_dir / "conventions.md").exists():
-            try:
-                from chameleon_mcp.conventions import render_conventions_md
-
-                conv_obj = _json.loads(
-                    (profile_dir / "conventions.json").read_text(encoding="utf-8")
-                )
-                if render_conventions_md(conv_obj):
-                    return True
-            except (OSError, ValueError):
-                pass
+    # conventions.md (the CLAUDE.md-channel mirror) deliberately does NOT force
+    # a repair re-derive: it renders entirely from on-disk artifacts, so the
+    # refresh noop path re-syncs it directly (_sync_conventions_md_from_disk) —
+    # healing a missing, deleted, or pre-idioms-format mirror in milliseconds
+    # instead of a full derivation.
     return _principles_incomplete(profile_dir)
 
 
@@ -8136,6 +8253,10 @@ def _refresh_repo_locked(repo_path, *, force: bool, analysis_root: Path | None =
                     # mirror the actual on-disk hash, not the cached one.
                     profile_sha256=_hash_profile_or_cached(profile_dir, cached),
                 )
+                # Self-heal the memory-channel mirror even on noop: it is not a
+                # derived-from-source artifact, so a missing or older-format
+                # file regenerates from the committed profile at no cost.
+                _sync_conventions_md_from_disk(profile_dir)
                 return _envelope(
                     {
                         "status": "noop",
@@ -8228,6 +8349,8 @@ def _refresh_repo_locked(repo_path, *, force: bool, analysis_root: Path | None =
             bootstrap_ms=cached.get("bootstrap_ms"),
             profile_sha256=cached.get("profile_sha256"),
         )
+        # Same mirror self-heal as the production-tip noop above.
+        _sync_conventions_md_from_disk(profile_dir)
         noop_data: dict = {
             "status": "noop",
             "reason": "no files changed since last refresh",
@@ -11854,23 +11977,62 @@ def _package_json_dependency_names(repo_path: Path) -> set[str] | None:
 
 def _sync_conventions_md(profile_dir: Path, conv: dict) -> None:
     """Keep `.chameleon/conventions.md` (the CLAUDE.md-channel mirror) in sync
-    after a conventions.json mutation. Best-effort: the teach/unteach must
-    succeed even if the mirror render fails. Honors the same kill switch as the
-    bootstrap write; an empty render removes a stale mirror rather than leaving
-    it lying about the profile."""
+    after a conventions.json or idioms.md mutation. Best-effort: the
+    teach/unteach must succeed even if the mirror render fails. Honors the same
+    kill switch as the bootstrap write; an empty render removes a stale mirror
+    rather than leaving it lying about the profile.
+
+    Principles and idiom gists ride the mirror too (read from the live profile
+    dir through the injection-scanned prose path), so the memory channel carries
+    the complete session-conventions content — that completeness is what lets
+    SessionStart skip its duplicate hook injection when the mirror is wired."""
     if os.environ.get("CHAMELEON_CONVENTIONS_MD") == "0":
         return
     try:
         from chameleon_mcp.conventions import render_conventions_md
+        from chameleon_mcp.idiom_coverage import has_idiom_content
+        from chameleon_mcp.profile.loader import safe_prose_text
 
         md_path = profile_dir / "conventions.md"
-        text = render_conventions_md(conv)
+        principles_text = safe_prose_text(profile_dir / "principles.md")
+        idioms_text = safe_prose_text(profile_dir / "idioms.md")
+        if not has_idiom_content(idioms_text):
+            idioms_text = ""
+        text = render_conventions_md(conv, principles_text or None, idioms_text or None)
         if not text:
             md_path.unlink(missing_ok=True)
             return
+        # Skip the rewrite when the mirror is already byte-identical: the noop
+        # refresh self-heal calls this every session, and a gratuitous replace
+        # would advance the mirror's mtime for no content change.
+        try:
+            if md_path.is_file() and md_path.read_text(encoding="utf-8") == text:
+                return
+        except OSError:
+            pass
         _tmp = md_path.with_suffix(".md.tmp")
         _tmp.write_text(text, encoding="utf-8")
         _tmp.replace(md_path)
+    except Exception:
+        pass
+
+
+def _sync_conventions_md_from_disk(profile_dir: Path) -> None:
+    """Mirror re-sync for call sites that mutated idioms.md (teach/deprecate),
+    which have no conventions dict in hand: load conventions.json from disk
+    (fail-open to an empty object — the idiom gists must still sync) and delegate.
+    """
+    try:
+        from chameleon_mcp.safe_open import safe_read_profile_artifact
+
+        conv: dict = {}
+        try:
+            _parsed = json.loads(safe_read_profile_artifact(profile_dir / "conventions.json"))
+            if isinstance(_parsed, dict):
+                conv = _parsed
+        except Exception:
+            conv = {}
+        _sync_conventions_md(profile_dir, conv)
     except Exception:
         pass
 
