@@ -46,9 +46,10 @@ def test_engine_version_changed_false_when_no_profile(tmp_path):
     assert t._engine_version_changed(pd, "1.5.0") is False
 
 
-def _seed_repo(tmp_path: Path, monkeypatch, engine_version: str) -> Path:
+def _seed_repo(tmp_path: Path, monkeypatch, engine_version: str, schema_version: int = 8) -> Path:
     """A minimal Ruby repo + .chameleon profile + index_db row, noop-eligible
-    (files unchanged) so only the engine-version guard can force a rerun."""
+    (files unchanged) so only the engine-version/schema-version guard can force
+    a rerun."""
     from chameleon_mcp import index_db
 
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "_data"))
@@ -69,7 +70,7 @@ def _seed_repo(tmp_path: Path, monkeypatch, engine_version: str) -> Path:
     # loader's cross-artifact gate that _profile_needs_rederive mirrors -- without
     # it the repair guard reads cross-artifact skew and forces a rebuild.
     stamp = {
-        "schema_version": 8,
+        "schema_version": schema_version,
         "engine_min_version": engine_version,
         "archetypes": {},
         "generation": 1,
@@ -105,7 +106,10 @@ def _seed_repo(tmp_path: Path, monkeypatch, engine_version: str) -> Path:
     )
     (pd / "counterexamples.json").write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
     (pd / "enforcement.json").write_text(json.dumps({"block_rules": {}}), encoding="utf-8")
-    (pd / "profile.summary.md").write_text("# summary\n", encoding="utf-8")
+    # The repair gate now also checks the summary carries the real render
+    # header (garbage content that merely happens to be non-empty must still
+    # force a rebuild), so a complete fixture must carry it too.
+    (pd / "profile.summary.md").write_text("# chameleon profile summary\n", encoding="utf-8")
     (pd / "principles.md").write_text(
         "# principles\n\n## anti-hallucination protocol\n\n- Don't invent symbols.\n",
         encoding="utf-8",
@@ -138,6 +142,33 @@ def test_refresh_rebootstraps_on_engine_version_change(tmp_path, monkeypatch):
     """The guard must sit ABOVE the noop short-circuit: even with unchanged
     files (noop-eligible), a stale engine stamp forces a full re-bootstrap."""
     repo_root = _seed_repo(tmp_path, monkeypatch, engine_version="0.5.0")
+    called: dict = {}
+
+    def fake_bootstrap(path, *, force=False, paths_glob=None, **kw):
+        called["force"] = force
+        return {"data": {"status": "rebootstrapped"}}
+
+    monkeypatch.setattr(t, "bootstrap_repo", fake_bootstrap)
+    out = t._refresh_repo_locked(repo_root, force=False)
+    assert called.get("force") is True
+    assert out["data"]["status"] == "rebootstrapped"
+
+
+def test_refresh_rebootstraps_on_schema_outdated(tmp_path, monkeypatch):
+    """The schema-outdated guard must sit ABOVE the noop short-circuit too: an
+    old-but-still-readable int schema_version forces a full re-derive instead
+    of noop-preserving stale clustering, mirroring the engine-version guard
+    just above and the too-new-schema refusal below (which must NOT re-derive,
+    the opposite direction)."""
+    from chameleon_mcp.bootstrap.orchestrator import ENGINE_MIN_VERSION
+    from chameleon_mcp.profile.schema import CURRENT_SCHEMA_VERSION
+
+    repo_root = _seed_repo(
+        tmp_path,
+        monkeypatch,
+        engine_version=ENGINE_MIN_VERSION,  # matches -> only schema triggers it
+        schema_version=CURRENT_SCHEMA_VERSION - 1,
+    )
     called: dict = {}
 
     def fake_bootstrap(path, *, force=False, paths_glob=None, **kw):
@@ -288,7 +319,10 @@ def _complete_profile(tmp_path):
     pd.joinpath("profile.json").write_text(
         json.dumps({"generation": 1, "schema_version": 8}), encoding="utf-8"
     )
-    pd.joinpath("profile.summary.md").write_text("# summary\n", encoding="utf-8")
+    # The repair gate now also checks the summary carries the real render
+    # header (garbage content that merely happens to be non-empty must still
+    # force a rebuild), so a complete fixture must carry it too.
+    pd.joinpath("profile.summary.md").write_text("# chameleon profile summary\n", encoding="utf-8")
     pd.joinpath("principles.md").write_text(
         "# principles\n\n## anti-hallucination protocol\n\n- x\n", encoding="utf-8"
     )
@@ -355,10 +389,13 @@ def test_profile_needs_rederive_on_corrupt_enforcement(tmp_path):
 
 
 def test_profile_needs_rederive_on_corrupt_ruby_constant_index(tmp_path):
-    # constant_index.json is Ruby's analogue of the symbol indexes; a corrupt one
-    # silently voids the Ruby cross-file existence-break advisory and refresh
-    # never repairs it. Validate-if-present: corrupt repairs, absent does not
-    # force a rebuild for a language (TS/Python) that never writes it.
+    # constant_index.json is Ruby's analogue of the symbol indexes; a corrupt
+    # or schema-stale one silently voids the Ruby cross-file existence-break
+    # advisory and refresh never repairs it. Validate-if-present: corrupt/
+    # stale repairs, absent does not force a rebuild for a language (TS/Python)
+    # that never writes it.
+    from chameleon_mcp.constant_index import SCHEMA_VERSION as _constant_index_sv
+
     pd = _complete_profile(tmp_path)
     pd.joinpath("profile.json").write_text(
         json.dumps({"generation": 1, "schema_version": 8, "language": "ruby"}),
@@ -366,8 +403,19 @@ def test_profile_needs_rederive_on_corrupt_ruby_constant_index(tmp_path):
     )
     assert not (pd / "constant_index.json").exists()
     assert t._profile_needs_rederive(pd) is False  # absent -> no forced rebuild
-    pd.joinpath("constant_index.json").write_text(json.dumps({"User": []}), encoding="utf-8")
-    assert t._profile_needs_rederive(pd) is False  # present + valid dict
+    # Realistic content: build_constant_index always writes this envelope
+    # shape (schema_version + language + constants), never a bare name->refs
+    # dict, so a valid file must carry the current schema_version to pass.
+    pd.joinpath("constant_index.json").write_text(
+        json.dumps({"schema_version": _constant_index_sv, "language": "ruby", "constants": {}}),
+        encoding="utf-8",
+    )
+    assert t._profile_needs_rederive(pd) is False  # present + valid dict + current schema
+    pd.joinpath("constant_index.json").write_text(
+        json.dumps({"schema_version": _constant_index_sv - 1, "language": "ruby", "constants": {}}),
+        encoding="utf-8",
+    )
+    assert t._profile_needs_rederive(pd) is True  # stale schema_version repairs
     pd.joinpath("constant_index.json").write_text("{ CORRUPT not json", encoding="utf-8")
     assert t._profile_needs_rederive(pd) is True
     pd.joinpath("constant_index.json").write_text(json.dumps([1, 2]), encoding="utf-8")
@@ -377,6 +425,8 @@ def test_profile_needs_rederive_on_corrupt_ruby_constant_index(tmp_path):
 def test_profile_needs_rederive_on_corrupt_python_indexes(tmp_path):
     # Python profiles ship exports_index.json / reverse_index.json with real
     # content; a corrupt one must force a repair (the TS-only guard missed this).
+    from chameleon_mcp.symbol_index import SCHEMA_VERSION as _symbol_index_sv
+
     for lang in ("python", "typescript"):
         sub = tmp_path / lang
         sub.mkdir()
@@ -385,10 +435,20 @@ def test_profile_needs_rederive_on_corrupt_python_indexes(tmp_path):
             json.dumps({"generation": 1, "schema_version": 8, "language": lang}),
             encoding="utf-8",
         )
-        pd.joinpath("exports_index.json").write_text(json.dumps({"a": 1}), encoding="utf-8")
-        pd.joinpath("reverse_index.json").write_text(json.dumps({"a": 1}), encoding="utf-8")
+        pd.joinpath("exports_index.json").write_text(
+            json.dumps({"a": 1, "schema_version": _symbol_index_sv}), encoding="utf-8"
+        )
+        pd.joinpath("reverse_index.json").write_text(
+            json.dumps({"a": 1, "schema_version": _symbol_index_sv}), encoding="utf-8"
+        )
         assert t._profile_needs_rederive(pd) is False, lang
         pd.joinpath("exports_index.json").write_text("{not json", encoding="utf-8")
+        assert t._profile_needs_rederive(pd) is True, lang
+        # A schema_version outside the loader's readable set (stale, not merely
+        # unparseable) must force a repair too -- the gap this test guards.
+        pd.joinpath("exports_index.json").write_text(
+            json.dumps({"a": 1, "schema_version": _symbol_index_sv + 999}), encoding="utf-8"
+        )
         assert t._profile_needs_rederive(pd) is True, lang
 
 

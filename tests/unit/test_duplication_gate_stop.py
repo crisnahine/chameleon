@@ -35,6 +35,15 @@ from chameleon_mcp.enforcement import EnforcementState, FileState, load_state, s
 def _isolate_metrics(tmp_path, monkeypatch):
     """Keep emit_hook_metric (env-resolved) off the developer's real metrics.jsonl."""
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "metrics-isolated"))
+    # exec_log (the "no passing test run" reminder's session_test_run_seen)
+    # reads/writes under ${TMPDIR}/.chameleon_exec_log/<repo_id>/ with an
+    # HMAC key at CHAMELEON_HMAC_KEY_PATH (fail-loud, no unsigned mode) --
+    # isolate both so this never touches the developer's real key/tmp state.
+    key_file = tmp_path / "hmac.key"
+    key_file.write_bytes(b"k" * 32)
+    key_file.chmod(0o600)
+    monkeypatch.setenv("CHAMELEON_HMAC_KEY_PATH", str(key_file))
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
 
 
 @pytest.fixture
@@ -100,6 +109,15 @@ def make_trusted_repo(tmp_path):
         stack.enter_context(
             patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path)
         )
+
+        # idiom_review=False only silences idiom/principle content; the
+        # independent "no passing test run" reminder still fires for a real
+        # source edit with no recorded test run. Record one so this gate's own
+        # surface (duplication review) is reached undisturbed, mirroring
+        # test_idiom_review.py's isolation for the same reminder.
+        from chameleon_mcp.exec_log import append_exec_log
+
+        append_exec_log(repo_id, session_id=session_id, command="pytest -q", exit_code=0)
 
         return repo, data_dir, session_id, file_path, profile_dir
 

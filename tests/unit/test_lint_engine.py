@@ -345,6 +345,33 @@ class TestLint:
         assert len(violations) == 1
         assert violations[0].rule == "top-level-node-kinds-mismatch"
 
+    def test_top_level_kinds_mismatch_actual_capped_for_huge_files(self):
+        # A file with thousands of top-level statements must not embed an
+        # unbounded literal repr of every kind in the violation's `actual`.
+        kinds = [f"FunctionDeclaration:{i}" for i in range(5000)]
+        snap = DimensionSnapshot(top_level_node_kinds=kinds)
+        query = {"top_level_node_kinds": ["ClassDeclaration"]}
+        violations = lint(snap, query)
+        assert len(violations) == 1
+        actual = violations[0].actual
+        assert len(actual) < 5_000
+        assert "+4950 more (capped at 50)" in actual
+
+    def test_top_level_kinds_cap_honors_thresholds_override(self, monkeypatch):
+        # The cap must actually be registered in _thresholds.py's DEFAULTS and
+        # read via threshold_int (tunable-thresholds-not-inline-constants) --
+        # not a hardcoded fallback that merely LOOKS wired. An unregistered
+        # name raises KeyError inside threshold(), which the broad except in
+        # _top_level_kinds_repr_cap would silently swallow every call, so this
+        # override must actually change the cap or the wiring is dead code.
+        monkeypatch.setenv("CHAMELEON_TOP_LEVEL_NODE_KINDS_REPR_CAP", "5")
+        kinds = [f"FunctionDeclaration:{i}" for i in range(20)]
+        snap = DimensionSnapshot(top_level_node_kinds=kinds)
+        query = {"top_level_node_kinds": ["ClassDeclaration"]}
+        violations = lint(snap, query)
+        assert len(violations) == 1
+        assert "+15 more (capped at 5)" in violations[0].actual
+
     def test_ruby_messages_humanized_no_parser_jargon_or_js_isms(self):
         # Parser node-kind names (ClassNode/ModuleNode) and TS-only "default
         # export" must never leak into a Ruby user's message.

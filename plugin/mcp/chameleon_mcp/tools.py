@@ -902,6 +902,22 @@ def detect_repo(file_path: str) -> dict:
         )
 
     p = Path(file_path).expanduser()
+    if not p.is_absolute():
+        # detect_repo takes no `repo` arg to resolve a relative path against
+        # (unlike get_archetype/get_callers/etc.), so a relative file_path
+        # would otherwise silently resolve against the MCP server process's
+        # own CWD via find_repo_root -- disclosing whatever repo happens to be
+        # there instead of failing on input the caller never fully specified.
+        # Reject it outright rather than guess.
+        return _envelope(
+            {
+                "repo_id": None,
+                "repo_root": None,
+                "profile_status": "no_repo",
+                "trust_state": "n/a",
+                "reason": "file_path must be an absolute path",
+            }
+        )
     repo_root, root_refusal = find_repo_root_with_refusal(p)
     if repo_root is None:
         no_repo: dict = {
@@ -989,12 +1005,16 @@ def detect_repo(file_path: str) -> dict:
         except (OSError, ValueError):
             profile_corrupted = True
 
-    if profile_present and not (profile_corrupted or profile_unsupported_schema or profile_too_new):
+    if not (profile_corrupted or profile_unsupported_schema or profile_too_new):
         # profile.json alone is not enough: a missing/corrupt/wrong-type core
         # artifact (archetypes/canonicals/rules) or a generation mismatch makes
         # load_profile_dir refuse and the hooks fail open, so detect_repo must not
         # report profile_present/trusted -- matching get_pattern_context and
-        # get_status on the identical directory state.
+        # get_status on the identical directory state. Called even when
+        # profile.json itself is absent: _profile_unrenderable_status reports
+        # profile_corrupted for a torn-down profile (core artifacts remain but
+        # the commit sentinel is gone) and None for a genuine no-profile dir,
+        # so this must not be gated on profile_present.
         _unrend = _profile_unrenderable_status(profile_dir)
         if _unrend == "profile_corrupted":
             profile_corrupted = True
@@ -1083,7 +1103,26 @@ def detect_repo(file_path: str) -> dict:
 
         # Hint reads the main worktree's config in a linked worktree (identity
         # off the worktree); repo_root stays the worktree for repo_id / repo_root.
-        locked_branch = _persisted_production_ref(resolve_profile_root(repo_root))
+        _lock_root = resolve_profile_root(repo_root)
+        locked_branch = _persisted_production_ref(_lock_root)
+        if locked_branch is None and not _production_ref_explicitly_disabled(_lock_root):
+            # Monorepo workspace inheritance: only the toplevel auto-locks at
+            # bootstrap (the root profile), and a workspace does not inherit
+            # the lock into its OWN config.json until its first refresh
+            # (mirrors refresh_repo's production-ref resolution). Without this
+            # walk, a workspace immediately after init reports locked:false
+            # even though its profile was derived from the locked production
+            # branch. Read-only: this mirrors the lock for reporting, it does
+            # not persist it into the workspace's config.
+            from chameleon_mcp.production_ref import git_toplevel
+
+            _toplevel = git_toplevel(_lock_root)
+            if (
+                _toplevel is not None
+                and _toplevel != _lock_root.resolve()
+                and not _production_ref_explicitly_disabled(_toplevel)
+            ):
+                locked_branch = _persisted_production_ref(_toplevel)
         if locked_branch:
             from chameleon_mcp.production_ref import resolve_production_ref
 
@@ -1725,8 +1764,10 @@ def _reorder_idioms_by_archetype(idioms_text: str, archetype: str | None) -> str
 
 
 # Metadata lines inside a `### <name>` idiom block: skipped when extracting the
-# one-line summary, since they carry no descriptive prose.
-_IDIOM_META_LINE_RE = re.compile(r"(?i)^[ \t]*(Language|Status|Archetype):")
+# one-line summary, since they carry no descriptive prose. Mirrors
+# idiom_coverage.py's sibling parser, which also treats Source: (provenance:
+# a doc path:line, a git ref, or a note) as metadata, not description prose.
+_IDIOM_META_LINE_RE = re.compile(r"(?i)^[ \t]*(Language|Status|Archetype|Source):")
 
 
 def _active_idioms_only(idioms_text: str) -> str:
@@ -1842,8 +1883,8 @@ def _idiom_block_names(idioms_text: str) -> set[str]:
 def _summarize_idiom_block(block_text: str, *, max_chars: int) -> str:
     """First prose sentence of an idiom block, for the terse turn-end rendering.
 
-    Skips the ``### name`` header and the ``Language/Status/Archetype`` metadata
-    lines, then takes the first description paragraph and returns its first sentence
+    Skips the ``### name`` header and the ``Language/Status/Archetype/Source``
+    metadata lines, then takes the first description paragraph and returns its first sentence
     (hard-capped to ``max_chars``). Stops at the ``Example:`` / ``Counterexample:``
     label or a code fence so no example code bleeds into the summary. ``""`` when the
     block carries no description (the caller then renders the name alone).
@@ -2126,6 +2167,15 @@ def get_pattern_context(file_path: str) -> dict:
         return _envelope(_empty_pattern_envelope(None, "no_repo", "n/a"))
 
     p = Path(file_path).expanduser()
+    if not p.is_absolute():
+        # get_pattern_context takes no `repo` arg to resolve a relative path
+        # against (unlike get_archetype/get_callers/etc.), so a relative
+        # file_path would otherwise silently resolve against the MCP server
+        # process's own CWD via find_repo_root -- disclosing whatever repo
+        # happens to be there instead of failing on input the caller never
+        # fully specified. Reject it outright rather than guess.
+        return _envelope(_empty_pattern_envelope(None, "no_repo", "n/a"))
+
     repo_root = find_repo_root(p)
     if repo_root is None:
         return _envelope(_empty_pattern_envelope(None, "no_repo", "n/a"))
@@ -2134,7 +2184,13 @@ def get_pattern_context(file_path: str) -> dict:
     profile_dir = _effective_profile_dir(repo_root)
     profile_file = profile_dir / "profile.json"
     if not profile_file.exists():
-        return _envelope(_empty_pattern_envelope(repo_id, "no_profile", "n/a"))
+        # profile.json alone missing is not necessarily a clean no-profile dir:
+        # a torn-down profile that still carries core artifacts (archetypes/
+        # canonicals/rules) is corrupt, not absent -- matching detect_repo and
+        # get_status on the identical directory state.
+        _unrend = _profile_unrenderable_status(profile_dir)
+        _status = _unrend if _unrend is not None else "no_profile"
+        return _envelope(_empty_pattern_envelope(repo_id, _status, "n/a"))
 
     from chameleon_mcp.profile.trust import is_material_change
 
@@ -4253,20 +4309,37 @@ def search_codebase(repo: str, query: str, limit: int = 10) -> dict:
         # unreadable", so an empty result on a corrupt symbol_signatures.json would
         # read as an authoritative "not found". Distinguish them: flag degraded
         # when the index artifact is present-but-unloadable.
+        from chameleon_mcp.symbol_signatures import SCHEMA_VERSION as _SS_SV
         from chameleon_mcp.symbol_signatures import load_symbol_signatures
 
-        if (
-            load_symbol_signatures(_pr) is None
-            and (_pr / ".chameleon" / "symbol_signatures.json").is_file()
-        ):
-            _reasons.append("symbol index unavailable (corrupt)")
+        _ss_path = _pr / ".chameleon" / "symbol_signatures.json"
+        if load_symbol_signatures(_pr) is None and _ss_path.is_file():
+            # Distinguish a schema-stale index (repaired by /chameleon-refresh,
+            # same as calls-index-stale below) from genuine corruption, instead
+            # of a flat "(corrupt)" for both -- mirrors the calls-index label
+            # this same function already routes through the shared reason.
+            _ss_reason = "corrupt"
+            try:
+                _ss_obj = json.loads(_ss_path.read_text(encoding="utf-8"))
+                if isinstance(_ss_obj, dict) and _ss_obj.get("schema_version") != _SS_SV:
+                    _ss_reason = "symbol-index-stale"
+            except (OSError, ValueError):
+                pass
+            _reasons.append(f"symbol index unavailable ({_ss_reason})")
     # A present-but-corrupt calls_index zeroes every `callers` count and re-ranks
     # NON-empty results, so check it regardless of whether results is empty --
     # otherwise a successful-looking search silently reports callers=0 everywhere.
     from chameleon_mcp.calls_index import load_calls_index
 
     if load_calls_index(_pr) is None and (_pr / ".chameleon" / "calls_index.json").is_file():
-        _reasons.append("call index unavailable (corrupt); caller counts may be zero")
+        # Route through the same helper get_callers / get_blast_radius /
+        # query_symbol_importers already use, so a schema-stale index reads
+        # as "calls-index-stale" everywhere -- not a hardcoded "(corrupt)"
+        # here and a different label on every sibling comprehension tool.
+        _reasons.append(
+            f"call index unavailable ({_calls_index_unavailable_reason(_pr)}); "
+            "caller counts may be zero"
+        )
     if _reasons:
         out["degraded"] = True
         out["reason"] = "; ".join(_reasons) + "; results may be incomplete"
@@ -6819,8 +6892,20 @@ def _attempt_partial_refresh(
     the profile intact.
     """
     from chameleon_mcp import index_db
-    from chameleon_mcp.bootstrap.transaction import atomic_profile_commit
+    from chameleon_mcp.bootstrap.transaction import atomic_profile_commit, cleanup_orphan_tmp_dirs
     from chameleon_mcp.profile.trust import hash_profile
+
+    # The orphaned merge-driver / crashed-txn tmp-dir sweep is documented as
+    # "called before every bootstrap/refresh", but was previously wired only
+    # into the full-bootstrap path -- a day-to-day small edit takes this
+    # partial-refresh path instead, so an orphan left by a killed mid-merge
+    # (or a crashed prior commit) survived indefinitely under normal refresh
+    # usage. Swept at the profile's actual home (profile_dir.parent), not the
+    # scan root, so a linked-worktree redirect doesn't miss it.
+    try:
+        cleanup_orphan_tmp_dirs(profile_dir.parent)
+    except Exception:
+        pass
 
     current_by_rel: dict[str, dict] = {}
     for p in candidates:
@@ -7997,6 +8082,7 @@ def _profile_needs_rederive(profile_dir) -> bool:
     # a rebuild on absence. Shares REVERSE_INDEXED_LANGUAGES with the
     # bootstrap build gate so the repair check cannot drift from what
     # bootstrap actually writes.
+    from chameleon_mcp.symbol_index import _READABLE_SCHEMA_VERSIONS as _SI_SVS
     from chameleon_mcp.symbol_index import REVERSE_INDEXED_LANGUAGES as _RIL
 
     for name in ("exports_index.json", "reverse_index.json"):
@@ -8007,6 +8093,8 @@ def _profile_needs_rederive(profile_dir) -> bool:
             except (OSError, ValueError):
                 return True
             if not isinstance(obj, dict):
+                return True
+            if obj.get("schema_version") not in _SI_SVS:
                 return True
     # constant_index.json is Ruby's analogue of the symbol indexes (Ruby has no
     # static export surface). It is Ruby-only and written inside the atomic txn;
@@ -8021,13 +8109,26 @@ def _profile_needs_rederive(profile_dir) -> bool:
             return True
         if not isinstance(obj, dict):
             return True
+        # Same schema_version validation as exports_index.json/reverse_index.json
+        # just above -- constant_index.py's own loader hard-rejects on a
+        # mismatched schema_version exactly like symbol_index.py's readers do,
+        # so a stale schema here must force the same repair, not survive every
+        # noop refresh until the next full bootstrap.
+        from chameleon_mcp.constant_index import SCHEMA_VERSION as _CI_SV
+
+        if obj.get("schema_version") != _CI_SV:
+            return True
     # profile.summary.md is preserved verbatim by the noop path; an empty or
-    # whitespace-only summary (truncated write / bad merge) must repair too.
+    # whitespace-only summary (truncated write / bad merge) must repair too,
+    # and so must garbage content that isn't actually a rendered summary
+    # (matches the render_summary_md header every real writer emits).
     try:
         summary_text = (profile_dir / "profile.summary.md").read_text(encoding="utf-8")
     except OSError:
         return True
     if not summary_text.strip():
+        return True
+    if "chameleon profile summary" not in summary_text.lower():
         return True
     # conventions.md (the CLAUDE.md-channel mirror) deliberately does NOT force
     # a repair re-derive: it renders entirely from on-disk artifacts, so the
@@ -8156,6 +8257,24 @@ def _refresh_repo_locked(repo_path, *, force: bool, analysis_root: Path | None =
     from chameleon_mcp.bootstrap.orchestrator import ENGINE_MIN_VERSION
 
     if _engine_version_changed(profile_dir, ENGINE_MIN_VERSION):
+        return bootstrap_repo(
+            str(repo_path), force=True, paths_glob=persisted_pg, analysis_root=analysis_root
+        )
+
+    # Schema-outdated guard: an old-but-readable schema_version rides along with
+    # an old engine stamp in practice (caught above), but a hand-edited or
+    # partially-migrated profile.json can carry a stale schema_version on its
+    # own. get_drift_status tells the user "run /chameleon-refresh to re-derive"
+    # for exactly this state (schema_outdated), so a noop here would make that
+    # advice a dead end. Re-derive fully rather than leaving the profile pinned
+    # to the old clustering schema.
+    from chameleon_mcp.profile.schema import CURRENT_SCHEMA_VERSION as _CURRENT_SCHEMA
+
+    if (
+        isinstance(_pj_schema, int)
+        and not isinstance(_pj_schema, bool)
+        and _pj_schema < _CURRENT_SCHEMA
+    ):
         return bootstrap_repo(
             str(repo_path), force=True, paths_glob=persisted_pg, analysis_root=analysis_root
         )
@@ -8820,7 +8939,82 @@ def _compute_contract_breaks(
             }
             for f in findings
         ]
-        return len(findings), details, None
+        # Existence breaks: signature_diff only sees a symbol that NARROWED, not
+        # one that was REMOVED outright (dropping the `export` keyword, or the
+        # declaration itself) -- a plain removal never shows up as a positional-
+        # arity change because there is no new signature to diff against. A
+        # removed-but-still-imported export is exactly the kind of caller-
+        # contract break this router exists to catch, so fold it in here rather
+        # than let it hide behind a clean blast-radius count.
+        # query_symbol_importers already computes this deterministically (its
+        # `broken` list: an indexed importer that still references a name the
+        # module's CURRENT on-disk export set no longer has), so reuse it
+        # instead of re-deriving the same signal from a second git diff. But
+        # query_symbol_importers only ever compares against the CURRENT
+        # on-disk export set -- it has no notion of old_ref -- so a file
+        # touched for an unrelated reason that already had a dangling import
+        # at old_ref (a pre-existing break this diff did not introduce) would
+        # otherwise be misattributed here. Only fold in a `broken` entry whose
+        # name was actually exported AT old_ref, confirming this diff is what
+        # removed it.
+        from chameleon_mcp.lint_engine import detect_language as _cb_detect_language
+        from chameleon_mcp.phantom_imports import (
+            _current_export_names,
+            _python_current_export_names,
+        )
+
+        for rel in changed_src:
+            try:
+                _qsi = query_symbol_importers(str(repo_root), str(repo_root / rel))
+                _qdata = _qsi.get("data") or {}
+            except Exception:
+                continue
+            _broken = _qdata.get("broken") or []
+            if not _broken:
+                continue
+            _lang = _cb_detect_language(rel)
+            if _lang not in ("typescript", "python"):
+                # Ruby's query_symbol_importers path (_ruby_constant_importers)
+                # always returns broken=[] (documented limitation, no
+                # removed-method-still-called check), so this never fires for
+                # .rb -- nothing to scope for languages outside these two.
+                continue
+            _old_show = _sig_run_git(["show", f"{old_ref}:{rel}"], cwd=repo_root)
+            if _old_show is None or _old_show.returncode != 0:
+                # File did not exist at old_ref (added within this diff) --
+                # nothing to compare against, so a "broken" entry here cannot
+                # be a removal relative to old_ref.
+                continue
+            _old_content = _old_show.stdout or ""
+            if _lang == "python":
+                _old_names, _old_open = _python_current_export_names(_old_content, rel)
+            else:
+                _old_names, _old_open = _current_export_names(_old_content)
+            if _old_open:
+                # old_ref's export set was open (export * from / from x import
+                # *) -- cannot tell what it exported, so don't guess.
+                continue
+            for b in _broken:
+                cnt = int(b.get("count", 0) or 0)
+                if cnt <= 0:
+                    continue
+                _name = b.get("name")
+                if not isinstance(_name, str) or _name not in _old_names:
+                    continue
+                # name/sites are already sanitized by query_symbol_importers's
+                # own boundary cleanup; only the file path needs it here.
+                details.append(
+                    {
+                        "file": sanitize_for_chameleon_context(rel),
+                        "name": _name,
+                        "old_required_positional": None,
+                        "new_required_positional": None,
+                        "caller_total": cnt,
+                        "callers": list(b.get("sites") or []),
+                        "kind": "removed_export_still_imported",
+                    }
+                )
+        return len(details), details, None
     except Exception:
         return 0, [], None
 
@@ -9328,6 +9522,44 @@ def _bootstrap_repo_unlocked(
         cleanup_orphan_tmp_dirs(repo_root)
     except Exception:
         pass
+
+    # Too-new-schema guard, checked even under force=True: an existing
+    # profile.json whose schema_version is ABOVE this engine's supported max
+    # was written by a NEWER chameleon. refresh_repo already refuses to
+    # re-derive over that profile even under force (unsupported_schema_version)
+    # -- without the same guard here, force=True would silently downgrade and
+    # destroy a teammate's committed newer profile, the one scenario refresh
+    # explicitly protects against. A non-int/bool schema is corruption, not
+    # this case, and is left to the normal re-derive path.
+    _existing_profile_path = repo_root / ".chameleon" / "profile.json"
+    if _existing_profile_path.is_file():
+        from chameleon_mcp.profile.loader import MAX_SUPPORTED_SCHEMA_VERSION as _MAX_SCHEMA_BOOT
+
+        try:
+            _existing_manifest = json.loads(_existing_profile_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            _existing_manifest = None
+        _existing_schema = (
+            _existing_manifest.get("schema_version")
+            if isinstance(_existing_manifest, dict)
+            else None
+        )
+        if (
+            isinstance(_existing_schema, int)
+            and not isinstance(_existing_schema, bool)
+            and _existing_schema > _MAX_SCHEMA_BOOT
+        ):
+            return _envelope(
+                {
+                    "status": "unsupported_schema_version",
+                    "error": (
+                        f"profile schema_version {_existing_schema} is newer than this "
+                        f"engine supports (max {_MAX_SCHEMA_BOOT}); it was written by a "
+                        "newer chameleon. Refusing to overwrite so the newer profile is "
+                        "not downgraded -- upgrade chameleon to bootstrap over it."
+                    ),
+                }
+            )
 
     if not force:
         committed_marker = repo_root / ".chameleon" / "COMMITTED"
@@ -13806,22 +14038,37 @@ def doctor(repo: str | None = None) -> dict:
 
             cutoff = _dt.now(_UTC) - _td(hours=72)
             ts_re = _re.compile(r"^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z\]")
-            recent: list[str] = []
+            # Group lines into ENTRIES (one timestamped anchor line plus every
+            # continuation line up to the next anchor), then window/slice by
+            # entry, not by raw line. The previous line-based approach kept a
+            # flat `recent` list and glued any non-timestamped line onto it
+            # whenever it was non-empty -- so a continuation line that
+            # actually belonged to an OUT-OF-WINDOW (or unparseable-timestamp)
+            # anchor got misattributed to whatever real entry preceded it in
+            # the file, and `recent[-5:]` could then surface that unrelated
+            # continuation (e.g. a benign first-run-setup banner) while the
+            # anchor line of the real recent error it displaced fell outside
+            # the slice entirely.
+            entries: list[list[str] | None] = []
             for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
                 m = ts_re.match(line)
-                if not m:
-                    if recent:
-                        recent.append(line)
+                if m:
+                    try:
+                        when = _dt.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S").replace(tzinfo=_UTC)
+                    except ValueError:
+                        when = None
+                    entries.append([line] if when is not None and when >= cutoff else None)
                     continue
-                try:
-                    when = _dt.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S").replace(tzinfo=_UTC)
-                except ValueError:
-                    if recent:
-                        recent.append(line)
-                    continue
-                if when >= cutoff:
-                    recent.append(line)
-            tail = recent[-5:]
+                # Continuation line: attach to the entry that most recently
+                # started, IN-WINDOW ONLY -- an out-of-window (or dropped/
+                # unparseable) anchor is represented by `None` above, so its
+                # own continuation lines are dropped with it instead of
+                # bleeding into a different, real in-window entry. A line
+                # before any anchor at all has nothing to attach to.
+                if entries and entries[-1] is not None:
+                    entries[-1].append(line)
+            recent_entries = [e for e in entries if e]
+            tail = [ln for e in recent_entries[-5:] for ln in e]
             if tail:
                 # Log lines can embed repo-derived text (an exception message
                 # carrying a symbol name, a path from a hostile fixture), and

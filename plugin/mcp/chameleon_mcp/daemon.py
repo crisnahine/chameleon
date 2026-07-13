@@ -911,11 +911,57 @@ def _idle_timeout_from_env() -> float:
         return DEFAULT_IDLE_TIMEOUT_S
 
 
-def run_daemon() -> int:
-    """In-process daemon entry point.
+def _acquire_daemon_pidfile(sock_path: Path) -> int | None:
+    """Acquire the daemon singleton lock and record `<pid>\\n<socket>\\n`.
 
-    Called from inside the forked child by `start_daemon()`. The parent's
-    role is to write the pidfile + verify the socket comes up.
+    Shared by both routes that can become the live daemon process: the
+    process `start_daemon()`'s forked-and-detached child execs into, and a
+    bare `python -m chameleon_mcp.daemon` invocation with no subcommand —
+    both end up running `run_daemon()`, and both must leave behind the same
+    discoverable pidfile so `daemon_status()` / `is_daemon_alive()` /
+    `stop_daemon()` see them identically.
+
+    Returns the open, still-locked file descriptor (kept open for the
+    process's whole lifetime — the flock releases automatically when it
+    closes) or None if another instance already holds the lock or the
+    pidfile could not be written.
+    """
+    if fcntl is None:
+        return None
+    pf = pid_path()
+    try:
+        lock_fd = os.open(str(pf), os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as e:
+        sys.stderr.write(f"[chameleon-daemon] cannot open pidfile for lock: {e}\n")
+        return None
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(lock_fd)
+        return None
+    try:
+        os.ftruncate(lock_fd, 0)
+        os.lseek(lock_fd, 0, os.SEEK_SET)
+        os.write(lock_fd, f"{os.getpid()}\n{sock_path}\n".encode())
+        os.fsync(lock_fd)
+    except OSError as e:
+        sys.stderr.write(f"[chameleon-daemon] cannot write pidfile: {e}\n")
+        os.close(lock_fd)
+        return None
+    return lock_fd
+
+
+def run_daemon() -> int:
+    """In-process daemon entry point — binds the socket and serves requests.
+
+    Reached two ways: `main()`'s bare-argv branch when `python -m
+    chameleon_mcp.daemon` is invoked directly with no subcommand, and the
+    process `start_daemon()`'s forked-and-detached child execs into (also the
+    bare form — no "start" argument survives the exec). The singleton lock
+    and the pidfile write happen here, once, via `_acquire_daemon_pidfile()`,
+    so a directly-invoked daemon is just as discoverable to
+    `daemon_status()` / `is_daemon_alive()` / `stop_daemon()` as one spawned
+    through the `start` subcommand.
     """
     if not _af_unix_available():
         sys.stderr.write(
@@ -930,12 +976,21 @@ def run_daemon() -> int:
         ensure_plugin_data_dir()
     except Exception:
         pass
+
+    lock_fd = _acquire_daemon_pidfile(sock_path)
+    if lock_fd is None:
+        sys.stderr.write(
+            "[chameleon-daemon] another daemon instance already holds the pidfile lock\n"
+        )
+        return 1
+
     try:
         sock_path.unlink()
     except FileNotFoundError:
         pass
     except OSError as e:
         sys.stderr.write(f"[chameleon-daemon] cannot remove stale socket: {e}\n")
+        os.close(lock_fd)
         return 1
 
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -958,6 +1013,7 @@ def run_daemon() -> int:
             "TMPDIR (or CHAMELEON_PLUGIN_DATA) to a shorter path to enable the "
             "daemon; hooks use the in-process path meanwhile\n"
         )
+        os.close(lock_fd)
         return 1
     from chameleon_mcp.plugin_paths import secure_chmod
 
@@ -989,6 +1045,10 @@ def run_daemon() -> int:
             pid_path().unlink()
         except FileNotFoundError:
             pass
+        except OSError:
+            pass
+        try:
+            os.close(lock_fd)
         except OSError:
             pass
     return 0
@@ -1094,33 +1154,11 @@ def start_daemon(*, force: bool = False) -> dict:
         except OSError:
             pass
 
-    pf = pid_path()
-    try:
-        lock_fd = os.open(str(pf), os.O_RDWR | os.O_CREAT, 0o600)
-    except OSError as e:
-        sys.stderr.write(f"[chameleon-daemon] cannot open pidfile for lock: {e}\n")
-        os._exit(1)
-    try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        os.close(lock_fd)
-        os._exit(0)
-
-    try:
-        os.ftruncate(lock_fd, 0)
-        os.lseek(lock_fd, 0, os.SEEK_SET)
-        os.write(lock_fd, f"{os.getpid()}\n{sock_path}\n".encode())
-        os.fsync(lock_fd)
-    except OSError as e:
-        sys.stderr.write(f"[chameleon-daemon] cannot write pidfile: {e}\n")
-        os.close(lock_fd)
-        os._exit(1)
-    try:
-        flags = fcntl.fcntl(lock_fd, fcntl.F_GETFD)
-        fcntl.fcntl(lock_fd, fcntl.F_SETFD, flags & ~fcntl.FD_CLOEXEC)
-    except OSError:
-        pass
-
+    # The singleton lock + pidfile write happen in run_daemon() itself, which
+    # this exec lands in (bare invocation, no "start" argument survives the
+    # exec) — see _acquire_daemon_pidfile(). That way a daemon started
+    # through this path and one invoked directly as
+    # `python -m chameleon_mcp.daemon` leave behind the same pidfile.
     try:
         os.execlp(python, python, "-m", "chameleon_mcp.daemon")
     except OSError as e:
@@ -1150,7 +1188,8 @@ def stop_daemon(*, timeout: float = 5.0) -> dict:
         return {"status": "not_running", "pid": None}
 
     # Recycle-TOCTOU guard: a LIVE daemon holds an exclusive flock on the
-    # pidfile (see serve_forever's lock_fd). Probe it — if we can ACQUIRE the
+    # pidfile (see run_daemon's lock_fd, acquired via _acquire_daemon_pidfile).
+    # Probe it — if we can ACQUIRE the
     # lock, no live daemon holds the file, so `pid` is a stale/recycled value
     # (an unrelated process that inherited it). Don't SIGTERM that process.
     # (Re-reading the pidfile is useless here: its bytes don't change on a pid

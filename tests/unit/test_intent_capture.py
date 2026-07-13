@@ -57,6 +57,13 @@ def test_numerals_bare_single_digit_excluded():
     assert "25" in out["numerals"]
 
 
+def test_numerals_single_digit_assignment_shaped_captured():
+    # A single digit in an explicit assignment position ("to N", "=N", ":N")
+    # is a checkable constant, not the bare-count noise excluded above.
+    out = extract_assertions("set the retry limit to 7 and retries=3, count: 5")
+    assert out["numerals"] == ["7", "3", "5"]
+
+
 # --- extract_assertions: identifiers ------------------------------------------
 
 
@@ -74,6 +81,17 @@ def test_identifiers_constant_case():
 
 def test_identifiers_dotted_path():
     assert "module.fn" in extract_assertions("call module.fn here")["identifiers"]
+
+
+def test_identifiers_slash_delimited_path():
+    out = extract_assertions("the endpoint to /api/v2/sync, then update the tests")
+    assert "/api/v2/sync" in out["identifiers"]
+
+
+def test_identifiers_slash_path_prose_not_captured():
+    # A single prose slash carries no leading "/" and must not match.
+    out = extract_assertions("use this and/or that, it runs 24/7, status: n/a")
+    assert out["identifiers"] == []
 
 
 def test_identifiers_plain_word_not_captured():

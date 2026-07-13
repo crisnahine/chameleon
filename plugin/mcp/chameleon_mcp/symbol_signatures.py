@@ -133,6 +133,8 @@ def build_symbol_signatures(files, repo_root: Path | str) -> dict:
             rt = entry.get("return_type")
             if isinstance(rt, str) and rt:
                 row["return_type"] = _truncate_type(rt)
+            if entry.get("is_async") is True:
+                row["is_async"] = True
             by_name[name] = row
         if by_name:
             collected.append((rel, by_name))
@@ -381,7 +383,11 @@ def render_imported_definition(name: str, entry: dict, target_rel: str) -> str:
             s += f": {t}"
         parts.append(s)
     ret = entry.get("return_type")
-    sig = f"{name}({', '.join(parts)})"
+    # Python's `async def` changes the required call syntax (an unawaited
+    # coroutine silently no-ops), so the marker must survive into the rendered
+    # signature the reviewer/search result sees.
+    prefix = "async " if entry.get("is_async") else ""
+    sig = f"{prefix}{name}({', '.join(parts)})"
     if isinstance(ret, str) and ret:
         sig += f": {ret}"
     # Append the definition's line so the reviewer can locate it (uses the stored

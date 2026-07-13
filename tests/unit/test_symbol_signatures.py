@@ -91,6 +91,22 @@ def test_build_dedups_ambiguous_name_keeping_first(tmp_path):
     assert payload["files"]["a.ts"]["dup"]["start_line"] == 1
 
 
+def test_build_copies_is_async_flag(tmp_path):
+    f = _file(
+        str(tmp_path / "routes.py"),
+        [
+            _sig("health_check", [], return_type="bool", is_async=True),
+            _sig("sync_check", [], return_type="bool"),
+        ],
+    )
+    payload = build_symbol_signatures([f], tmp_path)
+    entries = payload["files"]["routes.py"]
+    assert entries["health_check"]["is_async"] is True
+    # A sync callable carries no `is_async` key at all (not `False`), matching
+    # the artifact's omit-when-absent convention for optional fields.
+    assert "is_async" not in entries["sync_check"]
+
+
 def test_load_round_trips(tmp_path):
     chameleon = tmp_path / ".chameleon"
     chameleon.mkdir()
@@ -335,6 +351,21 @@ def test_render_includes_definition_line():
     entry = {"params": [], "start_line": 42, "end_line": 50}
     line = render_imported_definition("f", entry, "src/u.ts")
     assert "src/u.ts:42" in line
+
+
+def test_render_marks_async_python_callable():
+    # `async def` changes the required call syntax (an unawaited coroutine
+    # silently no-ops), so the marker must survive into the rendered line.
+    entry = {"params": [], "return_type": "bool", "start_line": 30, "is_async": True}
+    line = render_imported_definition("health_check", entry, "app/api/routes/utils.py")
+    assert line.startswith("async health_check(")
+
+
+def test_render_omits_async_prefix_for_sync_callable():
+    entry = {"params": [], "return_type": "bool", "start_line": 16}
+    line = render_imported_definition("test_email", entry, "app/api/routes/utils.py")
+    assert not line.startswith("async ")
+    assert line.startswith("test_email(")
 
 
 def test_render_ruby_keyword_args_use_colon():

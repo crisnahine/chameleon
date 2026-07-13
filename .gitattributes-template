@@ -32,6 +32,7 @@
 .chameleon/COMMITTED          merge=chameleon
 .chameleon/principles.md      merge=chameleon
 .chameleon/profile.summary.md merge=chameleon
+.chameleon/conventions.md     merge=chameleon
 
 # Generated index artifacts (exports_index.json, reverse_index.json,
 # function_catalog.json, calls_index.json) are intentionally NOT routed to

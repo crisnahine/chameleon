@@ -100,6 +100,16 @@ def make_trusted_repo(tmp_path):
         stack.enter_context(
             patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path)
         )
+
+        # idiom_review=False only silences idiom/principle content; the
+        # independent "no passing test run" reminder still fires for a real
+        # source edit with no recorded test run. Record one so this gate's own
+        # surface (async judge routing) is reached undisturbed, mirroring
+        # test_idiom_review.py's isolation for the same reminder.
+        from chameleon_mcp.exec_log import append_exec_log
+
+        append_exec_log(REPO_ID, session_id=SID, command="pytest -q", exit_code=0)
+
         return repo, data_dir, file_path
 
     try:

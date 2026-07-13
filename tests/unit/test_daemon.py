@@ -486,6 +486,60 @@ def test_start_daemon_degrades_when_af_unix_missing(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# Bare module invocation (`python -m chameleon_mcp.daemon`, no "start"
+# subcommand) must leave the same discoverable pidfile behind as the `start`
+# subcommand path, since main()'s empty-argv branch calls run_daemon()
+# directly, bypassing start_daemon()'s fork/exec dance entirely.
+# ---------------------------------------------------------------------------
+
+
+def test_run_daemon_writes_pidfile_without_going_through_start_daemon(tmp_path: Path):
+    import threading
+
+    from chameleon_mcp.daemon import _read_pidfile, is_daemon_alive
+
+    fake = tmp_path / "d"
+    fake.mkdir()
+    with (
+        patch("chameleon_mcp.daemon._plugin_data", return_value=fake),
+        patch.dict(os.environ, {"CHAMELEON_DAEMON_IDLE_TIMEOUT": "0.2"}),
+    ):
+        t = threading.Thread(target=run_daemon, daemon=True)
+        t.start()
+        try:
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline and not is_daemon_alive():
+                time.sleep(0.02)
+            assert is_daemon_alive() is True, "bare run_daemon() never became discoverable"
+            pid, sock = _read_pidfile()
+            assert pid == os.getpid()
+            assert sock
+        finally:
+            t.join(timeout=5.0)
+        # The idle timeout (0.2s) self-exits the thread; the pidfile cleanup in
+        # run_daemon()'s finally block must follow, so the daemon reads as gone.
+        assert is_daemon_alive() is False
+
+
+def test_run_daemon_second_bare_invocation_does_not_steal_the_lock(tmp_path: Path):
+    """Two bare invocations racing for the same pidfile: only the first gets
+    to serve; the second must see the lock held and bail out cleanly rather
+    than silently overwriting the running daemon's pidfile."""
+    fake = tmp_path / "d"
+    fake.mkdir()
+    from chameleon_mcp.daemon import _acquire_daemon_pidfile
+
+    with patch("chameleon_mcp.daemon._plugin_data", return_value=fake):
+        first = _acquire_daemon_pidfile(fake / "d.sock")
+        try:
+            assert first is not None
+            second = _acquire_daemon_pidfile(fake / "d.sock")
+            assert second is None
+        finally:
+            os.close(first)
+
+
+# ---------------------------------------------------------------------------
 # Code-only upgrade safety: a code change without a version bump must still
 # change the daemon identity so a new-code hook never reuses a stale daemon.
 # ---------------------------------------------------------------------------

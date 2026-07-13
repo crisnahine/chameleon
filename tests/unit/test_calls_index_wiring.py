@@ -192,7 +192,10 @@ def test_needs_rederive_index_checks(tmp_path):
     (cham / "profile.json").write_text(
         json.dumps({"generation": 1, "language": "ruby"}), encoding="utf-8"
     )
-    (cham / "profile.summary.md").write_text("# summary\n", encoding="utf-8")
+    # The repair gate also checks the summary carries the real render header
+    # (garbage content that merely happens to be non-empty must still force a
+    # rebuild), so a complete fixture must carry it too.
+    (cham / "profile.summary.md").write_text("# chameleon profile summary\n", encoding="utf-8")
     (cham / "principles.md").write_text("anti-hallucination protocol\n", encoding="utf-8")
     # COMMITTED sentinel: the repair gate mirrors the loader's sentinel check.
     (cham / "COMMITTED").write_text("ok\n", encoding="utf-8")
@@ -277,8 +280,17 @@ def test_needs_rederive_index_checks(tmp_path):
         json.dumps({"generation": 1, "language": "typescript"}), encoding="utf-8"
     )
     assert tools._profile_needs_rederive(cham) is True
-    (cham / "exports_index.json").write_text("{}", encoding="utf-8")
-    (cham / "reverse_index.json").write_text("{}", encoding="utf-8")
+    # Each symbol index must also carry the schema version its own loader
+    # reads (mirrors the calls_index/function_catalog/symbol_signatures/
+    # counterexamples checks above); a schema-less dict is dead data too.
+    from chameleon_mcp.symbol_index import SCHEMA_VERSION as _SYMBOL_INDEX_SV
+
+    (cham / "exports_index.json").write_text(
+        json.dumps({"schema_version": _SYMBOL_INDEX_SV}), encoding="utf-8"
+    )
+    (cham / "reverse_index.json").write_text(
+        json.dumps({"schema_version": _SYMBOL_INDEX_SV}), encoding="utf-8"
+    )
     assert tools._profile_needs_rederive(cham) is False
 
 
@@ -425,7 +437,10 @@ def test_needs_rederive_missing_conventions_md_mirror(tmp_path, monkeypatch):
     (cham / "profile.json").write_text(
         json.dumps({"generation": 1, "language": "ruby"}), encoding="utf-8"
     )
-    (cham / "profile.summary.md").write_text("# summary\n", encoding="utf-8")
+    # The repair gate also checks the summary carries the real render header
+    # (garbage content that merely happens to be non-empty must still force a
+    # rebuild), so a complete fixture must carry it too.
+    (cham / "profile.summary.md").write_text("# chameleon profile summary\n", encoding="utf-8")
     (cham / "principles.md").write_text("anti-hallucination protocol\n", encoding="utf-8")
     (cham / "COMMITTED").write_text("ok\n", encoding="utf-8")
 

@@ -2645,6 +2645,28 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
                 naming_lines.append(f"- Prefix {type_name}s with {pattern} ({pct}, enforced)")
             else:
                 naming_lines.append(f"- Prefix {type_name}s with {pattern} ({pct})")
+        # method_casing/class_casing/constant_casing (Ruby's in-source casing
+        # signal from extract_naming_conventions) share the prefix keys'
+        # {pattern, consistency} shape but read as "Name Xs in Y", not
+        # "Prefix Xs with Y" -- a separate loop keeps each key's own wording.
+        for key, plural in (
+            ("method_casing", "methods"),
+            ("class_casing", "classes"),
+            ("constant_casing", "constants"),
+        ):
+            entry = data.get(key)
+            if not entry or key in seen_naming:
+                continue
+            consistency = entry.get("consistency", 0)
+            if consistency < _STRONG_THRESHOLD:
+                continue
+            seen_naming.add(key)
+            pattern = entry["pattern"]
+            pct = f"{consistency:.0%}"
+            if consistency >= _ENFORCE_THRESHOLD:
+                naming_lines.append(f"- Name {plural} in {pattern} ({pct}, enforced)")
+            else:
+                naming_lines.append(f"- Name {type_name}s in {pattern} ({pct})")
         # File-naming is per-archetype (a service folder may be kebab while a
         # component folder is Pascal), so it stays keyed by archetype rather
         # than deduped on the convention key alone.
@@ -3106,6 +3128,20 @@ def format_conventions_echo(conventions: dict, *, archetype: str, principles_tex
         if entry and entry.get("consistency", 0) >= _STRONG_THRESHOLD:
             parts.append(f"Naming: {entry['pattern']}-prefix")
             break
+    else:
+        # No TS prefix convention for this archetype -- try Ruby's in-source
+        # casing signal (method_casing/class_casing/constant_casing) instead,
+        # the same fallback format_conventions_for_session's NAMING section
+        # renders for these keys.
+        for key, label in (
+            ("method_casing", "methods"),
+            ("class_casing", "classes"),
+            ("constant_casing", "constants"),
+        ):
+            entry = arch_naming.get(key)
+            if entry and entry.get("consistency", 0) >= _STRONG_THRESHOLD:
+                parts.append(f"Naming: {label} in {entry['pattern']}")
+                break
 
     arch_inheritance = conv.get("inheritance", {}).get(archetype, {})
     if not isinstance(arch_inheritance, dict):

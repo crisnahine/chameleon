@@ -506,6 +506,12 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # paste of foreign-style code must not flood the advisory list. Past the cap
     # a summary row reports the remainder, mirroring the secret-scan cap.
     "STYLE_RULE_VIOLATIONS_PER_FILE": 20,
+    # Cap on top-level node kinds embedded in the 'top-level-node-kinds-mismatch'
+    # violation's `actual` field. A file with thousands of top-level statements
+    # (a generated/bundled/barrel-export file) would otherwise embed a multi-KB
+    # literal repr in a single violation; past the cap a '+N more (capped at
+    # ...)' summary reports the remainder, mirroring the secret-scan cap.
+    "TOP_LEVEL_NODE_KINDS_REPR_CAP": 50,
     # Cap on proposed-content characters the PreToolUse hard-secret deny
     # scans, consistent with the 100KB ceiling every existing content scan
     # shares. A secret placed past the cap escapes the pre-write deny but

@@ -37,16 +37,29 @@ _QUOTED_RE = re.compile(r"\"([^\"\n]{2,80})\"|'([^'\n]{2,80})'|`([^`\n]{2,80})`"
 # Two-plus-digit integers and decimals. Bare single digits ("fix the 2 bugs")
 # are conversational noise that would force a judge spawn nearly every turn;
 # the spec-constant class this targets (ports, limits, versions, amounts) is
-# almost always multi-digit or decimal. Quoted single digits still capture via
-# the quoted-string pattern.
-_NUMERAL_RE = re.compile(r"(?<![\w.])\d{2,}(?:\.\d+)?(?![\w.])|(?<![\w.])\d\.\d+(?![\w.])")
+# almost always multi-digit or decimal. A single digit is still captured when
+# it sits in an explicit assignment-shaped position -- right after "to "/"="/
+# ":" the way "set the retry limit to 7" or "retries=3" reads -- since that
+# context is exactly the checkable-constant case a bare count like "2 bugs"
+# never has. Quoted single digits still capture via the quoted-string pattern.
+_NUMERAL_RE = re.compile(
+    r"(?<![\w.])\d{2,}(?:\.\d+)?(?![\w.])"
+    r"|(?<![\w.])\d\.\d+(?![\w.])"
+    r"|(?<=\bto )\d(?![\w.])"
+    r"|(?<=[=:]\s)\d(?![\w.])"
+    r"|(?<=[=:])\d(?![\w.])"
+)
 
 # Code-shaped identifiers only: dotted/underscored compounds, camelCase,
-# CONSTANT_CASE. Plain English words never match.
+# CONSTANT_CASE, and slash-delimited path segments (e.g. "/api/v2/sync").
+# The path form requires a leading slash and 2+ segments so it never fires on
+# ordinary prose slashes ("and/or", "24/7", "n/a"), which carry no leading "/".
+# Plain English words never match.
 _IDENTIFIER_RE = re.compile(
     r"\b[A-Za-z_][A-Za-z0-9]*(?:[._][A-Za-z0-9]+)+\b"
     r"|\b[a-z][a-z0-9]*(?:[A-Z][a-z0-9]+)+\b"
     r"|\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b"
+    r"|/[\w\-]+(?:/[\w\-]+)+"
 )
 
 

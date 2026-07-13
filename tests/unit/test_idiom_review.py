@@ -293,7 +293,7 @@ def test_shadow_mode_no_block_but_marker_written(make_trusted_repo):
     assert marker.is_file()
 
 
-def test_idiom_review_disabled_no_block(make_trusted_repo):
+def test_idiom_review_disabled_no_block(make_trusted_repo, tmp_path):
     repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
     profile_dir.joinpath("config.json").write_text(
         json.dumps({"enforcement": {"mode": "enforce", "idiom_review": False}}),
@@ -302,11 +302,51 @@ def test_idiom_review_disabled_no_block(make_trusted_repo):
     _touch_edited_file(file_path, data_dir, sid)
     _write_idioms(profile_dir)
 
+    # A passing test run isolates the switch under test from the independent
+    # "no passing test run" reminder (see test_idiom_review_test_signal.py and
+    # test_idiom_review_disabled_test_signal_still_fires below for that one).
+    env = {
+        "CHAMELEON_ENFORCE": "1",
+        "CHAMELEON_HMAC_KEY_PATH": str(tmp_path / "hmac.key"),
+        "TMPDIR": str(tmp_path),
+    }
+    with patch.dict(os.environ, env, clear=False):
+        from chameleon_mcp.exec_log import append_exec_log
+
+        append_exec_log("idiom_repo_id", session_id=sid, command="pytest -q", exit_code=0)
+
+    out = _run_stop(
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
+        env=env,
+    )
+    assert out.get("decision") != "block"
+
+
+def test_idiom_review_disabled_test_signal_still_fires(make_trusted_repo, tmp_path):
+    # The durable enforcement.idiom_review:false switch disables the idiom/
+    # principle review CONTENT only. It must not also silence the unrelated
+    # "no passing test run" reminder, which is generated in the same gate
+    # function but is a distinct turn-end signal.
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
+    profile_dir.joinpath("config.json").write_text(
+        json.dumps({"enforcement": {"mode": "enforce", "idiom_review": False}}),
+        encoding="utf-8",
+    )
+    _touch_edited_file(file_path, data_dir, sid)
+    _write_idioms(profile_dir)
+    # No exec log seeded -> no passing test run observed this session.
+
     out = _run_stop(
         {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
         env={"CHAMELEON_ENFORCE": "1"},
     )
-    assert out.get("decision") != "block"
+    assert out.get("decision") == "block"
+    reason = out.get("reason", "").lower()
+    assert "test run" in reason
+    assert "run the suite" in reason
+    # The idiom content itself must still be suppressed by the switch.
+    assert "always wrap db calls" not in reason
+    assert "idioms below" not in reason
 
 
 def test_inline_ignore_idioms_in_touched_file_no_block(make_trusted_repo):

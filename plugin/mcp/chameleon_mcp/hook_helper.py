@@ -668,7 +668,7 @@ def _should_emit_untrusted_prompt(repo_id: str, session_id: str | None) -> bool:
     (the prompt is harmless if duplicated; suppressing it on error would
     hide the trust gate completely).
     """
-    if not repo_id or not session_id:
+    if not repo_id or not isinstance(session_id, str) or not session_id:
         return True
     try:
         from chameleon_mcp.optouts import _safe_session_marker
@@ -3056,12 +3056,18 @@ def preflight_and_advise() -> int:
         pass
 
     result: dict | None = None
-    try:
-        from chameleon_mcp import daemon_client
+    # CHAMELEON_TRUST_REVALIDATE=1 asks for a per-call trust re-check, but the
+    # daemon's environment is frozen at spawn time and never observes an override
+    # set only on this invocation -- proxying to it here would silently defeat the
+    # revalidation the caller just asked for. Bypass the daemon entirely in that
+    # case and fall through to the in-process call below.
+    if os.environ.get("CHAMELEON_TRUST_REVALIDATE") != "1":
+        try:
+            from chameleon_mcp import daemon_client
 
-        result = daemon_client.call("get_pattern_context", {"file_path": file_path})
-    except Exception:
-        result = None
+            result = daemon_client.call("get_pattern_context", {"file_path": file_path})
+        except Exception:
+            result = None
 
     if result is not None:
         _profile_status = (result.get("data") or {}).get("repo", {}).get("profile_status")
@@ -7519,27 +7525,39 @@ def _idiom_review_gate(
     LLM is invoked from the hook.
     """
     try:
-        if cfg.mode == "off" or not cfg.idiom_review:
+        if cfg.mode == "off":
             return None
 
-        # Gather idioms/principles text; the gate needs at least one non-empty.
-        profile_dir = _enf_profile_dir(repo_root)
-        # safe_prose_text drops a poisoned idioms.md / principles.md: this Stop
-        # backstop reads them straight from disk (not via load_profile_dir), so the
-        # loader-side scan does not cover it, and trust persists across changes so
-        # the staleness gate no longer does either.
-        from chameleon_mcp.idiom_coverage import has_idiom_content
-        from chameleon_mcp.profile.loader import safe_prose_text
+        # idiom_review:false durably disables the idiom/principle CONTENT only.
+        # The "no passing test run" reminder computed further down is a distinct
+        # turn-end signal that happens to ride this same gate function; it must
+        # not inherit this switch, so idiom/principle text is loaded only when
+        # the review itself is enabled.
+        idiom_review_enabled = bool(cfg.idiom_review)
 
-        idioms_text = safe_prose_text(profile_dir / "idioms.md")
-        principles_text = safe_prose_text(profile_dir / "principles.md")
-        # A scaffold-only idioms.md (the common no-/chameleon-teach case) is no
-        # signal: drop it so the judge does not surface "no idioms yet" placeholder
-        # prose as team-idiom content, matching the per-edit get_pattern_context path.
-        if not has_idiom_content(idioms_text):
-            idioms_text = ""
-        if not idioms_text.strip() and not principles_text.strip():
-            return None
+        idioms_text = ""
+        principles_text = ""
+        if idiom_review_enabled:
+            # Gather idioms/principles text; the review needs at least one
+            # non-empty, checked right below.
+            profile_dir = _enf_profile_dir(repo_root)
+            # safe_prose_text drops a poisoned idioms.md / principles.md: this Stop
+            # backstop reads them straight from disk (not via load_profile_dir), so
+            # the loader-side scan does not cover it, and trust persists across
+            # changes so the staleness gate no longer does either.
+            from chameleon_mcp.idiom_coverage import has_idiom_content
+            from chameleon_mcp.profile.loader import safe_prose_text
+
+            idioms_text = safe_prose_text(profile_dir / "idioms.md")
+            principles_text = safe_prose_text(profile_dir / "principles.md")
+            # A scaffold-only idioms.md (the common no-/chameleon-teach case) is no
+            # signal: drop it so the judge does not surface "no idioms yet"
+            # placeholder prose as team-idiom content, matching the per-edit
+            # get_pattern_context path.
+            if not has_idiom_content(idioms_text):
+                idioms_text = ""
+            if not idioms_text.strip() and not principles_text.strip():
+                return None
 
         # An edited file that still exists this session, and is not opted out via
         # an inline `// chameleon-ignore idioms` (or bare ignore) directive.
@@ -7591,14 +7609,16 @@ def _idiom_review_gate(
         # PRIMARY language -- a frontend idiom carries Language: ruby -- so the
         # primary tag cannot discriminate there and must never language-drop an
         # idiom: treat the primary as always edited. Fail open to no expansion.
-        try:
-            profile_raw = json.loads((profile_dir / "profile.json").read_text(encoding="utf-8"))
-            hint = profile_raw.get("language_hint") or {}
-            primary = profile_raw.get("language")
-            if hint.get("secondary_detected") and isinstance(primary, str) and primary:
-                edited_languages = sorted({*edited_languages, primary})
-        except Exception:
-            pass
+        # Only meaningful when idiom content is actually being rendered below.
+        if idiom_review_enabled:
+            try:
+                profile_raw = json.loads((profile_dir / "profile.json").read_text(encoding="utf-8"))
+                hint = profile_raw.get("language_hint") or {}
+                primary = profile_raw.get("language")
+                if hint.get("secondary_detected") and isinstance(primary, str) and primary:
+                    edited_languages = sorted({*edited_languages, primary})
+            except Exception:
+                pass
 
         # Test-run signal: when the turn touched real source (not a pure
         # test/docs edit) and no passing test runner was observed this session,
@@ -7648,17 +7668,18 @@ def _idiom_review_gate(
         # path (not the <100ms hot path), so resolving a few is fine; cap
         # governed[:5] and fail open to no archetypes (the renderer then keeps all
         # same-language + untagged idioms -- cannot scope by archetype -- rather
-        # than hiding everything).
+        # than hiding everything). Only needed when idiom content is rendered below.
         edited_archetypes: list[str] = []
-        try:
-            from chameleon_mcp.tools import get_pattern_context
+        if idiom_review_enabled:
+            try:
+                from chameleon_mcp.tools import get_pattern_context
 
-            for f in governed[:5]:
-                arch = get_pattern_context(file_path=f)["data"]["archetype"]["archetype"]
-                if arch:
-                    edited_archetypes.append(arch)
-        except Exception:
-            edited_archetypes = []
+                for f in governed[:5]:
+                    arch = get_pattern_context(file_path=f)["data"]["archetype"]["archetype"]
+                    if arch:
+                        edited_archetypes.append(arch)
+            except Exception:
+                edited_archetypes = []
 
         names = ", ".join(sanitize_for_chameleon_context(Path(p).name) for p in governed[:5])
 
@@ -7688,8 +7709,20 @@ def _idiom_review_gate(
                 "files. Run the suite to confirm your changes pass before ending "
                 "(skip only if a watch process or CI is already running them)."
             )
+            if not idiom_review_enabled:
+                # idiom_review:false disables the idiom/principle review content
+                # only (below); this reminder is a distinct turn-end signal and
+                # must be able to surface on its own when that switch is off.
+                surfaced_review = True
 
-        if terse:
+        # test_signal_only marks the case where the ONLY thing in body is the
+        # test-run reminder above (idiom_review is durably off, so no idiom/
+        # principle content is ever loaded) -- used below to keep the block's
+        # wording honest instead of pointing at "the idioms below" that do not
+        # exist in this message.
+        test_signal_only = not idiom_review_enabled
+
+        if idiom_review_enabled and terse:
             # A + B + C + E. Scope idioms to the edited archetypes (B), summarize the
             # ones the model already saw this session (C) OR already receives every
             # session through the wired conventions.md memory channel, and show full
@@ -7724,7 +7757,7 @@ def _idiom_review_gate(
             if surfaced_review and principles_text.strip():
                 body.append("")
                 body.append("Also re-check the team principles (.chameleon/principles.md).")
-        else:
+        elif idiom_review_enabled:
             legacy_idioms = idioms_text
             if edited_archetypes:
                 from chameleon_mcp.tools import _reorder_idioms_by_archetypes
@@ -7805,13 +7838,20 @@ def _idiom_review_gate(
             except Exception:
                 pass
             _emit_check_event(repo_id, session_id, "idiom_review", "ran")
-            advisory = [
-                "[🦎 chameleon: idiom self-review (advisory)]",
-                f"You edited {names}. Re-check those edits against the idioms below "
-                "and fix any clear violation in your next action. Advisory; the "
-                "turn ends normally.",
-                *body,
-            ]
+            if test_signal_only:
+                header = [
+                    "[🦎 chameleon: test-run reminder (advisory)]",
+                    f"You edited {names} this turn with no recorded passing test "
+                    "run. Advisory; the turn ends normally.",
+                ]
+            else:
+                header = [
+                    "[🦎 chameleon: idiom self-review (advisory)]",
+                    f"You edited {names}. Re-check those edits against the idioms "
+                    "below and fix any clear violation in your next action. "
+                    "Advisory; the turn ends normally.",
+                ]
+            advisory = [*header, *body]
             return {
                 "hookSpecificOutput": {
                     "hookEventName": "Stop",
@@ -7821,12 +7861,16 @@ def _idiom_review_gate(
                 }
             }
 
-        parts = [
-            f"chameleon: you edited {names} this turn. Re-check those edits against "
-            "the team idioms below and fix any clear violation before ending.",
-            *body,
-        ]
-        if cfg.idiom_judge:
+        if test_signal_only:
+            lead = f"chameleon: you edited {names} this turn with no recorded passing test run."
+        else:
+            lead = (
+                f"chameleon: you edited {names} this turn. Re-check those edits "
+                "against the team idioms below and fix any clear violation before "
+                "ending."
+            )
+        parts = [lead, *body]
+        if not test_signal_only and cfg.idiom_judge:
             parts.append("")
             parts.append(
                 "Hold this to a high bar (idiom_judge): check each edited file "
@@ -7834,12 +7878,18 @@ def _idiom_review_gate(
                 "rubber-stamp it."
             )
         parts.append("")
-        parts.append(
-            "End again to confirm the review is done. Skip once: add "
-            f"{_ignore_hint(governed[:5], 'idioms')} in a file you touched. Off "
-            'durably for this repo: "enforcement": {"idiom_review": false} in '
-            ".chameleon/config.json."
-        )
+        if test_signal_only:
+            parts.append(
+                "End again to confirm you have run the suite. Skip once: add "
+                f"{_ignore_hint(governed[:5], 'idioms')} in a file you touched."
+            )
+        else:
+            parts.append(
+                "End again to confirm the review is done. Skip once: add "
+                f"{_ignore_hint(governed[:5], 'idioms')} in a file you touched. Off "
+                'durably for this repo: "enforcement": {"idiom_review": false} in '
+                ".chameleon/config.json."
+            )
 
         # Charge the same reconciled per-workspace counter the cap check read, so
         # an idiom block counts toward the workspace's shared budget in both modes.
@@ -10776,7 +10826,7 @@ def _multi_lens_review_lines(
             session_id,
             "multi_lens_review",
             "ran",
-            detail={"turn_key": route.get("turn_key")},
+            detail={"turn_key": route.get("turn_key"), "reason": route.get("reason")},
         )
         synthesized = lens_runner.run_lenses(lenses, max_lenses=2)
 

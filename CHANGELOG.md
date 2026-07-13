@@ -4,6 +4,136 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.2] - 2026-07-13
+
+Whole-plugin from-scratch real-invocation QA campaign: 36 parallel testers
+exercised every hook, skill, and MCP tool against the real profiled repos
+across TypeScript/Ruby/Python and every supported framework, weighted toward
+the freshest v3.1.0/v3.1.1 memory-channel code. 26 findings confirmed (each
+independently adversarially re-verified) and fixed. The fix wave itself went
+through two further verification passes before shipping: a per-fix adversarial
+re-check (which caught and repaired a fix-introduced test regression, see
+"Fixed" below) and a second independent review of the cumulative diff (which
+caught a fix-introduced false-positive bug in the PR-review auto-pass fix
+itself, plus two smaller parity gaps — all repaired, see "Fixed").
+
+### Fixed
+
+- **Daemon proxy silently defeated `CHAMELEON_TRUST_REVALIDATE=1` (P1).** The
+  long-lived chameleon-mcp daemon's environment is frozen at spawn time, so
+  `preflight-and-advise` proxying `get_pattern_context` to it never observed a
+  per-call revalidate override — a profile that genuinely diverged from its
+  trust grant kept reading as `trusted` instead of `stale` whenever a daemon
+  spawned without the flag was already running, the default steady-state
+  condition. `CHAMELEON_TRUST_REVALIDATE=1` now bypasses the daemon proxy and
+  runs the check in-process. `hook_helper.py`.
+- **PR-review auto-pass missed a removed-but-still-imported export (P1).**
+  `get_autopass_verdict`'s blast-radius fact only counted a file's CURRENT
+  importers, so deleting an export five other files still imported could
+  score `auto_pass_eligible=true`/`risk=low` with no mention of the break —
+  the exact defect class the safety net exists to catch. It now folds
+  `query_symbol_importers`'s "broken" entries into the verdict as a real
+  contract break, scoped to names that were actually exported at the diff's
+  own `old_ref` (an independent review of this same fix caught that the first
+  version compared only against the CURRENT export set with no notion of
+  `old_ref`, so a file touched for an unrelated reason with a pre-existing
+  dangling import — present at both `old_ref` and `HEAD` — would have been
+  misattributed to the diff under review; both directions are now covered by
+  a real two-scenario regression test). `tools.py`.
+- **`bootstrap_repo(force=True)` had no too-new-schema guard.** It would
+  silently downgrade/destroy a profile written by a newer chameleon engine —
+  the exact case `refresh_repo` already refuses even under `force`. Bootstrap
+  now applies the same refusal. `tools.py`.
+- **`.chameleon/conventions.md` was missing from the merge-driver routing.**
+  Absent from `.gitattributes-template`, a real two-branch merge with
+  divergent taught idioms left raw git conflict markers embedded in the
+  mirror instead of the driver ever running. Routed alongside
+  `COMMITTED`/`principles.md`/`profile.summary.md` (decline-cleanly,
+  refresh-repairs), and added to `test_gitattributes_template.py`'s tested
+  sets.
+- **Method/class/constant naming conventions never reached the model.**
+  `method_casing`/`class_casing`/`constant_casing` were derived and stored in
+  `conventions.json` but rendered into none of the three convention-delivery
+  channels (SessionStart, the conventions.md mirror, the Tier-1 PreToolUse
+  echo) — a model could be flagged for violating a naming rule it was never
+  shown. All three now surface it, mirroring how file-naming already does.
+  `conventions.py`.
+- **`refresh_repo` under-repaired corrupted/stale artifacts.** A corrupted
+  (non-empty garbage) `profile.summary.md` passed the repair guard's
+  emptiness-only check and stayed corrupt indefinitely; an old-but-readable
+  `profile.json` schema_version noop'd instead of re-deriving; a stale
+  `reverse_index.json`/`exports_index.json` schema_version was never
+  validated. All three now force a re-derive like their sibling artifacts do.
+  `tools.py`.
+- **`detect_repo`/`get_pattern_context` misreported a torn-down profile.**
+  When `profile.json` was missing but core artifacts remained, both reported
+  a clean `no_profile` instead of `profile_corrupted` — inconsistent with
+  `get_status` on the identical directory, contradicting the code's own
+  stated invariant. Both now call the same corruption check regardless of
+  whether `profile.json` itself exists. `tools.py`.
+- **`detect_repo`/`get_pattern_context` silently resolved a relative
+  `file_path` against the MCP server's own CWD**, contrary to their
+  documented absolute-path contract (the sibling `get_archetype` already
+  guards against this exact failure mode). Both now reject a non-absolute
+  path with a validation-error envelope instead of disclosing whatever repo
+  happens to sit at the resolved location. `tools.py`.
+- **`preflight-and-advise` crashed on a non-string `session_id`.** The one
+  call site (of ~11 in the file) without an `isinstance(str)` guard let a
+  malformed payload reach `str.encode()` and raise an unhandled
+  `AttributeError` past the hook's own try/except. Guarded to match every
+  other call site. `hook_helper.py`.
+- **The idiom-review off-switch silenced an unrelated reminder.**
+  `enforcement.idiom_review: false` also killed the independent "no passing
+  test run this turn" reminder, because both were computed inside the same
+  gate function. The reminder now fires independently of the idiom-review
+  switch. `hook_helper.py`.
+- **`multi_lens_review`'s "ran" check event dropped its route reason**, unlike
+  the "skipped" branch — no way to audit after the fact whether a turn's
+  judge spawn was intent-forced. The reason now rides in both. `hook_helper.py`.
+- **`detect_repo` misreported a monorepo workspace's production-ref lock**
+  immediately after init, reading only the workspace's own (nonexistent)
+  config instead of walking up to the toplevel's lock the way `refresh_repo`
+  already does. `tools.py`.
+- **An idiom taught with `source=` rendered a corrupted gist** — the
+  citation text leaked into the directive because `_summarize_idiom_block`'s
+  metadata-line regex didn't recognize `Source:`, unlike the sibling parser
+  in `idiom_coverage.py`. `tools.py`.
+- **`lint_file`'s node-kind-mismatch violation embedded an unbounded
+  `repr()`** of every top-level node kind, with no cap unlike sibling
+  violation classes in the same module. `lint_engine.py`.
+- **A bare `python -m chameleon_mcp.daemon` (no `start` subcommand) never
+  wrote a pidfile**, so `daemon_status()`/`stop_daemon()` reported a live,
+  request-serving daemon as not-running. `daemon.py`.
+- **Intent capture missed realistic checkable constants** — the identifier
+  regex never matched slash-delimited paths, and the numeral regex required
+  2+ digits. Broadened both. `intent_capture.py`.
+- **Python's async/await signal was computed but never surfaced** in
+  `search_codebase`/`get_pattern_context` — an async FastAPI endpoint
+  rendered indistinguishably from a sync one. `symbol_signatures.py`.
+- **`search_codebase` mislabeled a stale calls index as `(corrupt)`**
+  instead of the shared `calls-index-stale` reason sibling tools already use.
+  A review pass on this fix found the identical `(corrupt)` mislabel three
+  lines above for a stale symbol index, missed in the same edit — fixed too,
+  now distinguishing `symbol-index-stale` from genuine corruption. `tools.py`.
+- **`_profile_needs_rederive` validated `constant_index.json` (Ruby's
+  cross-file existence index) for JSON-parseability only, not schema_version**,
+  unlike the exports/reverse index check right above it — currently latent
+  (the format has only ever shipped schema_version 1) but would have silently
+  survived every refresh once a newer schema ships. Now validated the same way
+  its siblings are; found and fixed during the same review pass as the two
+  items above. `tools.py`.
+- **The orphaned merge-driver tmp-file sweep only ran on full bootstrap**,
+  not the partial-refresh path `/chameleon-refresh` takes for small diffs.
+  `tools.py`.
+- **`/chameleon-doctor`'s recent-hook-errors check could misattribute a
+  benign banner as the error**, dropping the real timestamped line that
+  pulled it into the surfaced tail. `tools.py`.
+- **`using-chameleon/SKILL.md` misdocumented `idiom_judge`'s default** as
+  "opt-in, default off"; the code default is on, matching every other doc
+  that states it.
+
+Full unit suite green (5545 passed, 3 skipped), ruff clean.
+
 ## [3.1.1] - 2026-07-13
 
 Hardens the delivery-faithful wiring detector behind the 3.1.0 memory-channel

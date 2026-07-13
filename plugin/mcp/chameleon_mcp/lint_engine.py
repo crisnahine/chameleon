@@ -959,6 +959,37 @@ def _namespace_local_base(class_name: str, known_bases: set[str], dominant: str)
     return best
 
 
+# Per-file cap on how many top-level node kinds are embedded in the
+# 'top-level-node-kinds-mismatch' violation's `actual` field. Mirrors the
+# secret-scan and style-rule caps in this module: a file with thousands of
+# top-level statements would otherwise embed a multi-KB literal repr in a
+# single violation.
+_TOP_LEVEL_KINDS_REPR_CAP_NAME = "TOP_LEVEL_NODE_KINDS_REPR_CAP"
+
+
+def _top_level_kinds_repr_cap() -> int:
+    try:
+        from chameleon_mcp._thresholds import threshold_int
+
+        return threshold_int(_TOP_LEVEL_KINDS_REPR_CAP_NAME)
+    except Exception:
+        return 50
+
+
+def _capped_top_level_kinds_repr(kinds: list[str]) -> str:
+    """Bounded repr of a file's top-level node kinds for a violation's `actual`.
+
+    Past the cap, shows the leading slice plus a '+N more (capped at ...)'
+    summary instead of a literal repr of the full list.
+    """
+    kinds = list(kinds)
+    cap = _top_level_kinds_repr_cap()
+    if len(kinds) <= cap:
+        return repr(kinds)
+    remaining = len(kinds) - cap
+    return f"{kinds[:cap]!r} +{remaining} more (capped at {cap})"
+
+
 def lint(
     snapshot: DimensionSnapshot, ast_query: dict | None, *, language: str | None = None
 ) -> list[Violation]:
@@ -1042,7 +1073,7 @@ def lint(
                 Violation(
                     rule="top-level-node-kinds-mismatch",
                     expected=repr(list(expected_kinds)),
-                    actual=repr(snapshot.top_level_node_kinds),
+                    actual=_capped_top_level_kinds_repr(snapshot.top_level_node_kinds),
                     # Info, not warning: this is an archetype-FIT heuristic (never
                     # block-eligible) whose own message concedes the match may be
                     # wrong and tells the reader not to restructure. Surfacing it

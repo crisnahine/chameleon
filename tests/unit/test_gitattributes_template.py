@@ -41,6 +41,7 @@ DECLINE_TO_MERGE = {
     "COMMITTED",
     "principles.md",
     "profile.summary.md",
+    "conventions.md",
 }
 
 

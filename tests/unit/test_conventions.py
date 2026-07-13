@@ -340,6 +340,25 @@ class TestFormatConventionsForSession:
         assert "I" in text
         assert "interface" in text.lower()
 
+    def test_formats_ruby_casing_conventions(self):
+        # method_casing/class_casing/constant_casing (Ruby's in-source casing
+        # signal) share the prefix keys' {pattern, consistency} shape but were
+        # never rendered into any convention-delivery channel until this test.
+        conventions = empty_conventions(generation=1)
+        conventions["conventions"]["naming"]["service"] = {
+            "method_casing": {"pattern": "snake_case", "consistency": 1.0, "sample_size": 500},
+            "class_casing": {"pattern": "PascalCase", "consistency": 1.0, "sample_size": 50},
+            "constant_casing": {
+                "pattern": "SCREAMING_SNAKE_CASE",
+                "consistency": 1.0,
+                "sample_size": 10,
+            },
+        }
+        text = format_conventions_for_session(conventions)
+        assert "Name methods in snake_case" in text
+        assert "Name classes in PascalCase" in text
+        assert "Name constants in SCREAMING_SNAKE_CASE" in text
+
     def test_empty_conventions_with_principles(self):
         conventions = empty_conventions(generation=1)
         text = format_conventions_for_session(
@@ -397,6 +416,18 @@ class TestFormatConventionsEcho:
         conventions = empty_conventions(generation=1)
         text = format_conventions_echo(conventions, archetype="hook")
         assert text == "Verify symbols/imports/paths exist before using them; don't invent"
+
+    def test_compact_echo_falls_back_to_ruby_casing(self):
+        # No TS prefix convention for this archetype -- the echo must fall
+        # back to the Ruby casing signal rather than showing no Naming line.
+        from chameleon_mcp.conventions import format_conventions_echo
+
+        conventions = empty_conventions(generation=1)
+        conventions["conventions"]["naming"]["service"] = {
+            "method_casing": {"pattern": "snake_case", "consistency": 1.0, "sample_size": 500},
+        }
+        text = format_conventions_echo(conventions, archetype="service")
+        assert "Naming: methods in snake_case" in text
 
     def test_archetype_absent_does_not_leak_other_archetype_import(self):
         # A dimension keyed only under a DIFFERENT archetype must NOT bleed into

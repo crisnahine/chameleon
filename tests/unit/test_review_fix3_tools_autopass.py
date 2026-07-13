@@ -16,8 +16,12 @@ Covers the confirmed findings:
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from pathlib import Path
 from unittest import mock
+
+import pytest
 
 from chameleon_mcp import autopass, tools
 
@@ -147,6 +151,93 @@ def test_compute_contract_breaks_sanitizes_via_in_callers(tmp_path, monkeypatch)
     via = details[0]["callers"][0]["via"]
     assert DANGER not in via[0]
     assert "chameleon-sanitized" in via[0]
+
+
+def _git(repo, *args):
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True)
+
+
+def _git_output(repo, *args):
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def _bootstrap_and_trust(repo, monkeypatch, data_dir):
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(data_dir))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    boot = tools.bootstrap_repo(str(repo), force=True)
+    assert boot["data"]["status"] == "success"
+    repo_id = tools._compute_repo_id(repo)
+    trust = tools.trust_profile(str(repo), confirmation_token=f"yes-trust-{repo_id[:8]}")
+    assert trust["data"]["status"] == "success"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_removed_export_still_imported_scopes_to_old_ref(tmp_path, monkeypatch):
+    # Regression: the removed_export_still_imported fold-in must only fire for
+    # a name that was actually exported AT old_ref. query_symbol_importers
+    # only ever compares against the CURRENT on-disk export set, so a file
+    # touched for an unrelated reason that already had a dangling import
+    # BEFORE old_ref (a pre-existing break this diff did not introduce) must
+    # not be misattributed to this diff -- while a genuine removal within
+    # old_ref..HEAD must still be caught.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@t.test")
+    _git(repo, "config", "user.name", "t")
+    src = repo / "src"
+    src.mkdir()
+
+    (src / "format.ts").write_text(
+        "export function formatDate(x: number): string {\n"
+        "  return String(x);\n"
+        "}\n"
+        "export function preExistingBroken(x: number): string {\n"
+        "  return String(x);\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (src / "user.ts").write_text(
+        "import { formatDate, preExistingBroken } from './format';\n"
+        "export function showUser(x: number): string {\n"
+        "  return formatDate(x) + preExistingBroken(x);\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "commit1: both functions present")
+    commit1 = _git_output(repo, "rev-parse", "HEAD")
+
+    (src / "format.ts").write_text(
+        "export function formatDate(x: number): string {\n  return String(x);\n}\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "commit2: preExistingBroken removed (this diff's base_ref)")
+    commit2 = _git_output(repo, "rev-parse", "HEAD")
+
+    (src / "format.ts").write_text(
+        "// unrelated comment tweak\n"
+        "export function formatDate(x: number): string {\n  return String(x);\n}\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "commit3 (HEAD): unrelated one-line comment edit")
+
+    _bootstrap_and_trust(repo, monkeypatch, tmp_path / "data")
+    numstat = "1\t1\tsrc/format.ts\n"
+
+    # base_ref=commit2 already lacked preExistingBroken -- not this diff's doing.
+    count, details, _reason = tools._compute_contract_breaks(repo, numstat, commit2, 50)
+    assert count == 0, f"false positive: pre-existing break misattributed to this diff: {details}"
+
+    # base_ref=commit1 genuinely had it -- this diff's own removal must still surface.
+    count2, details2, _reason2 = tools._compute_contract_breaks(repo, numstat, commit1, 50)
+    assert count2 == 1
+    assert details2[0]["name"] == "preExistingBroken"
+    assert details2[0]["kind"] == "removed_export_still_imported"
 
 
 # --------------------------------------------------------------------------
