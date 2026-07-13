@@ -575,16 +575,13 @@ def test_secondary_language_hint_keeps_primary_tagged_idioms(make_trusted_repo):
     assert "frontend-fetch-wrapper" in out.get("reason", "")
 
 
-def _wire_memory_channel(repo: Path, profile_dir: Path, *, gist_names: list[str]):
-    """CLAUDE.local.md import + a mirror whose TEAM IDIOMS section carries gists."""
-    (repo / "CLAUDE.local.md").write_text("@.chameleon/conventions.md\n", encoding="utf-8")
-    lines = "\n".join(f"- {n}: gist of {n}." for n in gist_names)
-    profile_dir.joinpath("conventions.md").write_text(
-        "PROJECT CONVENTIONS — authoritative.\n\n"
-        "TEAM IDIOMS (taught; follow on every edit — full text with examples in "
-        f".chameleon/idioms.md):\n{lines}\n",
-        encoding="utf-8",
-    )
+def _snapshot_mirror_gists(data_dir: Path, session_id: str, names: list[str]) -> None:
+    """Simulate the SessionStart-time snapshot of memory-channel-delivered gists."""
+    from chameleon_mcp.hook_helper import _MIRROR_IDIOMS_SNAPSHOT
+    from chameleon_mcp.optouts import _safe_session_marker
+
+    marker = _MIRROR_IDIOMS_SNAPSHOT.format(session=_safe_session_marker(session_id))
+    (data_dir / marker).write_text(json.dumps(names), encoding="utf-8")
 
 
 def test_mirror_carried_idiom_renders_gist_not_full_text(make_trusted_repo):
@@ -595,7 +592,7 @@ def test_mirror_carried_idiom_renders_gist_not_full_text(make_trusted_repo):
         "### wrap-fetches\nAlways wrap fetches in the apiClient helper.\n\n"
         "Example:\n```\napiClient.get('/x')\n```\n",
     )
-    _wire_memory_channel(repo, profile_dir, gist_names=["wrap-fetches"])
+    _snapshot_mirror_gists(data_dir, sid, ["wrap-fetches"])
 
     out = _run_stop(
         {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
@@ -616,7 +613,7 @@ def test_mirror_gist_kill_switch_restores_full_text(make_trusted_repo):
         "### wrap-fetches\nAlways wrap fetches in the apiClient helper.\n\n"
         "Example:\n```\napiClient.get('/x')\n```\n",
     )
-    _wire_memory_channel(repo, profile_dir, gist_names=["wrap-fetches"])
+    _snapshot_mirror_gists(data_dir, sid, ["wrap-fetches"])
 
     out = _run_stop(
         {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},

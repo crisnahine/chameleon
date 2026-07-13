@@ -31,12 +31,16 @@ SessionStart stops double-delivering the conventions block.
   Stop self-review renders that idiom as a one-line gist plus one shared
   "Full text for any you have not applied: .chameleon/idioms.md" pointer
   instead of re-dumping the full block. Delivery is verified the way Claude
-  Code resolves imports — code fences and inline code spans are ignored (a
-  doc that quotes the import line is not wiring), the path resolves relative
-  to its containing file, and the target must exist — so a linked worktree
-  with an unmaterialized target reads as undelivered. Idioms with no delivery
-  channel keep the v3.0.3 full-text escalation — an idiom the model never saw
-  is still never reduced to a name; detection fails open to "no channel".
+  Code resolves imports — code fences (indented/tilde/unclosed included) and
+  inline code spans are ignored (a doc that quotes the import line is not
+  wiring), the path resolves relative to its containing file, and the target
+  must exist — so a linked worktree with an unmaterialized target reads as
+  undelivered. Session-faithful: the delivered names are snapshotted at
+  SessionStart and the Stop gate reads only the snapshot, so an idiom taught
+  mid-session is never gisted before the model has actually seen it. Idioms
+  with no delivery channel keep the v3.0.3 full-text escalation — an idiom
+  the model never saw is still never reduced to a name; detection fails open
+  to "no channel".
 - **SessionStart memory-channel dedup** (`CHAMELEON_MEMORY_CHANNEL_DEDUP=0` to
   disable; `--toggle memory_channel_dedup`). A wired repo's session no longer
   receives the conventions block twice: the hook injection collapses to a

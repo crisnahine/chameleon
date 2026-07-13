@@ -445,3 +445,35 @@ def test_needs_rederive_missing_conventions_md_mirror(tmp_path, monkeypatch):
     assert not mirror.exists()
     assert tools._profile_needs_rederive(cham) is False
     monkeypatch.delenv("CHAMELEON_CONVENTIONS_MD")
+
+
+def test_bootstrap_mirror_carries_principles_and_idiom_gists(tmp_path):
+    # The txn's mirror write feeds principles + carried-forward idioms into
+    # render_conventions_md; the memory channel must receive the COMPLETE
+    # session-conventions content or the dedup/gist layers go silently inert.
+    repo = _make_ts_repo(tmp_path / "repo")
+    cham = repo / ".chameleon"
+    cham.mkdir(exist_ok=True)
+    (cham / "idioms.md").write_text(
+        "# idioms\n\n## active\n\n### wrap-fetches\nAlways wrap fetches in the apiClient helper.\n",
+        encoding="utf-8",
+    )
+    assert tools.bootstrap_repo(str(repo))["data"]["status"] == "success"
+    text = (cham / "conventions.md").read_text(encoding="utf-8")
+    assert "TEAM IDIOMS" in text
+    assert "- wrap-fetches:" in text
+    assert "PRINCIPLES" in text
+
+
+def test_noop_refresh_self_heals_missing_mirror(tmp_path):
+    # _profile_needs_rederive deliberately does NOT force a re-derive for a
+    # missing mirror; the noop path's _sync_conventions_md_from_disk is the
+    # only thing that heals it, so it must actually run.
+    repo = _make_ts_repo(tmp_path / "repo")
+    assert tools.bootstrap_repo(str(repo))["data"]["status"] == "success"
+    cham = repo / ".chameleon"
+    assert tools.refresh_repo(str(repo))["data"]["status"] == "noop"
+    (cham / "conventions.md").unlink()
+    healed = tools.refresh_repo(str(repo))
+    assert healed["data"]["status"] == "noop"  # still cheap — no re-derive
+    assert (cham / "conventions.md").is_file(), "noop refresh did not heal the mirror"

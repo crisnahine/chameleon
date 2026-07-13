@@ -948,12 +948,14 @@ Five places can stop work, all gated by trust, mode, and `CHAMELEON_ENFORCE`.
    scoped to the edited archetypes' idioms plus untagged general ones, idioms
    whose `Language:` tag names a recognized language the turn did not edit are
    dropped (untagged, `any`, and unrecognized tags fail open to shown), idioms
-   the model already saw this session — or already receives every session
-   through a wired `conventions.md` memory-channel import whose TEAM IDIOMS
-   section carries their gist (`CHAMELEON_STOP_IDIOM_GIST=0` disables this
-   layer) — are summarized to one line each, and full text is shown only for
-   in-scope idioms with no delivery channel at all — so an idiom the model
-   never saw is never reduced to a name. Mirror-carried idioms not otherwise
+   the model already saw this session — or received at session load through a
+   wired `conventions.md` memory-channel import whose TEAM IDIOMS section
+   carries their gist, per the SessionStart-time snapshot the Stop gate reads
+   (never the live mirror, which every teach rewrites;
+   `CHAMELEON_STOP_IDIOM_GIST=0` disables this layer) — are summarized to one
+   line each, and full text is shown only for in-scope idioms with no
+   delivery channel at all — so an idiom the model never saw is never reduced
+   to a name. Mirror-carried idioms not otherwise
    surfaced this session get one shared "Full text for any you have not
    applied: .chameleon/idioms.md" pointer instead of a re-dump. "Seen" is
    tracked per idiom name

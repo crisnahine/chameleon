@@ -17,7 +17,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import chameleon_mcp.hook_helper as hh
-from chameleon_mcp.hook_helper import _mirror_idiom_names, _wired_mirror_text
+from chameleon_mcp.hook_helper import (
+    _MIRROR_IDIOMS_SNAPSHOT,
+    _mirror_idiom_names,
+    _snapshot_mirror_idioms,
+    _wired_mirror_text,
+)
+from chameleon_mcp.optouts import _safe_session_marker
 from chameleon_mcp.tools import _render_stop_idioms, parse_idiom_gist_names
 
 _IDIOMS_MD = (
@@ -83,6 +89,14 @@ class TestRenderWithMirrorNames:
         out = _render(mirror_names={"no-such-idiom"})
         assert "### wrap-fetches" in out
         assert "### atomic-writes" in out
+
+    def test_idiom_in_both_seen_and_mirror_needs_no_pointer(self):
+        # Session-seen wins: the model already read the full block this
+        # session, so the shared idioms.md pointer must not appear.
+        out = _render(mirror_names={"wrap-fetches"}, seen=["wrap-fetches"])
+        assert "- wrap-fetches:" in out
+        assert "Full text for any you have not applied" not in out
+        assert "### atomic-writes" in out  # the unmirrored one still escalates
 
 
 class TestParseIdiomGistNames:
@@ -156,6 +170,34 @@ class TestWiredMirrorText:
         (profile / "conventions.md").write_text(_MIRROR_MD, encoding="utf-8")
         assert _wired_mirror_text(repo) == ""
 
+    def test_indented_fence_mention_is_not_wired(self, tmp_path):
+        # The init skill's own docs quote the import inside a 3-space-indented
+        # list fence; CommonMark treats that as a fence, so must the scan.
+        repo, profile = self._repo(tmp_path)
+        (repo / "CLAUDE.md").write_text(
+            "1. Wire it:\n\n   ```\n   @.chameleon/conventions.md\n   ```\n",
+            encoding="utf-8",
+        )
+        (profile / "conventions.md").write_text(_MIRROR_MD, encoding="utf-8")
+        assert _wired_mirror_text(repo) == ""
+
+    def test_tilde_fence_mention_is_not_wired(self, tmp_path):
+        repo, profile = self._repo(tmp_path)
+        (repo / "CLAUDE.md").write_text("~~~\n@.chameleon/conventions.md\n~~~\n", encoding="utf-8")
+        (profile / "conventions.md").write_text(_MIRROR_MD, encoding="utf-8")
+        assert _wired_mirror_text(repo) == ""
+
+    def test_unclosed_fence_blanks_to_eof(self, tmp_path):
+        # Markdown treats an unclosed fence as code to EOF; a quoted import
+        # after one must not read as wiring.
+        repo, profile = self._repo(tmp_path)
+        (repo / "CLAUDE.md").write_text(
+            "Example:\n\n```\nsome code\n\n@.chameleon/conventions.md\n",
+            encoding="utf-8",
+        )
+        (profile / "conventions.md").write_text(_MIRROR_MD, encoding="utf-8")
+        assert _wired_mirror_text(repo) == ""
+
     def test_prose_path_mention_without_sigil_is_not_wired(self, tmp_path):
         repo, profile = self._repo(tmp_path)
         (repo / "CLAUDE.md").write_text(
@@ -184,37 +226,100 @@ class TestWiredMirrorText:
 
 
 class TestMirrorIdiomNames:
-    def _wired(self, tmp_path) -> Path:
+    """Stop-side reads of the SessionStart-time snapshot (never the live file)."""
+
+    SID = "s-snap"
+
+    def _snap(self, tmp_path, payload) -> Path:
+        import json as _json
+
+        repo_data = tmp_path / "data"
+        repo_data.mkdir(parents=True, exist_ok=True)
+        snap = repo_data / _MIRROR_IDIOMS_SNAPSHOT.format(session=_safe_session_marker(self.SID))
+        snap.write_text(payload if isinstance(payload, str) else _json.dumps(payload))
+        return repo_data
+
+    def test_names_from_snapshot(self, tmp_path):
+        repo_data = self._snap(tmp_path, ["wrap-fetches"])
+        assert _mirror_idiom_names(repo_data, self.SID) == {"wrap-fetches"}
+
+    def test_missing_snapshot_returns_empty(self, tmp_path):
+        repo_data = tmp_path / "data"
+        repo_data.mkdir(parents=True)
+        assert _mirror_idiom_names(repo_data, self.SID) == set()
+
+    def test_other_sessions_snapshot_not_read(self, tmp_path):
+        repo_data = self._snap(tmp_path, ["wrap-fetches"])
+        assert _mirror_idiom_names(repo_data, "another-session") == set()
+
+    def test_malformed_snapshot_returns_empty(self, tmp_path):
+        repo_data = self._snap(tmp_path, "{not json")
+        assert _mirror_idiom_names(repo_data, self.SID) == set()
+        repo_data = self._snap(tmp_path, {"not": "a list"})
+        assert _mirror_idiom_names(repo_data, self.SID) == set()
+
+    def test_kill_switch_returns_empty(self, tmp_path, monkeypatch):
+        repo_data = self._snap(tmp_path, ["wrap-fetches"])
+        monkeypatch.setenv("CHAMELEON_STOP_IDIOM_GIST", "0")
+        assert _mirror_idiom_names(repo_data, self.SID) == set()
+
+
+class TestSnapshotMirrorIdioms:
+    """SessionStart-side snapshot writes."""
+
+    def _wired_repo(self, tmp_path, monkeypatch) -> tuple[Path, Path]:
+        monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
         repo = tmp_path / "repo"
         profile = repo / ".chameleon"
         profile.mkdir(parents=True)
         (repo / "CLAUDE.local.md").write_text("@.chameleon/conventions.md\n", encoding="utf-8")
         (profile / "conventions.md").write_text(_MIRROR_MD, encoding="utf-8")
         _clear_cache()
-        return repo
+        return repo, tmp_path / "data"
 
-    def test_names_from_delivered_mirror(self, tmp_path):
-        repo = self._wired(tmp_path)
-        assert _mirror_idiom_names(repo) == {"wrap-fetches"}
+    def _snap_path(self, data_dir: Path, repo: Path, sid: str) -> Path:
+        from chameleon_mcp.tools import _compute_repo_id
 
-    def test_unwired_repo_returns_empty(self, tmp_path):
-        repo = tmp_path / "repo"
-        profile = repo / ".chameleon"
-        profile.mkdir(parents=True)
-        (profile / "conventions.md").write_text(_MIRROR_MD, encoding="utf-8")
+        return (
+            data_dir
+            / _compute_repo_id(repo)
+            / _MIRROR_IDIOMS_SNAPSHOT.format(session=_safe_session_marker(sid))
+        )
+
+    def test_wired_repo_writes_delivered_names(self, tmp_path, monkeypatch):
+        import json as _json
+
+        repo, data_dir = self._wired_repo(tmp_path, monkeypatch)
+        _snapshot_mirror_idioms(repo, "sess-1")
+        snap = self._snap_path(data_dir, repo, "sess-1")
+        assert _json.loads(snap.read_text()) == ["wrap-fetches"]
+
+    def test_unwired_repo_writes_nothing(self, tmp_path, monkeypatch):
+        repo, data_dir = self._wired_repo(tmp_path, monkeypatch)
+        (repo / "CLAUDE.local.md").unlink()
         _clear_cache()
-        assert _mirror_idiom_names(repo) == set()
+        _snapshot_mirror_idioms(repo, "sess-2")
+        assert not self._snap_path(data_dir, repo, "sess-2").exists()
 
-    def test_pre_idioms_format_mirror_returns_empty(self, tmp_path):
-        repo = self._wired(tmp_path)
+    def test_null_session_writes_nothing(self, tmp_path, monkeypatch):
+        repo, data_dir = self._wired_repo(tmp_path, monkeypatch)
+        _snapshot_mirror_idioms(repo, None)
+        assert not list(data_dir.rglob(".mirror_idioms.*")) if data_dir.exists() else True
+
+    def test_mid_session_teach_does_not_reach_stop_gate(self, tmp_path, monkeypatch):
+        # The live mirror gains an idiom after session start; the Stop gate
+        # keeps reading the session snapshot, so the new idiom stays full-text.
+        repo, data_dir = self._wired_repo(tmp_path, monkeypatch)
+        _snapshot_mirror_idioms(repo, "sess-3")
         (repo / ".chameleon" / "conventions.md").write_text(
-            "PROJECT CONVENTIONS — authoritative.\n\nIMPORTS:\n- Prefer pathlib\n",
+            _MIRROR_MD.replace(
+                "- wrap-fetches: Always wrap fetches in the apiClient helper.",
+                "- wrap-fetches: Always wrap fetches in the apiClient helper.\n"
+                "- taught-later: A rule taught mid-session.",
+            ),
             encoding="utf-8",
         )
-        _clear_cache()
-        assert _mirror_idiom_names(repo) == set()
+        from chameleon_mcp.tools import _compute_repo_id
 
-    def test_kill_switch_returns_empty(self, tmp_path, monkeypatch):
-        repo = self._wired(tmp_path)
-        monkeypatch.setenv("CHAMELEON_STOP_IDIOM_GIST", "0")
-        assert _mirror_idiom_names(repo) == set()
+        repo_data = data_dir / _compute_repo_id(repo)
+        assert _mirror_idiom_names(repo_data, "sess-3") == {"wrap-fetches"}

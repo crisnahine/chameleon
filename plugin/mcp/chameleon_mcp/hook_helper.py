@@ -1803,6 +1803,11 @@ def session_start() -> int:
     except Exception:
         pass
 
+    # Record what the memory channel delivered NOW (import resolution time),
+    # so this session's Stop gates gist only idioms the model actually has.
+    if repo_root is not None:
+        _snapshot_mirror_idioms(repo_root, session_id)
+
     # Conventions render FIRST, before the (long) skill text: an instruction
     # block buried after ~14k chars of mechanics measurably loses authority —
     # models followed the identical rule at ~100% when it led the context and
@@ -7018,12 +7023,36 @@ _STOP_IDIOM_FULLTEXT_CHAR_CAP = 3000
 # target does not exist is documentation, not wiring.
 _CONVENTIONS_IMPORT_RE = re.compile(r"@(\S*\.chameleon[/\\]conventions\.md)\b")
 
-# Fenced code blocks and inline code spans: Claude Code does NOT evaluate
-# @imports inside either, so the wired scan must blank them before matching —
-# a doc that QUOTES the import line (this repo's own rules file does) is not
-# wiring. The span pattern is non-greedy and single-line, mirroring markdown.
-_FENCED_BLOCK_RE = re.compile(r"^```.*?^```", re.MULTILINE | re.DOTALL)
+# Inline code spans: Claude Code does NOT evaluate @imports inside them, so
+# the wired scan blanks them before matching — a doc that QUOTES the import
+# line (this repo's own rules file does) is not wiring. Fenced blocks get the
+# same treatment via the line-walk in _blank_code_regions.
 _INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
+
+
+def _blank_code_regions(text: str) -> str:
+    """Blank fenced code blocks and inline code spans before import matching.
+
+    Line-walk fence model rather than a paired regex: it handles indented
+    fences (up to 3 leading spaces, the shape the init skill's own docs use),
+    tilde fences, and — critically — an UNCLOSED fence, whose tail a markdown
+    renderer treats as code to EOF (a paired regex would leave it live and
+    count a quoted import as wiring). Over-blanking is the safe direction:
+    a missed real import just keeps the push-based delivery.
+    """
+    out: list[str] = []
+    in_fence = False
+    for ln in text.splitlines():
+        stripped = ln.lstrip()
+        if (stripped.startswith("```") or stripped.startswith("~~~")) and (
+            len(ln) - len(stripped) <= 3
+        ):
+            in_fence = not in_fence
+            out.append("")
+            continue
+        out.append("" if in_fence else _INLINE_CODE_RE.sub("", ln))
+    return "\n".join(out)
+
 
 # Delivered-mirror resolution, memoized per hook process: a Stop under the
 # multi-root backstop gates up to 16 roots, and the answer cannot change
@@ -7074,8 +7103,7 @@ def _wired_mirror_text(repo_root: Path) -> str:
                     text = f.read(read_cap)
             except OSError:
                 continue
-            text = _FENCED_BLOCK_RE.sub("", text)
-            text = _INLINE_CODE_RE.sub("", text)
+            text = _blank_code_regions(text)
             for m in _CONVENTIONS_IMPORT_RE.finditer(text):
                 try:
                     target = Path(os.path.expanduser(m.group(1)))
@@ -7097,26 +7125,69 @@ def _wired_mirror_text(repo_root: Path) -> str:
     return text_out
 
 
-def _mirror_idiom_names(repo_root: Path) -> set[str]:
-    """Idiom names whose gists the wired conventions mirror already delivers.
+# SessionStart-time snapshot of the idiom names the wired mirror DELIVERED to
+# this session. The Stop gate reads only this file: the live mirror is rewritten
+# by every teach, but Claude Code resolved the @import once at session load, so
+# a mid-session-taught idiom must never be treated as memory-channel-delivered.
+_MIRROR_IDIOMS_SNAPSHOT = ".mirror_idioms.{session}"
+
+
+def _snapshot_mirror_idioms(repo_root: Path, session_id: str | None) -> None:
+    """Persist the delivered mirror's idiom names for this session's Stop gates.
+
+    Runs at SessionStart — the same moment Claude Code resolves the memory
+    channel's @import — so the snapshot is exactly what the model received.
+    Best-effort: no wiring or any error writes nothing, and a missing snapshot
+    reads as "no channel" (full-text escalation) at Stop.
+    """
+    try:
+        if not session_id:
+            return
+        from chameleon_mcp.optouts import _safe_session_marker
+        from chameleon_mcp.plugin_paths import plugin_data_dir
+        from chameleon_mcp.tools import _compute_repo_id, parse_idiom_gist_names
+
+        names = sorted(parse_idiom_gist_names(_wired_mirror_text(repo_root)))
+        if not names:
+            return
+        snap_dir = plugin_data_dir() / _compute_repo_id(repo_root)
+        snap_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        snap = snap_dir / _MIRROR_IDIOMS_SNAPSHOT.format(session=_safe_session_marker(session_id))
+        snap.write_text(json.dumps(names), encoding="utf-8")
+        try:
+            os.chmod(snap, 0o600)
+        except OSError:
+            pass
+    except Exception:
+        pass
+
+
+def _mirror_idiom_names(repo_data: Path, session_id: str | None) -> set[str]:
+    """Idiom names the memory channel delivered to THIS session.
 
     The Stop self-review treats these like session-seen idioms (gist line, not a
-    full-text re-dump): their directive is ambient in every session through the
+    full-text re-dump): their directive arrived at session load through the
     memory channel, the higher-authority channel per the 2026-07-11 migration
-    A/B. Names are parsed by the grammar's owner (`parse_idiom_gist_names`,
-    exported next to the renderer that emits the section) from the DELIVERED
-    mirror text, and are compared against idioms.md block names downstream — a
-    name the mirror lacks keeps full-text escalation. Fail-open to the empty
-    set: no wiring, undelivered target, a pre-idioms-format mirror, or any read
-    error all mean "no channel", never a hidden idiom.
+    A/B. Reads the SessionStart-time snapshot rather than the live mirror, so an
+    idiom taught mid-session (the mirror re-syncs on every idioms.md write) is
+    correctly NOT here and keeps full-text escalation, and the Stop path does no
+    memory-file scanning at all. Fail-open to the empty set: no snapshot (an
+    unwired repo, a sibling monorepo workspace, a pre-3.1.0 session) or any
+    read error means "no channel", never a hidden idiom.
     Kill switch: CHAMELEON_STOP_IDIOM_GIST=0.
     """
     try:
         if os.environ.get("CHAMELEON_STOP_IDIOM_GIST", "1") == "0":
             return set()
-        from chameleon_mcp.tools import parse_idiom_gist_names
+        from chameleon_mcp.optouts import _safe_session_marker
 
-        return parse_idiom_gist_names(_wired_mirror_text(repo_root))
+        snap = repo_data / _MIRROR_IDIOMS_SNAPSHOT.format(session=_safe_session_marker(session_id))
+        if not snap.is_file():
+            return set()
+        data = json.loads(snap.read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            return set()
+        return {n.strip() for n in data if isinstance(n, str) and n.strip()}
     except Exception:
         return set()
 
@@ -7141,6 +7212,8 @@ SESSION_REAP_PREFIXES: tuple[str, ...] = (
     # collapses every marker to ".idiom_reviewed.unknown" and would then skip the
     # idiom review forever. Age it out like the other once-per-session markers.
     ".idiom_reviewed.",
+    # SessionStart-time snapshot of the memory channel's delivered idiom gists.
+    ".mirror_idioms.",
 )
 
 # Sink kinds from judge.run_correctness_judge that mean the reviewer produced
@@ -7414,7 +7487,7 @@ def _idiom_review_gate(
                 max_terse=_STOP_IDIOM_MAX_TERSE,
                 summary_max_chars=_STOP_IDIOM_SUMMARY_MAX_CHARS,
                 edited_languages=edited_languages,
-                mirror_idiom_names=_mirror_idiom_names(repo_root),
+                mirror_idiom_names=_mirror_idiom_names(repo_data, session_id),
             )
             if idioms_rendered:
                 body.append("")

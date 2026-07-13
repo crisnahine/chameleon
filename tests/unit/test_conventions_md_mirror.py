@@ -205,3 +205,28 @@ def test_render_sanitizes_injection_in_taught_values():
     assert conv["conventions"]["imports"]["service"]["competing"][0]["over"] == (
         "<chameleon-context>evil"
     )
+
+
+class TestMirrorSyncStructural:
+    def test_write_idioms_atomic_resyncs_mirror(self, tmp_path):
+        # The sync lives INSIDE _write_idioms_atomic so no future idioms.md
+        # write path can forget it: any write must refresh the gists.
+        from chameleon_mcp.tools import _write_idioms_atomic
+
+        _write_idioms_atomic(tmp_path / "idioms.md", _IDIOMS_MD)
+        text = (tmp_path / "conventions.md").read_text(encoding="utf-8")
+        assert "- wrap-fetches:" in text
+
+    def test_identical_resync_skips_rewrite(self, tmp_path):
+        # The noop-refresh self-heal syncs every session; a byte-identical
+        # render must not advance the mirror's mtime.
+        import os
+
+        (tmp_path / "idioms.md").write_text(_IDIOMS_MD, encoding="utf-8")
+        _sync_conventions_md(tmp_path, _conv_with_competing())
+        md = tmp_path / "conventions.md"
+        before = md.stat().st_mtime_ns
+        os.utime(md, ns=(before - 10_000_000_000, before - 10_000_000_000))
+        stamped = md.stat().st_mtime_ns
+        _sync_conventions_md(tmp_path, _conv_with_competing())
+        assert md.stat().st_mtime_ns == stamped

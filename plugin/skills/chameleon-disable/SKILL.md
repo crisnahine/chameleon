@@ -33,8 +33,9 @@ Use the most-temporary option that solves the immediate need. Revert by:
 
 The full opt-outs above are usually the wrong tool when the complaint is a
 single recurring surface. The frequent case: the turn-end Stop text
-("chameleon: you edited X this turn ... verify ... team idioms") that re-fires
-in every NEW session — session-scoped disables cannot stop it durably. These
+("chameleon: you edited X this turn. Re-check those edits against the team
+idioms ...") that re-fires in every NEW session — session-scoped disables
+cannot stop it durably. These
 `.chameleon/config.json` keys can (per-repo, committed → team-wide, survive
 new chats):
 

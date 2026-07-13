@@ -72,6 +72,9 @@ def _build_repo(tmp_path: Path) -> Path:
 
 
 def _session_start_context(repo: Path, monkeypatch) -> str:
+    import chameleon_mcp.hook_helper as _hh
+
+    _hh._WIRED_MIRROR_CACHE.clear()
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(repo.parent / "data"))
     monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(PLUGIN_ROOT))
@@ -183,3 +186,26 @@ def test_fenced_import_mention_keeps_full_injection(tmp_path, monkeypatch):
     ctx = _session_start_context(repo, monkeypatch)
     assert POINTER not in ctx
     assert PRINCIPLE_MARKER in ctx
+
+
+def test_session_start_snapshots_delivered_idiom_gists(tmp_path, monkeypatch):
+    # The Stop gate reads a SessionStart-time snapshot (never the live mirror),
+    # so session_start must write it whenever the wired import delivers gists.
+    from chameleon_mcp.conventions import render_conventions_md
+    from chameleon_mcp.hook_helper import _MIRROR_IDIOMS_SNAPSHOT
+    from chameleon_mcp.optouts import _safe_session_marker
+
+    repo = _build_repo(tmp_path)
+    _wire(repo)
+    idioms = (repo / ".chameleon" / "idioms.md").read_text(encoding="utf-8")
+    (repo / ".chameleon" / "conventions.md").write_text(
+        render_conventions_md(_CONV, _PRINCIPLES, idioms)
+    )
+    _session_start_context(repo, monkeypatch)
+    snap = (
+        tmp_path
+        / "data"
+        / _compute_repo_id(repo)
+        / _MIRROR_IDIOMS_SNAPSHOT.format(session=_safe_session_marker("s1"))
+    )
+    assert json.loads(snap.read_text()) == ["wrap"]
