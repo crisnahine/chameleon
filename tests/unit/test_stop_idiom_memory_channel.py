@@ -323,3 +323,42 @@ class TestSnapshotMirrorIdioms:
 
         repo_data = data_dir / _compute_repo_id(repo)
         assert _mirror_idiom_names(repo_data, "sess-3") == {"wrap-fetches"}
+
+
+class TestBlankCodeRegionsFenceRules:
+    def test_mixed_fence_nesting_stays_blanked(self, tmp_path):
+        # CommonMark: a ``` inside an open ~~~ block is literal content, not a
+        # closer — the quoted import after it must stay blanked.
+        repo = tmp_path / "repo"
+        profile = repo / ".chameleon"
+        profile.mkdir(parents=True)
+        (repo / "CLAUDE.md").write_text(
+            "~~~\n```\n@.chameleon/conventions.md\n~~~\n", encoding="utf-8"
+        )
+        (profile / "conventions.md").write_text(_MIRROR_MD, encoding="utf-8")
+        hh._WIRED_MIRROR_CACHE.clear()
+        assert _wired_mirror_text(repo) == ""
+
+    def test_info_string_line_is_not_a_closer(self, tmp_path):
+        # ```python inside an open ``` block has an info string and cannot
+        # close it; the import stays code to EOF.
+        repo = tmp_path / "repo"
+        profile = repo / ".chameleon"
+        profile.mkdir(parents=True)
+        (repo / "CLAUDE.md").write_text(
+            "```\n```python\n@.chameleon/conventions.md\n", encoding="utf-8"
+        )
+        (profile / "conventions.md").write_text(_MIRROR_MD, encoding="utf-8")
+        hh._WIRED_MIRROR_CACHE.clear()
+        assert _wired_mirror_text(repo) == ""
+
+    def test_import_after_properly_closed_fence_is_live(self, tmp_path):
+        repo = tmp_path / "repo"
+        profile = repo / ".chameleon"
+        profile.mkdir(parents=True)
+        (repo / "CLAUDE.md").write_text(
+            "```\nexample\n```\n\n@.chameleon/conventions.md\n", encoding="utf-8"
+        )
+        (profile / "conventions.md").write_text(_MIRROR_MD, encoding="utf-8")
+        hh._WIRED_MIRROR_CACHE.clear()
+        assert "TEAM IDIOMS" in _wired_mirror_text(repo)

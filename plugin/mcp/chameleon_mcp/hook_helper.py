@@ -7037,20 +7037,42 @@ def _blank_code_regions(text: str) -> str:
     fences (up to 3 leading spaces, the shape the init skill's own docs use),
     tilde fences, and — critically — an UNCLOSED fence, whose tail a markdown
     renderer treats as code to EOF (a paired regex would leave it live and
-    count a quoted import as wiring). Over-blanking is the safe direction:
-    a missed real import just keeps the push-based delivery.
+    count a quoted import as wiring). The close rule follows CommonMark: only
+    a marker of the SAME fence character, at least the opener's length, with
+    nothing else on the line — so an opposite-type marker or a ``` with an
+    info string inside an open block stays literal content and cannot
+    prematurely un-blank a quoted import. Over-blanking is the safe
+    direction: a missed real import just keeps the push-based delivery.
     """
+
+    def _marker(stripped: str) -> tuple[str, int] | None:
+        c = stripped[:1]
+        if c not in ("`", "~"):
+            return None
+        n = len(stripped) - len(stripped.lstrip(c))
+        return (c, n) if n >= 3 else None
+
     out: list[str] = []
-    in_fence = False
+    fence: tuple[str, int] | None = None
     for ln in text.splitlines():
         stripped = ln.lstrip()
-        if (stripped.startswith("```") or stripped.startswith("~~~")) and (
-            len(ln) - len(stripped) <= 3
-        ):
-            in_fence = not in_fence
+        marker = _marker(stripped) if len(ln) - len(stripped) <= 3 else None
+        if fence is None:
+            if marker is not None:
+                fence = marker
+                out.append("")
+                continue
+            out.append(_INLINE_CODE_RE.sub("", ln))
+        else:
+            closes = (
+                marker is not None
+                and marker[0] == fence[0]
+                and marker[1] >= fence[1]
+                and stripped.strip(fence[0]).strip() == ""
+            )
+            if closes:
+                fence = None
             out.append("")
-            continue
-        out.append("" if in_fence else _INLINE_CODE_RE.sub("", ln))
     return "\n".join(out)
 
 
