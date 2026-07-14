@@ -35,6 +35,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Trust hashing on migrated profiles covers `idioms/*.json` instead of the
   generated view. Unmigrated profiles hash exactly as before.
+- The 200KB cumulative `idioms.md` cap is no longer enforced at teach time
+  (per-idiom 50KB caps remain); the whole-file cap returns with the view
+  renderer work.
+- With `CHAMELEON_TRUST_REVALIDATE=1`, the first migration changes the trust
+  hash surface and triggers a one-time stale/re-trust prompt (default
+  one-time-trust users are unaffected).
 
 ## [3.1.4] - 2026-07-14
 

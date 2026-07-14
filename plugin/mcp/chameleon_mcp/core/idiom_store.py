@@ -657,6 +657,16 @@ def ensure_store_fresh(profile_dir: Path, *, repo_id: str | None) -> None:
         min_rank = min((r.rank for r in existing), default=1)
         for rec in incoming:
             if rec.slug in known_slugs or rec.title in known_titles:
+                match = next((r for r in existing if r.slug == rec.slug), None)
+                if match is None:
+                    match = next((r for r in existing if r.title == rec.title), None)
+                if match is not None and match.status != rec.status:
+                    print(
+                        f"chameleon: idioms.md edit to '{rec.title}' not folded into "
+                        "the store (status change via the view is ignored; use "
+                        "/chameleon-teach)",
+                        file=sys.stderr,
+                    )
                 continue
             rec.rank = min_rank - 1 - added
             upsert_idiom(profile_dir, rec)

@@ -11372,6 +11372,24 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
     repo_id = _compute_repo_id(repo_path)
     expected_short = repo_id[:8]
 
+    # Validate the confirmation token BEFORE anything below mutates the repo
+    # (the poison pre-scan is read-only, but the migration trigger writes to
+    # .chameleon/idioms/). A refused command -- wrong token -- must leave the
+    # repo untouched, so both run only once the token has already checked out.
+    if confirmation_token != repo_path.name and confirmation_token != f"yes-trust-{expected_short}":
+        return _envelope(
+            {
+                "status": "failed",
+                "error": (
+                    "confirmation_token must be exactly the repo basename "
+                    f"{repo_path.name!r}, or the literal string "
+                    f"'yes-trust-{expected_short}' "
+                    f"(yes-trust- prefix + the first 8 hex chars of repo_id "
+                    f"{repo_id!r}). Substring / prefix variants are NOT accepted."
+                ),
+            }
+        )
+
     # Scan for a poisoned idioms.md/principles.md BEFORE migrating: a
     # migration regenerates idioms.md from parsed "### " blocks, and
     # free-form prose with no recognized block (exactly the shape a raw
@@ -11403,20 +11421,6 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
     # including a migration that quarantined content, since here the user is
     # granting by explicit token, not a machine re-stamp.
     _migrate_idioms_store_or_warn(profile_dir, repo_id)
-
-    if confirmation_token != repo_path.name and confirmation_token != f"yes-trust-{expected_short}":
-        return _envelope(
-            {
-                "status": "failed",
-                "error": (
-                    "confirmation_token must be exactly the repo basename "
-                    f"{repo_path.name!r}, or the literal string "
-                    f"'yes-trust-{expected_short}' "
-                    f"(yes-trust- prefix + the first 8 hex chars of repo_id "
-                    f"{repo_id!r}). Substring / prefix variants are NOT accepted."
-                ),
-            }
-        )
 
     try:
         record = grant_trust(repo_id, profile_dir)
@@ -13392,8 +13396,9 @@ def teach_profile_structured(
                     "status": "failed",
                     "error": (
                         f"slug {slug!r} already exists in '## active'. To "
-                        'deprecate it, pass status="deprecated"; to update its '
-                        "body, edit idioms.md directly or pick a new slug."
+                        'retire it, pass status="deprecated"; to change its '
+                        "body, deprecate it and re-teach (idioms.md is a "
+                        "generated view), or pick a new slug."
                     ),
                 }
             )

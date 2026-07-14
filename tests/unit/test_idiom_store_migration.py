@@ -383,6 +383,48 @@ def test_ensure_store_fresh_reimports_legacy_write(tmp_path, monkeypatch, capsys
     assert "legacy idioms.md write" in capsys.readouterr().err
 
 
+def test_ensure_store_fresh_warns_on_status_only_edit(tmp_path, monkeypatch, capsys):
+    """A hand edit that moves an already-known idiom to the other status
+    section (active <-> deprecated) without changing its slug/title is not
+    folded into the store -- the view is regenerated and the status change
+    is silently discarded, per additive-only semantics -- but it must not
+    be silent: one stderr line names the ignored slug."""
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    text = (
+        "# idioms\n\n## active\n\n"
+        "### use-api-client\nLanguage: typescript\n"
+        "Status: active (added 2026-07-01)\n"
+        "Always use the apiClient helper for HTTP calls.\n\n"
+        "## deprecated\n"
+    )
+    profile = _profile_with_md(tmp_path, text)
+    migrate_idioms_md(profile, repo_id="a" * 64)
+
+    md = profile / "idioms.md"
+    # Move the "use-api-client" block from "## active" to "## deprecated",
+    # editing only its status line -- slug and title are unchanged.
+    new_view = (
+        "# idioms\n\n## active\n\n## deprecated\n\n"
+        "### use-api-client\nLanguage: typescript\n"
+        "Status: deprecated 2026-07-13\n"
+        "Always use the apiClient helper for HTTP calls.\n"
+    )
+    md.write_text(new_view, encoding="utf-8")
+
+    ensure_store_fresh(profile, repo_id="a" * 64)
+
+    record = next(r for r in load_store(profile) if r.slug == "use-api-client")
+    assert record.status == "active"  # store truth wins; the edit is discarded
+    err = capsys.readouterr().err
+    assert (
+        "idioms.md edit to 'use-api-client' not folded into the store "
+        "(status change via the view is ignored; use /chameleon-teach)" in err
+    )
+    # The view is regenerated back to the store's actual (active) status.
+    assert "## active\n\n### use-api-client" in md.read_text(encoding="utf-8")
+
+
 def test_ensure_store_fresh_noop_when_digest_matches(tmp_path, monkeypatch):
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
     monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
@@ -551,6 +593,23 @@ def test_trust_profile_triggers_migration(tmp_path, monkeypatch):
     rec = trust_state_for(tools._compute_repo_id(repo))
     assert rec is not None
     assert rec.hash_for_root(repo) == hash_profile(cham)
+
+
+def test_trust_profile_bad_token_does_not_migrate(tmp_path, monkeypatch):
+    """A refused trust command (wrong confirmation_token) must not mutate the
+    repo: the migration trigger (which writes .chameleon/idioms/) has to run
+    AFTER the token check succeeds, not before."""
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    from chameleon_mcp import tools
+
+    cham = _loadable_profile_with_md(tmp_path)
+    repo = cham.parent
+    original = (cham / "idioms.md").read_text(encoding="utf-8")
+    result = tools.trust_profile(str(repo), "definitely-not-the-right-token")
+    assert result["data"]["status"] == "failed"
+    assert (cham / "idioms.md").read_text(encoding="utf-8") == original
+    assert not store_exists(cham)
 
 
 def test_trust_profile_continues_when_migration_fails_but_store_survives(tmp_path, monkeypatch):
