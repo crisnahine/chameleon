@@ -419,9 +419,23 @@ _QUARANTINE_NAME = ".quarantine.md"
 
 
 def _idioms_lock_path(profile_dir: Path, repo_id: str | None) -> Path:
+    """Per-repo lock path. A falsy repo_id (a caller that hasn't resolved one)
+    must not bucket every such repo under one shared "unknown" lock -- that
+    would serialize unrelated repos' migrations against each other and let one
+    repo's lock hold block another's. Derive a real id from the profile's own
+    repo root instead; only fall back to the shared bucket if that derivation
+    itself fails."""
     from chameleon_mcp.profile.trust import repo_data_dir
 
-    rid = repo_id if isinstance(repo_id, str) and repo_id else "unknown"
+    if isinstance(repo_id, str) and repo_id:
+        rid = repo_id
+    else:
+        try:
+            from chameleon_mcp.tools import _compute_repo_id
+
+            rid = _compute_repo_id(profile_dir.parent)
+        except Exception:
+            rid = "unknown"
     return repo_data_dir(rid) / ".idioms.lock"
 
 
@@ -438,7 +452,11 @@ def _write_quarantine(profile_dir: Path, blocks: list[str]) -> None:
     path = store_dir(profile_dir) / _QUARANTINE_NAME
     try:
         existing = path.read_text(encoding="utf-8")
-    except OSError:
+    except Exception:
+        # An unreadable prior file (missing, or corrupt -- e.g. non-UTF-8
+        # bytes from a damaged write) must not abort this write: the NEW
+        # batch is never allowed to be lost, so an unreadable existing file
+        # is treated as empty and the header is re-rendered from scratch.
         existing = ""
     new_section = "\n\n".join(b.rstrip() for b in blocks) + "\n"
     if existing.strip():
@@ -482,10 +500,14 @@ def migrate_idioms_md(profile_dir: Path, *, repo_id: str | None) -> dict:
         except OSError:
             original = ""
         records, quarantined = records_from_markdown(original)
+        legacy = profile_dir / "idioms.md.legacy"
         try:
             store_dir(profile_dir).mkdir(parents=True, exist_ok=True)
-            if original:
-                legacy = profile_dir / "idioms.md.legacy"
+            # Write-once: a prior crash may already have preserved the true
+            # original here. Overwriting it on a retry would burn that copy
+            # in favor of whatever idioms.md happens to hold post-crash
+            # (possibly the already-regenerated, no-longer-original view).
+            if original and not legacy.exists():
                 tmp = legacy.with_name(f"{legacy.name}.{os.getpid()}.tmp")
                 tmp.write_text(original, encoding="utf-8")
                 os.replace(tmp, legacy)
@@ -499,6 +521,34 @@ def migrate_idioms_md(profile_dir: Path, *, repo_id: str | None) -> dict:
             # retry starts clean instead of silently losing the unwritten
             # records forever.
             shutil.rmtree(store_dir(profile_dir), ignore_errors=True)
+            # regenerate_views() may have already replaced idioms.md with the
+            # clean regenerated view before the crash (e.g. a failure inside
+            # _record_view_digest, which runs after _write_idioms_atomic has
+            # already succeeded). Left alone, a retry would re-derive records
+            # and quarantine from that already-migrated output instead of the
+            # true original -- fabricating an empty quarantine and risking an
+            # auto trust re-grant over content that was originally poisoned.
+            # Restore from the write-once legacy copy so a retry always
+            # re-parses the true original.
+            if legacy.exists():
+                try:
+                    legacy_text = legacy.read_text(encoding="utf-8")
+                    tmp = md_path.with_name(f"{md_path.name}.{os.getpid()}.tmp")
+                    tmp.write_text(legacy_text, encoding="utf-8")
+                    os.replace(tmp, md_path)
+                except OSError:
+                    pass
+            if store_exists(profile_dir):
+                # A partial unlink (e.g. a permissions error mid-tree) left
+                # the store directory behind; the store_exists() guard above
+                # will treat that as an already-migrated repo forever, so say
+                # so instead of letting the caller believe rollback succeeded.
+                print(
+                    "chameleon: idiom migration rollback incomplete -- "
+                    ".chameleon/idioms/ still exists after a failed migration; "
+                    "remove it manually before retrying",
+                    file=sys.stderr,
+                )
             raise
     n_in = len(records) + len(quarantined)
     print(
