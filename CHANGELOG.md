@@ -4,6 +4,26 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.0] - 2026-07-14
+
+### Changed
+- The Stop pipeline now lives in `chameleon_mcp/stop/` (advisories, gates,
+  pipeline with per-root RootContext); hook_helper keeps the same entry point
+  and seams. Behavior-preserving: no output or decision changes.
+- Archetype renames now rewrite the idiom store, so renamed archetypes keep
+  scoping idioms and survive view regeneration.
+- A v3 teammate's deprecation made via idioms.md is folded into the store
+  (reactivation via the view stays refused; use /chameleon-teach).
+- Idiom store records are read through the hardened profile-artifact path
+  (symlink-refusing, size-capped).
+- Teach and trust envelopes report `idioms_migrated` / `idioms_quarantined`
+  when their call triggered the one-time store migration.
+
+### Removed
+- The dead legacy idiom markdown writers (`_transition_slug_to_deprecated`,
+  `_write_new_deprecated_idiom`, `_find_all_slug_sections`,
+  `_render_idiom_block`); the store owns all idiom writes.
+
 ## [3.2.0] - 2026-07-14
 
 ### Added
