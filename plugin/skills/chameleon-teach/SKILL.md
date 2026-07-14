@@ -128,7 +128,7 @@ to free-form.
    chameleon-mcp::chameleon_lifecycle(
      action="teach_profile_structured",
      params={
-       "repo": "/Users/dev/repo",
+       "repo": "/Users/you/repo",
        "slug": "use-custom-query",
        "rationale": "Prefer useCustomQuery over useQuery for shared retry + error handling.",
        "example": "const { data } = useCustomQuery({ key: 'foo' });",
