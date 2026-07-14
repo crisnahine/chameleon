@@ -1941,15 +1941,25 @@ def _active_idioms_only(idioms_text: str) -> str:
     Deprecated idioms are RETIRED guidance -- a team deprecates an idiom exactly
     when it no longer applies. They must not be injected into the per-edit
     spotlight or re-checked at the Stop idiom self-review as if active. Cuts
-    everything from the first ``## deprecated`` heading onward (fence-agnostic:
-    a real ``## deprecated`` heading is a top-level section marker, not code).
+    everything from the first ``## deprecated`` heading onward.
+
+    Fence-aware, matching :func:`_parse_idiom_blocks`'s ``` tracking: a taught
+    idiom's ``Example:``/``Counterexample:`` body can itself contain a line that
+    looks like ``## deprecated`` (arbitrary user prose), and treating that as the
+    real section marker would truncate every idiom that follows it.
     """
     if not idioms_text:
         return idioms_text
-    m = re.search(r"(?mi)^\s*##\s+deprecated\b", idioms_text)
-    if m is None:
-        return idioms_text
-    return idioms_text[: m.start()].rstrip() + "\n"
+    lines = idioms_text.splitlines(keepends=True)
+    in_fence = False
+    offset = 0
+    for ln in lines:
+        if ln.lstrip().startswith("```"):
+            in_fence = not in_fence
+        elif not in_fence and re.match(r"(?i)\s*##\s+deprecated\b", ln):
+            return idioms_text[:offset].rstrip() + "\n"
+        offset += len(ln)
+    return idioms_text
 
 
 def _parse_idiom_blocks(idioms_text: str):

@@ -9,6 +9,7 @@ shrinks the injection-scan blast radius to a single idiom.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -205,3 +206,99 @@ def idioms_for_scope(
                 continue
         selected.append(rec)
     return selected
+
+
+_VIEW_DIGEST_NAME = ".view_digest"
+_GENERATED_HEADER = "# idioms"
+
+
+def view_digest_of(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def read_view_digest(profile_dir: Path) -> str:
+    try:
+        return (store_dir(profile_dir) / _VIEW_DIGEST_NAME).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _record_view_digest(profile_dir: Path, text: str) -> None:
+    sdir = store_dir(profile_dir)
+    sdir.mkdir(parents=True, exist_ok=True)
+    path = sdir / _VIEW_DIGEST_NAME
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(view_digest_of(text) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _escape_body(text: str) -> str:
+    """Escape structure-forking # / ## lines outside fences, same as teach does."""
+    try:
+        from chameleon_mcp.tools import _escape_markdown_section_headings
+
+        return _escape_markdown_section_headings(text)
+    except Exception:
+        return text
+
+
+def _render_block(rec: IdiomRecord) -> str:
+    """One idiom block in the exact byte format today's structured teach writes.
+
+    Deprecated blocks carry no Language line; the Archetype line renders only
+    for a single declared archetype (the Stop renderer drops blocks whose tag
+    is not an edited archetype, so a joined multi-tag would hide the idiom —
+    omitting the line keeps it always-visible, the safe direction). Same logic
+    makes a multi-language tag safe: unrecognized tags survive the language
+    filter.
+    """
+    lines: list[str] = [f"### {rec.title}"]
+    if rec.status == "active":
+        lines.append(f"Language: {', '.join(rec.languages) if rec.languages else 'any'}")
+        lines.append(f"Status: active (added {rec.added_date or 'unknown'})")
+    else:
+        lines.append(f"Status: deprecated {rec.deprecated_date or rec.added_date or 'unknown'}")
+    if len(rec.archetypes) == 1:
+        lines.append(f"Archetype: {rec.archetypes[0]}")
+    if rec.provenance:
+        lines.append(f"Source: {' '.join(rec.provenance.split())}")
+    lines.append(_escape_body(rec.rationale.strip()))
+    for label, items in (("Example:", rec.examples), ("Counterexample:", rec.counterexamples)):
+        for code in items:
+            lines.append("")
+            lines.append(label)
+            lines.append("```")
+            lines.append(code.rstrip())
+            lines.append("```")
+    return "\n".join(lines) + "\n"
+
+
+def render_idioms_md(records: list[IdiomRecord]) -> str:
+    """The whole idioms.md view: byte-deterministic, newest-first per section."""
+    ordered = sorted(records, key=lambda r: (r.rank, r.slug))
+    active = [r for r in ordered if r.status == "active"]
+    deprecated = [r for r in ordered if r.status == "deprecated"]
+    parts: list[str] = [_GENERATED_HEADER, "", "## active", ""]
+    for rec in active:
+        parts.append(_render_block(rec))
+    parts.append("## deprecated")
+    if deprecated:
+        parts.append("")
+        for rec in deprecated:
+            parts.append(_render_block(rec))
+    text = "\n".join(parts)
+    if not text.endswith("\n"):
+        text += "\n"
+    return text
+
+
+def regenerate_views(profile_dir: Path) -> str:
+    """Render idioms.md from the store, write it atomically (which re-syncs the
+    conventions.md mirror structurally), and record the view digest so a later
+    hand- or old-version edit of idioms.md is detectable as a legacy write."""
+    from chameleon_mcp.tools import _write_idioms_atomic
+
+    text = render_idioms_md(load_store(profile_dir))
+    _write_idioms_atomic(profile_dir / "idioms.md", text)
+    _record_view_digest(profile_dir, text)
+    return text
