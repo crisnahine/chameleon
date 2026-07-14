@@ -111,3 +111,42 @@ def test_view_only_hand_edit_reimported_on_next_teach(repo):
     slugs = {r_.slug for r_ in load_store(cham)}
     assert "teammate-idiom" in slugs
     assert (store_dir(cham) / "teammate-idiom.json").exists()
+
+
+def test_structured_tombstone_zero_width_rationale_fails_cleanly(repo):
+    # Zero-width-only rationale passes the pre-sanitize .strip() check (it
+    # isn't whitespace) but sanitizes down to "" -- must not reach
+    # IdiomRecord.__post_init__, which raises on an empty rationale.
+    result = tools.teach_profile_structured(
+        str(repo), slug="ghost-rule", rationale="​​", status="deprecated"
+    )
+    assert result["data"]["status"] == "failed"
+    assert "empty" in result["data"]["error"].lower()
+    assert "ghost-rule" not in {r_.slug for r_ in load_store(repo / ".chameleon")}
+
+
+def test_teach_aborts_when_migration_fails(repo, monkeypatch):
+    cham = repo / ".chameleon"
+    # This fixture's idioms.md is legacy-only (no store yet); a real migration
+    # failure removes the not-yet-created store dir and re-raises, so any
+    # OSError from migrate_idioms_md exercises that rollback path.
+    assert not store_dir(cham).exists()
+    original_md = (cham / "idioms.md").read_text(encoding="utf-8")
+
+    def _boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    # teach_profile does `from chameleon_mcp.core.idiom_store import
+    # migrate_idioms_md` INSIDE the function body, so the import resolves at
+    # call time against the idiom_store module's current attribute -- patching
+    # the module attribute (not a name already bound in tools' namespace) is
+    # what the from-import will actually pick up.
+    import chameleon_mcp.core.idiom_store as idiom_store_module
+
+    monkeypatch.setattr(idiom_store_module, "migrate_idioms_md", _boom)
+
+    result = tools.teach_profile(str(repo), "New rule.")
+    assert result["data"]["status"] == "failed"
+    assert "migration" in result["data"]["error"].lower()
+    assert (cham / "idioms.md").read_text(encoding="utf-8") == original_md
+    assert not store_dir(cham).exists()

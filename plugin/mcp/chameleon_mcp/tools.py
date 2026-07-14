@@ -10732,13 +10732,34 @@ def teach_profile(repo: str, feedback: str, archetype: str | None = None) -> dic
     _profile_dir = repo_path / ".chameleon"
     _was_trusted = _profile_trusted_now(_repo_id, _profile_dir)
 
+    # Imported unconditionally (not inside the try below) so the except
+    # branch can always call it, even if the try's own import line is what
+    # raised.
+    from chameleon_mcp.core.idiom_store import store_exists
+
     try:
         from chameleon_mcp.core.idiom_store import ensure_store_fresh, migrate_idioms_md
 
         migrate_idioms_md(_profile_dir, repo_id=_repo_id)
         ensure_store_fresh(_profile_dir, repo_id=_repo_id)
-    except Exception:
-        pass
+    except Exception as exc:
+        if not store_exists(_profile_dir):
+            # A failed migration rolls back the store dir entirely (see
+            # migrate_idioms_md); proceeding here would let teach_record seed a
+            # brand-new store containing only this one idiom, so every rendered
+            # view would drop the whole legacy idiom set down to one entry.
+            return _envelope(
+                {
+                    "status": "failed",
+                    "error": (
+                        f"idiom store migration failed ({exc}); teach aborted, idioms.md unchanged"
+                    ),
+                }
+            )
+        # The store exists (either migration never needed to run, or
+        # ensure_store_fresh failed after the store was already there) --
+        # that failure mode is additive-only against an intact store, so
+        # falling through and letting this teach proceed is safe.
 
     suspicious, suspicious_pattern = _looks_suspicious(feedback)
 
@@ -13146,13 +13167,34 @@ def teach_profile_structured(
         )
 
     profile_dir = repo_path / ".chameleon"
+    # Imported unconditionally (not inside the try below) so the except
+    # branch can always call it, even if the try's own import line is what
+    # raised.
+    from chameleon_mcp.core.idiom_store import store_exists
+
     try:
         from chameleon_mcp.core.idiom_store import ensure_store_fresh, migrate_idioms_md
 
         migrate_idioms_md(profile_dir, repo_id=_repo_id)
         ensure_store_fresh(profile_dir, repo_id=_repo_id)
-    except Exception:
-        pass
+    except Exception as exc:
+        if not store_exists(profile_dir):
+            # A failed migration rolls back the store dir entirely (see
+            # migrate_idioms_md); proceeding here would let teach_record seed a
+            # brand-new store containing only this one idiom, so every rendered
+            # view would drop the whole legacy idiom set down to one entry.
+            return _envelope(
+                {
+                    "status": "failed",
+                    "error": (
+                        f"idiom store migration failed ({exc}); teach aborted, idioms.md unchanged"
+                    ),
+                }
+            )
+        # The store exists (either migration never needed to run, or
+        # ensure_store_fresh failed after the store was already there) --
+        # that failure mode is additive-only against an intact store, so
+        # falling through and letting this teach proceed is safe.
 
     try:
         from chameleon_mcp.safe_open import safe_read_profile_artifact
@@ -13262,6 +13304,12 @@ def teach_profile_structured(
     s_rationale, s_example, s_counterexample = _sanitize_idiom_inputs(
         rationale, example, counterexample
     )
+    # The pre-sanitize `rationale.strip()` check above passes zero-width-only
+    # input; sanitization can still strip it down to "", which would otherwise
+    # reach IdiomRecord.__post_init__ and raise past this function's
+    # never-raise contract (the enclosing try only catches LockHeldError).
+    if not s_rationale.strip():
+        return _envelope({"status": "failed", "error": "rationale is empty after sanitization"})
     was_trusted = _profile_trusted_now(_repo_id, profile_dir)
     try:
         from chameleon_mcp.core.idiom_store import IdiomRecord, tombstone_record
