@@ -412,3 +412,140 @@ def records_from_markdown(text: str) -> tuple[list[IdiomRecord], list[str]]:
         rank += 1
         records.append(rec)
     return records, quarantined
+
+
+_QUARANTINE_NAME = ".quarantine.md"
+
+
+def _idioms_lock_path(profile_dir: Path, repo_id: str | None) -> Path:
+    from chameleon_mcp.profile.trust import repo_data_dir
+
+    rid = repo_id if isinstance(repo_id, str) and repo_id else "unknown"
+    return repo_data_dir(rid) / ".idioms.lock"
+
+
+def _write_quarantine(profile_dir: Path, blocks: list[str]) -> None:
+    if not blocks:
+        return
+    path = store_dir(profile_dir) / _QUARANTINE_NAME
+    payload = (
+        "# quarantined idiom blocks (preserved verbatim; review and re-teach)\n\n"
+        + "\n\n".join(b.rstrip() for b in blocks)
+        + "\n"
+    )
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def migrate_idioms_md(profile_dir: Path, *, repo_id: str | None) -> dict:
+    """One-time idioms.md -> store migration. User-initiated write paths only.
+
+    Order: parse once, preserve the original as idioms.md.legacy, write the
+    records, quarantine what cannot carry over, regenerate the views (a store
+    write, so the conventions.md mirror re-syncs), record the view digest.
+    Trust is re-stamped only when the profile was already trusted AND nothing
+    was quarantined: a migration that dropped content must leave trust for the
+    user to re-review, never bless restructured content automatically.
+    """
+    from chameleon_mcp.locks import acquire_advisory_lock
+
+    if store_exists(profile_dir):
+        return {"status": "noop"}
+    was_trusted = False
+    try:
+        from chameleon_mcp.tools import _profile_trusted_now
+
+        was_trusted = bool(repo_id) and _profile_trusted_now(repo_id, profile_dir)
+    except Exception:
+        was_trusted = False
+    with acquire_advisory_lock(_idioms_lock_path(profile_dir, repo_id), blocking_timeout=10.0):
+        if store_exists(profile_dir):
+            return {"status": "noop"}
+        md_path = profile_dir / "idioms.md"
+        try:
+            original = md_path.read_text(encoding="utf-8")
+        except OSError:
+            original = ""
+        records, quarantined = records_from_markdown(original)
+        store_dir(profile_dir).mkdir(parents=True, exist_ok=True)
+        if original:
+            legacy = profile_dir / "idioms.md.legacy"
+            tmp = legacy.with_name(f"{legacy.name}.{os.getpid()}.tmp")
+            tmp.write_text(original, encoding="utf-8")
+            os.replace(tmp, legacy)
+        for rec in records:
+            upsert_idiom(profile_dir, rec)
+        _write_quarantine(profile_dir, quarantined)
+        regenerate_views(profile_dir)
+    n_in = len(records) + len(quarantined)
+    print(
+        f"chameleon: idioms migrated to .chameleon/idioms/ "
+        f"({len(records)}/{n_in} carried, {len(quarantined)} quarantined; "
+        "original kept as idioms.md.legacy)",
+        file=sys.stderr,
+    )
+    if quarantined:
+        print(
+            "chameleon: trust NOT re-stamped (quarantined blocks need review; "
+            "run /chameleon-trust after checking .chameleon/idioms/.quarantine.md)",
+            file=sys.stderr,
+        )
+    else:
+        try:
+            from chameleon_mcp.tools import _regrant_trust_if_was_trusted
+
+            _regrant_trust_if_was_trusted(was_trusted, repo_id, profile_dir)
+        except Exception:
+            pass
+    return {
+        "status": "migrated",
+        "idioms_in": n_in,
+        "idioms_out": len(records),
+        "quarantined": len(quarantined),
+    }
+
+
+def ensure_store_fresh(profile_dir: Path, *, repo_id: str | None) -> None:
+    """Detect a legacy write (v3 teammate teach, hand edit) to the generated
+    idioms.md and fold the DELTA into the store before the next store write
+    regenerates the view — a teammate's idiom must never be silently discarded.
+    Additive only: store records absent from the view are kept (a hand-truncated
+    view must not delete truth)."""
+    from chameleon_mcp.locks import acquire_advisory_lock
+
+    if not store_exists(profile_dir):
+        return
+    md_path = profile_dir / "idioms.md"
+    try:
+        current = md_path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    if view_digest_of(current) == read_view_digest(profile_dir):
+        return
+    with acquire_advisory_lock(_idioms_lock_path(profile_dir, repo_id), blocking_timeout=10.0):
+        try:
+            current = md_path.read_text(encoding="utf-8")
+        except OSError:
+            return
+        if view_digest_of(current) == read_view_digest(profile_dir):
+            return
+        incoming, quarantined = records_from_markdown(current)
+        existing = load_store(profile_dir)
+        known_slugs = {r.slug for r in existing}
+        known_titles = {r.title for r in existing}
+        added = 0
+        min_rank = min((r.rank for r in existing), default=1)
+        for rec in incoming:
+            if rec.slug in known_slugs or rec.title in known_titles:
+                continue
+            rec.rank = min_rank - 1 - added
+            upsert_idiom(profile_dir, rec)
+            added += 1
+        _write_quarantine(profile_dir, quarantined)
+        regenerate_views(profile_dir)
+    print(
+        f"chameleon: legacy idioms.md write detected; {added} idiom(s) re-imported "
+        f"into the store ({len(quarantined)} quarantined)",
+        file=sys.stderr,
+    )
