@@ -10631,9 +10631,6 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
     )
 
 
-_IDIOMS_FILE_CAP = 200_000
-
-
 def _profile_trusted_now(repo_id: str | None, profile_dir: Path) -> bool:
     """True iff the profile is currently trusted for this user: a grant exists,
     covers this root, and the profile is not already a material change (i.e.
