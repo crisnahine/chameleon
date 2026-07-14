@@ -43,3 +43,26 @@ def test_gate_seams_are_hook_helper_attributes():
         "_stop_block_scope",
     ):
         assert getattr(hh, name) is getattr(gates, name)
+
+
+def test_stop_gates_shim_signature_and_patchability():
+    import inspect
+
+    from chameleon_mcp import hook_helper as hh
+
+    params = list(inspect.signature(hh._stop_gates).parameters)
+    assert params == [
+        "payload",
+        "repo_root",
+        "repo_id",
+        "session_id",
+        "is_subagent",
+        "repo_data",
+        "daemon_state",
+        "only_files",
+        "allow_model_spawn",
+    ]
+    with patch.object(hh, "_correctness_judge_route") as route:
+        route.return_value = None
+        # patched attribute must be what pipeline code resolves at call time
+        assert hh._correctness_judge_route is route
