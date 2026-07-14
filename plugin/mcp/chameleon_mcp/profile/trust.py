@@ -323,7 +323,9 @@ def hash_profile(profile_dir: Path) -> str:
       false break) de-trusts the profile rather than silently steering the check.
     - ``idioms.md`` — captured team idioms. ``/chameleon-teach`` mutates
       this; included so the user re-reviews new natural-language idioms
-      before they reach model context.
+      before they reach model context. Once ``.chameleon/idioms/`` exists
+      (the per-file idiom store), this file is a generated view of that
+      store and drops OUT of the hashed surface — see below.
     - ``profile.json`` — top-level profile + summary. The original
       hash input.
     - ``rules.json`` — lint rules; ``/chameleon-rename`` may rewrite
@@ -332,6 +334,16 @@ def hash_profile(profile_dir: Path) -> str:
       the forward definition-hydration the correctness judge reads. Hashed so a
       planted index (e.g. one inventing a definition to steer the judge) de-trusts
       the profile rather than silently feeding the reviewer fabricated context.
+
+    Once ``.chameleon/idioms/`` exists, ``idioms.md`` is a rendered view of
+    that store, so hashing it would flip trust on every cosmetic re-render
+    or hand edit of the view without a real content change (and would miss
+    a store-only edit that never touches the view). Instead each
+    ``idioms/*.json`` record is hashed in its place, sorted by filename so
+    the digest stays reproducible from profile_dir alone; non-record files
+    in that directory (``.view_digest``, ``.quarantine.md``) are metadata,
+    not idiom truth, and are excluded. Unmigrated profiles (no ``idioms/``
+    dir) hash byte-identically to before this store existed.
 
     Returns an empty string if ``profile.json`` is missing — callers treat
     that as "no trustable profile yet" rather than a real hash. Missing
@@ -343,7 +355,19 @@ def hash_profile(profile_dir: Path) -> str:
     if not profile_json.is_file():
         return ""
     h = hashlib.sha256()
-    for filename in _HASHED_ARTIFACTS:
+    names: list[str] = list(_HASHED_ARTIFACTS)
+    idioms_dir = profile_dir / "idioms"
+    try:
+        if idioms_dir.is_dir():
+            # The store is truth and idioms.md is a generated view: hash the
+            # truth, not the view (a byte-identical re-render or a viewer's
+            # hand edit must never flip trust). Sorted filenames keep the
+            # digest reproducible from profile_dir alone.
+            names = [n for n in names if n != "idioms.md"]
+            names.extend(sorted(f"idioms/{p.name}" for p in idioms_dir.glob("*.json")))
+    except OSError:
+        pass
+    for filename in names:
         artifact = profile_dir / filename
         try:
             body = safe_read_profile_artifact_bytes(artifact)
