@@ -302,3 +302,82 @@ def regenerate_views(profile_dir: Path) -> str:
     _write_idioms_atomic(profile_dir / "idioms.md", text)
     _record_view_digest(profile_dir, text)
     return text
+
+
+_LANGUAGE_LINE_RE = re.compile(r"(?im)^[ \t]*Language:[ \t]*(.+?)[ \t]*$")
+_STATUS_ACTIVE_RE = re.compile(
+    r"(?im)^[ \t]*Status:[ \t]*active(?:[ \t]*\(added[ \t]+([0-9-]+)\))?"
+)
+_STATUS_DEPRECATED_RE = re.compile(r"(?im)^[ \t]*Status:[ \t]*deprecated[ \t]*([0-9-]+)?")
+
+
+def records_from_markdown(text: str) -> tuple[list[IdiomRecord], list[str]]:
+    """Import a legacy idioms.md. Every ### block lands in exactly one output:
+    a validated record, or the quarantine list (verbatim raw block) when it
+    cannot be represented or trips the injection scan. Taught idioms cannot be
+    regenerated, so silent drops are forbidden here.
+    """
+    from chameleon_mcp.idiom_coverage import _parse_idioms_for_merge, parse_idiom_blocks
+
+    if not text or not text.strip():
+        return [], []
+    structured = parse_idiom_blocks(text)
+    raw_by_section = _parse_idioms_for_merge(text)
+    records: list[IdiomRecord] = []
+    quarantined: list[str] = []
+    taken_slugs: set[str] = set()
+    rank = 0
+    for block in structured:
+        title = (block.get("slug") or "").strip()
+        section = block.get("section") or "active"
+        raw = (raw_by_section.get(section, {}) or {}).get(title, "")
+        rank += 1
+        rationale = (block.get("rationale") or "").strip() or (block.get("body") or "").strip()
+        if not title or not rationale:
+            if raw or title:
+                quarantined.append(raw or f"### {title}")
+            continue
+        hit, _label = _scan_suspicious(raw or rationale)
+        if hit:
+            quarantined.append(raw or f"### {title}\n{rationale}")
+            continue
+        slug = slug_for_title(title)
+        if slug in taken_slugs:
+            n = 2
+            while f"{slug}-{n}" in taken_slugs:
+                n += 1
+            slug = f"{slug}-{n}"
+        taken_slugs.add(slug)
+        lang_m = _LANGUAGE_LINE_RE.search(raw or "")
+        languages = []
+        if lang_m:
+            languages = [w.strip().lower() for w in lang_m.group(1).split(",") if w.strip()]
+            if languages == ["any"]:
+                languages = []
+        added, deprecated_on = "", ""
+        m = _STATUS_ACTIVE_RE.search(raw or "")
+        if m:
+            added = m.group(1) or ""
+        m = _STATUS_DEPRECATED_RE.search(raw or "")
+        if m:
+            deprecated_on = m.group(1) or ""
+        try:
+            records.append(
+                IdiomRecord(
+                    slug=slug,
+                    title=title,
+                    rationale=rationale,
+                    languages=languages,
+                    archetypes=[a for a in [block.get("archetype")] if a],
+                    status="deprecated" if section == "deprecated" else "active",
+                    added_date=added,
+                    deprecated_date=deprecated_on,
+                    examples=[e for e in [block.get("example") or ""] if e],
+                    counterexamples=[c for c in [block.get("counterexample") or ""] if c],
+                    provenance=(block.get("source") or "").strip(),
+                    rank=rank,
+                )
+            )
+        except ValueError:
+            quarantined.append(raw or f"### {title}\n{rationale}")
+    return records, quarantined
