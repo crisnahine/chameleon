@@ -28,3 +28,18 @@ def test_patching_hook_helper_attribute_is_honored():
 
     with patch("chameleon_mcp.hook_helper._stale_test_advisory_lines", return_value=["x"]):
         assert hh._stale_test_advisory_lines() == ["x"]
+
+
+def test_gate_seams_are_hook_helper_attributes():
+    from chameleon_mcp import hook_helper as hh
+    from chameleon_mcp.stop import gates
+
+    for name in (
+        "_stop_file_still_blockable",
+        "_ledger_recheck_and_resurface",
+        "_ledger_persist",
+        "_confirmed_crossfile_break_sites",
+        "_effective_stop_blocks",
+        "_stop_block_scope",
+    ):
+        assert getattr(hh, name) is getattr(gates, name)
