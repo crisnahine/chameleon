@@ -4,6 +4,38 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0] - 2026-07-14
+
+### Added
+
+- Idiom structured store: `.chameleon/idioms/<slug>.json` is now idiom truth;
+  `idioms.md` and the conventions.md TEAM IDIOMS section are generated views.
+  Migration runs automatically on the first teach/refresh/trust touch; the
+  original file is preserved as `idioms.md.legacy`, and unparseable or
+  suspicious blocks are quarantined verbatim in `.chameleon/idioms/.quarantine.md`
+  (a quarantining migration never auto-re-stamps trust).
+- Per-idiom injection scanning: a suspicious phrase now drops only that idiom,
+  not the whole file.
+- First-class idiom reactivation: `teach_profile_structured(status="active")`
+  on a deprecated slug reactivates it; deprecation now preserves the body.
+- Hand or old-version edits to the generated idioms.md are detected by digest
+  and re-imported additively (mixed-version teams keep their idioms).
+- `chameleon_mcp.core`: canonical `Finding` type, entry-anchored `TurnBudget`,
+  flocked per-session state doc (foundations for the Stop pipeline overhaul).
+- Headerless legacy prose (a hand-written preamble, or a whole pre-store
+  `idioms.md` with no `### ` blocks) now migrates into a synthesized
+  `legacy-notes` idiom instead of vanishing silently; poisoned prose is
+  quarantined the same as a poisoned block.
+- Teach refuses loudly against a poisoned, not-yet-migrated `idioms.md`
+  instead of migrating (and laundering) it first; trust and refresh scan for
+  poison before mutating anything, so a poisoned file is never cleaned to an
+  empty view ahead of the scan that's supposed to catch it.
+
+### Changed
+
+- Trust hashing on migrated profiles covers `idioms/*.json` instead of the
+  generated view. Unmigrated profiles hash exactly as before.
+
 ## [3.1.4] - 2026-07-14
 
 ### Fixed
