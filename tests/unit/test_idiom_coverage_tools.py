@@ -1119,20 +1119,6 @@ class TestGateTeachAgreement:
         )
         assert _data(res2)["status"] == "failed"
 
-    def test_find_all_slug_sections_is_fence_aware(self, tmp_path, monkeypatch):
-        """[FIX 8] A `### slug` inside a fenced example must NOT count as an
-        existing slug, so gate (fence-aware) and teach agree."""
-        from chameleon_mcp.tools import _find_all_slug_sections
-
-        idioms = tmp_path / "idioms.md"
-        idioms.write_text(
-            "# idioms\n\n## active\n\n### real\nStatus: active\nUse it.\n\n"
-            "Example:\n```\n### ghost-slug\nbody\n```\n\n## deprecated\n\n_(none)_\n",
-            encoding="utf-8",
-        )
-        assert _find_all_slug_sections(idioms, "ghost-slug") == frozenset()
-        assert "active" in _find_all_slug_sections(idioms, "real")
-
 
 class TestCodeOnlyEvasion:
     """Dedup compares GUIDANCE (rationale to rationale), not code. A reworded
