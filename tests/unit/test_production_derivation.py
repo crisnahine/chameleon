@@ -341,8 +341,19 @@ class TestRefreshUnderLock:
         repo = self._bootstrapped_locked_repo(tmp_path)
         idioms = repo / ".chameleon" / "idioms.md"
         _time.sleep(1.1)  # ensure mtime advances past the index snapshot
+        # A properly-shaped "### " block, not a bare bullet: refresh now
+        # migrates idioms.md to the idiom store ahead of the re-derive, and
+        # the store only carries forward well-formed blocks into the
+        # regenerated view (freeform prose outside any block is preserved
+        # verbatim in idioms.md.legacy but is not itself a taught idiom).
         idioms.write_text(
-            idioms.read_text(encoding="utf-8") + "\n- ALWAYS use the ApiClient wrapper\n",
+            idioms.read_text(encoding="utf-8").replace(
+                "## active\n\n_(no idioms yet — run /chameleon-teach to capture team conventions)_\n\n",
+                "## active\n\n### always-use-apiclient\n"
+                "Status: active (added 2026-07-01)\n"
+                "Always use the ApiClient wrapper.\n\n",
+                1,
+            ),
             encoding="utf-8",
         )
         env = tools.refresh_repo(str(repo))

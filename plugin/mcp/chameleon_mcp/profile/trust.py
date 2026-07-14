@@ -397,6 +397,39 @@ def trust_state_for(repo_id: str) -> TrustRecord | None:
         return None
 
 
+def injected_prose_artifact(profile_dir: Path) -> str | None:
+    """Name of the first prose artifact (``idioms.md`` or ``principles.md``)
+    that trips the injection scan, or None if both are clean.
+
+    The same narrow check the /chameleon-teach gate uses (ignore-previous,
+    you-are-now-X, reveal-prompt, eval/exec/rm-rf). Callers that mutate
+    idioms.md before granting trust (e.g. the idiom-store migration) must run
+    this BEFORE that mutation, not after: a migration regenerates idioms.md
+    from parsed records, and free-form prose with no recognized "### " block
+    (which is exactly the shape a raw injection payload has) is dropped from
+    the regenerated view rather than quarantined -- scanning the post-
+    migration file would silently clear a poisoned repo instead of refusing
+    it. Fails open (returns None) on a scanner error: trusting your own repo
+    must not wedge on an unrelated bug.
+    """
+    try:
+        from chameleon_mcp.tools import _looks_suspicious
+
+        for prose in ("idioms.md", "principles.md"):
+            prose_path = profile_dir / prose
+            if not prose_path.is_file():
+                continue
+            try:
+                prose_text = prose_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if _looks_suspicious(prose_text)[0]:
+                return prose
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def grant_trust(repo_id: str, profile_dir: Path) -> TrustRecord:
     """Write or update a .trust record for repo_id with current profile hash.
 
@@ -434,34 +467,16 @@ def grant_trust(repo_id: str, profile_dir: Path) -> TrustRecord:
         repo_root_str = str(repo_root)
 
     # Defense-in-depth at grant time for the two PROSE artifacts a committed profile
-    # can poison: idioms.md (user-taught) and principles.md (derived). Scan them with
-    # the same narrow injection check the /chameleon-teach gate uses (ignore-previous,
-    # you-are-now-X, reveal-prompt, eval/exec/rm-rf), so a poisoned ref is refused at
-    # grant. canonicals.json / conventions.json are NOT scanned here: they carry real
-    # witness code where such tokens (eval(), secret-looking literals, "you must"
-    # comments) are legitimate, so a scan there false-positives and refuses trust on
-    # healthy repos. All profile content is additionally sanitized at every
-    # <chameleon-context> render site. Fail OPEN on a scanner error: trusting your own
-    # repo must not wedge on an unrelated bug.
-    try:
-        from chameleon_mcp.tools import _looks_suspicious
-
-        for prose in ("idioms.md", "principles.md"):
-            prose_path = profile_dir / prose
-            if not prose_path.is_file():
-                continue
-            try:
-                prose_text = prose_path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            if _looks_suspicious(prose_text)[0]:
-                raise ProfileInjectionError(
-                    f"profile at {profile_dir}: {prose} contains an injection pattern; refusing trust"
-                )
-    except ProfileInjectionError:
-        raise
-    except Exception:  # noqa: BLE001
-        pass
+    # can poison: idioms.md (user-taught) and principles.md (derived). canonicals.json
+    # / conventions.json are NOT scanned here: they carry real witness code where such
+    # tokens (eval(), secret-looking literals, "you must" comments) are legitimate, so
+    # a scan there false-positives and refuses trust on healthy repos. All profile
+    # content is additionally sanitized at every <chameleon-context> render site.
+    poisoned = injected_prose_artifact(profile_dir)
+    if poisoned is not None:
+        raise ProfileInjectionError(
+            f"profile at {profile_dir}: {poisoned} contains an injection pattern; refusing trust"
+        )
 
     new_hash = hash_profile(profile_dir)
 

@@ -7728,7 +7728,8 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
     # plugin-data path keeps the lock inode constant across the profile swap.
     from chameleon_mcp.profile.trust import repo_data_dir
 
-    _lock_dir = repo_data_dir(_compute_repo_id(repo_path))
+    _repo_id = _compute_repo_id(repo_path)
+    _lock_dir = repo_data_dir(_repo_id)
     _lock_dir.mkdir(parents=True, exist_ok=True)
     refresh_lock_path = _lock_dir / ".refresh.lock"
     try:
@@ -7739,6 +7740,40 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
             # and any re-derive below see the latest production, not the user's
             # last fetch. Fails open; the outcome rides out in the envelope.
             _prod_fetch = _maybe_fetch_production_ref(repo_path.resolve())
+            # Migrate a still-legacy idioms.md (or fold a hand edit) before the
+            # re-derive below reads it. Must run BEFORE the .idioms.lock /
+            # .conventions.lock acquisition just below: migrate_idioms_md and
+            # ensure_store_fresh take the same .idioms.lock internally, and
+            # re-acquiring a lock this process already holds would hang until
+            # its blocking_timeout. Skipped for a not-yet-bootstrapped repo (no
+            # profile.json yet) -- there is no idioms.md to migrate, and
+            # materializing an empty idioms/ dir here would leave a stray
+            # partial profile ahead of the implicit-bootstrap path below.
+            _profile_dir_for_migration = repo_path / ".chameleon"
+            if (_profile_dir_for_migration / "profile.json").is_file():
+                _idioms_md_for_migration = _profile_dir_for_migration / "idioms.md"
+                # The noop/staleness check below treats a newer idioms.md mtime
+                # as "a taught idiom landed since the last derive" and forces a
+                # full re-derive. A first-time migration's own rewrite (format
+                # transition only, e.g. the empty template regenerated through
+                # the store) must not look like that fresh edit -- restore the
+                # pre-migration mtime afterward so only a GENUINE prior edit
+                # (whose mtime was already newer walking in, e.g. the legacy
+                # hand-edit ensure_store_fresh folds in) still trips staleness.
+                try:
+                    _pre_migration_mtime_ns = _idioms_md_for_migration.stat().st_mtime_ns
+                except OSError:
+                    _pre_migration_mtime_ns = None
+                _migrate_idioms_store_or_warn(_profile_dir_for_migration, _repo_id)
+                if _pre_migration_mtime_ns is not None:
+                    try:
+                        if _idioms_md_for_migration.stat().st_mtime_ns != _pre_migration_mtime_ns:
+                            os.utime(
+                                _idioms_md_for_migration,
+                                ns=(_pre_migration_mtime_ns, _pre_migration_mtime_ns),
+                            )
+                    except OSError:
+                        pass
             # Hold .idioms.lock across the re-derive's idioms.md read AND the
             # atomic profile swap. teach/deprecate write idioms.md under this same
             # lock, so without it a teach landing between the orchestrator's
@@ -10650,6 +10685,58 @@ def _regrant_trust_if_was_trusted(
         pass
 
 
+def _migrate_idioms_store_or_warn(profile_dir: Path, repo_id: str | None) -> None:
+    """Trigger the idioms.md -> store migration (and fold any legacy hand
+    edit) for a caller that never writes idioms itself.
+
+    Unlike teach's write path (which aborts on a failed migration so it never
+    seeds a store missing the pre-migration idioms), refresh and trust only
+    READ idioms indirectly -- the render/read paths already fall back to
+    parsing legacy idioms.md, so a migration failure here must not block the
+    caller. A failure that also left no store behind is not silenced, though:
+    it prints one line so an operator can notice the repo is still running on
+    the legacy parser.
+
+    Skips the mutation entirely when idioms.md/principles.md currently fails
+    the injection scan: both migrate_idioms_md and ensure_store_fresh
+    regenerate idioms.md from parsed "### " blocks, and free-form prose with
+    no recognized block -- exactly the shape a raw injection payload has --
+    is dropped from the regenerated view rather than quarantined. Rewriting
+    over poisoned content would launder it out of the file BEFORE a caller's
+    own injection scan (grant_trust, refresh's trust-preservation re-grant)
+    gets a chance to see and refuse it. trust_profile additionally pre-checks
+    this itself for a clear user-facing refusal; this is the backstop for
+    every other caller, present and future.
+    """
+    from chameleon_mcp.profile.trust import injected_prose_artifact
+
+    if injected_prose_artifact(profile_dir) is not None:
+        import sys
+
+        print(
+            "chameleon: idiom-store migration skipped: idioms.md or principles.md "
+            "failed the injection scan; review .chameleon/ before re-running "
+            "/chameleon-teach or /chameleon-trust",
+            file=sys.stderr,
+        )
+        return
+    try:
+        from chameleon_mcp.core.idiom_store import ensure_store_fresh, migrate_idioms_md
+
+        migrate_idioms_md(profile_dir, repo_id=repo_id)
+        ensure_store_fresh(profile_dir, repo_id=repo_id)
+    except Exception:
+        from chameleon_mcp.core.idiom_store import store_exists
+
+        if not store_exists(profile_dir):
+            import sys
+
+            print(
+                "chameleon: idiom-store migration failed; continuing on legacy idioms.md",
+                file=sys.stderr,
+            )
+
+
 def teach_profile(repo: str, feedback: str, archetype: str | None = None) -> dict:
     """Append a captured idiom to .chameleon/idioms.md.
 
@@ -11263,6 +11350,38 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
 
     repo_id = _compute_repo_id(repo_path)
     expected_short = repo_id[:8]
+
+    # Scan for a poisoned idioms.md/principles.md BEFORE migrating: a
+    # migration regenerates idioms.md from parsed "### " blocks, and
+    # free-form prose with no recognized block (exactly the shape a raw
+    # injection payload has) is silently dropped from the regenerated view
+    # rather than quarantined. Scanning AFTER migration would see only the
+    # laundered, injection-free view and grant trust to what was originally a
+    # poisoned profile -- run the same check grant_trust applies, on the
+    # pre-migration content, so a poisoned repo is refused before anything
+    # rewrites the evidence.
+    from chameleon_mcp.profile.trust import injected_prose_artifact
+
+    _poisoned = injected_prose_artifact(profile_dir)
+    if _poisoned is not None:
+        return _envelope(
+            {
+                "status": "failed",
+                "error": (
+                    "profile failed the injection/secret scan and was NOT trusted; "
+                    f"review .chameleon/ for poisoned content: {_poisoned} contains "
+                    "an injection pattern"
+                ),
+            }
+        )
+
+    # A committed profile may still be on legacy idioms.md (never taught
+    # through this engine, or a teammate's hand edit since the last store
+    # write). Migrate/fold it in before grant_trust computes hash_profile
+    # below, so the explicit user grant covers the migrated surface --
+    # including a migration that quarantined content, since here the user is
+    # granting by explicit token, not a machine re-stamp.
+    _migrate_idioms_store_or_warn(profile_dir, repo_id)
 
     if confirmation_token != repo_path.name and confirmation_token != f"yes-trust-{expected_short}":
         return _envelope(

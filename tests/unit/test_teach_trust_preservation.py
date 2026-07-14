@@ -155,8 +155,15 @@ def test_competing_import_stale_stays_stale(tmp_path, monkeypatch):
     sample = _bootstrap_trusted(repo)
     assert _trust_state(sample) == "trusted"
     # Make the profile stale by mutating a hashed artifact OUTSIDE a teach.
-    idioms = repo / ".chameleon" / "idioms.md"
-    idioms.write_text((idioms.read_text() if idioms.exists() else "") + "\n<!-- drift -->\n")
+    # Not idioms.md: _bootstrap_trusted's trust_profile call migrates it to
+    # the idiom store, and hash_profile hashes the store (truth), not the
+    # regenerated idioms.md view, once that store exists -- a direct edit to
+    # the view alone would no longer flip trust. principles.md stays hashed
+    # either way.
+    principles = repo / ".chameleon" / "principles.md"
+    principles.write_text(
+        (principles.read_text() if principles.exists() else "") + "\n<!-- drift -->\n"
+    )
     assert _trust_state(sample) == "stale"
 
     # Teaching now must NOT silently re-trust the un-reviewed drift.

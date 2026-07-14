@@ -2004,6 +2004,18 @@ def _amend_root_profile_with_workspaces(
         for name, body in siblings.items():
             (txn_dir / name).write_text(body, encoding="utf-8")
         (txn_dir / "idioms.md").write_bytes(idioms_raw)
+        # The idiom store is user-authored truth like idioms.md: carry every
+        # file verbatim (records, quarantine, view digest) so this amend can
+        # never lose a taught idiom or un-detect a legacy write.
+        from chameleon_mcp.core.idiom_store import STORE_DIRNAME
+
+        _store_src = profile_dir / STORE_DIRNAME
+        if _store_src.is_dir():
+            _store_dst = txn_dir / STORE_DIRNAME
+            _store_dst.mkdir(exist_ok=True)
+            for _f in sorted(_store_src.iterdir()):
+                if _f.is_file():
+                    (_store_dst / _f.name).write_bytes(_f.read_bytes())
         (txn_dir / "profile.summary.md").write_text(summary_text, encoding="utf-8")
         if renames_text is not None:
             (txn_dir / "renames.json").write_text(renames_text, encoding="utf-8")
@@ -3107,6 +3119,18 @@ def _bootstrap_single(
             (txn_dir / "idioms.md").write_bytes(idioms_raw_bytes)
         else:
             (txn_dir / "idioms.md").write_text(idioms_content, encoding="utf-8")
+        # The idiom store is user-authored truth like idioms.md: carry every
+        # file verbatim (records, quarantine, view digest) so a refresh can
+        # never lose a taught idiom or un-detect a legacy write.
+        from chameleon_mcp.core.idiom_store import STORE_DIRNAME
+
+        _store_src = profile_dir / STORE_DIRNAME
+        if _store_src.is_dir():
+            _store_dst = txn_dir / STORE_DIRNAME
+            _store_dst.mkdir(exist_ok=True)
+            for _f in sorted(_store_src.iterdir()):
+                if _f.is_file():
+                    (_store_dst / _f.name).write_bytes(_f.read_bytes())
         (txn_dir / "profile.summary.md").write_text(
             _build_summary_md(
                 archetypes_data,
