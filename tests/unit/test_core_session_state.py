@@ -12,6 +12,7 @@ from chameleon_mcp.core.session_state import (
     reap_stale_docs,
     update_session_doc,
 )
+from chameleon_mcp.locks import acquire_advisory_lock
 
 
 def _iso(repo_id="a" * 64):
@@ -59,6 +60,15 @@ def test_corrupt_doc_fails_open_to_empty(tmp_path, monkeypatch):
     assert doc.spawn_count == 0
 
 
+def test_read_session_doc_fails_open_when_data_dir_unwritable(tmp_path, monkeypatch):
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(blocker / "data"))
+    doc = read_session_doc(_iso(), "sess-1")
+    assert isinstance(doc, SessionDoc)
+    assert doc.spawn_count == 0
+
+
 def test_reap_stale_docs(tmp_path, monkeypatch):
     import os
     import time
@@ -67,8 +77,28 @@ def test_reap_stale_docs(tmp_path, monkeypatch):
     update_session_doc(_iso(), "old", lambda d: None)
     update_session_doc(_iso(), "new", lambda d: None)
     old_path = _doc_path(_iso(), "old")
+    new_path = _doc_path(_iso(), "new")
+    old_lock = old_path.with_name(old_path.name + ".lock")
+    new_lock = new_path.with_name(new_path.name + ".lock")
     stale = time.time() - 72 * 3600
     os.utime(old_path, (stale, stale))
     assert reap_stale_docs(_iso(), max_age_hours=48) == 1
     assert not old_path.exists()
-    assert _doc_path(_iso(), "new").exists()
+    assert not old_lock.exists()
+    assert new_path.exists()
+    assert new_lock.exists()
+
+
+def test_reap_skips_doc_with_held_lock(tmp_path, monkeypatch):
+    import os
+    import time
+
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    update_session_doc(_iso(), "held", lambda d: None)
+    held_path = _doc_path(_iso(), "held")
+    stale = time.time() - 72 * 3600
+    os.utime(held_path, (stale, stale))
+    lock_path = held_path.with_name(held_path.name + ".lock")
+    with acquire_advisory_lock(lock_path):
+        assert reap_stale_docs(_iso(), max_age_hours=48) == 0
+    assert held_path.exists()

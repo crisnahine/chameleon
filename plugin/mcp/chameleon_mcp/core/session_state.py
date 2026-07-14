@@ -68,7 +68,11 @@ class SessionDoc:
             )
             br = data.get("stop_blocks_by_root")
             doc.stop_blocks_by_root = (
-                {str(k): int(v) for k, v in br.items() if isinstance(v, int)}
+                {
+                    str(k): int(v)
+                    for k, v in br.items()
+                    if isinstance(v, int) and not isinstance(v, bool)
+                }
                 if isinstance(br, dict)
                 else {}
             )
@@ -81,9 +85,9 @@ class SessionDoc:
 
 
 def read_session_doc(repo_id: str, session_id: str) -> SessionDoc:
-    """Lock-free snapshot read; corrupt or missing docs fail open to empty."""
-    path = _doc_path(repo_id, session_id)
+    """Lock-free snapshot read; corrupt, missing, or unresolvable docs fail open to empty."""
     try:
+        path = _doc_path(repo_id, session_id)
         return SessionDoc.from_dict(json.loads(path.read_text(encoding="utf-8")))
     except (OSError, json.JSONDecodeError, ValueError):
         return SessionDoc()
@@ -115,20 +119,45 @@ def update_session_doc(
 
 
 def reap_stale_docs(repo_id: str, *, max_age_hours: int = 48) -> int:
-    """Delete session docs (and their lock files) older than max_age_hours."""
+    """Delete session docs (and their lock sidecars) older than max_age_hours.
+
+    Each candidate is reaped under its own advisory lock so a doc mid-write by
+    a live holder is never yanked out from under it. A doc contended by another
+    holder is skipped this pass rather than waited on, since a stale-enough doc
+    is by definition not on anyone's hot path.
+    """
+    from chameleon_mcp.locks import LockHeldError, acquire_advisory_lock
     from chameleon_mcp.profile.trust import repo_data_dir
 
     cutoff = time.time() - max_age_hours * 3600
     reaped = 0
     try:
-        for p in repo_data_dir(repo_id).glob(f"{_DOC_PREFIX}*"):
-            try:
-                if p.stat().st_mtime < cutoff:
-                    p.unlink(missing_ok=True)
-                    if not p.name.endswith(".lock"):
-                        reaped += 1
-            except OSError:
-                continue
+        candidates = list(repo_data_dir(repo_id).glob(f"{_DOC_PREFIX}*.json"))
     except OSError:
-        pass
+        return 0
+
+    for p in candidates:
+        try:
+            if p.stat().st_mtime >= cutoff:
+                continue
+        except OSError:
+            continue
+
+        lock_path = p.with_name(p.name + ".lock")
+        try:
+            with acquire_advisory_lock(lock_path, blocking_timeout=0.5):
+                try:
+                    if p.stat().st_mtime >= cutoff:
+                        continue  # refreshed between the outer check and the lock
+                    p.unlink(missing_ok=True)
+                    reaped += 1
+                    # Unlink the sidecar while still holding it, not after: a
+                    # waiter blocked on this exact inode racing a session that
+                    # writes to a doc this stale is implausible, and the
+                    # fallout is bounded to one lost update in a dead session.
+                    lock_path.unlink(missing_ok=True)
+                except OSError:
+                    continue
+        except LockHeldError:
+            continue
     return reaped
