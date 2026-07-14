@@ -38,6 +38,18 @@ class SessionDoc:
     stop_blocks_by_root: dict[str, int] = field(default_factory=dict)
     intent_tokens: list[str] = field(default_factory=list)
     delivery_cursor: str = ""
+    # Detached-job scheduling (stop/scheduler.py). ``job_inflight`` is the
+    # live job's heartbeat file path, "" when no job is running; a non-empty
+    # value with a stale heartbeat is reclaimable (see
+    # ``scheduler.try_acquire_job_slot``). ``job_started_at`` is a wall-clock
+    # timestamp recorded at claim time, for diagnostics only -- staleness is
+    # judged off the heartbeat file's mtime, never off this field.
+    # ``review_spawns`` is the scheduler's own per-session spawn counter,
+    # independent of the (pre-phase-3) enforcement state's
+    # ``correctness_spawns``.
+    job_inflight: str = ""
+    job_started_at: float = 0.0
+    review_spawns: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -48,6 +60,9 @@ class SessionDoc:
             "stop_blocks_by_root": dict(self.stop_blocks_by_root),
             "intent_tokens": list(self.intent_tokens),
             "delivery_cursor": self.delivery_cursor,
+            "job_inflight": self.job_inflight,
+            "job_started_at": self.job_started_at,
+            "review_spawns": self.review_spawns,
         }
 
     @classmethod
@@ -79,6 +94,16 @@ class SessionDoc:
             doc.intent_tokens = [str(t) for t in data.get("intent_tokens") or []]
             dc = data.get("delivery_cursor")
             doc.delivery_cursor = dc if isinstance(dc, str) else ""
+            ji = data.get("job_inflight")
+            doc.job_inflight = ji if isinstance(ji, str) else ""
+            jsa = data.get("job_started_at")
+            doc.job_started_at = (
+                float(jsa) if isinstance(jsa, (int, float)) and not isinstance(jsa, bool) else 0.0
+            )
+            rs = data.get("review_spawns")
+            doc.review_spawns = (
+                rs if isinstance(rs, int) and not isinstance(rs, bool) and rs >= 0 else 0
+            )
         except Exception:
             return cls()
         return doc

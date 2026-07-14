@@ -649,6 +649,26 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # already-untrusted case, but bounded so an installation with many
     # profiled repos cannot make the scan unbounded.
     "ORPHANED_TRUST_SCAN_CAP": 200,
+    # Detached Stop review job: total wall-clock budget and its per-stage
+    # shares. The job runs off the Stop hook's own clock (it is spawned
+    # detached and outlives the hook process), so this is generous relative
+    # to the old 45s synchronous judge budget. Stage shares are advisory
+    # splits a job-runner stage may use to size its own sub-timeouts; they
+    # sum to less than the total so the runner keeps slack for process
+    # startup and the final write.
+    "JOB_TOTAL_BUDGET_SECONDS": 240,
+    "JOB_LENS_BUDGET_SECONDS": 150,
+    "JOB_VERIFY_BUDGET_SECONDS": 60,
+    "JOB_RENDER_BUDGET_SECONDS": 10,
+    # How often the detached job refreshes its heartbeat file's mtime while
+    # it runs. Must stay well under JOB_HEARTBEAT_STALE_SECONDS so a live job
+    # never reads as dead between two heartbeat writes.
+    "JOB_HEARTBEAT_INTERVAL_SECONDS": 10,
+    # A heartbeat file whose mtime is older than this is treated as a dead
+    # job: the single-inflight slot is reclaimed rather than left wedged by a
+    # child that crashed without cleaning up. Comfortably above the heartbeat
+    # write interval so one missed tick under load never looks dead.
+    "JOB_HEARTBEAT_STALE_SECONDS": 30,
 }
 
 

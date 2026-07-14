@@ -102,3 +102,54 @@ def test_reap_skips_doc_with_held_lock(tmp_path, monkeypatch):
     with acquire_advisory_lock(lock_path):
         assert reap_stale_docs(_iso(), max_age_hours=48) == 0
     assert held_path.exists()
+
+
+def test_job_fields_round_trip(tmp_path, monkeypatch):
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+
+    def claim(d):
+        d.job_inflight = "/data/.job_heartbeat.abc123"
+        d.job_started_at = 1752480000.5
+        d.review_spawns = 2
+
+    update_session_doc(_iso(), "sess-j", claim)
+    doc = read_session_doc(_iso(), "sess-j")
+    assert doc.job_inflight == "/data/.job_heartbeat.abc123"
+    assert doc.job_started_at == 1752480000.5
+    assert doc.review_spawns == 2
+    raw = json.loads(_doc_path(_iso(), "sess-j").read_text())
+    assert raw["job_inflight"] == "/data/.job_heartbeat.abc123"
+    assert raw["job_started_at"] == 1752480000.5
+    assert raw["review_spawns"] == 2
+
+
+def test_job_fields_default_empty():
+    doc = SessionDoc()
+    assert doc.job_inflight == ""
+    assert doc.job_started_at == 0.0
+    assert doc.review_spawns == 0
+
+
+def test_job_fields_reject_malformed_values():
+    # Wrong types (including the classic bool-passes-isinstance-int trap) fall
+    # back to the empty defaults rather than poisoning later arithmetic.
+    doc = SessionDoc.from_dict(
+        {
+            "job_inflight": ["not", "a", "string"],
+            "job_started_at": True,
+            "review_spawns": True,
+        }
+    )
+    assert doc.job_inflight == ""
+    assert doc.job_started_at == 0.0
+    assert doc.review_spawns == 0
+
+    doc = SessionDoc.from_dict({"job_started_at": "soon", "review_spawns": -3})
+    assert doc.job_started_at == 0.0
+    assert doc.review_spawns == 0
+
+    # An int timestamp is fine (coerced to float); a legit spawn count sticks.
+    doc = SessionDoc.from_dict({"job_started_at": 1752480000, "review_spawns": 4})
+    assert doc.job_started_at == 1752480000.0
+    assert isinstance(doc.job_started_at, float)
+    assert doc.review_spawns == 4

@@ -56,3 +56,16 @@ def _no_real_judge_spawn(request, monkeypatch):
         monkeypatch.setattr(refuter, "refuter_cli_absent", lambda: None, raising=False)
     except Exception:
         pass
+    # Phase 3: stop/scheduler.py is the only code allowed to spawn a model going
+    # forward. Its launch_job() detaches a real `python -m chameleon_mcp.stop.job`
+    # child (which itself spawns `claude -p`), so an unmocked call through it is
+    # exactly as billable as an unmocked judge/refuter spawn above. Neutralize it
+    # the same way: fail closed to "launch failed", never a real subprocess. Tests
+    # that assert on the real detach mechanics opt out with `real_judge_spawn` and
+    # mock `subprocess.Popen` themselves, same convention as the judge/refuter guards.
+    try:
+        from chameleon_mcp.stop import scheduler
+
+        monkeypatch.setattr(scheduler, "launch_job", lambda *a, **k: False, raising=False)
+    except Exception:
+        pass
