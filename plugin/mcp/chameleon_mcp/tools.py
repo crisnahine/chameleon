@@ -10839,8 +10839,8 @@ def teach_profile(repo: str, feedback: str, archetype: str | None = None) -> dic
                 {
                     "status": "failed",
                     "error": (
-                        f"idioms.md contains a suspicious pattern ({_poisoned}); clean it "
-                        "(or review .chameleon/idioms.md) before teaching"
+                        f"{_poisoned} contains a suspicious pattern; clean it "
+                        f"(or review .chameleon/{_poisoned}) before teaching"
                     ),
                 }
             )
@@ -13327,8 +13327,8 @@ def teach_profile_structured(
                 {
                     "status": "failed",
                     "error": (
-                        f"idioms.md contains a suspicious pattern ({_poisoned}); clean it "
-                        "(or review .chameleon/idioms.md) before teaching"
+                        f"{_poisoned} contains a suspicious pattern; clean it "
+                        f"(or review .chameleon/{_poisoned}) before teaching"
                     ),
                 }
             )
