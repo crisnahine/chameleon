@@ -10824,6 +10824,27 @@ def teach_profile(repo: str, feedback: str, archetype: str | None = None) -> dic
     # raised.
     from chameleon_mcp.core.idiom_store import store_exists
 
+    # No store yet means the next call below would migrate the live
+    # idioms.md. A migration regenerates idioms.md from parsed "### " blocks
+    # and drops everything else -- exactly the shape a raw injection payload
+    # has -- so a poisoned pre-migration file would be laundered clean before
+    # this teach's own idiom ever gets a chance to fail the scan. Refuse
+    # loudly here instead, the same pre-migration check trust_profile runs.
+    if not store_exists(_profile_dir):
+        from chameleon_mcp.profile.trust import injected_prose_artifact
+
+        _poisoned = injected_prose_artifact(_profile_dir)
+        if _poisoned is not None:
+            return _envelope(
+                {
+                    "status": "failed",
+                    "error": (
+                        f"idioms.md contains a suspicious pattern ({_poisoned}); clean it "
+                        "(or review .chameleon/idioms.md) before teaching"
+                    ),
+                }
+            )
+
     try:
         from chameleon_mcp.core.idiom_store import ensure_store_fresh, migrate_idioms_md
 
@@ -13290,6 +13311,27 @@ def teach_profile_structured(
     # branch can always call it, even if the try's own import line is what
     # raised.
     from chameleon_mcp.core.idiom_store import store_exists
+
+    # No store yet means the next call below would migrate the live
+    # idioms.md. A migration regenerates idioms.md from parsed "### " blocks
+    # and drops everything else -- exactly the shape a raw injection payload
+    # has -- so a poisoned pre-migration file would be laundered clean before
+    # this teach's own idiom ever gets a chance to fail the scan. Refuse
+    # loudly here instead, the same pre-migration check trust_profile runs.
+    if not store_exists(profile_dir):
+        from chameleon_mcp.profile.trust import injected_prose_artifact
+
+        _poisoned = injected_prose_artifact(profile_dir)
+        if _poisoned is not None:
+            return _envelope(
+                {
+                    "status": "failed",
+                    "error": (
+                        f"idioms.md contains a suspicious pattern ({_poisoned}); clean it "
+                        "(or review .chameleon/idioms.md) before teaching"
+                    ),
+                }
+            )
 
     try:
         from chameleon_mcp.core.idiom_store import ensure_store_fresh, migrate_idioms_md

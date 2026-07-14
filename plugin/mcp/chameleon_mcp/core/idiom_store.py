@@ -316,7 +316,12 @@ def records_from_markdown(text: str) -> tuple[list[IdiomRecord], list[str]]:
     """Import a legacy idioms.md. Every ### block lands in exactly one output:
     a validated record, or the quarantine list (verbatim raw block) when it
     cannot be represented or trips the injection scan. Taught idioms cannot be
-    regenerated, so silent drops are forbidden here.
+    regenerated, so silent drops are forbidden here -- and that no-silent-drop
+    contract covers ALL of idioms.md, not just its "### " blocks: content that
+    lives outside every block and every fence (a hand-written preamble, or a
+    whole legacy file the pre-store system injected as plain prose with no
+    header structure at all) is carried over too, as a single synthesized
+    'legacy-notes' record (or quarantined, same as a poisoned block).
 
     Two independent fence-aware walks of the same text (`parse_idiom_blocks`
     for structured fields, `_parse_idioms_raw_ordered` for verbatim raw text)
@@ -329,7 +334,11 @@ def records_from_markdown(text: str) -> tuple[list[IdiomRecord], list[str]]:
     still checked for and quarantines only the affected block rather than
     guessing which raw text belongs to it.
     """
-    from chameleon_mcp.idiom_coverage import _parse_idioms_raw_ordered, parse_idiom_blocks
+    from chameleon_mcp.idiom_coverage import (
+        _parse_idioms_raw_ordered,
+        _parse_loose_prose,
+        parse_idiom_blocks,
+    )
 
     if not text or not text.strip():
         return [], []
@@ -412,6 +421,44 @@ def records_from_markdown(text: str) -> tuple[list[IdiomRecord], list[str]]:
             continue
         rank += 1
         records.append(rec)
+
+    # Content outside every block: a hand-written preamble, or (headerless
+    # legacy files) the whole document. The old system injected such text
+    # wholesale, so dropping it here would silently erase guidance a user
+    # relied on -- carry it into one synthesized record, or quarantine it
+    # like a poisoned block, same as every other path through this function.
+    prose = _parse_loose_prose(text)
+    if prose:
+        hit, label = _scan_suspicious(prose)
+        if hit:
+            print(
+                f"chameleon: legacy prose outside any idiom block quarantined during import: "
+                f"matched {label!r} (edit or re-teach it with safe prose)",
+                file=sys.stderr,
+            )
+            quarantined.append(prose)
+        else:
+            slug = "legacy-notes"
+            if slug in taken_slugs:
+                n = 2
+                while f"{slug}-{n}" in taken_slugs:
+                    n += 1
+                slug = f"{slug}-{n}"
+            taken_slugs.add(slug)
+            try:
+                rec = IdiomRecord(
+                    slug=slug,
+                    title=slug,
+                    rationale=prose,
+                    languages=[],
+                    status="active",
+                    rank=rank + 1,
+                )
+            except ValueError:
+                quarantined.append(prose)
+            else:
+                records.append(rec)
+
     return records, quarantined
 
 

@@ -1257,6 +1257,51 @@ def _parse_idioms_raw_ordered(text: str) -> list[dict]:
     return entries
 
 
+_LOOSE_PROSE_TITLE_RE = re.compile(r"(?im)^#\s*(?:team\s+)?idioms\b")
+
+
+def _parse_loose_prose(text: str) -> str:
+    """Content that lives outside every ``### `` block AND every fence: a
+    hand-written preamble ahead of the first block, or -- the legacy
+    no-header case -- an entire file the old system injected as plain prose
+    with no ``### `` structure at all.
+
+    Shares fence/section/### boundary logic with `parse_idiom_blocks` and
+    `_parse_idioms_raw_ordered` byte-for-byte, so all three walks agree on
+    where a block starts and ends. Structural noise -- the generated title
+    line, the section headers, blank lines, and the bootstrap placeholders
+    (both the known exact text and the general ``_(...)_`` italic shape) --
+    carries no idiom signal and is dropped here, so it can never be
+    fabricated into a spurious 'legacy-notes' idiom.
+    """
+    lines: list[str] = []
+    in_block = False
+    in_fence = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if stripped in ("## active", "## deprecated"):
+            in_block = False
+            continue
+        if stripped.startswith("### "):
+            in_block = True
+            continue
+        if in_block:
+            continue
+        if not stripped:
+            continue
+        if _LOOSE_PROSE_TITLE_RE.match(stripped):
+            continue
+        if stripped.startswith("_(") and stripped.endswith(")_"):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
 def _parse_idioms_for_merge(text: str) -> dict[str, dict[str, str]]:
     """Parse idioms.md into {section: {slug: raw_block_text}} preserving the
     raw rendered block (so a merge re-emits each idiom byte-for-byte).
