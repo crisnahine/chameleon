@@ -384,11 +384,12 @@ def test_ensure_store_fresh_reimports_legacy_write(tmp_path, monkeypatch, capsys
 
 
 def test_ensure_store_fresh_warns_on_status_only_edit(tmp_path, monkeypatch, capsys):
-    """A hand edit that moves an already-known idiom to the other status
-    section (active <-> deprecated) without changing its slug/title is not
-    folded into the store -- the view is regenerated and the status change
-    is silently discarded, per additive-only semantics -- but it must not
-    be silent: one stderr line names the ignored slug."""
+    """A hand edit that moves an already-known idiom from '## active' to
+    '## deprecated' (slug/title unchanged) is now FOLDED into the store --
+    a v3 teammate's deprecation via the view must not be silently discarded.
+    (Ported from the pre-fold contract, which pinned warn+no-fold for this
+    direction; the reverse direction, deprecated -> active, stays
+    warn-only -- see test_status_fold_never_reactivates.)"""
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
     monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
     text = (
@@ -412,17 +413,143 @@ def test_ensure_store_fresh_warns_on_status_only_edit(tmp_path, monkeypatch, cap
     )
     md.write_text(new_view, encoding="utf-8")
 
-    ensure_store_fresh(profile, repo_id="a" * 64)
+    result = ensure_store_fresh(profile, repo_id="a" * 64)
 
     record = next(r for r in load_store(profile) if r.slug == "use-api-client")
-    assert record.status == "active"  # store truth wins; the edit is discarded
+    assert record.status == "deprecated"  # folded: the view edit is applied
+    assert record.deprecated_date == "2026-07-13"
+    assert result == {"added": 0, "folded": 1, "quarantined": 0}
+    err = capsys.readouterr().err
+    assert "1 status transition(s) folded" in err
+    # The view stays deprecated after regeneration.
+    assert "## deprecated\n\n### use-api-client" in md.read_text(encoding="utf-8")
+
+
+_FOLD_CORPUS = """# idioms
+
+## active
+
+### keep-api-client
+Language: typescript
+Status: active (added 2026-07-01)
+Always use the apiClient helper for HTTP calls.
+
+### retire-me
+Language: python
+Status: active (added 2026-06-01)
+Prefer small components.
+
+## deprecated
+
+### already-deprecated
+Status: deprecated 2026-05-01
+Use the query builder instead.
+"""
+
+
+def test_status_fold_active_to_deprecated(tmp_path, monkeypatch):
+    """A v3 teammate deprecating an idiom by editing idioms.md directly
+    (moving its ### block from '## active' to '## deprecated', changing only
+    the Status line) is folded into the store, and every other idiom --
+    active or already deprecated -- is left untouched."""
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    profile = _profile_with_md(tmp_path, _FOLD_CORPUS)
+    migrate_idioms_md(profile, repo_id="a" * 64)
+
+    md = profile / "idioms.md"
+    view = md.read_text(encoding="utf-8")
+    active_block = (
+        "### retire-me\nLanguage: python\nStatus: active (added 2026-06-01)\n"
+        "Prefer small components.\n"
+    )
+    assert active_block in view
+    new_view = view.replace(active_block, "")
+    new_view = new_view.replace(
+        "## deprecated\n",
+        "## deprecated\n\n### retire-me\nStatus: deprecated 2026-07-14\nPrefer small components.\n",
+        1,
+    )
+    md.write_text(new_view, encoding="utf-8")
+
+    result = ensure_store_fresh(profile, repo_id="a" * 64)
+    assert result == {"added": 0, "folded": 1, "quarantined": 0}
+
+    records = load_store(profile)
+    rec = next(r for r in records if r.slug == "retire-me")
+    assert rec.status == "deprecated"
+    assert rec.deprecated_date == "2026-07-14"
+    assert {r.slug for r in records} == {"keep-api-client", "retire-me", "already-deprecated"}
+    untouched = next(r for r in records if r.slug == "keep-api-client")
+    assert untouched.status == "active"
+    already = next(r for r in records if r.slug == "already-deprecated")
+    assert already.status == "deprecated" and already.deprecated_date == "2026-05-01"
+
+    regenerated = md.read_text(encoding="utf-8")
+    assert regenerated.index("## deprecated") < regenerated.index("### retire-me")
+
+
+def test_status_fold_never_reactivates(tmp_path, monkeypatch, capsys):
+    """The reverse direction (deprecated -> active via a view edit) is never
+    auto-applied -- reactivating a retired idiom requires an explicit teach,
+    so a stray or malicious view edit cannot silently revive it. Warn-only,
+    unchanged by this task's fold."""
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    text = (
+        "# idioms\n\n## active\n\n## deprecated\n\n"
+        "### no-raw-sql\nStatus: deprecated 2026-07-01\n"
+        "Use the query builder instead.\n"
+    )
+    profile = _profile_with_md(tmp_path, text)
+    migrate_idioms_md(profile, repo_id="a" * 64)
+
+    md = profile / "idioms.md"
+    # Move "no-raw-sql" from '## deprecated' to '## active' -- a stray or
+    # malicious view edit attempting to revive a retired idiom.
+    new_view = (
+        "# idioms\n\n## active\n\n"
+        "### no-raw-sql\nLanguage: any\nStatus: active (added 2026-07-14)\n"
+        "Use the query builder instead.\n\n## deprecated\n"
+    )
+    md.write_text(new_view, encoding="utf-8")
+
+    result = ensure_store_fresh(profile, repo_id="a" * 64)
+    assert result == {"added": 0, "folded": 0, "quarantined": 0}
+
+    rec = next(r for r in load_store(profile) if r.slug == "no-raw-sql")
+    assert rec.status == "deprecated"  # store truth wins; the edit is discarded
     err = capsys.readouterr().err
     assert (
-        "idioms.md edit to 'use-api-client' not folded into the store "
+        "idioms.md edit to 'no-raw-sql' not folded into the store "
         "(status change via the view is ignored; use /chameleon-teach)" in err
     )
-    # The view is regenerated back to the store's actual (active) status.
-    assert "## active\n\n### use-api-client" in md.read_text(encoding="utf-8")
+    # The view is regenerated back to the store's actual (deprecated) status.
+    assert "## deprecated\n\n### no-raw-sql" in md.read_text(encoding="utf-8")
+
+
+def test_load_store_refuses_symlinked_record(tmp_path, monkeypatch, capsys):
+    """load_store routes each record file through safe_read_profile_artifact
+    (O_NOFOLLOW): a record file swapped for a symlink pointing outside the
+    store is refused and skipped, not followed -- the rest of the store
+    still loads."""
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    profile = _profile_with_md(tmp_path)
+    migrate_idioms_md(profile, repo_id="a" * 64)
+
+    sdir = store_dir(profile)
+    outside = tmp_path / "outside-secret.json"
+    outside.write_text('{"secret": "not an idiom"}', encoding="utf-8")
+    target = sdir / "use-api-client.json"
+    target.unlink()
+    target.symlink_to(outside)
+
+    records = load_store(profile)
+    slugs = {r.slug for r in records}
+    assert "use-api-client" not in slugs  # symlinked record refused
+    assert "free-form-note" in slugs  # the rest of the store still loads
+    assert "idiom file skipped" in capsys.readouterr().err
 
 
 def test_ensure_store_fresh_noop_when_digest_matches(tmp_path, monkeypatch):

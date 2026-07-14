@@ -10685,7 +10685,7 @@ def _regrant_trust_if_was_trusted(
         pass
 
 
-def _migrate_idioms_store_or_warn(profile_dir: Path, repo_id: str | None) -> None:
+def _migrate_idioms_store_or_warn(profile_dir: Path, repo_id: str | None) -> dict | None:
     """Trigger the idioms.md -> store migration (and fold any legacy hand
     edit) for a caller that never writes idioms itself.
 
@@ -10707,6 +10707,10 @@ def _migrate_idioms_store_or_warn(profile_dir: Path, repo_id: str | None) -> Non
     gets a chance to see and refuse it. trust_profile additionally pre-checks
     this itself for a clear user-facing refusal; this is the backstop for
     every other caller, present and future.
+
+    Returns ``migrate_idioms_md``'s own return value when a migration ran (or
+    was already a noop), or None when the mutation was skipped (poisoned
+    content) or raised.
     """
     from chameleon_mcp.profile.trust import injected_prose_artifact
 
@@ -10719,12 +10723,13 @@ def _migrate_idioms_store_or_warn(profile_dir: Path, repo_id: str | None) -> Non
             "/chameleon-teach or /chameleon-trust",
             file=sys.stderr,
         )
-        return
+        return None
     try:
         from chameleon_mcp.core.idiom_store import ensure_store_fresh, migrate_idioms_md
 
-        migrate_idioms_md(profile_dir, repo_id=repo_id)
+        migrate_result = migrate_idioms_md(profile_dir, repo_id=repo_id)
         ensure_store_fresh(profile_dir, repo_id=repo_id)
+        return migrate_result
     except Exception:
         from chameleon_mcp.core.idiom_store import store_exists
 
@@ -10735,6 +10740,7 @@ def _migrate_idioms_store_or_warn(profile_dir: Path, repo_id: str | None) -> Non
                 "chameleon: idiom-store migration failed; continuing on legacy idioms.md",
                 file=sys.stderr,
             )
+        return None
 
 
 def teach_profile(repo: str, feedback: str, archetype: str | None = None) -> dict:
@@ -10845,10 +10851,11 @@ def teach_profile(repo: str, feedback: str, archetype: str | None = None) -> dic
                 }
             )
 
+    _migrate_result: dict | None = None
     try:
         from chameleon_mcp.core.idiom_store import ensure_store_fresh, migrate_idioms_md
 
-        migrate_idioms_md(_profile_dir, repo_id=_repo_id)
+        _migrate_result = migrate_idioms_md(_profile_dir, repo_id=_repo_id)
         ensure_store_fresh(_profile_dir, repo_id=_repo_id)
     except Exception as exc:
         if not store_exists(_profile_dir):
@@ -10980,12 +10987,23 @@ def teach_profile(repo: str, feedback: str, archetype: str | None = None) -> dic
                 ),
             }
         )
+    # Surfaced only when THIS call actually ran the idioms.md -> store
+    # migration (not on a noop against an already-migrated repo), so a
+    # teammate's client can show "N legacy idioms migrated" exactly once.
+    _migration_extra: dict = {}
+    if _migrate_result is not None and _migrate_result.get("status") == "migrated":
+        _migration_extra = {
+            "idioms_migrated": _migrate_result["idioms_out"],
+            "idioms_quarantined": _migrate_result["quarantined"],
+        }
+
     if outcome == "duplicate":
         return _envelope(
             {
                 "status": "success",
                 "already_present": True,
                 "note": "an identical idiom is already active; not duplicated.",
+                **_migration_extra,
             }
         )
 
@@ -10997,6 +11015,7 @@ def teach_profile(repo: str, feedback: str, archetype: str | None = None) -> dic
         "status": "success",
         "idioms_added": 1,
         "idioms_deprecated": 0,
+        **_migration_extra,
     }
     if suspicious:
         response["suspicious_input"] = True
@@ -11420,7 +11439,7 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
     # below, so the explicit user grant covers the migrated surface --
     # including a migration that quarantined content, since here the user is
     # granting by explicit token, not a machine re-stamp.
-    _migrate_idioms_store_or_warn(profile_dir, repo_id)
+    _migrate_result = _migrate_idioms_store_or_warn(profile_dir, repo_id)
 
     try:
         record = grant_trust(repo_id, profile_dir)
@@ -11473,6 +11492,9 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
     }
     if workspace_trust_count:
         data["workspace_profiles_trusted"] = workspace_trust_count
+    if _migrate_result is not None and _migrate_result.get("status") == "migrated":
+        data["idioms_migrated"] = _migrate_result["idioms_out"]
+        data["idioms_quarantined"] = _migrate_result["quarantined"]
     return _envelope(data)
 
 
@@ -13356,10 +13378,11 @@ def teach_profile_structured(
                 }
             )
 
+    _migrate_result: dict | None = None
     try:
         from chameleon_mcp.core.idiom_store import ensure_store_fresh, migrate_idioms_md
 
-        migrate_idioms_md(profile_dir, repo_id=_repo_id)
+        _migrate_result = migrate_idioms_md(profile_dir, repo_id=_repo_id)
         ensure_store_fresh(profile_dir, repo_id=_repo_id)
     except Exception as exc:
         if not store_exists(profile_dir):
@@ -13379,6 +13402,15 @@ def teach_profile_structured(
         # ensure_store_fresh failed after the store was already there) --
         # that failure mode is additive-only against an intact store, so
         # falling through and letting this teach proceed is safe.
+
+    # Surfaced only when THIS call actually ran the idioms.md -> store
+    # migration (not on a noop against an already-migrated repo).
+    _migration_extra: dict = {}
+    if _migrate_result is not None and _migrate_result.get("status") == "migrated":
+        _migration_extra = {
+            "idioms_migrated": _migrate_result["idioms_out"],
+            "idioms_quarantined": _migrate_result["quarantined"],
+        }
 
     try:
         from chameleon_mcp.safe_open import safe_read_profile_artifact
@@ -13456,6 +13488,7 @@ def teach_profile_structured(
                     "idioms_deprecated": 1,
                     "slug": slug,
                     "note": f"moved '### {slug}' from '## active' to '## deprecated'",
+                    **_migration_extra,
                 }
             )
         if existing is not None and existing.status == "deprecated" and status == "active":
@@ -13470,6 +13503,7 @@ def teach_profile_structured(
                     "idioms_deprecated": 0,
                     "slug": slug,
                     "note": f"reactivated '### {slug}'",
+                    **_migration_extra,
                 }
             )
     except LockHeldError as e:
@@ -13485,7 +13519,14 @@ def teach_profile_structured(
     # New slug: active goes through teach_profile (keeps sanitize/dedup/trust in
     # one place); new deprecated slug writes a tombstone record directly.
     if status == "active":
-        return teach_profile(repo, rendered)
+        _tp_result = teach_profile(repo, rendered)
+        # The migration (if any) ran above, before delegating -- teach_profile's
+        # own migrate_idioms_md call sees the store already exists and is a
+        # noop, so its envelope never carries the pair on its own; fold this
+        # call's migration counts in so the caller still sees them.
+        if _migration_extra and _tp_result.get("data", {}).get("status") == "success":
+            _tp_result["data"].update(_migration_extra)
+        return _tp_result
     s_rationale, s_example, s_counterexample = _sanitize_idiom_inputs(
         rationale, example, counterexample
     )
@@ -13526,7 +13567,15 @@ def teach_profile_structured(
         )
     _regrant_trust_if_was_trusted(was_trusted, _repo_id, profile_dir)
     _notify_daemon_cache_invalidation()
-    return _envelope({"status": "success", "idioms_added": 0, "idioms_deprecated": 1, "slug": slug})
+    return _envelope(
+        {
+            "status": "success",
+            "idioms_added": 0,
+            "idioms_deprecated": 1,
+            "slug": slug,
+            **_migration_extra,
+        }
+    )
 
 
 def _find_all_slug_sections(idioms_path: Path, slug: str) -> frozenset[str]:

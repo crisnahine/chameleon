@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import sys
+import time
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 
@@ -136,6 +137,8 @@ def load_store(profile_dir: Path) -> list[IdiomRecord]:
     Fail-open per file: a corrupt file or a record that trips the injection
     scan is skipped with a stderr warning; the rest of the store still loads.
     """
+    from chameleon_mcp.safe_open import safe_read_profile_artifact
+
     records: list[IdiomRecord] = []
     sdir = store_dir(profile_dir)
     try:
@@ -144,7 +147,7 @@ def load_store(profile_dir: Path) -> list[IdiomRecord]:
         return []
     for path in paths:
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(safe_read_profile_artifact(path))
             rec = IdiomRecord.from_dict(raw)
             hit, label = _scan_suspicious(_record_scan_text(rec))
         except Exception as exc:
@@ -625,35 +628,47 @@ def migrate_idioms_md(profile_dir: Path, *, repo_id: str | None) -> dict:
     }
 
 
-def ensure_store_fresh(profile_dir: Path, *, repo_id: str | None) -> None:
+def ensure_store_fresh(profile_dir: Path, *, repo_id: str | None) -> dict:
     """Detect a legacy write (v3 teammate teach, hand edit) to the generated
     idioms.md and fold the DELTA into the store before the next store write
     regenerates the view — a teammate's idiom must never be silently discarded.
     Additive only: store records absent from the view are kept (a hand-truncated
-    view must not delete truth)."""
+    view must not delete truth).
+
+    A view edit that moves an already-known idiom from active to deprecated
+    (a v3 teammate's deprecation, or a hand edit) is folded into the store the
+    same way a legacy addition is. The reverse — deprecated to active via the
+    view — is never auto-applied: reactivating a retired idiom requires an
+    explicit teach, so a stray or malicious view edit cannot silently revive
+    one.
+
+    Returns ``{"added": int, "folded": int, "quarantined": int}``.
+    """
     from chameleon_mcp.locks import acquire_advisory_lock
 
+    _noop = {"added": 0, "folded": 0, "quarantined": 0}
     if not store_exists(profile_dir):
-        return
+        return _noop
     md_path = profile_dir / "idioms.md"
     try:
         current = md_path.read_text(encoding="utf-8")
     except OSError:
-        return
+        return _noop
     if view_digest_of(current) == read_view_digest(profile_dir):
-        return
+        return _noop
     with acquire_advisory_lock(_idioms_lock_path(profile_dir, repo_id), blocking_timeout=10.0):
         try:
             current = md_path.read_text(encoding="utf-8")
         except OSError:
-            return
+            return _noop
         if view_digest_of(current) == read_view_digest(profile_dir):
-            return
+            return _noop
         incoming, quarantined = records_from_markdown(current)
         existing = load_store(profile_dir)
         known_slugs = {r.slug for r in existing}
         known_titles = {r.title for r in existing}
         added = 0
+        folded = 0
         min_rank = min((r.rank for r in existing), default=1)
         for rec in incoming:
             if rec.slug in known_slugs or rec.title in known_titles:
@@ -661,12 +676,20 @@ def ensure_store_fresh(profile_dir: Path, *, repo_id: str | None) -> None:
                 if match is None:
                     match = next((r for r in existing if r.title == rec.title), None)
                 if match is not None and match.status != rec.status:
-                    print(
-                        f"chameleon: idioms.md edit to '{rec.title}' not folded into "
-                        "the store (status change via the view is ignored; use "
-                        "/chameleon-teach)",
-                        file=sys.stderr,
-                    )
+                    if match.status == "active" and rec.status == "deprecated":
+                        match.status = "deprecated"
+                        match.deprecated_date = rec.deprecated_date or time.strftime(
+                            "%Y-%m-%d", time.gmtime()
+                        )
+                        upsert_idiom(profile_dir, match)
+                        folded += 1
+                    else:
+                        print(
+                            f"chameleon: idioms.md edit to '{rec.title}' not folded into "
+                            "the store (status change via the view is ignored; use "
+                            "/chameleon-teach)",
+                            file=sys.stderr,
+                        )
                 continue
             rec.rank = min_rank - 1 - added
             upsert_idiom(profile_dir, rec)
@@ -674,10 +697,12 @@ def ensure_store_fresh(profile_dir: Path, *, repo_id: str | None) -> None:
         _write_quarantine(profile_dir, quarantined)
         regenerate_views(profile_dir)
     print(
-        f"chameleon: legacy idioms.md write detected; {added} idiom(s) re-imported "
-        f"into the store ({len(quarantined)} quarantined)",
+        f"chameleon: legacy idioms.md write detected; {added} idiom(s) re-imported, "
+        f"{folded} status transition(s) folded, into the store "
+        f"({len(quarantined)} quarantined)",
         file=sys.stderr,
     )
+    return {"added": added, "folded": folded, "quarantined": len(quarantined)}
 
 
 def _norm_rationale(text: str) -> str:
