@@ -316,30 +316,55 @@ def records_from_markdown(text: str) -> tuple[list[IdiomRecord], list[str]]:
     a validated record, or the quarantine list (verbatim raw block) when it
     cannot be represented or trips the injection scan. Taught idioms cannot be
     regenerated, so silent drops are forbidden here.
+
+    Two independent fence-aware walks of the same text (`parse_idiom_blocks`
+    for structured fields, `_parse_idioms_raw_ordered` for verbatim raw text)
+    are joined POSITIONALLY, not by (section, title): a title lookup collapses
+    same-titled blocks onto each other (last-wins raw paired with every
+    block sharing that title), so a poisoned duplicate's scan could run over
+    a benign sibling's raw and vice versa, and Language/Status metadata could
+    cross-attribute between them. Both walks share identical block-boundary
+    logic, so they line up index-for-index by construction; a mismatch is
+    still checked for and quarantines only the affected block rather than
+    guessing which raw text belongs to it.
     """
-    from chameleon_mcp.idiom_coverage import _parse_idioms_for_merge, parse_idiom_blocks
+    from chameleon_mcp.idiom_coverage import _parse_idioms_raw_ordered, parse_idiom_blocks
 
     if not text or not text.strip():
         return [], []
     structured = parse_idiom_blocks(text)
-    raw_by_section = _parse_idioms_for_merge(text)
+    raw_ordered = _parse_idioms_raw_ordered(text)
     records: list[IdiomRecord] = []
     quarantined: list[str] = []
     taken_slugs: set[str] = set()
     rank = 0
-    for block in structured:
+    for idx, block in enumerate(structured):
         title = (block.get("slug") or "").strip()
         section = block.get("section") or "active"
-        raw = (raw_by_section.get(section, {}) or {}).get(title, "")
-        rank += 1
         rationale = (block.get("rationale") or "").strip() or (block.get("body") or "").strip()
-        if not title or not rationale:
-            if raw or title:
-                quarantined.append(raw or f"### {title}")
+        entry = raw_ordered[idx] if idx < len(raw_ordered) else None
+        if entry is None or entry.get("title") != title or entry.get("section") != section:
+            # The positional-alignment invariant does not hold at this index.
+            # Quarantine whatever raw text exists AT THIS POSITION (if any)
+            # rather than pair this block's metadata with a different block's
+            # raw text.
+            raw = entry.get("raw", "") if entry is not None else ""
+            quarantined.append(
+                raw or (f"### {title}\n{rationale}" if title else rationale) or "### (unparsed)"
+            )
             continue
-        hit, _label = _scan_suspicious(raw or rationale)
+        raw = entry.get("raw", "")
+        if not title or not rationale:
+            quarantined.append(raw or f"### {title}")
+            continue
+        hit, label = _scan_suspicious(raw)
         if hit:
-            quarantined.append(raw or f"### {title}\n{rationale}")
+            print(
+                f"chameleon: idiom {title!r} quarantined during import: matched {label!r} "
+                "(edit or re-teach it with safe prose)",
+                file=sys.stderr,
+            )
+            quarantined.append(raw)
             continue
         slug = slug_for_title(title)
         if slug in taken_slugs:
@@ -348,36 +373,42 @@ def records_from_markdown(text: str) -> tuple[list[IdiomRecord], list[str]]:
                 n += 1
             slug = f"{slug}-{n}"
         taken_slugs.add(slug)
-        lang_m = _LANGUAGE_LINE_RE.search(raw or "")
+        # Language:/Status: lines are metadata only in the PROSE region; a
+        # fenced example (worst on deprecated blocks, which have no real
+        # Language line) can contain the literal text "Language: python" as
+        # payload, not a real tag. Same sniff _render_stop_idioms uses.
+        pre_fence = raw.split("```", 1)[0]
+        lang_m = _LANGUAGE_LINE_RE.search(pre_fence)
         languages = []
         if lang_m:
             languages = [w.strip().lower() for w in lang_m.group(1).split(",") if w.strip()]
             if languages == ["any"]:
                 languages = []
         added, deprecated_on = "", ""
-        m = _STATUS_ACTIVE_RE.search(raw or "")
+        m = _STATUS_ACTIVE_RE.search(pre_fence)
         if m:
             added = m.group(1) or ""
-        m = _STATUS_DEPRECATED_RE.search(raw or "")
+        m = _STATUS_DEPRECATED_RE.search(pre_fence)
         if m:
             deprecated_on = m.group(1) or ""
         try:
-            records.append(
-                IdiomRecord(
-                    slug=slug,
-                    title=title,
-                    rationale=rationale,
-                    languages=languages,
-                    archetypes=[a for a in [block.get("archetype")] if a],
-                    status="deprecated" if section == "deprecated" else "active",
-                    added_date=added,
-                    deprecated_date=deprecated_on,
-                    examples=[e for e in [block.get("example") or ""] if e],
-                    counterexamples=[c for c in [block.get("counterexample") or ""] if c],
-                    provenance=(block.get("source") or "").strip(),
-                    rank=rank,
-                )
+            rec = IdiomRecord(
+                slug=slug,
+                title=title,
+                rationale=rationale,
+                languages=languages,
+                archetypes=[a for a in [block.get("archetype")] if a],
+                status="deprecated" if section == "deprecated" else "active",
+                added_date=added,
+                deprecated_date=deprecated_on,
+                examples=[e for e in [block.get("example") or ""] if e],
+                counterexamples=[c for c in [block.get("counterexample") or ""] if c],
+                provenance=(block.get("source") or "").strip(),
+                rank=rank + 1,
             )
         except ValueError:
-            quarantined.append(raw or f"### {title}\n{rationale}")
+            quarantined.append(raw)
+            continue
+        rank += 1
+        records.append(rec)
     return records, quarantined

@@ -1204,33 +1204,38 @@ def looks_like_idioms_markdown(text: str) -> bool:
     return re.search(r"(?m)^###\s+\S", text) is not None
 
 
-def _parse_idioms_for_merge(text: str) -> dict[str, dict[str, str]]:
-    """Parse idioms.md into {section: {slug: raw_block_text}} preserving the
-    raw rendered block (so a merge re-emits each idiom byte-for-byte). Insertion
-    order is preserved via the dict. Fence-aware so a `### slug` line inside an
-    example is not mistaken for a real block boundary."""
-    sections: dict[str, dict[str, str]] = {"active": {}, "deprecated": {}}
+def _parse_idioms_raw_ordered(text: str) -> list[dict]:
+    """Parse idioms.md into raw ``### title`` blocks in FILE ORDER, duplicate
+    titles preserved as separate entries: ``[{"section", "title", "raw"}, ...]``.
+
+    Fence-aware so a `### slug` line inside an example is not mistaken for a
+    real block boundary. Shares its block-boundary logic with
+    `parse_idiom_blocks` byte-for-byte (section headers, ### lines, fence
+    toggling) so a caller walking both outputs positionally can rely on the
+    two lists lining up index-for-index, even when two blocks share a title.
+    """
+    entries: list[dict] = []
     section = "active"
-    slug: str | None = None
+    title: str | None = None
     buf: list[str] = []
     in_fence = False
 
     def flush() -> None:
-        nonlocal slug, buf
-        if slug is not None and section in sections:
-            sections[section][slug] = "\n".join(buf).rstrip()
-        slug = None
+        nonlocal title, buf
+        if title is not None:
+            entries.append({"section": section, "title": title, "raw": "\n".join(buf).rstrip()})
+        title = None
         buf = []
 
     for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith("```"):
             in_fence = not in_fence
-            if slug is not None:
+            if title is not None:
                 buf.append(line)
             continue
         if in_fence:
-            if slug is not None:
+            if title is not None:
                 buf.append(line)
             continue
         if stripped == "## active":
@@ -1243,12 +1248,28 @@ def _parse_idioms_for_merge(text: str) -> dict[str, dict[str, str]]:
             continue
         if stripped.startswith("### "):
             flush()
-            slug = stripped[4:].strip()
+            title = stripped[4:].strip()
             buf = [line]
             continue
-        if slug is not None:
+        if title is not None:
             buf.append(line)
     flush()
+    return entries
+
+
+def _parse_idioms_for_merge(text: str) -> dict[str, dict[str, str]]:
+    """Parse idioms.md into {section: {slug: raw_block_text}} preserving the
+    raw rendered block (so a merge re-emits each idiom byte-for-byte).
+
+    A thin dict-ification of `_parse_idioms_raw_ordered`: iterating in file
+    order and overwriting on a repeated title is exactly last-wins, the same
+    semantics the union merge below has always relied on for a duplicate
+    slug.
+    """
+    sections: dict[str, dict[str, str]] = {"active": {}, "deprecated": {}}
+    for entry in _parse_idioms_raw_ordered(text):
+        if entry["section"] in sections:
+            sections[entry["section"]][entry["title"]] = entry["raw"]
     return sections
 
 
