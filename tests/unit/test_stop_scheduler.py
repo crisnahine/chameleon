@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -373,24 +374,65 @@ def test_try_acquire_job_slot_reclaims_stale_heartbeat(tmp_path):
 
 
 def test_try_acquire_job_slot_concurrent_exactly_one_wins(tmp_path):
-    """spec §10 double-spawn property test: N racing threads, exactly one wins."""
-    n = 8
-    barrier = threading.Barrier(n)
-    results: list[Path | None] = [None] * n
+    """spec §10 double-spawn property test: N racing threads, exactly one wins.
 
-    def worker(i: int) -> None:
-        barrier.wait()
-        results[i] = scheduler.try_acquire_job_slot(REPO_ID, "race-session")
+    Looped over fresh sessions at a tightened GIL switch interval because the
+    detected failure mode was a narrow window: the heartbeat file used to be
+    created AFTER update_session_doc returned (outside the flock), so a
+    concurrent acquirer taking the flock in that gap saw job_inflight set with
+    the heartbeat absent, read it as a dead job, and double-claimed. A single
+    barrier race almost never lands in the window (0 hits in 800 iterations at
+    default switching); 16 threads + 1us switching reproduced it within ~100
+    iterations against the racy shape.
+    """
+    n = 16
+    iterations = 60
+    old_interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        for it in range(iterations):
+            sid = f"race-session-{it}"
+            barrier = threading.Barrier(n)
+            results: list[Path | None] = [None] * n
 
-    threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+            def worker(i: int, sid: str = sid, barrier=barrier, results=results) -> None:
+                barrier.wait()
+                results[i] = scheduler.try_acquire_job_slot(REPO_ID, sid)
 
-    winners = [r for r in results if r is not None]
-    assert len(winners) == 1
-    assert read_session_doc(REPO_ID, "race-session").review_spawns == 1
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            winners = [r for r in results if r is not None]
+            assert len(winners) == 1, f"iteration {it}: {len(winners)} winners"
+            assert read_session_doc(REPO_ID, sid).review_spawns == 1
+    finally:
+        sys.setswitchinterval(old_interval)
+
+
+def test_heartbeat_exists_whenever_claim_is_committed(tmp_path, monkeypatch):
+    """Deterministic pin of the same double-claim class the loop above hunts
+    probabilistically: at the instant update_session_doc commits a doc with
+    job_inflight set, the heartbeat file must already exist. The racy shape
+    (heartbeat touched after the flock released) fails this on every run,
+    single-threaded -- no timing luck required."""
+    from chameleon_mcp.core import session_state
+
+    real = session_state.update_session_doc
+    violations: list[str] = []
+
+    def checked(repo_id, session_id, mutate):
+        doc = real(repo_id, session_id, mutate)
+        if doc.job_inflight and not Path(doc.job_inflight).exists():
+            violations.append(doc.job_inflight)
+        return doc
+
+    monkeypatch.setattr(session_state, "update_session_doc", checked)
+
+    assert scheduler.try_acquire_job_slot(REPO_ID, SID) is not None
+    assert violations == []
 
 
 # --- launch_job ------------------------------------------------------------------
@@ -485,6 +527,28 @@ def test_launch_job_unsupported_platform_never_falls_back_to_sync(tmp_path, monk
     # The failed launch left nothing behind: heartbeat gone, slot released.
     assert not heartbeat.exists()
     assert read_session_doc(REPO_ID, SID).job_inflight == ""
+
+
+@pytest.mark.real_judge_spawn
+def test_launch_job_request_write_failure_cleans_heartbeat(tmp_path, monkeypatch):
+    """A failed request-file write must leave nothing behind either: heartbeat
+    unlinked and slot released, same as a failed detach."""
+    heartbeat = scheduler.try_acquire_job_slot(REPO_ID, SID)
+    assert heartbeat is not None
+    request = _make_request(tmp_path, heartbeat)
+    monkeypatch.setattr(scheduler, "_write_request_file", lambda req: None)
+    popen_calls: list = []
+    monkeypatch.setattr(
+        scheduler.subprocess, "Popen", lambda *a, **k: popen_calls.append(1) or SimpleNamespace()
+    )
+
+    assert scheduler.launch_job(request) is False
+
+    assert popen_calls == []
+    assert not heartbeat.exists()
+    doc = read_session_doc(REPO_ID, SID)
+    assert doc.job_inflight == ""
+    assert doc.review_spawns == 0
 
 
 @pytest.mark.real_judge_spawn

@@ -391,6 +391,15 @@ def try_acquire_job_slot(repo_id: str, session_id: str) -> Path | None:
     budget -- a dead job never suppresses review for minutes"). The file name
     is stable per (repo_id, session_id), so reclaiming a stale slot re-touches
     the SAME path rather than minting a new one.
+
+    Ordering invariant: the heartbeat file is created INSIDE the mutate
+    callback (under the doc's flock), BEFORE the claim fields are set, so a
+    committed ``job_inflight`` always implies the heartbeat exists. Touching
+    it after ``update_session_doc`` returned left a window where a concurrent
+    acquirer took the flock, saw the claim with no heartbeat file, read it as
+    a dead job, and double-claimed -- one double billable spawn per hit
+    (reproduced at 16-thread contention). A failed touch raises out of the
+    callback, aborting the load-mutate-save cycle before anything commits.
     """
     from chameleon_mcp._thresholds import threshold_int
     from chameleon_mcp.core.session_state import update_session_doc
@@ -412,24 +421,27 @@ def try_acquire_job_slot(repo_id: str, session_id: str) -> Path | None:
         if live:
             acquired = False
             return
+        heartbeat_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        heartbeat_path.touch(exist_ok=True)  # updates mtime when reclaiming a stale slot
+        try:
+            os.chmod(heartbeat_path, 0o600)
+        except OSError:
+            pass
         doc.job_inflight = str(heartbeat_path)
         doc.job_started_at = now
         doc.review_spawns += 1
         acquired = True
 
-    update_session_doc(repo_id, session_id, _mutate)
-    if not acquired:
-        return None
-
     try:
-        heartbeat_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        heartbeat_path.touch(exist_ok=True)  # updates mtime even if it already exists
-        try:
-            os.chmod(heartbeat_path, 0o600)
-        except OSError:
-            pass
-    except OSError:
-        _release_job_slot(repo_id, session_id)
+        update_session_doc(repo_id, session_id, _mutate)
+    except Exception:
+        # A heartbeat-touch failure or a lock timeout aborted the cycle before
+        # the claim committed, so there is nothing to roll back. Deliberately
+        # no heartbeat unlink here: on a lock timeout the existing file may be
+        # a LIVE job's heartbeat, and unlinking it would get that job's slot
+        # reclaimed out from under it.
+        return None
+    if not acquired:
         return None
     return heartbeat_path
 
@@ -465,6 +477,13 @@ def _job_env() -> dict[str, str]:
     and the reviewer silently never fires on a non-API-key install. The one
     addition is ``CHAMELEON_DISABLE=1``, so the job's own `claude -p`
     reviewer spawns never recurse into chameleon's own hooks.
+
+    Forward contract for the job runner (``stop/job.py``): the flag exists
+    for the REVIEWER CHILDREN the job spawns, and the job process itself
+    inherits it -- so job.py must never consult the plugin's own optout
+    hierarchy (``is_chameleon_suppressed`` / the ``CHAMELEON_DISABLE`` env
+    check) as a run/skip gate, or every job would read its own environment
+    as "chameleon disabled" and silently self-disable.
     """
     env = dict(os.environ)
     env["CHAMELEON_DISABLE"] = "1"
@@ -543,7 +562,7 @@ def launch_job(request: JobRequest) -> bool:
 
     request_path = _write_request_file(request)
     if request_path is None:
-        _release_job_slot(request.repo_id, request.session_id)
+        _cleanup_failed_launch(None, request)
         return False
 
     detach_kwargs = _detach_kwargs(os.name)
@@ -568,11 +587,15 @@ def launch_job(request: JobRequest) -> bool:
     return True
 
 
-def _cleanup_failed_launch(request_path: Path, request: JobRequest) -> None:
-    try:
-        request_path.unlink(missing_ok=True)
-    except OSError:
-        pass
+def _cleanup_failed_launch(request_path: Path | None, request: JobRequest) -> None:
+    """Undo everything a failed launch left behind: request file (when it got
+    as far as being written), heartbeat file, and the session doc's slot claim
+    -- so a failed launch is indistinguishable from never having tried."""
+    if request_path is not None:
+        try:
+            request_path.unlink(missing_ok=True)
+        except OSError:
+            pass
     try:
         Path(request.heartbeat_path).unlink(missing_ok=True)
     except OSError:
