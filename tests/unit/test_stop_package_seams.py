@@ -66,3 +66,46 @@ def test_stop_gates_shim_signature_and_patchability():
         route.return_value = None
         # patched attribute must be what pipeline code resolves at call time
         assert hh._correctness_judge_route is route
+
+
+def test_multiroot_shims_signature_and_patchability():
+    # hook_helper._discover_stop_roots / _gate_one_root / _write_session_attestation
+    # are tiny wrapper FUNCTIONS (not `is`-identical aliases) that defer-import
+    # stop.pipeline and delegate -- pipeline.py must not be imported at
+    # hook_helper's top, so an `is`-identity assertion (the gates.py/advisories.py
+    # shape) does not apply here. The contract this pins instead: the frozen
+    # signature every existing call site depends on, AND that patching the
+    # hook_helper attribute is what a caller resolving it by module-global name
+    # (stop_backstop's per-root loop) actually sees.
+    import inspect
+
+    from chameleon_mcp import hook_helper as hh
+    from chameleon_mcp.stop import pipeline
+
+    assert list(inspect.signature(hh._discover_stop_roots).parameters) == list(
+        inspect.signature(pipeline.discover_stop_roots).parameters
+    )
+    assert list(inspect.signature(hh._gate_one_root).parameters) == list(
+        inspect.signature(pipeline.gate_one_root).parameters
+    )
+    assert list(inspect.signature(hh._write_session_attestation).parameters) == list(
+        inspect.signature(pipeline.write_session_attestation).parameters
+    )
+
+    # Patching hook_helper._gate_one_root by name intercepts stop_backstop's
+    # per-root loop, since it calls the module-global (not a bound closure).
+    with patch.object(hh, "_gate_one_root") as gate_mock:
+        gate_mock.return_value = {
+            "output": {},
+            "attest": False,
+            "gated": False,
+            "suppressed_reason": None,
+        }
+        with (
+            patch.object(hh, "_discover_stop_roots", return_value=[{"repo_id": "r"}]),
+            patch("sys.stdin"),
+            patch("chameleon_mcp.hook_helper._read_payload_dict", return_value={}),
+            patch("chameleon_mcp.hook_helper._emit"),
+        ):
+            hh.stop_backstop()
+        gate_mock.assert_called_once()

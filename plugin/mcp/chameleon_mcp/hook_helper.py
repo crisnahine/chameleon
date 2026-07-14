@@ -9485,168 +9485,22 @@ def _write_session_attestation(
     suppressed_reason: str | None,
     daemon_state: dict | None = None,
 ) -> None:
-    """Build and persist this session's Stop attestation. Strictly fail-open.
+    from chameleon_mcp.stop.pipeline import write_session_attestation
 
-    The attestation is self-signed and raise-only: nothing recorded in it may
-    ever lower scrutiny anywhere downstream; it exists only to RAISE gate depth
-    and make post-incident replay honest. It must never change the turn
-    outcome, so any exception is swallowed here (and again by the caller).
-    """
-    try:
-        payload = _build_session_attestation(
-            repo_root=repo_root,
-            repo_id=repo_id,
-            session_id=session_id,
-            repo_data=repo_data,
-            suppressed_reason=suppressed_reason,
-            daemon_state=daemon_state,
-        )
-        from chameleon_mcp.review_ledger import record_session_attestation
-
-        record_session_attestation(repo_id, payload)
-    except Exception:
-        pass
+    write_session_attestation(
+        repo_root=repo_root,
+        repo_id=repo_id,
+        session_id=session_id,
+        repo_data=repo_data,
+        suppressed_reason=suppressed_reason,
+        daemon_state=daemon_state,
+    )
 
 
 def _discover_stop_roots(cwd: Path, session_id) -> list[dict]:
-    """Every workspace root whose enforcement state was touched this session.
+    from chameleon_mcp.stop.pipeline import discover_stop_roots
 
-    Closes the coordinator-root dead spot: a session launched at a monorepo
-    coordinator (its cwd resolves to a profile-less git root, or edits landed in
-    sibling repos) has its per-edit state written under EACH edited file's own
-    workspace repo_id, not the cwd's. This globs the session-keyed state files
-    across every repo_id dir and regroups their recorded files by each file's
-    OWN ``find_repo_root``, so the Stop can gate every touched workspace against
-    its own profile instead of the one cwd resolves to.
-
-    Each state file's parent dir NAME is the authoritative repo_id (the dir the
-    armed state actually lives in). It is NOT recomputed via
-    ``_compute_repo_id(ws_root)`` -- a workspace's live git identity can shift
-    between the posttool write and the Stop (a remote added mid-session, a
-    transient ``git remote`` failure), which would point the gate at a different,
-    empty state dir and silently miss the armed block.
-
-    Returns an ordered list of dicts (armed-bearing roots first, then by
-    descending touched-file count, then path -- a deterministic tiebreak so the
-    single model-spawn budget and any replay are stable), each:
-    ``{"ws_root", "repo_id", "repo_data", "files": set[str], "has_armed": bool}``.
-    Fails open to the cwd root alone (or []) on any error.
-    """
-    from chameleon_mcp.optouts import _safe_session_marker
-    from chameleon_mcp.profile.loader import find_repo_root
-    from chameleon_mcp.tools import _compute_repo_id
-
-    groups: dict[str, dict] = {}
-
-    def _add(ws_root: Path, repo_id: str, repo_data: Path, *, path=None, armed=False):
-        try:
-            ws_key = str(ws_root.resolve())
-        except OSError:
-            ws_key = str(ws_root)
-        # Key by (repo_data, ws_root), NOT ws_root alone: if a workspace's git
-        # identity shifts mid-session (an origin remote added, a transient git
-        # failure changing the _compute_repo_id fallback), the same ws_root has
-        # armed state under TWO repo_data dirs. Keying by ws_root alone would
-        # collapse them and gate only the first dir's state, silently missing the
-        # other's armed block. A (repo_data, ws_root) key gates each contributing
-        # state file so every armed entry is re-linted. Normal topologies (one
-        # repo_data per ws_root) produce one group either way.
-        key = f"{repo_data}\x00{ws_key}"
-        g = groups.get(key)
-        if g is None:
-            g = {
-                "ws_root": ws_root,
-                "repo_id": repo_id,
-                "repo_data": repo_data,
-                "files": set(),
-                "has_armed": False,
-            }
-            groups[key] = g
-        if path is not None:
-            g["files"].add(path)
-        if armed:
-            g["has_armed"] = True
-
-    marker = _safe_session_marker(session_id)
-    # A degenerate empty/None session_id collapses to the shared "unknown" marker.
-    # Globbing that bucket would pull in unrelated repos' leftover "unknown" state
-    # (state files are never reaped), so restrict discovery to the cwd root only.
-    if marker != "unknown":
-        from chameleon_mcp.enforcement import load_state
-
-        try:
-            # Sorted so the discovered order (and, with the (repo_data, ws_root)
-            # keying above, which group a ws_root's files land in) is stable
-            # rather than filesystem glob-order dependent.
-            state_files = sorted(_plugin_data_dir().glob(f"*/.enforcement.{marker}.json"))
-        except OSError:
-            state_files = []
-        for sf in state_files:
-            repo_data = sf.parent
-            repo_id = repo_data.name
-            try:
-                st = load_state(repo_data, session_id or "")
-            except Exception:
-                continue
-            for path, fs in st.files.items():
-                try:
-                    ws = find_repo_root(Path(path))
-                except Exception:
-                    ws = None
-                if ws is None:
-                    continue
-                _add(
-                    ws,
-                    repo_id,
-                    repo_data,
-                    path=path,
-                    armed=bool(getattr(fs, "blockable_unresolved", False)),
-                )
-
-    # Always include the cwd root if it resolves + carries a profile, so the
-    # idiom review and attestation run for the primary repo even with zero armed
-    # files (today's behavior). A cwd root already grouped from a state file keeps
-    # that state file's authoritative repo_id.
-    try:
-        cwd_root = find_repo_root(cwd)
-    except Exception:
-        cwd_root = None
-    if cwd_root is not None:
-        try:
-            cwd_id = _compute_repo_id(cwd_root)
-            _add(cwd_root, cwd_id, _plugin_data_dir() / cwd_id)
-        except Exception:
-            pass
-
-    ordered = sorted(
-        groups.values(),
-        key=lambda g: (0 if g["has_armed"] else 1, -len(g["files"]), str(g["ws_root"])),
-    )
-    try:
-        from chameleon_mcp._thresholds import threshold_int
-
-        cap = threshold_int("STOP_MAX_ROOTS")
-    except Exception:
-        cap = 16
-    if len(ordered) > cap:
-        # No silent truncation of ENFORCEMENT: armed roots rank first, so the cap
-        # normally drops only advisory-only roots. But a session touching more
-        # than `cap` ARMED workspaces would leave the overflow ungated -- record a
-        # check event so a green Stop never reads as "every workspace was checked"
-        # when it was not. Best-effort; a telemetry failure must not break the Stop.
-        dropped = [g for g in ordered[cap:] if g["has_armed"]]
-        if dropped:
-            try:
-                _emit_check_event(
-                    dropped[0]["repo_id"],
-                    session_id,
-                    "stop_relint",
-                    "skipped",
-                    f"multiroot_cap_dropped_{len(dropped)}_armed",
-                )
-            except Exception:
-                pass
-    return ordered[:cap]
+    return discover_stop_roots(cwd, session_id)
 
 
 def _gate_one_root(
@@ -9659,55 +9513,17 @@ def _gate_one_root(
     only_files: set[str] | None,
     allow_model_spawn: bool,
 ) -> dict:
-    """Trust / suppression / stale gates + ``_stop_gates`` for one workspace.
+    from chameleon_mcp.stop.pipeline import gate_one_root
 
-    Returns ``{"output", "attest", "gated", "suppressed_reason"}``. ``gated`` is
-    False for an untrusted or stale grant -- that root is skipped entirely and,
-    matching today's single-root behavior, writes no attestation. A suppressed
-    (paused / session-disabled) root skips the gates (output {}) but still
-    attests, because the disable window is the scrutiny-relevant fact.
-    """
-    from chameleon_mcp.optouts import is_chameleon_suppressed
-    from chameleon_mcp.profile.trust import profile_diverged_from_grant, trust_state_for
-
-    ws_root = root["ws_root"]
-    repo_id = root["repo_id"]
-    repo_data = root["repo_data"]
-
-    rec = trust_state_for(repo_id)
-    # Per-root trust, never unioned: a grant on one workspace (or the coordinator)
-    # does not vouch for another workspace's unreviewed profile. grants_root
-    # resolves membership correctly even under a monorepo-shared repo_id.
-    if rec is None or not rec.grants_root(ws_root):
-        return {"output": {}, "attest": False, "gated": False, "suppressed_reason": None}
-    if profile_diverged_from_grant(rec, ws_root, _enf_profile_dir(ws_root)):
-        return {"output": {}, "attest": False, "gated": False, "suppressed_reason": None}
-
-    suppressed_reason = is_chameleon_suppressed(ws_root, repo_id, session_id)
-    if suppressed_reason is not None:
-        _emit_check_event(repo_id, session_id, "stop_relint", "skipped", "suppressed")
-        return {
-            "output": {},
-            "attest": True,
-            "gated": True,
-            "suppressed_reason": suppressed_reason,
-        }
-
-    try:
-        output = _stop_gates(
-            payload=payload,
-            repo_root=ws_root,
-            repo_id=repo_id,
-            session_id=session_id,
-            is_subagent=is_subagent,
-            repo_data=repo_data,
-            daemon_state=daemon_state,
-            only_files=only_files,
-            allow_model_spawn=allow_model_spawn,
-        )
-    except Exception:
-        output = {}
-    return {"output": output, "attest": True, "gated": True, "suppressed_reason": None}
+    return gate_one_root(
+        payload=payload,
+        root=root,
+        session_id=session_id,
+        is_subagent=is_subagent,
+        daemon_state=daemon_state,
+        only_files=only_files,
+        allow_model_spawn=allow_model_spawn,
+    )
 
 
 def stop_backstop() -> int:
