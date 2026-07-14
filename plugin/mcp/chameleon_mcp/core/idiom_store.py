@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sys
 from dataclasses import dataclass, field, fields
 from pathlib import Path
@@ -425,14 +426,27 @@ def _idioms_lock_path(profile_dir: Path, repo_id: str | None) -> Path:
 
 
 def _write_quarantine(profile_dir: Path, blocks: list[str]) -> None:
+    """Append newly-quarantined blocks to the review file, never overwrite it.
+
+    A migration and a later legacy-write re-import are independent quarantine
+    events; a prior batch is preserved verbatim until a human reviews it, so a
+    second event must not silently destroy the first (same "no silent drops"
+    contract records_from_markdown holds for the store itself).
+    """
     if not blocks:
         return
     path = store_dir(profile_dir) / _QUARANTINE_NAME
-    payload = (
-        "# quarantined idiom blocks (preserved verbatim; review and re-teach)\n\n"
-        + "\n\n".join(b.rstrip() for b in blocks)
-        + "\n"
-    )
+    try:
+        existing = path.read_text(encoding="utf-8")
+    except OSError:
+        existing = ""
+    new_section = "\n\n".join(b.rstrip() for b in blocks) + "\n"
+    if existing.strip():
+        payload = existing.rstrip("\n") + "\n\n" + new_section
+    else:
+        payload = (
+            "# quarantined idiom blocks (preserved verbatim; review and re-teach)\n\n" + new_section
+        )
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     tmp.write_text(payload, encoding="utf-8")
     os.replace(tmp, path)
@@ -468,16 +482,24 @@ def migrate_idioms_md(profile_dir: Path, *, repo_id: str | None) -> dict:
         except OSError:
             original = ""
         records, quarantined = records_from_markdown(original)
-        store_dir(profile_dir).mkdir(parents=True, exist_ok=True)
-        if original:
-            legacy = profile_dir / "idioms.md.legacy"
-            tmp = legacy.with_name(f"{legacy.name}.{os.getpid()}.tmp")
-            tmp.write_text(original, encoding="utf-8")
-            os.replace(tmp, legacy)
-        for rec in records:
-            upsert_idiom(profile_dir, rec)
-        _write_quarantine(profile_dir, quarantined)
-        regenerate_views(profile_dir)
+        try:
+            store_dir(profile_dir).mkdir(parents=True, exist_ok=True)
+            if original:
+                legacy = profile_dir / "idioms.md.legacy"
+                tmp = legacy.with_name(f"{legacy.name}.{os.getpid()}.tmp")
+                tmp.write_text(original, encoding="utf-8")
+                os.replace(tmp, legacy)
+            for rec in records:
+                upsert_idiom(profile_dir, rec)
+            _write_quarantine(profile_dir, quarantined)
+            regenerate_views(profile_dir)
+        except Exception:
+            # A half-written store would permanently short-circuit every future
+            # call through the store_exists() guard above -- roll back so a
+            # retry starts clean instead of silently losing the unwritten
+            # records forever.
+            shutil.rmtree(store_dir(profile_dir), ignore_errors=True)
+            raise
     n_in = len(records) + len(quarantined)
     print(
         f"chameleon: idioms migrated to .chameleon/idioms/ "
