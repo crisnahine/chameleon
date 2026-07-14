@@ -12249,7 +12249,8 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
             {"status": "failed", "error": "no .chameleon/ directory (run /chameleon-init first)"}
         )
 
-    lock_dir = _rdd(_compute_repo_id(repo_root))
+    repo_id = _compute_repo_id(repo_root)
+    lock_dir = _rdd(repo_id)
     try:
         with _bootstrap_write_locks(lock_dir):
             try:
@@ -12410,14 +12411,23 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
             idioms_path = profile_dir / "idioms.md"
             idioms_text = idioms_path.read_text(encoding="utf-8") if idioms_path.exists() else ""
 
-            # Rewrite taught-idiom archetype references so a rename does not leave a
-            # dangling "Archetype: <old>" pointing at an archetype that no longer exists.
-            for _old, _new in effective.items():
-                idioms_text = re.sub(
-                    rf"(?m)^Archetype: {re.escape(_old)}$",
-                    f"Archetype: {_new}",
-                    idioms_text,
-                )
+            from chameleon_mcp.core.idiom_store import store_exists as _idiom_store_exists
+
+            store_backed = _idiom_store_exists(profile_dir)
+            if not store_backed:
+                # Rewrite taught-idiom archetype references so a rename does not leave
+                # a dangling "Archetype: <old>" pointing at an archetype that no longer
+                # exists. Once the idiom store exists it is truth for archetype tags —
+                # rename_archetypes (called below, after this lock releases) rewrites
+                # the records and regenerates this view instead, so a store-backed
+                # repo skips this legacy markdown rewrite (it would otherwise be
+                # reverted by the next store write's regenerate_views()).
+                for _old, _new in effective.items():
+                    idioms_text = re.sub(
+                        rf"(?m)^Archetype: {re.escape(_old)}$",
+                        f"Archetype: {_new}",
+                        idioms_text,
+                    )
 
             summary_md = _rewrite_summary_md(
                 profile_data,
@@ -12514,6 +12524,16 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
             }
         )
 
+    if store_backed:
+        # Must run OUTSIDE _bootstrap_write_locks: that block already acquired
+        # .idioms.lock for the txn above, and rename_archetypes acquires the same
+        # per-repo lock itself (the pattern every other store writer uses). Calling
+        # it while still inside would re-enter an already-held advisory lock and
+        # block until its timeout instead of completing.
+        from chameleon_mcp.core.idiom_store import rename_archetypes
+
+        rename_archetypes(profile_dir, effective, repo_id=repo_id)
+
     # The rename rewrites canonicals.json (the witness set), so the block-rule
     # verdict in enforcement.json must be re-measured against the renamed profile;
     # otherwise it stays pinned to the pre-rename witnesses. Calibrate before the
@@ -12521,7 +12541,6 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
     # reflected in new_profile_sha256 and the index.db mirror.
     _calibrate_block_rules_for_repo(repo_root)
 
-    repo_id = _compute_repo_id(repo_root)
     new_hash = hash_profile(profile_dir)
     try:
         cached = index_db.get_repo(repo_id, repo_root_hint=str(repo_root)) or {}

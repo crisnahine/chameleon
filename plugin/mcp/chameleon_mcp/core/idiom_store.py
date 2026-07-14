@@ -787,3 +787,25 @@ def tombstone_record(profile_dir: Path, record: IdiomRecord, *, repo_id: str | N
         record.rank = min((r.rank for r in existing), default=1) - 1
         upsert_idiom(profile_dir, record)
         regenerate_views(profile_dir)
+
+
+def rename_archetypes(profile_dir: Path, renames: dict[str, str], *, repo_id: str | None) -> int:
+    """Rewrite record archetype tags after a profile-wide archetype rename.
+
+    The store is truth: without this, a rename is inert for idiom scoping and
+    the view reverts on the next regeneration. Returns records changed."""
+    from chameleon_mcp.locks import acquire_advisory_lock
+
+    if not store_exists(profile_dir) or not renames:
+        return 0
+    changed = 0
+    with acquire_advisory_lock(_idioms_lock_path(profile_dir, repo_id), blocking_timeout=10.0):
+        for rec in load_store(profile_dir):
+            new = [renames.get(a, a) for a in rec.archetypes]
+            if new != rec.archetypes:
+                rec.archetypes = new
+                upsert_idiom(profile_dir, rec)
+                changed += 1
+        if changed:
+            regenerate_views(profile_dir)
+    return changed
