@@ -621,3 +621,112 @@ def ensure_store_fresh(profile_dir: Path, *, repo_id: str | None) -> None:
         f"into the store ({len(quarantined)} quarantined)",
         file=sys.stderr,
     )
+
+
+def _norm_rationale(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+def teach_record(profile_dir: Path, record: IdiomRecord, *, repo_id: str | None) -> str:
+    """Add one idiom. Duplicate = same normalized rationale + same archetype set
+    among ACTIVE records (the dedup contract the markdown teach used)."""
+    from chameleon_mcp.locks import acquire_advisory_lock
+
+    with acquire_advisory_lock(_idioms_lock_path(profile_dir, repo_id), blocking_timeout=10.0):
+        existing = load_store(profile_dir)
+        want = (_norm_rationale(record.rationale), tuple(sorted(record.archetypes)))
+        for r in existing:
+            if r.status != "active":
+                continue
+            if (_norm_rationale(r.rationale), tuple(sorted(r.archetypes))) == want:
+                return "duplicate"
+        if find_by_slug(existing, record.slug) is not None:
+            n = 2
+            while find_by_slug(existing, f"{record.slug}-{n}") is not None:
+                n += 1
+            # Every caller sets title == slug before this rename fires; keep
+            # them matched so the rendered `### {title}` header agrees with
+            # the slug the record is actually addressed by afterward.
+            if record.title == record.slug:
+                record.title = f"{record.slug}-{n}"
+            record.slug = f"{record.slug}-{n}"
+        record.rank = min((r.rank for r in existing), default=1) - 1
+        upsert_idiom(profile_dir, record)
+        regenerate_views(profile_dir)
+    return "added"
+
+
+def deprecate_record(
+    profile_dir: Path,
+    slug: str,
+    *,
+    timestamp: str,
+    rationale: str = "",
+    example: str | None = None,
+    counterexample: str | None = None,
+    provenance: str | None = None,
+    repo_id: str | None,
+) -> str:
+    """Move a slug to deprecated, PRESERVING its body. The optional arguments
+    are appended as a deprecation note, never a replacement."""
+    from chameleon_mcp.locks import acquire_advisory_lock
+
+    with acquire_advisory_lock(_idioms_lock_path(profile_dir, repo_id), blocking_timeout=10.0):
+        records = load_store(profile_dir)
+        rec = find_by_slug(records, slug)
+        if rec is None or rec.status != "active":
+            return "absent"
+        rec.status = "deprecated"
+        rec.deprecated_date = timestamp
+        note = (rationale or "").strip()
+        if note and _norm_rationale(note) != _norm_rationale(rec.rationale):
+            rec.rationale = f"{rec.rationale.rstrip()}\n\nDeprecated: {note}"
+        if example:
+            rec.examples.append(example)
+        if counterexample:
+            rec.counterexamples.append(counterexample)
+        if provenance:
+            rec.provenance = provenance
+        upsert_idiom(profile_dir, rec)
+        regenerate_views(profile_dir)
+    return "deprecated"
+
+
+def reactivate_record(profile_dir: Path, slug: str, *, timestamp: str, repo_id: str | None) -> str:
+    from chameleon_mcp.locks import acquire_advisory_lock
+
+    with acquire_advisory_lock(_idioms_lock_path(profile_dir, repo_id), blocking_timeout=10.0):
+        records = load_store(profile_dir)
+        rec = find_by_slug(records, slug)
+        if rec is None or rec.status != "deprecated":
+            return "absent"
+        rec.status = "active"
+        rec.added_date = timestamp
+        rec.deprecated_date = ""
+        upsert_idiom(profile_dir, rec)
+        regenerate_views(profile_dir)
+    return "reactivated"
+
+
+def tombstone_record(profile_dir: Path, record: IdiomRecord, *, repo_id: str | None) -> None:
+    """Write a brand-new record directly as deprecated (a tombstone teach:
+    'never do X' recorded without ever having been active). No dedup — a
+    tombstone for an existing rationale is still a distinct decision."""
+    from chameleon_mcp.locks import acquire_advisory_lock
+
+    with acquire_advisory_lock(_idioms_lock_path(profile_dir, repo_id), blocking_timeout=10.0):
+        existing = load_store(profile_dir)
+        if find_by_slug(existing, record.slug) is not None:
+            n = 2
+            while find_by_slug(existing, f"{record.slug}-{n}") is not None:
+                n += 1
+            # Every caller sets title == slug before this rename fires; keep
+            # them matched so the rendered `### {title}` header agrees with
+            # the slug the record is actually addressed by afterward.
+            if record.title == record.slug:
+                record.title = f"{record.slug}-{n}"
+            record.slug = f"{record.slug}-{n}"
+        record.status = "deprecated"
+        record.rank = min((r.rank for r in existing), default=1) - 1
+        upsert_idiom(profile_dir, record)
+        regenerate_views(profile_dir)

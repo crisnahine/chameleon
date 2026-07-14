@@ -10690,7 +10690,7 @@ def teach_profile(repo: str, feedback: str, archetype: str | None = None) -> dic
     `suspicious_input: True` plus the matched pattern so the using-
     chameleon skill can surface a UI warning.
     """
-    from chameleon_mcp.locks import LockHeldError, acquire_advisory_lock
+    from chameleon_mcp.locks import LockHeldError
 
     # never-raise / fail-open contract: a malformed call could send feedback as a
     # list/dict, which the sanitize/regex path below would crash on.
@@ -10732,6 +10732,14 @@ def teach_profile(repo: str, feedback: str, archetype: str | None = None) -> dic
     _profile_dir = repo_path / ".chameleon"
     _was_trusted = _profile_trusted_now(_repo_id, _profile_dir)
 
+    try:
+        from chameleon_mcp.core.idiom_store import ensure_store_fresh, migrate_idioms_md
+
+        migrate_idioms_md(_profile_dir, repo_id=_repo_id)
+        ensure_store_fresh(_profile_dir, repo_id=_repo_id)
+    except Exception:
+        pass
+
     suspicious, suspicious_pattern = _looks_suspicious(feedback)
 
     sanitized = _sanitize_user_input(feedback)
@@ -10743,8 +10751,40 @@ def teach_profile(repo: str, feedback: str, archetype: str | None = None) -> dic
     body = _escape_markdown_section_headings(sanitized)
 
     timestamp = time.strftime("%Y-%m-%d", time.gmtime())
+
+    try:
+        from chameleon_mcp.safe_open import safe_read_profile_artifact
+
+        profile_data = json.loads(
+            safe_read_profile_artifact(repo_path / ".chameleon" / "profile.json")
+        )
+        language = profile_data.get("language", "any")
+    except Exception as exc:
+        import sys
+
+        print(
+            f"[chameleon] WARNING: profile.json read failed in teach_profile;"
+            f" defaulting language to 'any'. Detail: {exc}",
+            file=sys.stderr,
+        )
+        language = "any"
+
+    from chameleon_mcp.core.idiom_store import IdiomRecord, records_from_markdown, teach_record
+
     if body.lstrip().startswith("### "):
-        addition = f"\n{body.rstrip()}\n"
+        # Pre-rendered block (structured teach delegation, or a user-authored
+        # header in free-form feedback): parse it with the migration importer
+        # so the block's own metadata wins over the auto-derived fields.
+        parsed, rejected = records_from_markdown(f"# idioms\n\n## active\n\n{body.strip()}\n")
+        if not parsed:
+            return _envelope(
+                {"status": "failed", "error": "idiom block could not be parsed"}
+                if rejected
+                else {"status": "failed", "error": "feedback contained no idiom body"}
+            )
+        record = parsed[0]
+        if not record.languages and language != "any":
+            record.languages = [language]
     else:
         existing_text = idioms_path.read_text(encoding="utf-8") if idioms_path.exists() else ""
 
@@ -10780,125 +10820,28 @@ def teach_profile(repo: str, feedback: str, archetype: str | None = None) -> dic
             slug = _new_slug()
             if f"### {slug}\n" in existing_text or f"### {slug} " in existing_text:
                 slug = _new_slug()
-        try:
-            from chameleon_mcp.safe_open import safe_read_profile_artifact
-
-            profile_data = json.loads(
-                safe_read_profile_artifact(repo_path / ".chameleon" / "profile.json")
-            )
-            language = profile_data.get("language", "any")
-        except Exception as exc:
-            import sys
-
-            print(
-                f"[chameleon] WARNING: profile.json read failed in teach_profile;"
-                f" defaulting language to 'any'. Detail: {exc}",
-                file=sys.stderr,
-            )
-            language = "any"
         # An optional, recognized archetype scopes the idiom (P3 then surfaces it
         # first on that archetype's edits). An unrecognized value is dropped, not
         # erroring, so a typo leaves a general idiom rather than failing the teach.
         from chameleon_mcp.profile.schema import ARCHETYPE_NAME_RE
 
-        archetype_line = ""
-        if isinstance(archetype, str) and ARCHETYPE_NAME_RE.match(archetype.strip()):
-            archetype_line = f"Archetype: {archetype.strip()}\n"
-        addition = (
-            f"\n### {slug}\nLanguage: {language}\n{archetype_line}"
-            f"Status: active (added {timestamp})\n{body}\n"
+        record = IdiomRecord(
+            slug=slug,
+            title=slug,
+            rationale=body.strip(),
+            languages=[] if language == "any" else [language],
+            archetypes=(
+                [archetype.strip()]
+                if isinstance(archetype, str) and ARCHETYPE_NAME_RE.match(archetype.strip())
+                else []
+            ),
+            status="active",
+            added_date=timestamp,
+            rank=0,
         )
 
-    from chameleon_mcp.profile.trust import repo_data_dir as _rdd
-
-    lock_path = _rdd(_compute_repo_id(idioms_path.parent.parent)) / ".idioms.lock"
     try:
-        # Block-and-retry briefly on contention, matching every sibling idiom
-        # writer (refresh re-derive, structured deprecate, competing-import
-        # teach all pass blocking_timeout=10.0). Without it this free-form teach
-        # was the lone non-blocking idiom writer, so a second concurrent teach or
-        # a default-on background auto-refresh holding .idioms.lock failed the
-        # capture outright instead of waiting out the brief hold.
-        with acquire_advisory_lock(lock_path, blocking_timeout=10.0):
-            current = (
-                idioms_path.read_text(encoding="utf-8")
-                if idioms_path.exists()
-                else "# idioms\n\n## active\n\n## deprecated\n"
-            )
-            current = current.replace(
-                "_(no idioms yet — run /chameleon-teach to capture team conventions)_\n\n",
-                "",
-                1,
-            )
-            # Idempotency: an identical body already active must not be appended a
-            # second time. The slug guard above only avoids a duplicate `### slug`
-            # header, so re-teaching the exact same feedback (a user repeat or a
-            # skill retry) fell through to a fresh random slug and rendered the same
-            # idiom 2-3x in every injected Tier-2 block. The dedup keys on the
-            # (body, archetype) PAIR, not the body alone: a re-teach of the same
-            # rationale with a DIFFERENT archetype scope is a genuinely new idiom
-            # and must append, not no-op. Scoped to the ACTIVE section only -- a
-            # body under `## deprecated` SHOULD re-activate on a re-teach. The
-            # deprecated split anchors to a line start so a body that merely
-            # mentions `## deprecated` cannot truncate the active section early.
-            _active = current
-            _dep_idx = current.find("\n## deprecated")
-            if _dep_idx != -1:
-                _active = current[:_dep_idx]
-            _dup = False
-            if body.strip():
-                if body.lstrip().startswith("### "):
-                    # Structured path: `body` is the whole rendered block (its own
-                    # `### ` header + Language/Status/any Archetype line), so an
-                    # exact block match IS the identity. A raw containment check is
-                    # right here -- the block is long and self-delimited.
-                    _dup = f"\n{body.rstrip()}\n" in _active
-                else:
-                    # Free-form path: the identity is the (body, archetype) PAIR --
-                    # `archetype_line` is a separate line the else-branch above set,
-                    # so a re-teach of the same rationale scoped to a DIFFERENT
-                    # archetype is a new idiom and must append, not no-op. Walk each
-                    # active idiom block (split on the `### ` header); a block whose
-                    # newline-bounded `\n{body}\n` matches (so a SHORT body cannot
-                    # collide with a fragment of an unrelated idiom) AND whose
-                    # archetype scoping matches is the duplicate.
-                    _body_block = f"\n{body}\n"
-                    _want_arch = archetype_line.strip()  # "Archetype: <name>" or ""
-                    for _block in _active.split("\n### "):
-                        if _body_block not in f"\n{_block}\n":
-                            continue
-                        _block_has_arch = "\nArchetype: " in f"\n{_block}"
-                        if (_want_arch and _want_arch in _block) or (
-                            not _want_arch and not _block_has_arch
-                        ):
-                            _dup = True
-                            break
-            if _dup:
-                return _envelope(
-                    {
-                        "status": "success",
-                        "already_present": True,
-                        "note": "an identical idiom is already active; not duplicated.",
-                    }
-                )
-            if "## active" in current:
-                new_content = current.replace("## active\n", f"## active\n{addition}", 1)
-            else:
-                new_content = current + addition
-            if len(new_content.encode("utf-8")) > _IDIOMS_FILE_CAP:
-                return _envelope(
-                    {
-                        "status": "failed",
-                        "error": (
-                            f"idioms.md would exceed {_IDIOMS_FILE_CAP // 1000}KB "
-                            f"cumulative cap ({len(new_content.encode('utf-8'))} bytes "
-                            f"after append). Move older idioms to '## deprecated', "
-                            f"trim the file, or run /chameleon-refresh before "
-                            f"capturing more."
-                        ),
-                    }
-                )
-            _write_idioms_atomic(idioms_path, new_content)
+        outcome = teach_record(_profile_dir, record, repo_id=_repo_id)
     except LockHeldError as e:
         return _envelope(
             {
@@ -10906,6 +10849,14 @@ def teach_profile(repo: str, feedback: str, archetype: str | None = None) -> dic
                 "error": (
                     f"another operation holds the idioms lock (PID {e.holder_pid}); retry shortly"
                 ),
+            }
+        )
+    if outcome == "duplicate":
+        return _envelope(
+            {
+                "status": "success",
+                "already_present": True,
+                "note": "an identical idiom is already active; not duplicated.",
             }
         )
 
@@ -13194,6 +13145,15 @@ def teach_profile_structured(
             {"status": "failed", "error": "no profile in this repo (run /chameleon-init)"}
         )
 
+    profile_dir = repo_path / ".chameleon"
+    try:
+        from chameleon_mcp.core.idiom_store import ensure_store_fresh, migrate_idioms_md
+
+        migrate_idioms_md(profile_dir, repo_id=_repo_id)
+        ensure_store_fresh(profile_dir, repo_id=_repo_id)
+    except Exception:
+        pass
+
     try:
         from chameleon_mcp.safe_open import safe_read_profile_artifact
 
@@ -13212,68 +13172,128 @@ def teach_profile_structured(
         language = "any"
     rendered = rendered.replace(f"### {slug}\n", f"### {slug}\nLanguage: {language}\n", 1)
 
-    sections = _find_all_slug_sections(idioms_path, slug)
-    in_active = "active" in sections
-    in_deprecated = "deprecated" in sections
+    from chameleon_mcp.core.idiom_store import (
+        deprecate_record,
+        find_by_slug,
+        load_store,
+        reactivate_record,
+    )
+    from chameleon_mcp.locks import LockHeldError
 
-    if in_deprecated:
-        return _envelope(
-            {
-                "status": "failed",
-                "error": (
-                    f"slug {slug!r} already exists in '## deprecated'. Pick a "
-                    "new slug or edit idioms.md directly to reactivate."
-                ),
-            }
-        )
-    if in_active and status == "active":
-        return _envelope(
-            {
-                "status": "failed",
-                "error": (
-                    f"slug {slug!r} already exists in '## active'. To "
-                    'deprecate it, pass status="deprecated"; to update its '
-                    "body, edit idioms.md directly or pick a new slug."
-                ),
-            }
-        )
-    # The deprecated-idiom paths write idioms.md directly (the active path
-    # delegates to teach_profile, which preserves trust on its own). Capture
-    # trust before the write and re-grant on success so deprecating an idiom does
-    # not stale the user's own trust.
-    profile_dir = repo_path / ".chameleon"
-    if in_active and status == "deprecated":
-        was_trusted = _profile_trusted_now(_repo_id, profile_dir)
-        result = _transition_slug_to_deprecated(
-            idioms_path,
-            slug,
-            archetype=archetype,
-            rationale=rationale.strip(),
-            timestamp=timestamp,
-            example=example,
-            counterexample=counterexample,
-            source=clean_source or None,
-        )
-        if result.get("data", {}).get("status") == "success":
+    existing = find_by_slug(load_store(profile_dir), slug)
+    timestamp_now = timestamp
+    try:
+        if existing is not None and existing.status == "active" and status == "active":
+            return _envelope(
+                {
+                    "status": "failed",
+                    "error": (
+                        f"slug {slug!r} already exists in '## active'. To "
+                        'deprecate it, pass status="deprecated"; to update its '
+                        "body, edit idioms.md directly or pick a new slug."
+                    ),
+                }
+            )
+        if existing is not None and status == "deprecated":
+            was_trusted = _profile_trusted_now(_repo_id, profile_dir)
+            # Same sanitization the tombstone (new-deprecated-slug) path and
+            # teach_profile apply before anything reaches the store: a
+            # deprecation note is echoed back into the model's context inside
+            # a <chameleon-context> wrapper just like an active idiom is.
+            dep_rationale, dep_example, dep_counterexample = _sanitize_idiom_inputs(
+                rationale, example, counterexample
+            )
+            outcome = deprecate_record(
+                profile_dir,
+                slug,
+                timestamp=timestamp_now,
+                rationale=dep_rationale,
+                example=dep_example,
+                counterexample=dep_counterexample,
+                provenance=clean_source or None,
+                repo_id=_repo_id,
+            )
+            if outcome == "absent":
+                return _envelope(
+                    {
+                        "status": "failed",
+                        "error": f"slug {slug!r} is not active; nothing to deprecate",
+                    }
+                )
             _regrant_trust_if_was_trusted(was_trusted, _repo_id, profile_dir)
-        return result
+            _notify_daemon_cache_invalidation()
+            return _envelope(
+                {
+                    "status": "success",
+                    "idioms_added": 0,
+                    "idioms_deprecated": 1,
+                    "slug": slug,
+                    "note": f"moved '### {slug}' from '## active' to '## deprecated'",
+                }
+            )
+        if existing is not None and existing.status == "deprecated" and status == "active":
+            was_trusted = _profile_trusted_now(_repo_id, profile_dir)
+            reactivate_record(profile_dir, slug, timestamp=timestamp_now, repo_id=_repo_id)
+            _regrant_trust_if_was_trusted(was_trusted, _repo_id, profile_dir)
+            _notify_daemon_cache_invalidation()
+            return _envelope(
+                {
+                    "status": "success",
+                    "idioms_added": 1,
+                    "idioms_deprecated": 0,
+                    "slug": slug,
+                    "note": f"reactivated '### {slug}'",
+                }
+            )
+    except LockHeldError as e:
+        return _envelope(
+            {
+                "status": "failed",
+                "error": (
+                    f"another operation holds the idioms lock (PID {e.holder_pid}); retry shortly"
+                ),
+            }
+        )
 
+    # New slug: active goes through teach_profile (keeps sanitize/dedup/trust in
+    # one place); new deprecated slug writes a tombstone record directly.
     if status == "active":
         return teach_profile(repo, rendered)
-    was_trusted = _profile_trusted_now(_repo_id, profile_dir)
-    result = _write_new_deprecated_idiom(
-        idioms_path,
-        slug,
-        archetype=archetype,
-        rationale=rationale.strip(),
-        timestamp=timestamp,
-        example=example,
-        counterexample=counterexample,
-        source=clean_source or None,
+    s_rationale, s_example, s_counterexample = _sanitize_idiom_inputs(
+        rationale, example, counterexample
     )
-    if result.get("data", {}).get("status") == "success":
-        _regrant_trust_if_was_trusted(was_trusted, _repo_id, profile_dir)
-    return result
+    was_trusted = _profile_trusted_now(_repo_id, profile_dir)
+    try:
+        from chameleon_mcp.core.idiom_store import IdiomRecord, tombstone_record
+
+        tombstone_record(
+            profile_dir,
+            IdiomRecord(
+                slug=slug,
+                title=slug,
+                rationale=s_rationale,
+                archetypes=[archetype] if archetype else [],
+                status="deprecated",
+                deprecated_date=timestamp_now,
+                examples=[e for e in [s_example] if e],
+                counterexamples=[c for c in [s_counterexample] if c],
+                provenance=clean_source,
+                rank=0,
+            ),
+            repo_id=_repo_id,
+        )
+    except LockHeldError as e:
+        return _envelope(
+            {
+                "status": "failed",
+                "error": (
+                    f"another operation holds the idioms lock (PID {e.holder_pid}); retry shortly"
+                ),
+            }
+        )
+    _regrant_trust_if_was_trusted(was_trusted, _repo_id, profile_dir)
+    _notify_daemon_cache_invalidation()
+    return _envelope({"status": "success", "idioms_added": 0, "idioms_deprecated": 1, "slug": slug})
 
 
 def _find_all_slug_sections(idioms_path: Path, slug: str) -> frozenset[str]:
