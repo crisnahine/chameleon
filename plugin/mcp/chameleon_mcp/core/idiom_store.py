@@ -80,11 +80,26 @@ class IdiomRecord:
 
     @classmethod
     def from_dict(cls, data: dict) -> IdiomRecord:
+        if not isinstance(data, dict):
+            raise ValueError(f"idiom record root must be an object, got {type(data).__name__}")
         known = {f.name for f in fields(cls)}
         kwargs = {k: v for k, v in data.items() if k in known}
         for name in ("languages", "archetypes", "paths", "examples", "counterexamples"):
             v = kwargs.get(name)
             kwargs[name] = [str(x) for x in v] if isinstance(v, list) else []
+        for name in (
+            "title",
+            "rationale",
+            "provenance",
+            "evidence",
+            "added_date",
+            "deprecated_date",
+            "status",
+            "source",
+            "slug",
+        ):
+            if name in kwargs and kwargs[name] is not None:
+                kwargs[name] = str(kwargs[name])
         rank = kwargs.get("rank")
         kwargs["rank"] = rank if isinstance(rank, int) and not isinstance(rank, bool) else 0
         return cls(**kwargs)
@@ -102,7 +117,14 @@ def _scan_suspicious(text: str) -> tuple[bool, str | None]:
 
 def _record_scan_text(rec: IdiomRecord) -> str:
     return "\n".join(
-        [rec.title, rec.rationale, rec.provenance, *rec.examples, *rec.counterexamples]
+        [
+            rec.title,
+            rec.rationale,
+            rec.provenance,
+            rec.evidence,
+            *rec.examples,
+            *rec.counterexamples,
+        ]
     )
 
 
@@ -122,13 +144,13 @@ def load_store(profile_dir: Path) -> list[IdiomRecord]:
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
             rec = IdiomRecord.from_dict(raw)
-        except (OSError, json.JSONDecodeError, ValueError, TypeError) as exc:
+            hit, label = _scan_suspicious(_record_scan_text(rec))
+        except Exception as exc:
             print(
                 f"chameleon: idiom file skipped ({path.name}): {exc}",
                 file=sys.stderr,
             )
             continue
-        hit, label = _scan_suspicious(_record_scan_text(rec))
         if hit:
             print(
                 f"chameleon: idiom '{rec.slug}' dropped from context: matched {label!r} "
@@ -150,6 +172,8 @@ def find_by_slug(records: list[IdiomRecord], slug: str) -> IdiomRecord | None:
 
 def upsert_idiom(profile_dir: Path, record: IdiomRecord) -> None:
     """Atomic per-file write. Callers hold the store lock and regenerate views."""
+    if not _SLUG_RE.match(record.slug):
+        raise ValueError(f"invalid idiom slug: {record.slug!r}")
     sdir = store_dir(profile_dir)
     sdir.mkdir(parents=True, exist_ok=True)
     path = sdir / f"{record.slug}.json"
