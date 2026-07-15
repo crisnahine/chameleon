@@ -1917,36 +1917,23 @@ def session_start() -> int:
                 # HIGHER-authority channel at session load — re-injecting it
                 # here doubles several KB of context for a strictly weaker
                 # delivery (migration A/B 2026-07-11: 10/10 via the memory
-                # channel vs 4/10 as hook context). Replace the block with a
-                # one-line pointer, but ONLY when the swap is lossless: every
-                # non-empty line this block would inject must already appear
-                # in the text the import ACTUALLY delivers (resolved the way
-                # Claude Code resolves it), so a pre-3.1.0 mirror missing the
-                # principles sections, a content-stale mirror, or a worktree
-                # whose import target is not materialized all keep the full
-                # injection. The non-empty guard keeps an empty line set from
-                # vacuously passing. Fail-open: any doubt keeps the full
-                # injection.
+                # channel vs 4/10 as hook context). Drop only what the mirror
+                # ACTUALLY delivers and keep everything else, PER ITEM rather
+                # than all-or-nothing: a pre-3.1.0 mirror missing the
+                # principles sections still gets those sections injected (the
+                # rest collapses to a pointer), and a content-stale mirror
+                # missing one newer rule line gets exactly that line, not the
+                # whole block. See _dedupe_conventions_block. Fail-open: any
+                # doubt or error keeps the full injection.
                 try:
                     if (
                         conventions_block
                         and os.environ.get("CHAMELEON_MEMORY_CHANNEL_DEDUP", "1") != "0"
                         and repo_root is not None
                     ):
-                        _delivered = _wired_mirror_text(repo_root)
-                        _lines = [
-                            ln.strip()
-                            for ln in conventions_block.splitlines()
-                            if ln.strip()
-                            and ln.strip()
-                            not in ("<chameleon-conventions>", "</chameleon-conventions>")
-                        ]
-                        if _delivered.strip() and _lines and all(ln in _delivered for ln in _lines):
-                            conventions_block = (
-                                "Project conventions, principles, and team idioms "
-                                "load through your @.chameleon/conventions.md "
-                                "import; follow them as project instructions."
-                            )
+                        conventions_block = _dedupe_conventions_block(
+                            conventions_block, _wired_mirror_text(repo_root)
+                        )
                 except Exception:
                     pass
     except Exception:
@@ -7249,6 +7236,125 @@ def _wired_mirror_text(repo_root: Path) -> str:
         text_out = ""
     _WIRED_MIRROR_CACHE[key] = text_out
     return text_out
+
+
+_CONVENTIONS_WRAPPER_TAGS = ("<chameleon-conventions>", "</chameleon-conventions>")
+
+_MEMORY_CHANNEL_POINTER_FULL = (
+    "Project conventions, principles, and team idioms "
+    "load through your @.chameleon/conventions.md "
+    "import; follow them as project instructions."
+)
+
+_MEMORY_CHANNEL_POINTER_PARTIAL = (
+    "Some project conventions, principles, and team idioms already "
+    "load through your @.chameleon/conventions.md import; the rest "
+    "follow below as project instructions."
+)
+
+
+def _split_conventions_block_units(body_lines: list[str]) -> list[list[str]]:
+    """Split a conventions block's body (wrapper tags stripped) into the
+    blank-line-delimited units `format_conventions_for_session` renders: the
+    intro preamble (title + framing paragraph) and each labeled section
+    (header line followed by its bullets).
+    """
+    units: list[list[str]] = []
+    current: list[str] = []
+    for ln in body_lines:
+        if ln.strip():
+            current.append(ln)
+        elif current:
+            units.append(current)
+            current = []
+    if current:
+        units.append(current)
+    return units
+
+
+def _prune_conventions_unit(unit: list[str], delivered_lines: set[str]) -> list[str]:
+    """Return the subset of one preamble/section unit not already delivered.
+
+    `delivered_lines` is the SET of stripped non-empty lines the wired mirror
+    carries. Coverage is exact-line membership against that set, never a
+    substring test: the mirror is rendered by the same block formatter, so a
+    genuinely-delivered bullet round-trips verbatim, while a stale/renamed
+    value ("- Prefer ./api" vs the mirror's "- Prefer ./apiV2") correctly
+    reads as NOT delivered instead of a false substring hit that would drop a
+    line the mirror never actually carried.
+
+    A header+bullets section (every line after the first starts with "- ")
+    drops individually-covered bullets but keeps its header attached to any
+    bullet that survives — an orphan bullet with no header would read as
+    broken output, not a dedup. Bullets are pruned only when the mirror
+    genuinely carries THIS section, proven by its header line also appearing
+    in `delivered_lines`: a real `render_conventions_md` mirror always emits
+    the section header, so legitimate dedup is unchanged, but a bullet that
+    only floats in unrelated mirror prose — a hand-authored "deprecated /
+    rejected" decoy reciting a still-current rule to suppress its hook
+    re-injection — is NOT the mirror delivering that section, so the section
+    survives whole. The header gate only ever keeps MORE, never drops more,
+    so losslessness is strengthened, not relaxed. A non-bullet unit (the
+    intro preamble) is atomic: it survives whole if any of its lines are
+    missing, never split mid-sentence.
+    """
+    stripped = [ln.strip() for ln in unit]
+    if len(unit) >= 2 and all(s.startswith("- ") for s in stripped[1:]):
+        if stripped[0] not in delivered_lines:
+            return list(unit)
+        header = unit[0]
+        missing = [
+            item for item, s in zip(unit[1:], stripped[1:], strict=True) if s not in delivered_lines
+        ]
+        return [header, *missing] if missing else []
+    return [] if all(s in delivered_lines for s in stripped) else list(unit)
+
+
+def _dedupe_conventions_block(conventions_block: str, delivered: str) -> str:
+    """Per-item memory-channel dedup: inject only what `delivered` doesn't
+    already carry, keeping the rest as a pointer — never all-or-nothing.
+
+    Lossless at line granularity: a bullet is dropped from the fresh
+    injection ONLY when that EXACT line already appears (as its own line) in
+    the text the wired mirror import delivers AND the mirror also carries
+    that bullet's section header — flat line membership alone is not enough,
+    so a bullet reproduced out of section in unrelated mirror prose does not
+    suppress it (see _prune_conventions_unit). Every other line — an entire
+    missing section (a pre-3.1.0 mirror lacking PRINCIPLES), one new bullet
+    in an otherwise-synced section (a content-stale mirror), or a renamed
+    value whose fresh line merely shares a prefix with a mirror line —
+    survives, with its section header kept attached rather than emitted as
+    an orphan bullet. Returns the pointer alone when everything is covered
+    (the historical all-or-nothing outcome), the untouched input when
+    nothing overlaps (dedup bought nothing, so there is nothing to point at
+    — same outcome as an unwired repo), or a pointer plus the surviving,
+    re-wrapped subset otherwise. `delivered` empty/blank (no wiring, no
+    target, a read error) short-circuits to the untouched input, matching
+    the pre-per-item gate.
+    """
+    if not delivered.strip():
+        return conventions_block
+    delivered_lines = {s for ln in delivered.splitlines() if (s := ln.strip())}
+    body = [
+        ln for ln in conventions_block.splitlines() if ln.strip() not in _CONVENTIONS_WRAPPER_TAGS
+    ]
+    units = _split_conventions_block_units(body)
+    if not units:
+        return conventions_block
+    survivors = [_prune_conventions_unit(u, delivered_lines) for u in units]
+    total_before = sum(len(u) for u in units)
+    total_after = sum(len(s) for s in survivors)
+    if total_after == total_before:
+        return conventions_block
+    if total_after == 0:
+        return _MEMORY_CHANNEL_POINTER_FULL
+    partial_body: list[str] = []
+    for surviving_unit in (s for s in survivors if s):
+        if partial_body:
+            partial_body.append("")
+        partial_body.extend(surviving_unit)
+    partial = "\n".join([_CONVENTIONS_WRAPPER_TAGS[0], *partial_body, _CONVENTIONS_WRAPPER_TAGS[1]])
+    return _MEMORY_CHANNEL_POINTER_PARTIAL + "\n\n" + partial
 
 
 # SessionStart-time snapshot of the idiom names the wired mirror DELIVERED to

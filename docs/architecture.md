@@ -677,10 +677,14 @@ banner and the other hooks fail open silently and log a `no-interpreter` line.
   `.chameleon/conventions.md` into the memory channel — detected
   delivery-faithfully: code fences/inline code spans are ignored and the
   import path must resolve (relative to its containing file) to an existing
-  mirror — the block is replaced by a one-line pointer instead of being
-  injected twice, gated on every line of the would-be block already appearing
-  in the delivered text; kill switch
-  `CHAMELEON_MEMORY_CHANNEL_DEDUP=0`. It appends a drift banner when
+  mirror — the block drops PER ITEM whatever line the mirror already
+  delivers and keeps only what it doesn't (a missing whole section still
+  injects in full; a bullet is dropped only when its exact line AND its
+  section header are both in the mirror, so an out-of-section recital in a
+  decoy mirror cannot suppress a current rule; a header stays attached to
+  any surviving bullet under it), collapsing to a one-line pointer only when
+  every line is already covered, instead of injecting everything twice; kill
+  switch `CHAMELEON_MEMORY_CHANNEL_DEDUP=0`. It appends a drift banner when
   warranted, runs the default-on auto-refresh, and
   fires the advisor daemon asynchronously. It also wires the status line: when
   neither the project's `settings.json` nor the global `~/.claude/settings.json`
