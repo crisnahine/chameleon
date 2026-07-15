@@ -592,7 +592,8 @@ def test_launch_job_env_disable_and_config_dir_inheritance(tmp_path, monkeypatch
     """BUG-J1: the child inherits the real CLAUDE_CONFIG_DIR unchanged, never
     an empty throwaway dir (which strips OAuth/subscription auth), plus
     CHAMELEON_DISABLE=1 so the job's own reviewer spawns never recurse."""
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/Users/dev/.claude")
+    config_dir = str(tmp_path / "user-config" / ".claude")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", config_dir)
     heartbeat = scheduler.try_acquire_job_slot(REPO_ID, SID)
     request = _make_request(tmp_path, heartbeat)
     captured: dict = {}
@@ -607,7 +608,7 @@ def test_launch_job_env_disable_and_config_dir_inheritance(tmp_path, monkeypatch
 
     env = captured["env"]
     assert env["CHAMELEON_DISABLE"] == "1"
-    assert env["CLAUDE_CONFIG_DIR"] == "/Users/dev/.claude"
+    assert env["CLAUDE_CONFIG_DIR"] == config_dir
     assert "chameleon-judge-" not in env.get("CLAUDE_CONFIG_DIR", "")
 
 
