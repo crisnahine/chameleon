@@ -11,6 +11,10 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field, fields
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from chameleon_mcp.judge import Finding as JudgeFinding
 
 KINDS: tuple[str, ...] = ("correctness", "duplication", "idiom", "intent", "advisory")
 SEVERITIES: tuple[str, ...] = ("blocker", "high", "medium", "low")
@@ -120,3 +124,70 @@ class Finding:
         kwargs["span"] = (int(span[0]), int(span[1]))
         kwargs["intent_tokens"] = tuple(kwargs.get("intent_tokens") or ())
         return cls(**kwargs)
+
+    @classmethod
+    def from_judge_finding(
+        cls,
+        jf: JudgeFinding,
+        *,
+        kind: str,
+        source_lens: str,
+        intent_tokens: tuple[str, ...] = (),
+        created_at: str,
+    ) -> Finding:
+        """Adapt a ``judge.Finding`` (message/confidence/file/line, plus the
+        pinned-evidence layer) into the canonical Finding every lens, VERIFY,
+        and the ledger now share.
+
+        ``severity`` has no source field on a judge finding -- it carries only
+        a 0..1 confidence -- so it is derived the same way the pre-existing
+        single-lens callers did (``stop/gates.py::_finding_severity``,
+        ``stop_verify.py::_severity_for``): confidence at or above 0.7 reads
+        "high", else "medium" (a lone correctness finding never reads "low").
+        Matching that threshold keeps ledger/resurface behavior identical for
+        the lens this adapter first serves.
+
+        ``evidence`` renders the finding's pinned ``evidence_cmds`` (each a
+        ``{"cmd", "output_sha256"}`` pair) into one line per command, or ""
+        when none were pinned -- the field is never hardcoded blank the way
+        the old ad hoc refuter-dict builder left it regardless of what
+        evidence existed. ``excerpt_sha`` carries over whatever the judge
+        finding already had pinned (usually none yet -- parsing never sets
+        it); ``excerpt`` (the raw text) is intentionally left "" here, since a
+        judge finding never carries excerpt text, only its hash -- a later
+        stage that reads the file (VERIFY) attaches the real text via
+        ``dataclasses.replace()``.
+        """
+        claim = str(getattr(jf, "message", "") or "").strip()
+        file = str(getattr(jf, "file", "") or "")
+        line = getattr(jf, "line", None)
+        span = (line, line) if isinstance(line, int) and not isinstance(line, bool) else (0, 0)
+        try:
+            confidence = float(getattr(jf, "confidence", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        confidence = max(0.0, min(1.0, confidence))
+        severity = normalize_severity("high" if confidence >= 0.7 else "medium")
+        evidence_cmds = getattr(jf, "evidence_cmds", None) or []
+        evidence = "; ".join(
+            f"{ec.get('cmd', '')} [output_sha256={ec.get('output_sha256', '')}]"
+            for ec in evidence_cmds
+            if isinstance(ec, dict)
+        )
+        excerpt_sha = str(getattr(jf, "excerpt_sha", "") or "")
+        return cls(
+            id=compute_match_key(claim, file, kind),
+            kind=kind,
+            severity=severity,
+            confidence=confidence,
+            file=file,
+            span=span,
+            claim=claim,
+            evidence=evidence,
+            excerpt_sha=excerpt_sha,
+            excerpt="",
+            source_lens=source_lens,
+            status="pending",
+            created_at=created_at,
+            intent_tokens=tuple(intent_tokens or ()),
+        )
