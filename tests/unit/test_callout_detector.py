@@ -152,7 +152,7 @@ def test_suppressed_session_writes_nothing(tmp_path):
 
 
 def test_hard_secret_prompt_persists_suppressed_only(tmp_path):
-    aws = "AKIAIOSFODNN7EXAMPLE"
+    aws = "AKIAIOSFODNN7EXAMPLE"  # chameleon-ignore secret-detected-in-content
     _run_with_repo(tmp_path, f'set the key to "{aws}" and retry 25 times')
     entries = _intent_entries(tmp_path)
     assert len(entries) == 1
@@ -252,13 +252,18 @@ def test_pending_findings_verify_ran_false_renders_no_banner(tmp_path):
     assert "[confirmed]" not in ctx
 
 
-def test_pending_findings_stale_digest_dropped(tmp_path):
+def test_pending_findings_stale_digest_annotated_not_dropped(tmp_path):
+    """FLIPPED (phase-3 task 6, spec section 5.4): a whole-file digest
+    mismatch used to silently drop the finding. "One policy at every
+    delivery point ... silent drops are removed" -- it now surfaces
+    annotated `[stale: code changed since review]` instead, the same
+    annotate-never-drop treatment the excerpt_sha path already had."""
     repo = tmp_path / "repo"
     (repo / "src").mkdir(parents=True, exist_ok=True)
     f = repo / "src" / "a.ts"
     f.write_text("export const x = 2\n", encoding="utf-8")
     # Recorded digest differs from the file's current content: the finding is
-    # stale (the file was edited after the review) and must not surface.
+    # stale (the file was edited after the review) and must surface, flagged.
     _seed_pending(
         tmp_path,
         findings=[{"file": "src/a.ts", "line": 1, "message": "stale", "confidence": 0.9}],
@@ -266,7 +271,10 @@ def test_pending_findings_stale_digest_dropped(tmp_path):
     )
 
     raw = _run_with_repo(tmp_path, "carry on please")
-    assert json.loads(raw) == {}
+    out = json.loads(raw)
+    ctx = out["hookSpecificOutput"]["additionalContext"]
+    assert "stale" in ctx
+    assert "stale: code changed since review" in ctx
     assert not _pending_path(tmp_path).exists()  # consumed either way
 
 

@@ -19,7 +19,7 @@ import pytest
 from chameleon_mcp import refuter, review_ledger
 from chameleon_mcp.core.finding import Finding
 from chameleon_mcp.core.session_state import read_session_doc
-from chameleon_mcp.stop import job, lenses, scheduler
+from chameleon_mcp.stop import assemble, job, lenses, scheduler
 from chameleon_mcp.stop.lenses import LensResult
 
 REPO_ID = "job-test-repo"
@@ -251,6 +251,93 @@ def test_job_does_not_self_disable_under_inherited_chameleon_disable(tmp_path, m
     # Findings were processed and persisted despite the inherited
     # CHAMELEON_DISABLE=1 -- job.py never reads it as a run/skip gate.
     assert len(_persisted_findings(repo)) == 1
+
+
+# --- delivery payload: written at job end (spec section 3.5) ----------------
+
+
+def test_run_writes_delivery_payload_from_persisted_findings(tmp_path, monkeypatch):
+    heartbeat = scheduler.try_acquire_job_slot(REPO_ID, SID)
+    request_path, repo = _write_request(tmp_path, heartbeat)
+
+    finding = _stub_finding(claim="payload-worthy finding")
+    monkeypatch.setattr(
+        lenses, "resolve_runner", lambda name: lambda *a, **k: LensResult(findings=[finding])
+    )
+    monkeypatch.setattr(refuter, "run_batch", lambda *a, **k: [{"id": "0", "verdict": "confirmed"}])
+
+    rc = job.main([str(request_path)])
+
+    assert rc == 0
+    from chameleon_mcp.profile.trust import repo_data_dir
+
+    payload = assemble.read_delivery_payload(repo_data_dir(REPO_ID), SID)
+    assert payload is not None
+    assert "payload-worthy finding" in payload
+
+
+def test_run_clears_stale_payload_when_nothing_is_undelivered(tmp_path, monkeypatch):
+    from chameleon_mcp.profile.trust import repo_data_dir
+
+    assemble.write_delivery_payload(repo_data_dir(REPO_ID), SID, "stale leftover text")
+    heartbeat = scheduler.try_acquire_job_slot(REPO_ID, SID)
+    request_path, _repo = _write_request(tmp_path, heartbeat)
+    monkeypatch.setattr(
+        lenses, "resolve_runner", lambda name: lambda *a, **k: LensResult(findings=[])
+    )
+
+    rc = job.main([str(request_path)])
+
+    assert rc == 0
+    assert assemble.read_delivery_payload(repo_data_dir(REPO_ID), SID) is None
+
+
+# --- item B: the job must always clear its slot, even on setup failure ------
+#
+# Everything between request-load and the try/finally (resolving the
+# heartbeat interval, constructing and starting the heartbeat thread) used to
+# live OUTSIDE the try/finally that clears the job slot. A failure there
+# (a bad threshold read, a thread the OS refused to start) skipped
+# clear_job_slot entirely and left the session's single-inflight slot wedged
+# until the heartbeat staleness window expired on its own.
+
+
+def test_thread_construction_failure_still_clears_the_job_slot(tmp_path, monkeypatch):
+    heartbeat = scheduler.try_acquire_job_slot(REPO_ID, SID)
+    assert heartbeat is not None
+    request_path, _repo = _write_request(tmp_path, heartbeat)
+
+    def _boom(*a, **k):
+        raise RuntimeError("thread construction exploded")
+
+    monkeypatch.setattr(job.threading, "Thread", _boom)
+
+    rc = job.main([str(request_path)])
+
+    assert rc == 0
+    doc = read_session_doc(REPO_ID, SID)
+    assert doc.job_inflight == ""  # slot cleared despite never reaching _run at all
+
+
+def test_threshold_lookup_failure_before_run_still_clears_the_job_slot(tmp_path, monkeypatch):
+    heartbeat = scheduler.try_acquire_job_slot(REPO_ID, SID)
+    assert heartbeat is not None
+    request_path, _repo = _write_request(tmp_path, heartbeat)
+
+    from chameleon_mcp import _thresholds
+
+    def _boom(name):
+        raise RuntimeError("threshold lookup exploded")
+
+    monkeypatch.setattr(_thresholds, "threshold_int", _boom)
+
+    rc = job.main([str(request_path)])
+
+    assert rc == 0
+    doc = read_session_doc(REPO_ID, SID)
+    assert doc.job_inflight == ""
+    events = _events()
+    assert any(e.get("status") == "run_error" for e in events)
 
 
 # --- scheduler.clear_job_slot: the deliberate divergence from _release_job_slot --

@@ -222,9 +222,12 @@ def test_delivery_drops_out_of_repo_path_without_reading(tmp_path):
     assert _pending_findings_block(repo, data, _SID) is None
 
 
-def test_delivery_no_excerpt_sha_keeps_whole_file_drop(tmp_path):
-    # The preserved conservative path: a finding WITHOUT a pinned excerpt is still
-    # dropped when its whole-file digest changed since review.
+def test_delivery_no_excerpt_sha_annotates_stale_not_dropped(tmp_path):
+    # FLIPPED (phase-3 task 6, spec section 5.4): a finding WITHOUT a pinned
+    # excerpt whose whole-file digest changed since review used to be dropped
+    # silently. "One policy at every delivery point ... silent drops are
+    # removed" -- it now surfaces annotated `[stale: code changed since
+    # review]` instead, the refuter stays the only dropper.
     repo = _repo_with_bug(tmp_path)
     data = tmp_path / "data"
     data.mkdir()
@@ -235,9 +238,12 @@ def test_delivery_no_excerpt_sha_keeps_whole_file_drop(tmp_path):
         {"file": "a.rb", "line": 3, "message": "z", "confidence": 0.9},
         digests={"a.rb": old},
     )
-    assert _pending_findings_block(repo, data, _SID) is None
+    block = _pending_findings_block(repo, data, _SID)
+    assert block is not None and "z" in block
+    assert "stale: code changed since review" in block
 
-    # ...and delivered clean when the whole-file digest still matches.
+    # ...and delivered clean (no stale tag) when the whole-file digest still
+    # matches.
     cur = hashlib.sha256((repo / "a.rb").read_bytes()[:1_000_000]).hexdigest()[:16]
     _write_pending(
         data,
@@ -246,6 +252,7 @@ def test_delivery_no_excerpt_sha_keeps_whole_file_drop(tmp_path):
     )
     block = _pending_findings_block(repo, data, _SID)
     assert block is not None and "z" in block
+    assert "stale" not in block.lower()
 
 
 def test_delivery_renders_suggested_fix(tmp_path):

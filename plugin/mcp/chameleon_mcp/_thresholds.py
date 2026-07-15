@@ -683,6 +683,30 @@ DEFAULTS: Final[dict[str, int | float]] = {
     "IDIOM_LENS_MAX_IDIOMS": 12,
     "IDIOM_LENS_MAX_PROMPT_BYTES": 60_000,
     "IDIOM_LENS_MAX_FINDINGS": 8,
+    # stop/assemble.py's greedy-pack ceiling for one UserPromptSubmit delivery
+    # emission, across every discovered workspace root (spec section 6: "One
+    # emission" -- not per-root). Provisional pending the full ranked
+    # block>resurfaced>delivered>advisory assembler; an item that does not fit
+    # whole is omitted from the render and stays `pending` for the next
+    # delivery point, never truncated mid-item.
+    "REVIEW_RENDER_TOKEN_CEILING": 800,
+    # SessionStart dead-session delivery's own, wider ceiling (spec section 6:
+    # SessionStart <= 2,500 tokens) -- a session opener reads more than a
+    # mid-turn nudge, and there is no 3s wrapper cap on this hook to protect.
+    "SESSION_START_DELIVERY_TOKEN_CEILING": 2_500,
+    # A ledger row's own owning session cannot be told apart from any other
+    # session on the row itself (findings are not session-keyed, only
+    # ws_root-keyed), so "from a dead session" is approximated by age: a row
+    # created at least this long ago has almost certainly already had its
+    # owning session's own next UserPromptSubmit fire (that delivery point
+    # always wins the race in normal use), so SessionStart is the right place
+    # to surface it now rather than risk a genuine double-delivery moments
+    # apart in the same still-live session.
+    "SESSION_START_DEAD_FINDING_MIN_AGE_SECONDS": 120,
+    # CHAMELEON_JUDGE_WAIT poll cadence: how often the harness/eval Stop path
+    # rechecks the detached job's session-doc slot / heartbeat while waiting
+    # for it to finish inside the remaining hook budget (spec section 3.1).
+    "JUDGE_WAIT_POLL_INTERVAL_SECONDS": 1.0,
 }
 
 

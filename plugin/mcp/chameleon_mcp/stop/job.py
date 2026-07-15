@@ -216,6 +216,43 @@ def _persist(request: JobRequest, findings: list[Finding]) -> None:
         _checkpoint(request, "persist_error", reason=repr(exc)[:200])
 
 
+def _write_delivery_payload(request: JobRequest) -> None:
+    """Pre-render this job's repo's undelivered findings into the delivery
+    payload cache (spec section 3.5), so a later UserPromptSubmit read under
+    the callout-detector wrapper's 3s cap only ever pays for a file read.
+
+    Renders the FULL current ``undelivered_findings`` snapshot for
+    ``request.repo_root`` -- not just this run's own new findings -- so the
+    cache always reflects everything still pending for this workspace, not
+    a delta (``stop/delivery.py``'s ``deliver_for_root`` depends on that
+    invariant to mark delivered correctly from a cheap live re-query rather
+    than needing match_keys threaded through the cached text itself). An
+    empty snapshot writes/clears an empty payload rather than leaving a
+    stale render in place. Fail-open: any exception here only costs the
+    fast-path cache, never the job's own persisted findings.
+    """
+    try:
+        from chameleon_mcp._thresholds import threshold_int
+        from chameleon_mcp.profile.trust import repo_data_dir
+        from chameleon_mcp.review_ledger import undelivered_findings
+        from chameleon_mcp.stop.assemble import render_findings, write_delivery_payload
+        from chameleon_mcp.stop.delivery import _annotate_staleness, _delivery_header
+
+        live = undelivered_findings(request.repo_id, ws_roots=[str(request.repo_root)])
+        text = ""
+        if live:
+            live = _annotate_staleness(request.repo_root, live)
+            rendered = render_findings(
+                live,
+                header=_delivery_header(len(live)),
+                ceiling_tokens=threshold_int("REVIEW_RENDER_TOKEN_CEILING"),
+            )
+            text = rendered.text
+        write_delivery_payload(repo_data_dir(request.repo_id), request.session_id, text)
+    except Exception as exc:  # noqa: BLE001 -- the payload cache must never crash the job
+        _checkpoint(request, "payload_render_error", reason=repr(exc)[:200])
+
+
 def _run(request: JobRequest) -> None:
     from chameleon_mcp._thresholds import threshold_int
     from chameleon_mcp.core.budget import TurnBudget
@@ -227,6 +264,7 @@ def _run(request: JobRequest) -> None:
     findings = _run_lenses(request, budget)
     verified = _run_verify(request, findings, budget)
     _persist(request, verified)
+    _write_delivery_payload(request)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -236,6 +274,18 @@ def main(argv: list[str] | None = None) -> int:
     file that cannot be loaded, is itself a fail-open no-op: with no
     repo_id/session_id resolved there is nowhere meaningful to record a
     check event against, so this returns 0 silently in both cases.
+
+    Everything from here on that can raise -- resolving the heartbeat
+    interval, constructing and starting the heartbeat thread, and running
+    the job itself -- lives inside ONE try whose ``finally`` always clears
+    the job slot. A failure in any of that setup used to happen BEFORE the
+    try/finally existed at all, so an exception there (a bad threshold read,
+    a thread the OS refused to start under resource pressure) skipped
+    ``clear_job_slot`` entirely and left the session's single-inflight slot
+    wedged until the heartbeat staleness window expired on its own.
+    ``interval`` is seeded with a safe fallback before the try so the
+    ``finally``'s heartbeat-thread join has a sane timeout even when
+    ``threshold_int`` itself is what raised.
     """
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
@@ -245,23 +295,26 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     _unlink_request_file(Path(args[0]))
 
-    from chameleon_mcp._thresholds import threshold_int
-
-    interval = float(threshold_int("JOB_HEARTBEAT_INTERVAL_SECONDS"))
     stop_event = threading.Event()
-    heartbeat_thread = threading.Thread(
-        target=_heartbeat_loop,
-        args=(Path(request.heartbeat_path), stop_event, interval),
-        daemon=True,
-    )
-    heartbeat_thread.start()
+    heartbeat_thread: threading.Thread | None = None
+    interval = 10.0
     try:
+        from chameleon_mcp._thresholds import threshold_int
+
+        interval = float(threshold_int("JOB_HEARTBEAT_INTERVAL_SECONDS"))
+        heartbeat_thread = threading.Thread(
+            target=_heartbeat_loop,
+            args=(Path(request.heartbeat_path), stop_event, interval),
+            daemon=True,
+        )
+        heartbeat_thread.start()
         _run(request)
     except Exception as exc:  # noqa: BLE001 -- the job must never exit un-slotted
         _checkpoint(request, "run_error", reason=repr(exc)[:200])
     finally:
         stop_event.set()
-        heartbeat_thread.join(timeout=max(1.0, interval))
+        if heartbeat_thread is not None:
+            heartbeat_thread.join(timeout=max(1.0, interval))
         try:
             from chameleon_mcp.stop.scheduler import clear_job_slot
 

@@ -1842,6 +1842,11 @@ def session_start() -> int:
     if interpreter_banner:
         wrapped_parts.append("")
         wrapped_parts.append(interpreter_banner)
+    if repo_root is not None:
+        dead_session_banner = _dead_session_delivery_banner(repo_root, session_id=session_id)
+        if dead_session_banner:
+            wrapped_parts.append("")
+            wrapped_parts.append(dead_session_banner)
     wrapped_parts.append("</chameleon-context>")
     wrapped = "\n".join(wrapped_parts)
 
@@ -6537,13 +6542,18 @@ def _pending_findings_block(repo_root: Path, repo_data: Path, session_id) -> str
     """Deliver findings a detached judge left pending, or None.
 
     Consumes ``.judge_pending.<sid>.json`` (written by the async judge after the
-    Stop that spawned it already ended). A finding is dropped as stale when its
-    file's current first-1MB digest no longer matches the digest recorded at
-    review time, or the file is gone -- the review read code that has since
-    changed. The file is unlinked whether or not anything survives, so a stale
-    batch is consumed exactly once. Trust-hash verification is deliberately
-    skipped: this is a first-party plugin-data file this plugin wrote, not
-    repo-controlled content, and UserPromptSubmit must stay cheap.
+    Stop that spawned it already ended). A finding whose file is gone since
+    review is dropped -- the cited code no longer exists, so there is nothing
+    left to show. One whose file's current first-1MB digest no longer matches
+    the digest recorded at review time is ANNOTATED ``[stale: code changed
+    since review]``, never dropped (spec: "one policy at every delivery point
+    ... silent drops are removed" -- this coarse whole-file check is the
+    conservative fallback for a finding with no pinned excerpt_sha; a pinned
+    excerpt already annotates rather than drops, below). The file is unlinked
+    whether or not anything survives, so a stale batch is consumed exactly
+    once. Trust-hash verification is deliberately skipped: this is a
+    first-party plugin-data file this plugin wrote, not repo-controlled
+    content, and UserPromptSubmit must stay cheap.
     """
     from chameleon_mcp.optouts import _safe_session_marker
 
@@ -6591,15 +6601,18 @@ def _pending_findings_block(repo_root: Path, repo_data: Path, session_id) -> str
                     excerpt_sha, _excerpt_window(repo_root, safe_rel, finding.get("line"))
                 )
             elif safe_rel in recorded:
-                # No excerpt pin: keep the conservative whole-file drop, reading only
-                # the first 1MB (not the whole cited file) on this hot path.
+                # No excerpt pin: fall back to the whole-file digest as the
+                # staleness signal, reading only the first 1MB (not the whole
+                # cited file) on this hot path. Annotate on a mismatch, never
+                # drop -- the refuter is the only dropper (contract, module
+                # docstring).
                 try:
                     with open(abs_path, "rb") as fh:
                         raw = fh.read(1_000_000)
                 except OSError:
                     continue
                 if hashlib.sha256(raw).hexdigest()[:16] != recorded.get(safe_rel):
-                    continue
+                    stale = True
         live.append({**finding, "_stale": stale})
     if not live:
         return None
@@ -6732,6 +6745,22 @@ def callout_detector() -> int:
             block = _pending_findings_block(repo_root, repo_data, session_id)
             if block:
                 context_blocks.append(block)
+    except Exception:
+        pass
+
+    # New ledger-based delivery (spec section 3.5): multi-root, reusing the
+    # same enforcement-state discovery the Stop backstop uses, so a
+    # coordinator/monorepo session's OTHER touched workspaces deliver too --
+    # not just this payload's own cwd. Runs independently of the legacy
+    # single-root suppression check above (it applies its own, per
+    # workspace) and independently of whether cwd itself resolves to a repo
+    # at all, since a session can touch a root other than its launch cwd.
+    try:
+        _cwd_raw = payload.get("cwd")
+        cwd_for_delivery = Path(_cwd_raw) if isinstance(_cwd_raw, str) and _cwd_raw else Path(".")
+        ledger_block = _ledger_delivery_block(cwd_for_delivery, session_id)
+        if ledger_block:
+            context_blocks.append(ledger_block)
     except Exception:
         pass
 
@@ -9501,6 +9530,42 @@ def _discover_stop_roots(cwd: Path, session_id) -> list[dict]:
     from chameleon_mcp.stop.pipeline import discover_stop_roots
 
     return discover_stop_roots(cwd, session_id)
+
+
+def _ledger_delivery_block(cwd: Path, session_id) -> str | None:
+    """Thin shim to ``stop.delivery.deliver_pending_findings`` -- see that
+    function's docstring. A separate module-level name so a test can patch
+    ``chameleon_mcp.hook_helper._ledger_delivery_block`` directly, mirroring
+    ``_discover_stop_roots``/``_gate_one_root``'s own shim pattern."""
+    from chameleon_mcp.stop.delivery import deliver_pending_findings
+
+    return deliver_pending_findings(cwd, session_id)
+
+
+def _dead_session_delivery_banner(repo_root: Path, session_id: str | None = None) -> str | None:
+    """SessionStart's dead-session finding delivery (spec section 3.5): a
+    session that ended without a next prompt still surfaces its findings,
+    here, at a later session's start. Fails open to None; bails before any
+    ledger read when the repo has no plugin-data dir at all (no prior
+    session ever profiled/reviewed it here), matching
+    ``_judge_spawn_health_banner``'s own side-effect-free-bail discipline.
+    """
+    try:
+        from chameleon_mcp.optouts import is_chameleon_suppressed
+        from chameleon_mcp.profile.loader import find_repo_root
+        from chameleon_mcp.stop.delivery import deliver_dead_session_findings
+        from chameleon_mcp.tools import _compute_repo_id
+
+        resolved_root = find_repo_root(repo_root) or repo_root
+        repo_id = _compute_repo_id(resolved_root)
+        if is_chameleon_suppressed(resolved_root, repo_id, session_id) is not None:
+            return None
+        repo_data = _plugin_data_dir() / repo_id
+        if not repo_data.is_dir():
+            return None
+        return deliver_dead_session_findings(resolved_root, repo_id, repo_data)
+    except Exception:
+        return None
 
 
 def _gate_one_root(

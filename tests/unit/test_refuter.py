@@ -152,3 +152,43 @@ def test_run_one_does_not_retry_on_timeout(monkeypatch):
     out = refuter.run_one(Path("/tmp"), _finding(6), "excerpt", model="sonnet", timeout=45)
     assert len(attempts) == 1
     assert out["verdict"] == "unverified"
+
+
+# --- build_refuter_prompt: intent_tokens rendering (phase-3 task-6 item A) ---
+#
+# An intent-forced correctness finding ("code says 2, user wanted 3") used to
+# reach the refuter with only its excerpt: the excerpt alone can look
+# internally consistent, so the refuter's "cannot tell -> refute" rule kills a
+# finding that is only wrong relative to what the user actually asked for.
+# verify.py's _to_refuter_dict already carried intent_tokens on the dict; this
+# pins that build_refuter_prompt actually renders them into the prompt.
+
+
+def test_prompt_includes_intent_line_when_finding_carries_intent_tokens():
+    finding = {**_finding(1), "intent_tokens": ["retryLimit", "3"]}
+    prompt = refuter.build_refuter_prompt(finding, "some excerpt")
+    assert "intent: retryLimit, 3" in prompt
+    # Still inside the untrusted <finding> data block, not floated loose.
+    before_close = prompt.split("</finding>")[0]
+    assert "intent: retryLimit, 3" in before_close
+
+
+def test_prompt_omits_intent_line_when_no_intent_tokens():
+    prompt = refuter.build_refuter_prompt(_finding(1), "some excerpt")
+    assert "intent:" not in prompt
+
+
+def test_prompt_omits_intent_line_for_empty_intent_tokens_list():
+    finding = {**_finding(1), "intent_tokens": []}
+    prompt = refuter.build_refuter_prompt(finding, "some excerpt")
+    assert "intent:" not in prompt
+
+
+def test_prompt_still_renders_kind_claim_evidence_unchanged():
+    """Additive only: the existing rendered fields keep their exact shape for
+    every caller that supplies no intent_tokens at all (e.g. pr-review's
+    round-3 refuter, which builds its finding dicts without that key)."""
+    prompt = refuter.build_refuter_prompt(_finding(1), "some excerpt")
+    assert "kind: inverted-condition" in prompt
+    assert "claim: condition inverted" in prompt
+    assert "evidence: line 10" in prompt

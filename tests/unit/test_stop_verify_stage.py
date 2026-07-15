@@ -216,6 +216,28 @@ def test_refuter_dict_carries_kind_evidence_and_intent_tokens(tmp_path, monkeypa
     assert d["claim"] == "idiom 'wrap-fetches' violated at src/a.py:3"
 
 
+def test_intent_tokens_reach_the_actual_refuter_prompt(tmp_path, monkeypatch):
+    """End-to-end over the real refuter.run_batch/run_one/build_refuter_prompt
+    chain (only the hardened spawn itself is stubbed): an intent-forced
+    finding's `intent:` line must survive all the way into the prompt text a
+    real refuter spawn would see, not just the intermediate dict shape
+    (test_refuter_dict_carries_kind_evidence_and_intent_tokens pins that
+    half; this pins the other)."""
+    repo = _repo_with_file(tmp_path)
+    finding = _finding(intent_tokens=("retryLimit", "3"))
+    captured: dict = {}
+
+    def fake_spawn_status(prompt, cwd, *, model=None, timeout_s=None):
+        captured["prompt"] = prompt
+        return None, "spawn_exec_error"  # fails open to unverified; prompt already captured
+
+    monkeypatch.setattr(refuter, "_spawn_status", fake_spawn_status)
+
+    verify.verify_findings([finding], repo_root=repo, budget=_budget(), event_sink=None)
+
+    assert "intent: retryLimit, 3" in captured["prompt"]
+
+
 # --- excerpt attachment: happens regardless of VERIFY's own fate -----------
 
 
