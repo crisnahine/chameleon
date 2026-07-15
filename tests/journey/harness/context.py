@@ -95,6 +95,17 @@ def build_context(
         # idle window keeps cross-act daemon lifetime from amplifying any lock
         # contention into a multi-act stall.
         "CHAMELEON_DAEMON_IDLE_TIMEOUT": "60",
+        # Turn-end model review is async-first: a detached job reviews after
+        # Stop returns, so its findings normally land on the NEXT turn. Every
+        # act/cell here is a one-shot `claude -p` session with no next turn to
+        # deliver into, so without this flag a model-reviewed finding would
+        # never reach the transcript this harness inspects. This makes Stop
+        # poll the same job and render in-turn instead (bounded by its own
+        # budget; see CHAMELEON_JUDGE_WAIT in .claude/rules/environment-variables.md).
+        # Shared by both consumers of build_context: the journey runner and
+        # the effectiveness eval (tests/effectiveness/runner.py imports this
+        # same builder), so one entry here covers both harnesses' base env.
+        "CHAMELEON_JUDGE_WAIT": "1",
     }
 
     return JourneyContext(
