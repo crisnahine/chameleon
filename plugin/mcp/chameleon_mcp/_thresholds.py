@@ -667,6 +667,11 @@ DEFAULTS: Final[dict[str, int | float]] = {
     "JOB_LENS_BUDGET_SECONDS": 150,
     "JOB_VERIFY_BUDGET_SECONDS": 60,
     "JOB_RENDER_BUDGET_SECONDS": 10,
+    # The self-learning idiom miner's own share of the job's remaining budget
+    # (the reserved remainder after lenses/VERIFY/render): it runs LAST, after
+    # every other stage, so this is a ceiling on its own window rather than a
+    # slice reserved up front.
+    "JOB_MINER_BUDGET_SECONDS": 20,
     # The token side of the job's single core.budget.TurnBudget (constructed
     # once at job entry, threaded through every stage per that module's own
     # "constructed at entry, passed down explicitly" contract). Lenses and
@@ -735,6 +740,18 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # recurrence 0 is the first sighting, so the default of 1 promotes on the
     # (1+1)=2nd sighting. See record_findings's _mutate in review_ledger.py.
     "SHELVED_PROMOTE_MIN_RECURRENCE": 1,
+    # Self-learning idiom miner (stop/miner.py, spec section 7.4). Signal 2
+    # (new-idiom candidates): a correctness/duplication finding's match_key
+    # must have recurred at least this many times (occurrences, 1-indexed --
+    # the ledger's own recurrence field is 0 on the first sighting) across at
+    # least this many DISTINCT sessions before it becomes a candidate; a
+    # pattern one person hit three times in one session is not yet a team
+    # convention. IDIOM_CANDIDATE_MAX bounds the total candidate files kept
+    # under .chameleon/idiom-candidates/ -- once at the cap, a NEW slug is not
+    # written (an existing slug's merge-on-rewrite is unaffected).
+    "IDIOM_MINER_MIN_RECURRENCE": 3,
+    "IDIOM_MINER_MIN_SESSIONS": 2,
+    "IDIOM_CANDIDATE_MAX": 50,
 }
 
 

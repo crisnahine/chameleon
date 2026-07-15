@@ -336,6 +336,24 @@ def _write_delivery_payload(request: JobRequest) -> None:
         _checkpoint(request, "payload_render_error", reason=repr(exc)[:200])
 
 
+def _run_miner(request: JobRequest, budget: TurnBudget) -> None:
+    """Self-learning idiom miner (spec section 7.4): the job's END-of-run tail
+    stage, mining candidates from the ledger + override audit into
+    ``.chameleon/idiom-candidates/`` -- never the live idiom store. Runs LAST,
+    after the delivery payload, so it never competes with the lens/VERIFY/
+    persist/render stages that actually gate what the user sees this turn.
+    ``stop/miner.py::run_miner`` is already fail-open at every one of its own
+    seams; this wrapper only guards the deferred import itself, mirroring
+    every other stage in this module.
+    """
+    try:
+        from chameleon_mcp.stop.miner import run_miner
+
+        run_miner(request, budget)
+    except Exception as exc:  # noqa: BLE001 -- the miner must never crash the job
+        _checkpoint(request, "miner_stage_error", reason=repr(exc)[:200])
+
+
 def _run(request: JobRequest) -> None:
     from chameleon_mcp._thresholds import threshold_int
     from chameleon_mcp.core.budget import TurnBudget
@@ -349,6 +367,7 @@ def _run(request: JobRequest) -> None:
     verified = _run_verify(request, findings, budget)
     _persist(request, verified)
     _write_delivery_payload(request)
+    _run_miner(request, budget)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -678,6 +678,52 @@ def test_clear_job_slot_clears_inflight_without_refunding_spend():
 # cover.
 
 
+# --- self-learning idiom miner: wired as the job's tail stage (Task 6) -----
+
+
+def test_run_writes_idiom_candidate_from_a_recurrence_seeded_ledger(tmp_path, monkeypatch):
+    from chameleon_mcp.core.idiom_candidates import load_candidates
+
+    heartbeat = scheduler.try_acquire_job_slot(REPO_ID, SID)
+    request_path, repo = _write_request(tmp_path, heartbeat, lens_names=())
+
+    # Seed three prior sightings of the SAME correctness claim across three
+    # distinct sessions -- exactly what the miner's signal 2 (recurring
+    # fix-pattern) looks for -- before the job itself runs. No lens is
+    # requested this turn (lens_names=()), so the miner's own tail stage is
+    # what's under test here, not the lens pipeline.
+    finding = _stub_finding(claim="always resolve via getClient(), never new ApiClient() directly")
+    for sid in ("prior-s1", "prior-s2", "prior-s3"):
+        review_ledger.record_findings(REPO_ID, str(repo), [finding], session_id=sid)
+
+    rc = job.main([str(request_path)])
+
+    assert rc == 0
+    rows = load_candidates(repo / ".chameleon")
+    assert len(rows) == 1
+    assert rows[0]["source"] == "learned"
+    assert rows[0]["occurrences"] >= 3
+
+
+def test_run_miner_kill_switch_leaves_the_ledger_seeded_but_writes_no_candidate(
+    tmp_path, monkeypatch
+):
+    from chameleon_mcp.core.idiom_candidates import load_candidates
+
+    monkeypatch.setenv("CHAMELEON_IDIOM_MINER", "0")
+    heartbeat = scheduler.try_acquire_job_slot(REPO_ID, SID)
+    request_path, repo = _write_request(tmp_path, heartbeat, lens_names=())
+
+    finding = _stub_finding(claim="a recurring finding that would otherwise mine a candidate")
+    for sid in ("prior-s1", "prior-s2", "prior-s3"):
+        review_ledger.record_findings(REPO_ID, str(repo), [finding], session_id=sid)
+
+    rc = job.main([str(request_path)])
+
+    assert rc == 0
+    assert load_candidates(repo / ".chameleon") == []
+
+
 def test_main_through_real_lenses_never_spawns_claude(tmp_path, monkeypatch):
     import subprocess
 
