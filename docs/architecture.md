@@ -236,7 +236,7 @@ All JSON artifacts carry `schema_version`, `engine_min_version`, and a
 | `canonicals.json` | Per-archetype canonical: the witness (path + sha hint), normative shape (AST query + callable signatures), normative idioms (comments), and the secret/injection/poisoning scan verdicts. |
 | `conventions.json` | Per-archetype derived conventions (imports, naming, error handling, body shape, doc coverage, test pairing, inheritance and method calls for Ruby, class contract, key exports) plus repo-level layering. |
 | `principles.md` | Data-backed prose principles generated from conventions. |
-| `conventions.md` | The CLAUDE.md-channel mirror: the rendered conventions block PLUS the principles sections and a TEAM IDIOMS gist section (one `- name: first-sentence directive` line per taught idiom), for wiring into Claude's memory channel via a one-line `.claude/rules/chameleon-conventions.md`, `CLAUDE.local.md`, or a `CLAUDE.md` import (init offers all three, consent-gated; none edits an existing file by default). Rewritten by bootstrap/refresh, re-synced by teach/unteach after every conventions.json or idioms.md mutation, self-healed from disk on a noop refresh when missing or older-format; absent when nothing renders. Kill switch `CHAMELEON_CONVENTIONS_MD=0`. Motive: memory-channel delivery measured 100% rule adherence vs 40% for the same content as a hook advisory (results-published/migration-ab-2026-07-11.md). Because the mirror is the complete session-conventions content, a wired import lets SessionStart skip its duplicate hook injection (`CHAMELEON_MEMORY_CHANNEL_DEDUP`) and lets the Stop idiom review render mirror-carried idioms as gists instead of full text (`CHAMELEON_STOP_IDIOM_GIST`). |
+| `conventions.md` | The CLAUDE.md-channel mirror: the rendered conventions block PLUS the principles sections and a TEAM IDIOMS gist section (one `- name: first-sentence directive` line per taught idiom), for wiring into Claude's memory channel via a one-line `.claude/rules/chameleon-conventions.md`, `CLAUDE.local.md`, or a `CLAUDE.md` import (init offers all three, consent-gated; none edits an existing file by default). Rewritten by bootstrap/refresh, re-synced by teach/unteach after every conventions.json or idioms.md mutation, self-healed from disk on a noop refresh when missing or older-format; absent when nothing renders. Kill switch `CHAMELEON_CONVENTIONS_MD=0`. Motive: memory-channel delivery measured 100% rule adherence vs 40% for the same content as a hook advisory (results-published/migration-ab-2026-07-11.md). Because the mirror is the complete session-conventions content, a wired import lets SessionStart skip its duplicate hook injection (`CHAMELEON_MEMORY_CHANNEL_DEDUP`). (Pre-3.4.0 this also let the Stop idiom-review interrupt render mirror-carried idioms as gists via `CHAMELEON_STOP_IDIOM_GIST`; that interrupt is gone — idiom review is now the async job's idiom lens, see [Turn-end advisories](#turn-end-advisories-on-by-default-never-block).) |
 | `rules.json` | Tool-derived rules keyed by source: prettier, tsconfig compiler options, eslint, editorconfig, rubocop. |
 | `idioms.md` | Human-authored team idioms. Carried forward byte-identical across refresh; never regenerated. |
 | `profile.summary.md` | Human-readable summary for PR review and the trust prompt. |
@@ -881,10 +881,9 @@ From `config.json` `enforcement.mode`, validated against `{off, shadow, enforce}
   zero-false-positive calibration against the repo's own committed files plus a
   high- or medium-confidence archetype match; the archetype-independent security
   facts (hard-kind secrets, eval/exec sinks) block on deterministic detection
-  with no confidence gate; the turn-end idiom review blocks once per session when
-  idioms/principles are present. So enforce is the safe default for the
-  calibrated convention rules without a measure-first shadow period, not a
-  blanket "every block is calibrated" guarantee.
+  with no confidence gate. So enforce is the safe default for the calibrated
+  convention rules without a measure-first shadow period, not a blanket
+  "every block is calibrated" guarantee.
 
 `CHAMELEON_ENFORCE=0` forces advisory-only for the whole session regardless of
 mode. `/chameleon-disable` and `/chameleon-pause-15m` suppress all behavior for
@@ -892,7 +891,12 @@ their window, including enforce-mode blocks.
 
 ### Block points
 
-Five places can stop work, all gated by trust, mode, and `CHAMELEON_ENFORCE`.
+Four places can stop work, all gated by trust, mode, and `CHAMELEON_ENFORCE`.
+(A fifth used to exist here: a once-per-session Stop-hook idiom-review
+interrupt. As of v3.4.0 idiom review is advisory-only — one lens of the
+async-first turn-end review job described in
+[Turn-end advisories](#turn-end-advisories-on-by-default-never-block) — so it
+no longer stops work.)
 
 1. **PreToolUse secret deny.** A deterministic hard-kind credential in the
    *proposed* content. Archetype-independent (fires even when no archetype
@@ -929,45 +933,6 @@ Five places can stop work, all gated by trust, mode, and `CHAMELEON_ENFORCE`.
    merge into one context, and one attestation is written per distinct run-root.
    A single-repo session is output-equivalent to the legacy single-root path.
    Closes the v2.38.28 coordinator-root turn-end dead spot.
-5. **Idiom review.** When the turn edited files governed by idioms or
-   principles and no lint block stood, the Stop hook blocks once per session to
-   force a self-review against `idioms.md`/`principles.md`. Gated by
-   `enforcement.idiom_review` (default on) — setting it `false` in
-   `.chameleon/config.json` is the durable per-repo off-switch for this review
-   (committed → team-wide; the block message itself names it), leaving every
-   other hook surface live. `enforcement.idiom_judge` (default on)
-   only hardens the directive text; it does not spawn a model. Set it false to
-   restore the blanket self-review directive. The review governs SOURCE edits
-   only: a file counts as idiom-governed only when it has a recognized source
-   language (`detect_language`, with a notebook `.ipynb` counting as python),
-   so a turn that touched only markdown/config files (e.g. `/chameleon-init`'s
-   own `CLAUDE.local.md` consent edit) never fires the review and never burns
-   the once-per-session marker. The rendering
-   is **terse by default** (kill switch `CHAMELEON_STOP_IDIOM_TERSE=0` restores
-   the legacy full dump of every idiom plus the principles text): the review is
-   scoped to the edited archetypes' idioms plus untagged general ones, idioms
-   whose `Language:` tag names a recognized language the turn did not edit are
-   dropped (untagged, `any`, and unrecognized tags fail open to shown), idioms
-   the model already saw this session — or received at session load through a
-   wired `conventions.md` memory-channel import whose TEAM IDIOMS section
-   carries their gist, per the SessionStart-time snapshot the Stop gate reads
-   (never the live mirror, which every teach rewrites;
-   `CHAMELEON_STOP_IDIOM_GIST=0` disables this layer) — are summarized to one
-   line each, and full text is shown only for in-scope idioms with no
-   delivery channel at all — so an idiom the model never saw is never reduced
-   to a name. Mirror-carried idioms not otherwise
-   surfaced this session get one shared "Full text for any you have not
-   applied: .chameleon/idioms.md" pointer instead of a re-dump. "Seen" is
-   tracked per idiom name
-   in the enforcement state's `idioms_shown_names`, computed from the `###`
-   headers that actually survived the char-capped Tier-2 block, so an idiom
-   truncated out of that block (or one from the deny path, which emits no
-   idioms) still renders full. Principles become a one-line pointer to
-   `.chameleon/principles.md` (they were already injected at SessionStart),
-   and a turn that touched no idiom-governed file does not fire — and does not
-   burn the once-per-session marker, so a later governed edit still gets its
-   review.
-
 ### Escalation
 
 Per-file escalation, invisible to the user, stored in a session-scoped
@@ -1074,59 +1039,69 @@ team stays visible. The override audit never auto-mutates the trust-hashed
 
 ### Turn-end advisories (on by default, never block)
 
-These run in the Stop backstop after the block gates decline, produce only
-`additionalContext`, and fail open to no findings.
+As of v3.4.0 the model-reviewed advisories are async-first (spec "Stop hook +
+idiom system overhaul" section 3.1): the Stop hook's deterministic gates
+decide whether a turn warrants a review and, if so, launch exactly ONE
+detached background job (`stop/scheduler.py` owns every spawn decision;
+POSIX `start_new_session=True`, Windows `CREATE_NEW_PROCESS_GROUP |
+DETACHED_PROCESS`) and return immediately — Stop never waits on it, so a
+model review never delays turn end. This replaces the pre-3.4.0 design (a
+synchronous per-turn spawn, an opt-in `CHAMELEON_JUDGE_ASYNC=1` detached
+variant, and a "multi-lens" config toggle) with one pipeline that is always
+detached. `CHAMELEON_JUDGE_WAIT=1` is the one exception: it makes Stop poll
+the same job and render in-turn, for one-shot harness/eval sessions with no
+next turn to deliver into (see the `environment-variables.md` entry).
 
-- **Correctness judge** (`enforcement.correctness_judge`, default on). A
-  separate `claude -p` reviewer reads the turn's reconstructed diffs for logic
-  errors the static engine cannot see: unguarded optional derefs, dropped
-  awaits, off-by-one, inverted conditions, dead code. It is advisory by design;
-  an LLM verdict is stochastic and cannot clear a near-zero reproducible bar, so
-  a blocking variant does not belong on the hot path. The prompt is fed on stdin
-  (never argv, so diff contents never leak through the process table), all tools
-  are disallowed, the child runs with `CHAMELEON_DISABLE=1` to prevent
-  recursion, secret-bearing files are filtered out, and diff bytes/file
-  count/finding count are capped. Model: `CHAMELEON_JUDGE_MODEL` (default
-  `sonnet`); sync wall-clock budget 45s. With `CHAMELEON_JUDGE_ASYNC=1` (POSIX
-  only) the spawn detaches and findings arrive at the next prompt via a pending
-  file the UserPromptSubmit hook consumes exactly once, dropping any finding
-  whose file has changed since review; the route also auto-detaches when a
-  prior spawn proved `claude --bare` loses credentials on the install (a
-  marker with a one-day TTL, so a login fix is re-probed). The prompt is
-  grounded with committed caller facts, multi-hop transitive callers,
-  imported-symbol signatures, and captured intent tokens (each grounding block
-  has its own default-on config flag).
-  A **reviewer model ladder** (`judge_model_for_route`) escalates the judge to
-  `CHAMELEON_JUDGE_MODEL_HIGH` (default `opus`) on a high-risk route
-  (`risk_high` / intent-forced); low-risk routes keep the base model. The
-  escalation runs **only on the detached async path** (opted in or
-  auto-detached): the synchronous Stop path is capped by the 55s hook wrapper
-  (45s judge budget, shared with the duplication lens), where a slower model
-  would time out and fail open to zero findings on exactly the turns the
-  escalation is meant to strengthen, so a sync turn keeps the base model. The
-  ladder is raise-only and never garbage: an unrecognized model name falls back
-  to the valid base rather than being spawned (a bad `--model` exits nonzero
-  and would silently disable the judge), so it can only strengthen the reviewer
-  or leave it unchanged. The round-3 refuter has the same shape
-  (`_refuter_model_for`): a BLOCK/high/critical-severity finding escalates to
-  `CHAMELEON_REFUTER_MODEL_HIGH` (default `opus`), nits keep
-  `CHAMELEON_REFUTER_MODEL`. `CHAMELEON_JUDGE_TIERING=0` kills the whole
-  ladder, flattening judge and refuter to their base models on every route.
-- **Turn-end duplication** (`enforcement.duplication_review`, default on). Each
-  new function is matched by body hash against the committed function catalog
-  and functions added earlier this session; a hit goes through a bounded judge
-  spawn that confirms real re-implementations. Confirmed matches surface as a
-  `[🦎 chameleon: N possible duplicates]` advisory. Skipped on SubagentStop,
-  capped per session, deduplicated per (file, content). The confirm spawn's
-  model is independently tunable with `CHAMELEON_DUP_MODEL` (default `sonnet`;
-  an unrecognized value falls back rather than failing the spawn open).
-- **Multi-lens review** (`enforcement.multi_lens_review`, default on). When on,
-  it replaces the separate correctness and duplication gates with one
-  coordinated pass that runs both lenses concurrently and surfaces a finding
-  only when two lenses agree or one raises it at high confidence. This lifts the
-  one-spawn-per-turn budget so duplication is no longer starved by the
-  correctness defer.
-- **Deterministic advisories** (each a default-on config flag): stale-test (a
+- **The review job** (`stop/job.py`, spawned by `stop/scheduler.py`) runs the
+  turn's active lenses under one `core.budget.TurnBudget`
+  (`JOB_TOTAL_BUDGET_SECONDS`, default 240s), each producing canonical
+  `core.finding.Finding` objects (`stop/lenses/__init__.py`'s `LensResult`):
+  - **Correctness** (`enforcement.correctness_judge`, default on,
+    `stop/lenses/correctness.py`). A `claude -p` reviewer reads the turn's
+    reconstructed diffs for logic errors the static engine cannot see:
+    unguarded optional derefs, dropped awaits, off-by-one, inverted
+    conditions, dead code. The prompt is fed on stdin (never argv), all tools
+    are disallowed, the child runs with `CHAMELEON_DISABLE=1` to prevent
+    recursion, secret-bearing files are filtered out, and diff bytes/file
+    count/finding count are capped. Grounded with committed caller facts,
+    multi-hop transitive callers, imported-symbol signatures, and captured
+    intent tokens (each grounding block has its own default-on config flag,
+    and each fails open independently — an absent calls index or a per-file
+    parse exception inside one grounding stage skips just that stage's
+    contribution and still lets the review spawn and return findings). Model:
+    `CHAMELEON_JUDGE_MODEL` (default `sonnet`). The **reviewer model ladder**
+    (`judge_model_for_route`, `CHAMELEON_JUDGE_MODEL_HIGH`) that was meant to
+    escalate a high-risk route to a stronger model is currently INERT: its
+    escalation branch is gated on a flag (`judge._RUNNING_DETACHED`) that
+    nothing in the new pipeline sets, so every route reads the base model
+    regardless of risk — see the `CHAMELEON_JUDGE_MODEL_HIGH` entry in
+    `environment-variables.md` for the open follow-up.
+  - **Duplication** (`enforcement.duplication_review`, default on,
+    `stop/lenses/duplication.py`). Each new function is matched by body hash
+    against the committed function catalog and functions added earlier this
+    session; a hit goes through a bounded judge spawn that confirms real
+    re-implementations. Model independently tunable with `CHAMELEON_DUP_MODEL`.
+  - **Idiom** (`enforcement.idiom_review`, default on, `stop/lenses/idiom.py`).
+    Scoped to the edited archetypes'/languages' idioms, cited by diff hunk; a
+    violation claim must carry the idiom's slug and the offending lines or it
+    is dropped. Replaces the pre-3.4.0 once-per-session Stop-hook self-review
+    INTERRUPT (`_idiom_review_gate`, deleted) — idiom review is advisory-only
+    now, like every other lens, and a compliant turn is silent. Tuned with
+    `CHAMELEON_IDIOM_LENS_MAX_IDIOMS`/`_MAX_PROMPT_BYTES`/`_MAX_FINDINGS`.
+
+  Every finding from every lens then passes through **VERIFY**
+  (`stop/verify.py`, `CHAMELEON_STOP_VERIFY=0` to disable): the independent
+  refuter (`refuter.py`) checks each single-file-local finding (`correctness`
+  or `idiom` kind — a `duplication` finding's two-location evidence is exempt
+  and passes through pre-confirmed) before it can surface; a refuted finding
+  is DROPPED, a confirmed one is tagged `[confirmed]`, everything else is
+  `[unverified]`. On any VERIFY failure every finding passes through
+  unverified, never dropped. The job persists survivors to the finding ledger
+  (below), pre-renders a delivery payload, and exits — always 0, fail-open at
+  every stage (a stage exception is a check event, never a crash).
+
+- **Deterministic advisories** (each a default-on config flag, run inline in
+  the Stop hook itself, not part of the detached job): stale-test (a
   changed source whose paired test is untouched), change-set completeness (a new
   file of a kind that needs a companion, like a Rails model needing a
   migration), cross-file existence break, the cross-workspace existence break
@@ -1136,21 +1111,23 @@ These run in the Stop backstop after the block gates decline, produce only
   [Cross-file indexes](#cross-file-indexes)), test integrity (live source
   changed while tests were weakened), and intent scope drift (changed files
   that share no word with any requested identifier).
-- **Finding->fix ledger** (`CHAMELEON_FINDING_LEDGER=0` to disable; default
-  on). Every finding the multi-lens review or the synchronous correctness
-  judge surfaces at Stop is persisted to the durable `judge_findings` table in
-  drift.db, anchored to the reviewed file's 16-hex content digest. The next
-  Stop re-checks each open finding *before* that turn's gates persist (so a
-  turn's own findings are never immediately re-surfaced): a cited file that
-  changed or is gone since review counts as addressed and leaves the open set;
-  an unchanged one stays open. An unaddressed high-severity finding (judge
-  confidence >= 0.7, or a multi-lens finding two lenses independently agreed
-  on) is re-surfaced exactly once via a `<chameleon-context>` block, then
-  marked `resurfaced` and never nagged again. Stop-only (off the per-edit hot
-  path), fail-open, bounded, with paths and lens names sanitized on the way to
-  the model surface. Findings a detached async judge delivers through the
-  pending file are outside the ledger's scope; they keep their own one-shot
-  next-prompt delivery.
+- **Finding lifecycle ledger** (`review_ledger.py`, one JSON row per
+  `match_key` under the repo's plugin-data dir). `stop/job.py` persists every
+  VERIFY survivor via `record_findings`; a finding below the built-in severity
+  surface bar (medium+ surfaces even unverified, low only when
+  `verified=="confirmed"`) is stored `status="shelved"` instead, with a check
+  event. Delivery reads `undelivered_findings` and marks rows
+  `delivered`/`addressed`/`resurfaced` as they are shown, re-addressed (the
+  cited file changed since review), or re-surfaced; an unaddressed HIGH
+  finding resurfaces exactly once. A stale finding (digest changed since
+  creation) renders `[stale]` rather than being dropped — the pre-3.4.0
+  silent-drop behavior this replaced is gone by design. This is a DIFFERENT,
+  newer mechanism than the older `judge_findings` table in drift.db
+  (`CHAMELEON_FINDING_LEDGER`, `_ledger_persist`/`_ledger_recheck_and_resurface`
+  in `stop/gates.py`): that table's write side (`_ledger_persist`) has no
+  live caller post-cutover, so it no longer receives new rows, while its
+  read/resurface side stays wired and still resurfaces any pre-3.4.0 rows
+  left over from before the migration.
 
 ---
 
@@ -1621,11 +1598,11 @@ under `enforcement` are tolerated for forward compatibility; unknown keys under
 | `enforcement.mode` | `"enforce"` | `off` / `shadow` / `enforce`. |
 | `enforcement.stop_backstop` | `true` | Stop-hook enforcement backstop. |
 | `enforcement.stop_block_cap` | `3` | Max Stop blocks per session. |
-| `enforcement.idiom_review` | `true` | Once-per-session idiom self-review. `false` is the durable per-repo silence for the turn-end "you edited X ... verify ... team idioms" text (everything else stays live). |
-| `enforcement.idiom_judge` | `true` | Harden the idiom-review directive. |
-| `enforcement.correctness_judge` | `true` | Turn-end correctness reviewer. |
-| `enforcement.duplication_review` | `true` | Turn-end duplication advisory. |
-| `enforcement.multi_lens_review` | `true` | Coordinated multi-lens pass (replaces the two above). |
+| `enforcement.idiom_review` | `true` | Gates the async review job's idiom lens (`stop/lenses/idiom.py`). `false` is the durable per-repo off-switch. |
+| `enforcement.idiom_judge` | `true` | VESTIGIAL: pre-3.4.0 this hardened the now-deleted Stop-hook idiom-review directive text. Still surfaced in `/chameleon-status` output but read by no live lens. |
+| `enforcement.correctness_judge` | `true` | Gates the async review job's correctness lens. |
+| `enforcement.duplication_review` | `true` | Gates the async review job's duplication lens. |
+| `enforcement.multi_lens_review` | `true` | VESTIGIAL: pre-3.4.0 this coordinated the correctness+duplication gates into one pass. Every review is now one job running every active lens by construction, so this key is unread. |
 | `enforcement.judge_crossfile_facts` / `judge_imported_definitions` / `judge_transitive_impact` | `true` | Judge prompt grounding blocks. |
 | `enforcement.signature_contract_diff` | `true` | Deterministic caller-contract diff (tool-time). |
 | `enforcement.stale_test_advisory` / `changeset_completeness` / `crossfile_existence_advisory` / `test_integrity_review` / `intent_scope_advisory` | `true` | Deterministic turn-end advisories. |

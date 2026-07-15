@@ -173,8 +173,9 @@ Handle this distinctly from plain `success`:
   so editing a workspace file gets that workspace's conventions once its profile
   is trusted — that part works normally.
 - Claude Code launches at the repo ROOT, but the turn-end Stop safety net
-  (cross-file break detection, the once-per-session idiom review,
-  duplication/stale-test advisories, the session attestation) still covers
+  (cross-file break detection, the async review job's correctness/
+  duplication/idiom lenses, stale-test advisories, the session attestation)
+  still covers
   the session: the multi-root Stop backstop discovers every workspace the
   turn actually touched (from each edited file's own workspace-scoped
   enforcement state, not the launch cwd) and gates it against its own

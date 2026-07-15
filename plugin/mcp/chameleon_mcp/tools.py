@@ -6089,11 +6089,11 @@ def get_status(repo: str) -> dict:
     - ``proposed_demotions`` (when non-empty) — rules whose override pressure
       crossed the demotion bar without multi-session evidence (or that are
       security-class), still blocking, awaiting a human decision.
-    - ``idiom_review`` — whether the once-per-session Stop-hook idiom/principle
-      self-review fires (default on in enforce mode).
-    - ``idiom_judge`` — opt-in flag that strengthens the idiom-review directive.
-    - ``correctness_judge`` — whether the turn-end independent correctness
-      reviewer runs (default on; advisory, never blocks).
+    - ``idiom_review`` — whether the async turn-end review job's idiom lens
+      runs (default on; advisory, never blocks).
+    - ``idiom_judge`` — vestigial: no longer read by any lens.
+    - ``correctness_judge`` — whether the async turn-end review job's
+      correctness lens runs (default on; advisory, never blocks).
     - ``config_malformed`` — True when config.json is present but its enforcement
       section is unparseable, so enforcement is off (gates fail open) until fixed.
 

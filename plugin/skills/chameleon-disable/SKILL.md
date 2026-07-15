@@ -32,26 +32,25 @@ Use the most-temporary option that solves the immediate need. Revert by:
 ## Silencing ONE surface durably (keep the rest of chameleon)
 
 The full opt-outs above are usually the wrong tool when the complaint is a
-single recurring surface. The frequent case: the turn-end Stop text
-("chameleon: you edited X this turn. Re-check those edits against the team
-idioms ...") that re-fires in every NEW session — session-scoped disables
-cannot stop it durably. These
-`.chameleon/config.json` keys can (per-repo, committed → team-wide, survive
+single recurring surface. The turn-end review (correctness/duplication/idiom
+findings) is advisory-only and delivered next turn, so a session touching no
+idiom-governed files or triggering no real violation is already silent — but
+a team that wants one lens off entirely (not just quiet on a clean turn) has
+these `.chameleon/config.json` keys (per-repo, committed → team-wide, survive
 new chats):
 
-- `"enforcement": {"idiom_review": false}` — turn off exactly the
-  once-per-session Stop idiom/principles self-review (the block AND its
-  shadow-mode advisory). Per-edit guidance, denies, and every other turn-end
-  check stay live. This is the answer to "stop the Stop-hook idiom text, but
-  keep chameleon".
+- `"enforcement": {"idiom_review": false}` — turn off the idiom lens of the
+  async turn-end review job. Per-edit guidance, denies, and every other
+  turn-end check (correctness, duplication, deterministic advisories) stay
+  live. This is the answer to "stop idiom findings, but keep chameleon".
 - `"enforcement": {"stop_backstop": false}` — turn off the ENTIRE Stop
-  turn-end pipeline (relint block, idiom review, correctness judge, all
-  turn-end advisories). Per-edit hooks stay live.
-- `"enforcement": {"stop_block_cap": 0}` — never let Stop BLOCK; most
-  turn-end advisories still run (the idiom review's own advisory rides the
-  block budget, so it goes quiet too).
+  turn-end pipeline (relint block, the whole review job — correctness/
+  duplication/idiom lenses — and every deterministic turn-end advisory).
+  Per-edit hooks stay live.
+- `"enforcement": {"stop_block_cap": 0}` — never let Stop BLOCK; the review
+  job and its advisories still run and still deliver findings.
 
-When the user asks to disable chameleon because of the turn-end idiom text
+When the user asks to disable chameleon because of turn-end idiom findings
 specifically, offer `idiom_review: false` first — it solves the recurring
 annoyance without giving up the per-edit layer. Editing `.chameleon/config.json`
 is a repo file change: make the edit, tell the user it applies from the next
@@ -75,6 +74,6 @@ turn, and let them commit it when they want it team-wide.
 - Latency is too high → run `/chameleon-doctor` to check health
 - One archetype's canonical is bad → edit `.chameleon/canonicals.json` directly OR use `/chameleon-refresh`
 - Profile drift is causing churn → `/chameleon-refresh`
-- The turn-end Stop idiom text keeps coming back in new sessions → `"enforcement": {"idiom_review": false}` in `.chameleon/config.json` (see above)
+- Turn-end idiom findings feel noisy or wrong → `"enforcement": {"idiom_review": false}` in `.chameleon/config.json` (see above)
 
 Disable is the escape hatch for situations where chameleon legitimately isn't useful in the moment, not a tool for fixing other problems.
