@@ -121,3 +121,29 @@ def test_unknown_reason_is_not_echoed(repo, tmp_path):
     assert "turn-end reviewer failed to spawn last session" in out
     assert "<script>" not in out
     assert "(unknown)" in out
+
+
+# --- post-cutover "review_job" vocabulary (stop/scheduler.py + stop/pipeline.py) ---
+
+
+def _review_job_degraded_checks(reason="platform_unavailable"):
+    return [
+        {"check": "review_job", "status": "spawned", "reason": "risk_high", "count": 1},
+        {"check": "review_job", "status": "degraded", "reason": reason, "count": 1},
+    ]
+
+
+def test_review_job_degraded_last_session_surfaces_banner(repo, tmp_path):
+    _plant_attestation(_review_job_degraded_checks())
+    out = _run_session_start(repo, tmp_path)
+    assert "turn-end reviewer failed to spawn last session" in out
+    assert "platform_unavailable" in out
+    assert "/chameleon-doctor" in out
+
+
+def test_review_job_healthy_spawn_no_banner(repo, tmp_path):
+    _plant_attestation(
+        [{"check": "review_job", "status": "spawned", "reason": "first_low_risk", "count": 1}]
+    )
+    out = _run_session_start(repo, tmp_path)
+    assert "turn-end reviewer failed to spawn" not in out

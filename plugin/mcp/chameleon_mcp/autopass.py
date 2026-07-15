@@ -470,6 +470,13 @@ def session_coverage_from_attestations(records, changed_files) -> dict:
 
                 if not is_grounding_event(reason):
                     flags["judge_degraded"] = True
+            # Post-cutover vocabulary (stop/scheduler.py + stop/pipeline.py's
+            # _run_review_job): a review job that failed to launch. No
+            # grounding-event family rides this channel, so no analogous
+            # exemption is needed -- job.py never files a lens/verify
+            # checkpoint under "degraded".
+            if check == "review_job" and status in ("degraded", "platform_unavailable"):
+                flags["judge_degraded"] = True
         for ov in rec.get("overrides") or []:
             if not isinstance(ov, dict):
                 continue

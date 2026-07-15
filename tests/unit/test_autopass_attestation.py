@@ -153,6 +153,75 @@ def test_override_on_diff_file_flags():
     assert sc["overrides_on_diff"] is True
 
 
+# --- post-cutover "review_job" vocabulary (stop/scheduler.py + stop/pipeline.py) ---
+
+
+def test_review_job_degraded_flags():
+    rec = _att(
+        governed=["a.ts"],
+        checks=[{"check": "review_job", "status": "degraded", "reason": "platform_unavailable"}],
+    )
+    sc = session_coverage_from_attestations([rec], ["a.ts"])
+    assert sc["judge_degraded"] is True
+
+
+def test_review_job_platform_unavailable_status_flags():
+    # The literal status the spec names, in case a future caller ever emits it
+    # directly rather than riding "degraded"/reason="platform_unavailable".
+    rec = _att(
+        governed=["a.ts"],
+        checks=[{"check": "review_job", "status": "platform_unavailable", "reason": None}],
+    )
+    sc = session_coverage_from_attestations([rec], ["a.ts"])
+    assert sc["judge_degraded"] is True
+
+
+def test_review_job_spawned_without_degraded_does_NOT_flag():
+    rec = _att(
+        governed=["a.ts"],
+        checks=[{"check": "review_job", "status": "spawned", "reason": "first_low_risk"}],
+    )
+    sc = session_coverage_from_attestations([rec], ["a.ts"])
+    assert sc["judge_degraded"] is False
+
+
+def test_review_job_routing_skips_do_NOT_flag():
+    # routed_skip_low_risk / skipped_session_cap / skipped_digest_dup /
+    # multiroot_budget are deliberate skips, not degradations.
+    for status, reason in (
+        ("routed_skip_low_risk", None),
+        ("skipped_session_cap", None),
+        ("skipped_digest_dup", None),
+        ("skipped", "multiroot_budget"),
+    ):
+        rec = _att(
+            governed=["a.ts"], checks=[{"check": "review_job", "status": status, "reason": reason}]
+        )
+        sc = session_coverage_from_attestations([rec], ["a.ts"])
+        assert sc["judge_degraded"] is False, status
+
+
+def test_mixed_old_and_new_vocab_either_flags():
+    # A ledger spanning the phase-3 cutover carries both vocabularies; either
+    # one degrading must still raise the flag (OR, never AND).
+    rec = _att(
+        governed=["a.ts"],
+        checks=[
+            {"check": "correctness_judge", "status": "degraded_spawn", "reason": "spawn_timeout"},
+        ],
+    )
+    sc_old = session_coverage_from_attestations([rec], ["a.ts"])
+    rec2 = _att(
+        governed=["a.ts"],
+        checks=[
+            {"check": "review_job", "status": "degraded", "reason": "platform_unavailable"},
+        ],
+    )
+    sc_new = session_coverage_from_attestations([rec2], ["a.ts"])
+    assert sc_old["judge_degraded"] is True
+    assert sc_new["judge_degraded"] is True
+
+
 def test_override_on_other_file_does_not_flag():
     rec = _att(governed=["a.ts"], overrides=[{"file": "other.ts", "rule": "naming", "count": 1}])
     sc = session_coverage_from_attestations([rec], ["a.ts"])

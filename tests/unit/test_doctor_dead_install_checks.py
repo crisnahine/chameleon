@@ -235,6 +235,88 @@ class TestJudgeSpawnHealth:
         )
         assert _check("judge_spawn_health")["status"] == "ok"
 
+    # -- post-cutover "review_job" vocabulary (stop/scheduler.py + stop/pipeline.py) --
+
+    def test_review_job_all_degraded_launches_warn(self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        _make_profile(repo)
+        monkeypatch.chdir(repo)
+        repo_id = tools._compute_repo_id(repo.resolve())
+        # Every launch attempt logs "spawned" (the route decision) immediately
+        # followed by "degraded" (platform_unavailable) when the detach itself
+        # fails -- a paired failure, never a net completion.
+        _attest(
+            repo_id,
+            "s1",
+            [
+                {"check": "review_job", "status": "spawned", "reason": "risk_high", "count": 1},
+                {
+                    "check": "review_job",
+                    "status": "degraded",
+                    "reason": "platform_unavailable",
+                    "count": 1,
+                },
+            ],
+        )
+        c = _check("judge_spawn_health")
+        assert c["status"] == "warn"
+        assert "failing to spawn" in str(c["detail"])
+        assert "platform_unavailable" in str(c["detail"])
+
+    def test_review_job_net_successful_spawn_is_ok(self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        _make_profile(repo)
+        monkeypatch.chdir(repo)
+        repo_id = tools._compute_repo_id(repo.resolve())
+        # "spawned" with no launch-failure companion in the same record means
+        # the job actually detached -- the new vocabulary's closest analog to
+        # "reviewer completed".
+        _attest(
+            repo_id,
+            "s1",
+            [{"check": "review_job", "status": "spawned", "reason": "first_low_risk", "count": 1}],
+        )
+        assert _check("judge_spawn_health")["status"] == "ok"
+
+    def test_mixed_old_and_new_vocab_all_degraded_still_warns(self, tmp_path, monkeypatch):
+        # A ledger spanning the phase-3 cutover carries BOTH vocabularies; the
+        # OR must still catch an all-failing window.
+        repo = tmp_path / "repo"
+        _make_profile(repo)
+        monkeypatch.chdir(repo)
+        repo_id = tools._compute_repo_id(repo.resolve())
+        _attest(repo_id, "s1", [_STARTED, _DEGRADED])
+        _attest(
+            repo_id,
+            "s2",
+            [
+                {"check": "review_job", "status": "spawned", "reason": "risk_high", "count": 1},
+                {
+                    "check": "review_job",
+                    "status": "degraded",
+                    "reason": "platform_unavailable",
+                    "count": 1,
+                },
+            ],
+        )
+        c = _check("judge_spawn_health")
+        assert c["status"] == "warn"
+
+    def test_mixed_old_and_new_vocab_one_healthy_is_ok(self, tmp_path, monkeypatch):
+        # An old-vocab degraded session plus a new-vocab healthy one: the OR
+        # of BOTH vocabularies' completion signals must clear the warn.
+        repo = tmp_path / "repo"
+        _make_profile(repo)
+        monkeypatch.chdir(repo)
+        repo_id = tools._compute_repo_id(repo.resolve())
+        _attest(repo_id, "s1", [_STARTED, _DEGRADED])
+        _attest(
+            repo_id,
+            "s2",
+            [{"check": "review_job", "status": "spawned", "reason": "first_low_risk", "count": 1}],
+        )
+        assert _check("judge_spawn_health")["status"] == "ok"
+
 
 # --------------------------------------------------------------------------
 # advisory_emission

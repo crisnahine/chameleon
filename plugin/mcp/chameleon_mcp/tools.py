@@ -14794,31 +14794,57 @@ def doctor(repo: str | None = None) -> dict:
 
             _hist = read_session_attestations(cwd_repo_id, limit=5)
             _records = _hist.get("records") or []
-            judge_events = [
-                e
-                for rec in _records
-                for e in (rec.get("checks") or [])
-                if isinstance(e, dict) and e.get("check") == "correctness_judge"
-            ]
             # A grounding event (judge_defs_*/judge_transitive_*/judge_facts_*)
             # rides the degraded_spawn channel in pre-2.38.9 attestations but is
             # NOT a spawn failure; counting it warned "reviewer failing to spawn"
             # for a healthy reviewer. Drop those so only genuine failures warn.
             from chameleon_mcp.judge import is_grounding_event as _is_grounding
 
-            degraded = [
-                e
-                for e in judge_events
-                if e.get("status") == "degraded_spawn" and not _is_grounding(e.get("reason"))
-            ]
-            # Every spawn attempt logs "spawned/started"; only "spawned/completed"
-            # marks a reviewer that actually ran. Degradations with no completion
-            # anywhere in the window mean the turn-end review layer is dead.
-            completed = [
-                e
-                for e in judge_events
-                if e.get("status") == "spawned" and e.get("reason") == "completed"
-            ]
+            # Recognizes BOTH check-event vocabularies so a mixed-version
+            # attestation history (a repo whose ledger spans the phase-3
+            # cutover) still surfaces a dead reviewer: the pre-cutover
+            # "correctness_judge" checks, and the async scheduler's own
+            # "review_job" checks (stop/scheduler.py + stop/pipeline.py's
+            # _run_review_job). The new vocabulary has no "spawned/completed"
+            # equivalent (the detached job runner records no explicit success
+            # checkpoint), so per RECORD: a "review_job"/"degraded" (reason
+            # "platform_unavailable") means that record's launch failed; a
+            # "review_job"/"spawned" with no launch-failure companion in the
+            # SAME record means the job actually detached -- the closest
+            # available analog to "the reviewer ran".
+            judge_events: list[dict] = []
+            degraded: list[dict] = []
+            completed: list[dict] = []
+            for rec in _records:
+                rec_checks = [e for e in (rec.get("checks") or []) if isinstance(e, dict)]
+
+                old_events = [e for e in rec_checks if e.get("check") == "correctness_judge"]
+                judge_events.extend(old_events)
+                degraded.extend(
+                    e
+                    for e in old_events
+                    if e.get("status") == "degraded_spawn" and not _is_grounding(e.get("reason"))
+                )
+                # Every spawn attempt logs "spawned/started"; only
+                # "spawned/completed" marks a reviewer that actually ran.
+                completed.extend(
+                    e
+                    for e in old_events
+                    if e.get("status") == "spawned" and e.get("reason") == "completed"
+                )
+
+                review_events = [e for e in rec_checks if e.get("check") == "review_job"]
+                judge_events.extend(review_events)
+                review_degraded = [
+                    e
+                    for e in review_events
+                    if e.get("status") in ("degraded", "platform_unavailable")
+                ]
+                review_spawned = [e for e in review_events if e.get("status") == "spawned"]
+                degraded.extend(review_degraded)
+                net_completed = len(review_spawned) - len(review_degraded)
+                if net_completed > 0:
+                    completed.extend(review_spawned[:net_completed])
             if degraded and not completed:
                 judge_warn = True
                 _reasons = sorted({str(e.get("reason") or "unknown") for e in degraded})

@@ -717,7 +717,10 @@ _INTERPRETER_BANNER_FILENAME = ".interpreter_banner.last"
 # Degradation reasons the judge paths write into check events. The banner
 # echoes the reason into injected context, so anything outside this set reads
 # as "unknown" -- the injection surface stays allowlisted even if the ledger
-# text was tampered with.
+# text was tampered with. "platform_unavailable" is the async scheduler's own
+# reason (stop/pipeline.py's ``_run_review_job``, "review_job"/"degraded") for
+# a review job that failed to detach -- the direct successor of the old
+# spawn-failure reasons above.
 _JUDGE_DEGRADED_REASONS = frozenset(
     {
         "spawn_timeout",
@@ -725,6 +728,7 @@ _JUDGE_DEGRADED_REASONS = frozenset(
         "spawn_nonzero_exit",
         "pipeline_error",
         "unparseable_output",
+        "platform_unavailable",
     }
 )
 
@@ -904,7 +908,7 @@ def _drift_banner_for_repo(repo_root: Path, session_id: str | None = None) -> st
 
 def _judge_spawn_health_banner(repo_root: Path, session_id: str | None = None) -> str | None:
     """One-line SessionStart advisory when the previous session's attestation
-    recorded a degraded correctness-judge spawn.
+    recorded a degraded review-job spawn.
 
     A failed reviewer spawn otherwise lives only in the attestation ledger:
     the turn-end review layer can be silently dead (broken auth, missing
@@ -913,6 +917,13 @@ def _judge_spawn_health_banner(repo_root: Path, session_id: str | None = None) -
     session so a resumed session never warns about its own in-progress state.
     Same optout + TTL-marker discipline as the drift banner. Best-effort: any
     failure returns None.
+
+    Recognizes BOTH check-event vocabularies so a mixed-version attestation
+    history (a repo whose ledger spans the phase-3 cutover) still surfaces:
+    the pre-cutover ``correctness_judge``/``degraded_spawn`` rows, and the
+    scheduler's own ``review_job``/``degraded`` (reason ``platform_unavailable``,
+    stop/pipeline.py's ``_run_review_job``) -- the async job's counterpart to
+    a spawn that never got off the ground.
     """
     try:
         from chameleon_mcp._thresholds import threshold_int
@@ -942,10 +953,9 @@ def _judge_spawn_health_banner(repo_root: Path, session_id: str | None = None) -
         for entry in latest.get("checks") or []:
             if not isinstance(entry, dict):
                 continue
-            if (
-                entry.get("check") == "correctness_judge"
-                and entry.get("status") == "degraded_spawn"
-            ):
+            check = entry.get("check")
+            status = entry.get("status")
+            if check == "correctness_judge" and status == "degraded_spawn":
                 raw = entry.get("reason")
                 # A grounding event (judge_defs_*/judge_transitive_*/judge_facts_*)
                 # is NOT a spawn failure; skip it so a healthy reviewer never
@@ -957,6 +967,16 @@ def _judge_spawn_health_banner(repo_root: Path, session_id: str | None = None) -
                 # banner.
                 if isinstance(raw, str) and _judge_grounding_family(raw) is not None:
                     continue
+                reason = raw if raw in _JUDGE_DEGRADED_REASONS else "unknown"
+                break
+            if check == "review_job" and status in ("degraded", "platform_unavailable"):
+                # The cutover's replacement vocabulary (stop/pipeline.py's
+                # _run_review_job / stop/scheduler.py): a review job that
+                # failed to launch. No grounding-event family exists on this
+                # channel -- the job runner (stop/job.py) never files a
+                # lens/verify checkpoint under "degraded", so no analogous
+                # skip is needed here.
+                raw = entry.get("reason")
                 reason = raw if raw in _JUDGE_DEGRADED_REASONS else "unknown"
                 break
         if reason is None:
