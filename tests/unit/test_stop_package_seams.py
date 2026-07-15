@@ -62,10 +62,10 @@ def test_stop_gates_shim_signature_and_patchability():
         "only_files",
         "allow_model_spawn",
     ]
-    with patch.object(hh, "_correctness_judge_route") as route:
+    with patch.object(hh, "_scheduler_route") as route:
         route.return_value = None
         # patched attribute must be what pipeline code resolves at call time
-        assert hh._correctness_judge_route is route
+        assert hh._scheduler_route is route
 
 
 def test_multiroot_shims_signature_and_patchability():

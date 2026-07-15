@@ -5,9 +5,8 @@ facts for the callables the turn actually changed, read from the committed
 ``calls_index.json`` snapshot. These tests pin the hunk parser, the block
 format (sites, [+N more], lower-bound suffix, no-callers wording), the
 changed-callable selection (span x hunk intersection, whole-file diffs), the
-char cap's line-boundary truncation, the build_prompt insertion, the config
-flag, and the run_correctness_judge wiring with its judge_facts_* sink kinds.
-The real parse is stubbed through the ``_parse_changed_file`` indirection so
+char cap's line-boundary truncation, the build_prompt insertion, and the
+config flag. The real parse is stubbed through the ``_parse_changed_file`` indirection so
 no node/ruby toolchain is needed.
 """
 
@@ -15,7 +14,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -582,157 +580,6 @@ def test_real_parse_spans_intersect_hunks(tmp_path):
     block = judge.caller_facts_for_diffs(repo, [_diff("src/util.ts", "@@ -5,3 +5,3 @@\n+x\n")])
     assert "- formatDate() in src/util.ts: 1 committed caller, e.g. src/a.ts:3 (render)" in block
     assert "untouched()" not in block
-
-
-# --- run_correctness_judge wiring ----------------------------------------------
-
-
-def _wired_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    profile = repo / ".chameleon"
-    profile.mkdir()
-    src = repo / "util.ts"
-    src.write_text("export function fmt() { return 1 }\n", encoding="utf-8")
-    return repo, profile, src
-
-
-def test_run_judge_passes_facts_to_prompt_and_sinks_included(tmp_path, monkeypatch):
-    repo, profile, src = _wired_repo(tmp_path)
-    _write_calls_index(
-        repo,
-        {
-            "util.ts": {
-                "fmt": {
-                    "callers": [_caller("b.ts", "use")],
-                    "total": 1,
-                    "truncated": False,
-                }
-            }
-        },
-    )
-    monkeypatch.setattr(judge, "_parse_changed_file", lambda root, path: [_fn("fmt", 1, 1)])
-    captured = {}
-
-    def fake_build(
-        repo_root,
-        profile_dir,
-        diffs,
-        intent_tokens=None,
-        caller_facts=None,
-        transitive_facts=None,
-        imported_defs=None,
-    ):
-        captured["caller_facts"] = caller_facts
-        return "prompt"
-
-    events = []
-    with (
-        patch.object(judge, "build_prompt", side_effect=fake_build),
-        patch.object(judge, "_spawn_reviewer_status", return_value=(_result_line("[]"), None)),
-    ):
-        judge.run_correctness_judge(
-            repo,
-            profile,
-            [str(src)],
-            lambda _p: None,
-            event_sink=lambda kind, detail: events.append(kind),
-        )
-    assert captured["caller_facts"] is not None
-    assert "- fmt() in util.ts: 1 committed caller" in captured["caller_facts"]
-    assert "judge_facts_included" in events
-
-
-def test_run_judge_config_off_sinks_skipped_disabled(tmp_path, monkeypatch):
-    repo, profile, src = _wired_repo(tmp_path)
-    (profile / "config.json").write_text(
-        json.dumps({"enforcement": {"judge_crossfile_facts": False}}), encoding="utf-8"
-    )
-    _write_calls_index(
-        repo,
-        {
-            "util.ts": {
-                "fmt": {
-                    "callers": [_caller("b.ts", "use")],
-                    "total": 1,
-                    "truncated": False,
-                }
-            }
-        },
-    )
-    monkeypatch.setattr(judge, "_parse_changed_file", lambda root, path: [_fn("fmt", 1, 1)])
-    captured = {}
-
-    def fake_build(
-        repo_root,
-        profile_dir,
-        diffs,
-        intent_tokens=None,
-        caller_facts=None,
-        transitive_facts=None,
-        imported_defs=None,
-    ):
-        captured["caller_facts"] = caller_facts
-        return "prompt"
-
-    events = []
-    with (
-        patch.object(judge, "build_prompt", side_effect=fake_build),
-        patch.object(judge, "_spawn_reviewer_status", return_value=(_result_line("[]"), None)),
-    ):
-        judge.run_correctness_judge(
-            repo,
-            profile,
-            [str(src)],
-            lambda _p: None,
-            event_sink=lambda kind, detail: events.append(kind),
-        )
-    assert captured["caller_facts"] is None
-    assert "judge_facts_skipped_disabled" in events
-    assert "judge_facts_included" not in events
-
-
-def test_run_judge_no_index_sinks_skipped_and_still_reviews(tmp_path, monkeypatch):
-    repo, profile, src = _wired_repo(tmp_path)
-    monkeypatch.setattr(judge, "_parse_changed_file", lambda root, path: [_fn("fmt", 1, 1)])
-    stream = _result_line(json.dumps([{"message": "bug", "confidence": 0.8}]))
-    events = []
-    with patch.object(judge, "_spawn_reviewer_status", return_value=(stream, None)):
-        findings = judge.run_correctness_judge(
-            repo,
-            profile,
-            [str(src)],
-            lambda _p: None,
-            event_sink=lambda kind, detail: events.append(kind),
-        )
-    # Facts absent, but the judge itself still ran and returned findings.
-    assert [f.message for f in findings] == ["bug"]
-    assert "judge_facts_skipped_no_calls_index" in events
-
-
-def test_run_judge_facts_failure_never_blocks_review(tmp_path, monkeypatch):
-    repo, profile, src = _wired_repo(tmp_path)
-    _write_calls_index(
-        repo,
-        {
-            "util.ts": {
-                "fmt": {
-                    "callers": [_caller("b.ts", "use")],
-                    "total": 1,
-                    "truncated": False,
-                }
-            }
-        },
-    )
-
-    def boom(root, path):
-        raise RuntimeError("parser exploded")
-
-    monkeypatch.setattr(judge, "_parse_changed_file", boom)
-    stream = _result_line(json.dumps([{"message": "bug", "confidence": 0.8}]))
-    with patch.object(judge, "_spawn_reviewer_status", return_value=(stream, None)):
-        findings = judge.run_correctness_judge(repo, profile, [str(src)], lambda _p: None)
-    assert [f.message for f in findings] == ["bug"]
 
 
 # --- hostile-content sanitization --------------------------------------------

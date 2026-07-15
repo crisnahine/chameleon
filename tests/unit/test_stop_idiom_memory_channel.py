@@ -19,7 +19,6 @@ from pathlib import Path
 import chameleon_mcp.hook_helper as hh
 from chameleon_mcp.hook_helper import (
     _MIRROR_IDIOMS_SNAPSHOT,
-    _mirror_idiom_names,
     _snapshot_mirror_idioms,
     _wired_mirror_text,
 )
@@ -225,45 +224,6 @@ class TestWiredMirrorText:
         assert _wired_mirror_text(repo) == first
 
 
-class TestMirrorIdiomNames:
-    """Stop-side reads of the SessionStart-time snapshot (never the live file)."""
-
-    SID = "s-snap"
-
-    def _snap(self, tmp_path, payload) -> Path:
-        import json as _json
-
-        repo_data = tmp_path / "data"
-        repo_data.mkdir(parents=True, exist_ok=True)
-        snap = repo_data / _MIRROR_IDIOMS_SNAPSHOT.format(session=_safe_session_marker(self.SID))
-        snap.write_text(payload if isinstance(payload, str) else _json.dumps(payload))
-        return repo_data
-
-    def test_names_from_snapshot(self, tmp_path):
-        repo_data = self._snap(tmp_path, ["wrap-fetches"])
-        assert _mirror_idiom_names(repo_data, self.SID) == {"wrap-fetches"}
-
-    def test_missing_snapshot_returns_empty(self, tmp_path):
-        repo_data = tmp_path / "data"
-        repo_data.mkdir(parents=True)
-        assert _mirror_idiom_names(repo_data, self.SID) == set()
-
-    def test_other_sessions_snapshot_not_read(self, tmp_path):
-        repo_data = self._snap(tmp_path, ["wrap-fetches"])
-        assert _mirror_idiom_names(repo_data, "another-session") == set()
-
-    def test_malformed_snapshot_returns_empty(self, tmp_path):
-        repo_data = self._snap(tmp_path, "{not json")
-        assert _mirror_idiom_names(repo_data, self.SID) == set()
-        repo_data = self._snap(tmp_path, {"not": "a list"})
-        assert _mirror_idiom_names(repo_data, self.SID) == set()
-
-    def test_kill_switch_returns_empty(self, tmp_path, monkeypatch):
-        repo_data = self._snap(tmp_path, ["wrap-fetches"])
-        monkeypatch.setenv("CHAMELEON_STOP_IDIOM_GIST", "0")
-        assert _mirror_idiom_names(repo_data, self.SID) == set()
-
-
 class TestSnapshotMirrorIdioms:
     """SessionStart-side snapshot writes."""
 
@@ -307,8 +267,11 @@ class TestSnapshotMirrorIdioms:
         assert not list(data_dir.rglob(".mirror_idioms.*")) if data_dir.exists() else True
 
     def test_mid_session_teach_does_not_reach_stop_gate(self, tmp_path, monkeypatch):
-        # The live mirror gains an idiom after session start; the Stop gate
-        # keeps reading the session snapshot, so the new idiom stays full-text.
+        # The live mirror gains an idiom after session start; the snapshot the
+        # Stop gate would read stays pinned to what was delivered at session
+        # start, so the new idiom is absent from it.
+        import json as _json
+
         repo, data_dir = self._wired_repo(tmp_path, monkeypatch)
         _snapshot_mirror_idioms(repo, "sess-3")
         (repo / ".chameleon" / "conventions.md").write_text(
@@ -319,10 +282,8 @@ class TestSnapshotMirrorIdioms:
             ),
             encoding="utf-8",
         )
-        from chameleon_mcp.tools import _compute_repo_id
-
-        repo_data = data_dir / _compute_repo_id(repo)
-        assert _mirror_idiom_names(repo_data, "sess-3") == {"wrap-fetches"}
+        snap = self._snap_path(data_dir, repo, "sess-3")
+        assert _json.loads(snap.read_text()) == ["wrap-fetches"]
 
 
 def _is_wired(tmp_path, claude_md: str) -> bool:

@@ -1,16 +1,12 @@
 """Regression tests for the hook_helper + hooks review-fix-3 batch.
 
-Covers six confirmed findings:
+Covers four confirmed findings:
 
 1. BLOCKING DISCIPLINE: the eval-call and hard-secret PreToolUse denies must
    only run for a recognized code language and scan the per-language
    string/comment-stripped content (eval), so an ``eval(`` / example
    ``AKIA...`` / ``ghp_`` token in prose/config/fixtures (.md/.txt/.json/.yaml)
    never hard-blocks the edit -- while a real secret/eval in code still denies.
-2. A correctness-judge TIMEOUT must not let the duplication gate spawn its own
-   reviewer sequentially in the same Stop (two ~45s spawns blow the 55s cap).
-3. The multi-lens correctness lens must route through the async/detach path
-   when ``_judge_async_mode`` is active, instead of a doomed sync spawn.
 4. ``_posttool_no_archetype_advisory`` must reuse the caller's already-decoded
    content for the inline-ignore scans rather than re-reading the file.
 5. ``_nearby_signatures_section`` must filter to source-suffix siblings before
@@ -209,138 +205,6 @@ def test_proposed_hard_eval_violations_gates_on_language():
     # A bare eval call in code still denies.
     real, _ = _proposed_hard_eval_violations("y = eval(payload)\n", "a.py", tool_name="Write")
     assert real, "a real eval() call in .py must still be a hard violation"
-
-
-# ---------------------------------------------------------------------------
-# Finding 2 -- judge timeout must not trigger a second sequential spawn
-# ---------------------------------------------------------------------------
-
-
-def test_duplication_deferred_after_judge_timeout(tmp_path: Path):
-    # After a judge timeout the duplication gate must SKIP its spawn: it sees
-    # corr_spawning True (the route spawned + timed out), so it returns [] with
-    # reason corr_judge_active rather than running a second ~45s reviewer.
-    from chameleon_mcp import hook_helper
-
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    repo_data = tmp_path / "data"
-    repo_data.mkdir()
-
-    class _Cfg:
-        duplication_review = True
-        multi_lens_review = False
-        mode = "shadow"
-
-    class _State:
-        duplication_spawns = 0
-        files: list[str] = []
-
-    events: list[tuple] = []
-
-    def _capture(repo_id, session_id, check, status, reason=None, **kw):
-        events.append((check, status, reason))
-
-    # corr_spawning True AND timed out -> the call expression in _stop the
-    # production code uses keeps corr_spawning True. The gate must skip.
-    with patch.object(hook_helper, "_emit_check_event", _capture):
-        lines = hook_helper._duplication_advisory_lines(
-            repo_root=repo,
-            repo_id="r",
-            session_id="s",
-            state=_State(),
-            cfg=_Cfg(),
-            repo_data=repo_data,
-            corr_spawning=True,
-        )
-    assert lines == []
-    assert ("duplication_review", "skipped", "corr_judge_active") in events
-
-
-def test_timeout_sink_sets_route_flag_but_fast_failure_does_not():
-    # The decision the _stop path makes: defer (skip dup) on success OR timeout,
-    # run dup only on a fast failure. Model the route flags the gate sets.
-    def corr_active(*, spawn_failed: bool, timed_out: bool) -> bool:
-        # Mirrors the production expression in _stop_gates.
-        corr_spawning = True
-        return corr_spawning and (not spawn_failed or timed_out)
-
-    # Clean completion: defer.
-    assert corr_active(spawn_failed=False, timed_out=False) is True
-    # Timeout consumed the budget: still defer (no second spawn).
-    assert corr_active(spawn_failed=True, timed_out=True) is True
-    # Fast failure (nonzero exit / parse error): run duplication.
-    assert corr_active(spawn_failed=True, timed_out=False) is False
-
-
-# ---------------------------------------------------------------------------
-# Finding 3 -- multi-lens correctness lens detaches under async mode
-# ---------------------------------------------------------------------------
-
-
-def test_multilens_detaches_correctness_under_async_mode(tmp_path: Path):
-    from chameleon_mcp import hook_helper
-
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    repo_data = tmp_path / "data"
-    repo_data.mkdir()
-
-    class _Cfg:
-        multi_lens_review = True
-        correctness_judge = True
-        duplication_review = False  # only correctness lens would run sync
-        mode = "shadow"
-
-    class _State:
-        correctness_spawns = 0
-        duplication_spawns = 0
-        files: list[str] = []
-
-    route = {
-        "spawn": True,
-        "fresh": [str(repo / "a.py")],
-        "digests": {"a.py": "deadbeef"},
-        "intent_tokens": [],
-        "turn_key": "tk-1",
-    }
-
-    launched: dict = {}
-
-    def _fake_launch(**kwargs):
-        launched.update(kwargs)
-        return True
-
-    sync_ran = {"correctness": False}
-
-    def _fake_run_correctness_judge(*a, **k):
-        sync_ran["correctness"] = True
-        return []
-
-    state = _State()
-    with (
-        patch.object(hook_helper, "_judge_async_mode", return_value="async_opt_in"),
-        patch("chameleon_mcp.judge_async.launch_async_judge", _fake_launch),
-        patch("chameleon_mcp.judge.run_correctness_judge", _fake_run_correctness_judge),
-        patch.object(hook_helper, "_emit_check_event", lambda *a, **k: None),
-    ):
-        lines = hook_helper._multi_lens_review_lines(
-            repo_root=repo,
-            repo_id="r",
-            session_id="s",
-            state=state,
-            cfg=_Cfg(),
-            repo_data=repo_data,
-            daemon_state={"available": True},
-            route=route,
-        )
-    # The async detach was used and the synchronous correctness spawn did NOT run.
-    assert launched, "the correctness lens should have detached via launch_async_judge"
-    assert sync_ran["correctness"] is False
-    # The detached spawn still consumed the review budget.
-    assert state.correctness_spawns == 1
-    # Nothing to surface synchronously (correctness detached, duplication off).
-    assert lines == []
 
 
 # ---------------------------------------------------------------------------

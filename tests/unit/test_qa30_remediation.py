@@ -1,18 +1,19 @@
 """Regression tests for the QA-30 remediation pass (v2.14.x).
 
 Each test pins a concrete defect found during the QA-30 campaign so it cannot
-silently regress. All seven are toolchain-free (they exercise the pure-Python
-regex lint path and orchestration core, never the subprocess AST dumpers). The
-idioms.md-deletion warning fix is verified end-to-end against a real bootstrap
-rather than here, since it requires a language toolchain.
+silently regress. All are toolchain-free (they exercise the pure-Python
+regex lint path, never the subprocess AST dumpers). The idioms.md-deletion
+warning fix is verified end-to-end against a real bootstrap rather than here,
+since it requires a language toolchain. (Fix #1, the multi-lens concurrent
+runner, was removed along with the phase-3 deletion of the standalone
+``lens_runner`` module; its concurrency and fail-open-per-lens contracts now
+live in ``stop/job.py``'s lens stage, pinned in test_stop_job.py.)
 """
 
 from __future__ import annotations
 
 import dataclasses
-import threading
 
-from chameleon_mcp import lens_runner
 from chameleon_mcp.exec_log import classify_test_command
 from chameleon_mcp.lint_engine import (
     _blank_ruby_percent_literals,
@@ -21,45 +22,6 @@ from chameleon_mcp.lint_engine import (
     lint_conventions,
 )
 from chameleon_mcp.profile.summary import count_config_rules
-
-# --- Fix #1: multi-lens lenses run concurrently, not sequentially -----------
-
-
-def test_run_lenses_executes_lenses_concurrently():
-    """Two lenses must run in parallel so their spawn budgets do not sum past
-    the Stop hook's wall-clock cap. A Barrier(2) only releases when BOTH lenses
-    are in-flight at once; sequential execution would deadlock the barrier, its
-    TimeoutError would be swallowed per-lens, and nothing would surface."""
-    barrier = threading.Barrier(2, timeout=5)
-
-    def make(name: str) -> lens_runner.Lens:
-        def run() -> list[dict]:
-            barrier.wait()  # completes only if the other lens is also running
-            return [{"file": f"{name}.py", "line": 1, "claim": name, "confidence": 0.95}]
-
-        return lens_runner.Lens(name=name, run=run)
-
-    out = lens_runner.run_lenses([make("a"), make("b")], max_lenses=2, min_confidence=0.7)
-    # Both lenses cleared the barrier and surfaced their high-confidence finding.
-    assert len([f for f in out if f.get("surface")]) == 2
-
-
-def test_run_lenses_still_fails_open_per_lens():
-    """A raising lens contributes nothing; the others still surface."""
-
-    def boom() -> list[dict]:
-        raise RuntimeError("lens blew up")
-
-    def good() -> list[dict]:
-        return [{"file": "g.py", "line": 2, "claim": "g", "confidence": 0.95}]
-
-    out = lens_runner.run_lenses(
-        [lens_runner.Lens("bad", boom), lens_runner.Lens("good", good)],
-        max_lenses=2,
-        min_confidence=0.7,
-    )
-    assert any(f.get("file") == "g.py" for f in out)
-
 
 # --- Fix #7: bare/standalone minitest is a test command ---------------------
 

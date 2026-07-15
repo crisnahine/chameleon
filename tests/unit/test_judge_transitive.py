@@ -412,50 +412,6 @@ def test_transitive_block_char_cap_emits_tail(tmp_path, monkeypatch):
     assert "more transitive" in block  # the dropped-count tail
 
 
-def test_transitive_skipped_no_index_telemetry(tmp_path, monkeypatch):
-    # No calls_index present -> the distinct no_index event, not no_chains.
-    repo = tmp_path / "plain"
-    repo.mkdir()
-    profile = repo / ".chameleon"
-    profile.mkdir()
-    p = repo / "a.ts"
-    p.write_text("x\n", encoding="utf-8")
-    events = []
-    monkeypatch.setattr(judge, "_spawn_reviewer_status", lambda *a, **k: (None, "spawn_timeout"))
-    judge.run_correctness_judge(
-        repo,
-        profile,
-        [str(p)],
-        lambda _p: None,
-        event_sink=lambda k, d: events.append(k),
-    )
-    assert "judge_transitive_skipped_no_index" in events
-    assert "judge_transitive_skipped_no_chains" not in events
-
-
-def test_transitive_skipped_disabled_telemetry(tmp_path, monkeypatch):
-    repo = tmp_path / "plain"
-    repo.mkdir()
-    profile = repo / ".chameleon"
-    profile.mkdir()
-    profile.joinpath("config.json").write_text(
-        json.dumps({"enforcement": {"judge_transitive_impact": False}}),
-        encoding="utf-8",
-    )
-    p = repo / "a.ts"
-    p.write_text("x\n", encoding="utf-8")
-    events = []
-    monkeypatch.setattr(judge, "_spawn_reviewer_status", lambda *a, **k: (None, "spawn_timeout"))
-    judge.run_correctness_judge(
-        repo,
-        profile,
-        [str(p)],
-        lambda _p: None,
-        event_sink=lambda k, d: events.append(k),
-    )
-    assert "judge_transitive_skipped_disabled" in events
-
-
 # code-review remediation: bool-as-int in the finding parser
 
 
