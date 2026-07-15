@@ -25,6 +25,8 @@ from chameleon_mcp.profile.config import EnforcementConfig
 from chameleon_mcp.stop import lenses
 from chameleon_mcp.stop.lenses import LENSES, LensResult, active_lenses, resolve_runner
 from chameleon_mcp.stop.lenses import correctness as correctness_lens
+from chameleon_mcp.stop.lenses import duplication as duplication_lens
+from chameleon_mcp.stop.lenses import idiom as idiom_lens
 
 
 def _result_line(text: str) -> str:
@@ -101,6 +103,16 @@ def test_resolve_runner_correctness_returns_real_callable():
     assert runner is correctness_lens.run
 
 
+def test_resolve_runner_duplication_returns_real_callable():
+    runner = resolve_runner("duplication")
+    assert runner is duplication_lens.run
+
+
+def test_resolve_runner_idiom_returns_real_callable():
+    runner = resolve_runner("idiom")
+    assert runner is idiom_lens.run
+
+
 def test_resolve_runner_unregistered_name_raises_keyerror():
     try:
         resolve_runner("not-a-real-lens")
@@ -108,19 +120,6 @@ def test_resolve_runner_unregistered_name_raises_keyerror():
         pass
     else:
         raise AssertionError("expected KeyError for an unregistered lens name")
-
-
-def test_resolve_runner_duplication_not_yet_implemented_raises_import_error():
-    # Task 3 lands stop/lenses/duplication.py; until then the registry entry
-    # is wired but the module doesn't exist -- resolve_runner surfaces that as
-    # an ordinary ModuleNotFoundError rather than swallowing it, so the job
-    # runner (Task 4) decides how to handle a lens that isn't ready.
-    try:
-        resolve_runner("duplication")
-    except ModuleNotFoundError:
-        pass
-    else:
-        raise AssertionError("expected ModuleNotFoundError for the not-yet-built lens")
 
 
 def test_active_lenses_default_config_has_all_three():
@@ -591,10 +590,11 @@ def test_correctness_lens_run_pipeline_error_is_caught(tmp_path, monkeypatch):
     assert any(kind == "pipeline_error" for kind, _detail in result.check_events)
 
 
-def test_module_import_does_not_require_duplication_or_idiom_modules():
-    # stop/lenses/__init__.py must import cleanly even though the
-    # duplication/idiom runner modules referenced in LENSES don't exist yet
-    # (Task 3) -- active_lenses() never imports them.
+def test_module_import_does_not_eagerly_import_lens_runner_modules():
+    # stop/lenses/__init__.py must import cleanly without importing any of
+    # the three runner modules its LENSES registry names -- active_lenses()
+    # only reads config, never a lens module, so a lens whose module is
+    # broken or absent cannot take down the registry itself.
     import importlib
 
     importlib.reload(lenses)

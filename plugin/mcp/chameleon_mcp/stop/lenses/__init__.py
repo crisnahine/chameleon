@@ -10,14 +10,12 @@ every lens's telemetry into one attestation without knowing each lens's
 internals.
 
 ``LENSES`` maps a lens name to ``(config_key, module_path)`` rather than a
-live callable: duplication and idiom don't have a runner module yet (Task
-3), and importing them eagerly here would make this package fail to import
-until they land. Each registered module is expected to expose a ``run``
-callable; the job runner resolves and imports it lazily, at the point it
-actually schedules that lens, via ``resolve_runner``. ``active_lenses``
-itself never imports a lens module -- it only reads the repo's enforcement
-config -- so it works for every registered lens today, including the two
-whose modules don't exist yet.
+live callable, so this package never has to import all three runner modules
+just to answer "which lenses are active" -- ``active_lenses`` only reads the
+repo's enforcement config. Each registered module (``correctness.py``,
+``duplication.py``, ``idiom.py``) exposes a ``run`` callable; the job runner
+resolves and imports it lazily, at the point it actually schedules that
+lens, via ``resolve_runner``.
 
 Top-level imports stay stdlib-only; every non-stdlib symbol (the lens runner
 modules, ``core.finding.Finding``) is resolved via a deferred import inside
@@ -56,9 +54,6 @@ class LensResult:
 # caller that needs a stable iteration order gets one for free.
 LENSES: dict[str, tuple[str, str]] = {
     "correctness": ("correctness_judge", "chameleon_mcp.stop.lenses.correctness:run"),
-    # Task 3 lands these runner modules; the registry entry is wired ahead of
-    # the implementation so active_lenses() (which never imports a lens
-    # module) is correct for all three lenses starting now.
     "duplication": ("duplication_review", "chameleon_mcp.stop.lenses.duplication:run"),
     "idiom": ("idiom_review", "chameleon_mcp.stop.lenses.idiom:run"),
 }
@@ -77,9 +72,8 @@ def resolve_runner(name: str) -> Callable:
     """Import and return the registered lens's ``run`` callable.
 
     Raises ``KeyError`` for an unregistered lens name, and whatever import
-    error the target module raises (``ModuleNotFoundError`` for the
-    not-yet-implemented duplication/idiom lenses, until Task 3 lands them) --
-    this function does no fail-open swallowing of its own; the caller
+    error the target module raises for a lens registered but not yet built
+    -- this function does no fail-open swallowing of its own; the caller
     (the job runner) decides how to handle a lens that isn't ready yet.
     """
     _config_key, path = LENSES[name]

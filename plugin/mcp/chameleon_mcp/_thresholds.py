@@ -669,6 +669,14 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # child that crashed without cleaning up. Comfortably above the heartbeat
     # write interval so one missed tick under load never looks dead.
     "JOB_HEARTBEAT_STALE_SECONDS": 30,
+    # The idiom lens's reviewer prompt: how many of the diff-scoped idioms ride
+    # in one spawn (mirrors DUPLICATION_REVIEW_MAX_FINDINGS's per-turn economy),
+    # the total prompt byte budget (mirrors DUPLICATION_REVIEW_MAX_PROMPT_BYTES),
+    # and the cap on violations returned per spawn so a broad edit cannot flood
+    # the turn with idiom findings.
+    "IDIOM_LENS_MAX_IDIOMS": 12,
+    "IDIOM_LENS_MAX_PROMPT_BYTES": 60_000,
+    "IDIOM_LENS_MAX_FINDINGS": 8,
 }
 
 
