@@ -41,6 +41,19 @@ if TYPE_CHECKING:
 
 _DISCLAIMER = "Advisory; verify each before acting -- they may be wrong."
 
+# The durable off-switch disclosure the pre-cutover ``_idiom_review_gate``
+# carried in its once-per-session BLOCK message ("Appendix F: port the
+# disclosure, drop the block"). The idiom lens is no longer a turn-ending
+# interrupt, so this rides the render itself instead -- the least-noisy
+# honest surface: it appears only on a turn that actually shows the user an
+# idiom finding, strictly narrower than the old gate (which fired on every
+# session's first idiom-governed edit regardless of whether a real
+# violation existed).
+_IDIOM_DURABLE_OFF_HINT = (
+    'Idiom review can be turned off durably for this repo: "enforcement": '
+    '{"idiom_review": false} in .chameleon/config.json.'
+)
+
 
 @dataclass(frozen=True)
 class RenderResult:
@@ -100,6 +113,7 @@ def render_findings(findings: list[Finding], *, header: str, ceiling_tokens: int
     lines = [f"[\U0001f98e {header}]", _DISCLAIMER]
     spent = approx_tokens("\n".join(lines))
     packed_keys: list[str] = []
+    idiom_shown = False
     for f in items:
         line = _render_line(f)
         cost = approx_tokens(line)
@@ -108,9 +122,13 @@ def render_findings(findings: list[Finding], *, header: str, ceiling_tokens: int
         lines.append(line)
         spent += cost
         packed_keys.append(f.match_key)
+        if f.kind == "idiom":
+            idiom_shown = True
 
     if not packed_keys:
         return RenderResult(text="", delivered_match_keys=())
+    if idiom_shown:
+        lines.append(_IDIOM_DURABLE_OFF_HINT)
     return RenderResult(text="\n".join(lines), delivered_match_keys=tuple(packed_keys))
 
 

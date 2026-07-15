@@ -135,6 +135,68 @@ def test_greedy_pack_tries_smaller_items_after_a_big_one_does_not_fit():
     assert "tiny" in result.text
 
 
+# --- idiom durable-off disclosure (ports the pre-cutover gate's off-switch --
+# text; "drop the block" -- it rides the render instead of a Stop interrupt) -
+
+
+def test_idiom_finding_render_carries_durable_off_hint():
+    f = _finding(kind="idiom", source_lens="idiom", claim="violates taught idiom wrap-fetches")
+    result = render_findings([f], header="h", ceiling_tokens=800)
+    assert '"idiom_review": false' in result.text
+    assert ".chameleon/config.json" in result.text
+
+
+def test_correctness_only_render_has_no_idiom_hint():
+    f = _finding()  # kind="correctness" by default
+    result = render_findings([f], header="h", ceiling_tokens=800)
+    assert '"idiom_review": false' not in result.text
+
+
+def test_idiom_hint_appears_once_for_multiple_idiom_findings():
+    findings = [
+        _finding(id="i1", kind="idiom", source_lens="idiom", claim="c1", file="a.ts", span=(1, 1)),
+        _finding(id="i2", kind="idiom", source_lens="idiom", claim="c2", file="b.ts", span=(2, 2)),
+    ]
+    result = render_findings(findings, header="h", ceiling_tokens=800)
+    assert result.text.count('"idiom_review": false') == 1
+
+
+def test_idiom_hint_omitted_when_the_only_idiom_finding_does_not_fit_ceiling():
+    kept = _finding(id="kept", claim="tiny", file="src/small.ts", span=(2, 2))
+    dropped_idiom = _finding(
+        id="dropped",
+        kind="idiom",
+        source_lens="idiom",
+        claim="x " * 500,
+        file="src/big.ts",
+        span=(1, 1),
+    )
+    # Ceiling fits the header/disclaimer and the small correctness line, but
+    # not the huge idiom one -- the hint must not appear for content the user
+    # never actually saw.
+    result = render_findings([kept, dropped_idiom], header="h", ceiling_tokens=60)
+    assert kept.match_key in result.delivered_match_keys
+    assert dropped_idiom.match_key not in result.delivered_match_keys
+    assert '"idiom_review": false' not in result.text
+
+
+# --- single-emit: one Stop, at most one model-review header -----------------
+
+
+def test_render_findings_emits_exactly_one_header_regardless_of_finding_count():
+    # Structurally single-emit: render_findings is the sole place a
+    # "[chameleon: N possible issue(s)]" header is produced, and
+    # stop/pipeline.py's _run_advisories calls the (single) _run_review_job
+    # site at most once per Stop -- so a turn with several surviving
+    # findings must still fold into ONE review block, never one per finding.
+    findings = [
+        _finding(id=f"f{i}", claim=f"issue {i}", file=f"src/f{i}.ts", span=(i + 1, i + 1))
+        for i in range(4)
+    ]
+    result = render_findings(findings, header="chameleon: 4 possible issues", ceiling_tokens=800)
+    assert result.text.count("[\U0001f98e") == 1
+
+
 # --- delivery payload: write/read/clear round trip --------------------------
 
 
