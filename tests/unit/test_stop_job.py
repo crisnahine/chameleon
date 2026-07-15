@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -216,6 +217,45 @@ def test_unresolvable_lens_name_fails_open(tmp_path, monkeypatch):
     assert rc == 0
     events = _events()
     assert any(e.get("status") == "lens_error" for e in events)
+
+
+def test_lenses_run_concurrently_not_sequentially(tmp_path, monkeypatch):
+    # Two lenses that each block on a shared Barrier(2) BOTH complete only if
+    # the job runs them concurrently: the barrier releases only once both
+    # threads reach it. Sequential execution would leave the first lens
+    # waiting on a barrier the second never reaches, the wait would time out
+    # into a BrokenBarrierError, _run_lens_one would swallow it, and neither
+    # finding would surface. Pins the ThreadPoolExecutor concurrency in
+    # stop/job.py::_run_lenses that the deleted lens_runner.run_lenses used to
+    # provide (was test_qa30_remediation::test_run_lenses_executes_lenses_concurrently).
+    heartbeat = scheduler.try_acquire_job_slot(REPO_ID, SID)
+    request_path, repo = _write_request(
+        tmp_path, heartbeat, lens_names=("correctness", "duplication")
+    )
+
+    barrier = threading.Barrier(2, timeout=5)
+
+    def _barrier_runner(name):
+        span = (1, 1) if name == "correctness" else (2, 2)
+
+        def _run(*a, **k):
+            barrier.wait()  # returns only once the other lens is also in-flight
+            return LensResult(findings=[_stub_finding(id=name, claim=f"{name} finding", span=span)])
+
+        return _run
+
+    monkeypatch.setattr(lenses, "resolve_runner", _barrier_runner)
+    # Keep VERIFY off the real refuter -- the concurrency proof is the lens
+    # stage, not verification (both findings pass through unverified, kept).
+    monkeypatch.setattr(refuter, "run_batch", lambda *a, **k: [])
+
+    rc = job.main([str(request_path)])
+
+    assert rc == 0
+    # Both lenses cleared the barrier -> both findings persisted; sequential
+    # execution would have deadlocked the barrier and surfaced zero.
+    persisted = _persisted_findings(repo)
+    assert {f.claim for f in persisted} == {"correctness finding", "duplication finding"}
 
 
 # --- heartbeat -----------------------------------------------------------------

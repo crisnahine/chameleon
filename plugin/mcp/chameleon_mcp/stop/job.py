@@ -29,10 +29,11 @@ canonical finding-lifecycle ledger (one JSON row per match_key under the
 repo's plugin-data dir, keyed for cross-session recurrence; see
 core/finding.py's lifecycle and review_ledger.py's surface-bar/resurface
 API). That ledger is a NEW store, distinct from the legacy
-``.judge_pending.<sid>.json`` judge_async.py still writes and the
+``.judge_pending.<sid>.json`` queue (whose writer, the old async judge, is
+gone -- only pre-upgrade leftover files remain, migrated once into the
+ledger via ``review_ledger.migrate_pending_queue``) and the
 ``judge_findings`` drift.db table stop/gates.py's still-live gates read and
-write -- both keep running unchanged until the Stop pipeline is switched
-over to this job runner and the ledger's delivery/resurface API.
+write.
 
 Top-level imports stay stdlib-only; every non-stdlib symbol is resolved via
 a deferred import inside the function that needs it, mirroring the rest of

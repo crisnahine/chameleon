@@ -1508,7 +1508,7 @@ def recheck_and_resurface(repo_id: str, ws_root) -> list:
 
 def _finding_from_legacy_pending(raw: dict):
     """Adapt one legacy ``.judge_pending.<sid>.json`` finding entry (the
-    judge_async.py next-turn delivery payload's shape -- file/line/message/
+    old next-turn delivery payload's shape -- file/line/message/
     confidence/verify/excerpt_sha/suggested_fix/evidence_cmds) into a
     canonical Finding, or None when the entry has no usable message. Every
     such entry was correctness-lens output (the only lens that ever wrote
