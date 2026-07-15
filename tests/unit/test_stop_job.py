@@ -273,13 +273,16 @@ def test_run_writes_delivery_payload_from_persisted_findings(tmp_path, monkeypat
 
     payload = assemble.read_delivery_payload(repo_data_dir(REPO_ID), SID)
     assert payload is not None
-    assert "payload-worthy finding" in payload
+    assert "payload-worthy finding" in payload.text
+    # The job persisted the match_keys its render represents alongside the text,
+    # so a cache-hit consumer marks delivered only what was shown.
+    assert payload.match_keys == (finding.match_key,)
 
 
 def test_run_clears_stale_payload_when_nothing_is_undelivered(tmp_path, monkeypatch):
     from chameleon_mcp.profile.trust import repo_data_dir
 
-    assemble.write_delivery_payload(repo_data_dir(REPO_ID), SID, "stale leftover text")
+    assemble.write_delivery_payload(repo_data_dir(REPO_ID), SID, "stale leftover text", ("mk1",))
     heartbeat = scheduler.try_acquire_job_slot(REPO_ID, SID)
     request_path, _repo = _write_request(tmp_path, heartbeat)
     monkeypatch.setattr(

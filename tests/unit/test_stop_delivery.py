@@ -105,7 +105,8 @@ def test_single_root_uses_cached_payload_and_consumes_it(tmp_path):
     f = _finding(claim="cached claim")
     review_ledger.record_findings("repo-b-id", str(repo), [f])
     repo_data = tmp_path / "data" / "repo-b-id"
-    assemble.write_delivery_payload(repo_data, SID, "PRE-RENDERED TEXT")
+    # The payload represents exactly this finding, so its match_key rides along.
+    assemble.write_delivery_payload(repo_data, SID, "PRE-RENDERED TEXT", (f.match_key,))
     root = _root("repo-b-id", repo, tmp_path / "data")
 
     with (
@@ -116,11 +117,46 @@ def test_single_root_uses_cached_payload_and_consumes_it(tmp_path):
 
     assert block is not None
     assert "PRE-RENDERED TEXT" in block
-    # The cache is consumed (one-shot) and the underlying finding is marked
-    # delivered even though the emitted text came from the cache, not a live
-    # render of this exact finding.
+    # The cache is consumed (one-shot) and the finding the payload represents is
+    # marked delivered.
     assert assemble.read_delivery_payload(repo_data, SID) is None
     assert review_ledger.undelivered_findings("repo-b-id", ws_roots=[str(repo)]) == []
+
+
+def test_cache_hit_marks_only_the_payloads_match_keys_overflow_stays_pending(tmp_path):
+    """The exact reviewer-reproduced defect: a cache payload whose text
+    represents only a SUBSET of the currently-undelivered findings (the
+    overflow that didn't fit the ceiling when the job rendered) must mark
+    delivered ONLY that subset. The un-rendered remainder stays pending so a
+    later delivery shows it -- never silently retired unseen."""
+    repo = _repo(tmp_path, "repo-overflow")
+    f1 = _finding(claim="finding one", file="src/a.ts", span=(1, 1))
+    f2 = _finding(claim="finding two", file="src/b.ts", span=(2, 2))
+    f3 = _finding(claim="finding three", file="src/c.ts", span=(3, 3))
+    review_ledger.record_findings("overflow-id", str(repo), [f1, f2, f3])
+    repo_data = tmp_path / "data" / "overflow-id"
+    # The job could only fit finding one under the ceiling; its payload text
+    # shows only that, and its match_keys reflect only that.
+    assemble.write_delivery_payload(
+        repo_data, SID, "[render showing only finding one]", (f1.match_key,)
+    )
+    root = _root("overflow-id", repo, tmp_path / "data")
+
+    with (
+        patch("chameleon_mcp.hook_helper._discover_stop_roots", return_value=[root]),
+        patch("chameleon_mcp.optouts.is_chameleon_suppressed", side_effect=_not_suppressed),
+    ):
+        block = delivery.deliver_pending_findings(repo, SID)
+
+    assert block is not None
+    assert "finding one" in block
+    remaining = review_ledger.undelivered_findings("overflow-id", ws_roots=[str(repo)])
+    remaining_keys = {r.match_key for r in remaining}
+    # Findings 2 and 3 were NEVER shown, so they must STILL be pending.
+    assert remaining_keys == {f2.match_key, f3.match_key}
+    # And finding 1, which the payload DID show, is now delivered (gone from
+    # the undelivered pool) -- all three findings accounted for, none lost.
+    assert f1.match_key not in remaining_keys
 
 
 def test_no_roots_discovered_returns_none(tmp_path):

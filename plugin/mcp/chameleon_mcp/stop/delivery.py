@@ -107,15 +107,14 @@ def deliver_for_root(
     ``stop/judge_wait.py`` feeds into) is built from individually-wrapped
     blocks the same way.
 
-    The cache is text-only (no match_keys pinned alongside it), so delivered
-    status is still derived from a live, but cheap (one ledger JSON parse,
-    no per-finding file read), ``undelivered_findings`` call: the job always
-    renders its payload from the FULL undelivered snapshot for this
-    ``ws_root`` (never a delta -- see ``stop/job.py``), so "every row still
-    undelivered right now" and "every row the cached text represents" stay
-    the same set across the overwhelmingly common single-job-per-turn case
-    the single-inflight-job-slot invariant guarantees. Returns None when
-    there is nothing to show.
+    On a cache hit, ONLY the match_keys the cached payload actually
+    represents (``DeliveryPayload.match_keys``, which is the render's own
+    ``delivered_match_keys``) are marked delivered -- never the whole
+    live-undelivered set. The job's render may have packed only a subset
+    under the ceiling; marking the whole set delivered would silently retire
+    an overflow finding that was never shown (permanent loss). Any un-rendered
+    remainder is left ``pending``, so a later delivery point surfaces it.
+    Returns None when there is nothing to show.
     """
     from chameleon_mcp.review_ledger import mark_delivered, undelivered_findings
     from chameleon_mcp.stop.assemble import clear_delivery_payload, read_delivery_payload
@@ -126,9 +125,14 @@ def deliver_for_root(
         clear_delivery_payload(repo_data, session_id)  # one-shot consumption
     if not live:
         return None
-    if cached:
-        mark_delivered(repo_id, tuple(f.match_key for f in live))
-        return _wrap(cached)
+    if cached is not None and cached.text:
+        # Mark ONLY what the cached text represents. mark_delivered is a no-op
+        # for any key not currently pending/resurfaced, so a key already
+        # delivered elsewhere is harmless; an overflow key absent from
+        # match_keys stays pending for the next delivery point.
+        if cached.match_keys:
+            mark_delivered(repo_id, cached.match_keys)
+        return _wrap(cached.text)
     live = _annotate_staleness(ws_root, live)
     text = _render_and_mark(
         repo_id, live, header=_delivery_header(len(live)), ceiling_tokens=ceiling_tokens

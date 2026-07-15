@@ -223,13 +223,15 @@ def _write_delivery_payload(request: JobRequest) -> None:
 
     Renders the FULL current ``undelivered_findings`` snapshot for
     ``request.repo_root`` -- not just this run's own new findings -- so the
-    cache always reflects everything still pending for this workspace, not
-    a delta (``stop/delivery.py``'s ``deliver_for_root`` depends on that
-    invariant to mark delivered correctly from a cheap live re-query rather
-    than needing match_keys threaded through the cached text itself). An
-    empty snapshot writes/clears an empty payload rather than leaving a
-    stale render in place. Fail-open: any exception here only costs the
-    fast-path cache, never the job's own persisted findings.
+    cache always reflects everything still pending for this workspace. The
+    render's own ``delivered_match_keys`` (the subset that fit under the
+    ceiling) is persisted ALONGSIDE the text, so a cache-hit consumer
+    (``stop/delivery.py``'s ``deliver_for_root``) marks delivered ONLY what
+    the text shows -- an overflow finding the render omitted stays pending
+    rather than being silently retired unseen. An empty snapshot
+    writes/clears an empty payload rather than leaving a stale render in
+    place. Fail-open: any exception here only costs the fast-path cache,
+    never the job's own persisted findings.
     """
     try:
         from chameleon_mcp._thresholds import threshold_int
@@ -240,6 +242,7 @@ def _write_delivery_payload(request: JobRequest) -> None:
 
         live = undelivered_findings(request.repo_id, ws_roots=[str(request.repo_root)])
         text = ""
+        match_keys: tuple[str, ...] = ()
         if live:
             live = _annotate_staleness(request.repo_root, live)
             rendered = render_findings(
@@ -248,7 +251,8 @@ def _write_delivery_payload(request: JobRequest) -> None:
                 ceiling_tokens=threshold_int("REVIEW_RENDER_TOKEN_CEILING"),
             )
             text = rendered.text
-        write_delivery_payload(repo_data_dir(request.repo_id), request.session_id, text)
+            match_keys = rendered.delivered_match_keys
+        write_delivery_payload(repo_data_dir(request.repo_id), request.session_id, text, match_keys)
     except Exception as exc:  # noqa: BLE001 -- the payload cache must never crash the job
         _checkpoint(request, "payload_render_error", reason=repr(exc)[:200])
 

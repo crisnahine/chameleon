@@ -114,22 +114,43 @@ def render_findings(findings: list[Finding], *, header: str, ceiling_tokens: int
     return RenderResult(text="\n".join(lines), delivered_match_keys=tuple(packed_keys))
 
 
+@dataclass(frozen=True)
+class DeliveryPayload:
+    """A pre-rendered delivery payload plus the EXACT set of findings its text
+    represents.
+
+    ``match_keys`` is the load-bearing half: the cached ``text`` shows only
+    the subset that fit under the ceiling when the job rendered it, so a
+    cache-hit consumer MUST mark delivered only these keys -- never the whole
+    live-undelivered set, which would silently mark an overflow finding
+    delivered without ever showing it (permanent loss). It is exactly
+    ``RenderResult.delivered_match_keys`` from the render that produced
+    ``text``.
+    """
+
+    text: str
+    match_keys: tuple[str, ...]
+
+
 def _payload_path(repo_data: Path, session_id) -> Path:
     from chameleon_mcp.optouts import _safe_session_marker
 
     marker = _safe_session_marker(session_id)
-    return Path(repo_data) / f".delivery_payload.{marker}"
+    return Path(repo_data) / f".delivery_payload.{marker}.json"
 
 
-def write_delivery_payload(repo_data: Path, session_id, text: str) -> None:
-    """Atomically stage ``text`` as the pre-rendered delivery payload.
+def write_delivery_payload(repo_data: Path, session_id, text: str, match_keys=()) -> None:
+    """Atomically stage ``text`` + the ``match_keys`` it represents as the
+    pre-rendered delivery payload.
 
-    Best-effort: a write failure here never crashes the job -- the finding
-    stays reachable via a live ledger query at the next delivery point, just
-    without the fast-path cache. An empty ``text`` unlinks any stale payload
-    instead of writing an empty file, so a job that ends with nothing left
-    to deliver never leaves a prior render lying around to be served as if
-    still fresh.
+    The payload is a small JSON object ``{"text": ..., "match_keys": [...]}``
+    rather than raw text so a cache-hit reader can mark delivered ONLY the
+    findings the text actually shows (spec: never lose a finding). Best-effort:
+    a write failure here never crashes the job -- the finding stays reachable
+    via a live ledger query at the next delivery point, just without the
+    fast-path cache. An empty ``text`` unlinks any stale payload instead of
+    writing an empty file, so a job that ends with nothing left to deliver
+    never leaves a prior render lying around to be served as if still fresh.
     """
     path = _payload_path(repo_data, session_id)
     if not text:
@@ -139,9 +160,15 @@ def write_delivery_payload(repo_data: Path, session_id, text: str) -> None:
             pass
         return
     try:
+        import json
+
         path.parent.mkdir(parents=True, exist_ok=True)
+        body = json.dumps(
+            {"text": text, "match_keys": [str(k) for k in match_keys]},
+            separators=(",", ":"),
+        )
         tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        tmp.write_text(text, encoding="utf-8")
+        tmp.write_text(body, encoding="utf-8")
         try:
             os.chmod(tmp, 0o600)
         except OSError:
@@ -151,20 +178,37 @@ def write_delivery_payload(repo_data: Path, session_id, text: str) -> None:
         pass
 
 
-def read_delivery_payload(repo_data: Path, session_id) -> str | None:
-    """The cached text, or None when absent/unreadable/empty.
+def read_delivery_payload(repo_data: Path, session_id) -> DeliveryPayload | None:
+    """The cached ``DeliveryPayload`` (text + the match_keys it represents),
+    or None when absent/unreadable/empty/malformed.
 
     A read-only peek: it does NOT unlink the file. The caller consumes and
-    clears it via ``clear_delivery_payload`` once it actually emits the
-    text, so a read-only caller (a health check, a test) can look without a
-    side effect.
+    clears it via ``clear_delivery_payload`` once it actually emits the text,
+    so a read-only caller (a health check, a test) can look without a side
+    effect. A corrupt or non-conforming file fails open to None (the caller
+    falls back to a live render) rather than raising.
     """
+    import json
+
     path = _payload_path(repo_data, session_id)
     try:
-        text = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8")
     except OSError:
         return None
-    return text or None
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    text = data.get("text")
+    if not isinstance(text, str) or not text:
+        return None
+    keys = data.get("match_keys")
+    match_keys = tuple(str(k) for k in keys) if isinstance(keys, list) else ()
+    return DeliveryPayload(text=text, match_keys=match_keys)
 
 
 def clear_delivery_payload(repo_data: Path, session_id) -> None:

@@ -207,9 +207,10 @@ def test_wait_and_render_prefers_the_jobs_own_cached_payload(tmp_path, monkeypat
     monkeypatch.setenv("CHAMELEON_JUDGE_WAIT", "1")
     repo = tmp_path / "repo"
     repo.mkdir()
-    review_ledger.record_findings(REPO_ID, str(repo), [_finding(claim="cached wait finding")])
+    f = _finding(claim="cached wait finding")
+    review_ledger.record_findings(REPO_ID, str(repo), [f])
     repo_data = tmp_path / REPO_ID
-    assemble.write_delivery_payload(repo_data, SID, "JOB-RENDERED PAYLOAD")
+    assemble.write_delivery_payload(repo_data, SID, "JOB-RENDERED PAYLOAD", (f.match_key,))
     heartbeat = tmp_path / "hb"
     heartbeat.write_text("x", encoding="utf-8")
 
@@ -225,6 +226,8 @@ def test_wait_and_render_prefers_the_jobs_own_cached_payload(tmp_path, monkeypat
     assert result is not None
     assert "JOB-RENDERED PAYLOAD" in result
     assert assemble.read_delivery_payload(repo_data, SID) is None  # consumed
+    # The finding the payload represents is marked delivered.
+    assert review_ledger.undelivered_findings(REPO_ID, ws_roots=[str(repo)]) == []
 
 
 # --- end-to-end through the real job runner (no waiting needed) -------------

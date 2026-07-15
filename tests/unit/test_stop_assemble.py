@@ -140,8 +140,20 @@ def test_greedy_pack_tries_smaller_items_after_a_big_one_does_not_fit():
 
 def test_payload_write_read_round_trip(tmp_path):
     repo_data = tmp_path / "repo-a"
+    write_delivery_payload(repo_data, "sess-1", "hello payload", ("mk1", "mk2"))
+    payload = read_delivery_payload(repo_data, "sess-1")
+    assert payload is not None
+    assert payload.text == "hello payload"
+    assert payload.match_keys == ("mk1", "mk2")
+
+
+def test_payload_write_without_match_keys_defaults_empty(tmp_path):
+    repo_data = tmp_path / "repo-a2"
     write_delivery_payload(repo_data, "sess-1", "hello payload")
-    assert read_delivery_payload(repo_data, "sess-1") == "hello payload"
+    payload = read_delivery_payload(repo_data, "sess-1")
+    assert payload is not None
+    assert payload.text == "hello payload"
+    assert payload.match_keys == ()
 
 
 def test_payload_read_missing_returns_none(tmp_path):
@@ -149,25 +161,37 @@ def test_payload_read_missing_returns_none(tmp_path):
     assert read_delivery_payload(repo_data, "sess-1") is None
 
 
+def test_payload_read_malformed_json_fails_open_to_none(tmp_path):
+    from chameleon_mcp.stop.assemble import _payload_path
+
+    repo_data = tmp_path / "repo-b2"
+    path = _payload_path(repo_data, "sess-1")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("not json{{{", encoding="utf-8")
+    assert read_delivery_payload(repo_data, "sess-1") is None
+
+
 def test_payload_write_empty_text_unlinks_stale_payload(tmp_path):
     repo_data = tmp_path / "repo-c"
-    write_delivery_payload(repo_data, "sess-1", "stale content")
-    assert read_delivery_payload(repo_data, "sess-1") == "stale content"
+    write_delivery_payload(repo_data, "sess-1", "stale content", ("mk1",))
+    assert read_delivery_payload(repo_data, "sess-1").text == "stale content"
     write_delivery_payload(repo_data, "sess-1", "")
     assert read_delivery_payload(repo_data, "sess-1") is None
 
 
 def test_payload_is_scoped_per_session(tmp_path):
     repo_data = tmp_path / "repo-d"
-    write_delivery_payload(repo_data, "sess-a", "for a")
-    write_delivery_payload(repo_data, "sess-b", "for b")
-    assert read_delivery_payload(repo_data, "sess-a") == "for a"
-    assert read_delivery_payload(repo_data, "sess-b") == "for b"
+    write_delivery_payload(repo_data, "sess-a", "for a", ("a",))
+    write_delivery_payload(repo_data, "sess-b", "for b", ("b",))
+    assert read_delivery_payload(repo_data, "sess-a").text == "for a"
+    assert read_delivery_payload(repo_data, "sess-a").match_keys == ("a",)
+    assert read_delivery_payload(repo_data, "sess-b").text == "for b"
+    assert read_delivery_payload(repo_data, "sess-b").match_keys == ("b",)
 
 
 def test_clear_delivery_payload_removes_file(tmp_path):
     repo_data = tmp_path / "repo-e"
-    write_delivery_payload(repo_data, "sess-1", "text")
+    write_delivery_payload(repo_data, "sess-1", "text", ("mk1",))
     clear_delivery_payload(repo_data, "sess-1")
     assert read_delivery_payload(repo_data, "sess-1") is None
 
@@ -179,6 +203,6 @@ def test_clear_delivery_payload_on_missing_file_does_not_raise(tmp_path):
 
 def test_payload_read_is_read_only(tmp_path):
     repo_data = tmp_path / "repo-g"
-    write_delivery_payload(repo_data, "sess-1", "peekable")
+    write_delivery_payload(repo_data, "sess-1", "peekable", ("mk1",))
     read_delivery_payload(repo_data, "sess-1")
-    assert read_delivery_payload(repo_data, "sess-1") == "peekable"  # still there
+    assert read_delivery_payload(repo_data, "sess-1").text == "peekable"  # still there
