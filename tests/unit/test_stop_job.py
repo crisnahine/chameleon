@@ -68,14 +68,14 @@ def _stub_finding(**over) -> Finding:
 
 
 def _write_request(
-    tmp_path: Path, heartbeat: Path, *, lens_names=("correctness",)
+    tmp_path: Path, heartbeat: Path, *, lens_names=("correctness",), session_id: str = SID
 ) -> tuple[Path, Path]:
     repo = tmp_path / "repo"
     src = _write_source(repo)
     request = scheduler.JobRequest(
         repo_root=repo,
         repo_id=REPO_ID,
-        session_id=SID,
+        session_id=session_id,
         files=(str(src),),
         intent_tokens=(),
         lens_names=lens_names,
@@ -212,6 +212,49 @@ def test_persist_shelves_below_configured_surface_bar(tmp_path, monkeypatch):
     assert len(raw) == 1
     (row,) = raw.values()
     assert row["status"] == "shelved"
+
+
+def test_persist_promotes_recurring_below_bar_finding_across_two_persists(tmp_path, monkeypatch):
+    """A below-surface-bar finding that recurs across two DIFFERENT sessions'
+    persists is promoted to pending on the second sighting, carrying the
+    recurrence count and both session ids -- the recurrence auto-promotion
+    this T1 shelving test's sibling scenario now exercises end to end
+    through the real job -> record_findings(session_id=...) wiring."""
+    heartbeat = scheduler.try_acquire_job_slot(REPO_ID, SID)
+    request_path, repo = _write_request(tmp_path, heartbeat)
+
+    profile_dir = repo / ".chameleon"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    (profile_dir / "config.json").write_text(
+        json.dumps({"review": {"surface_bar": "high"}}), encoding="utf-8"
+    )
+
+    finding = _stub_finding(severity="medium", claim="recurring medium finding")
+    monkeypatch.setattr(
+        lenses, "resolve_runner", lambda name: lambda *a, **k: LensResult(findings=[finding])
+    )
+    monkeypatch.setattr(refuter, "run_batch", lambda *a, **k: [])
+
+    assert job.main([str(request_path)]) == 0
+    raw = review_ledger._read_findings_rows(REPO_ID)
+    (row,) = raw.values()
+    assert row["status"] == "shelved"
+    assert row["recurrence"] == 0
+
+    sid2 = "job-sess-2"
+    heartbeat2 = scheduler.try_acquire_job_slot(REPO_ID, sid2)
+    request_path2, _repo2 = _write_request(tmp_path, heartbeat2, session_id=sid2)
+
+    assert job.main([str(request_path2)]) == 0
+    raw2 = review_ledger._read_findings_rows(REPO_ID)
+    (row2,) = raw2.values()
+    assert row2["status"] == "pending"
+    assert row2["recurrence"] == 1
+    assert set(row2["session_ids"]) == {SID, sid2}
+
+    persisted = _persisted_findings(repo)
+    assert len(persisted) == 1
+    assert persisted[0].claim == "recurring medium finding"
 
 
 # --- fail-open: a lens exception never crashes the job ----------------------

@@ -723,6 +723,11 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # process shutdown) rather than spending the full wrapper budget on the
     # poll alone.
     "JUDGE_WAIT_STOP_BUDGET_SECONDS": 35,
+    # A shelved (below-surface-bar) finding is auto-promoted to pending once
+    # its match_key has recurred at least this many times across sessions --
+    # recurrence 0 is the first sighting, so the default of 1 promotes on the
+    # (1+1)=2nd sighting. See record_findings's _mutate in review_ledger.py.
+    "SHELVED_PROMOTE_MIN_RECURRENCE": 1,
 }
 
 

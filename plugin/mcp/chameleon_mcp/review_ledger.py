@@ -1309,41 +1309,92 @@ def _record_findings_check_event(repo_id: str, status: str, *, reason: str | Non
         pass
 
 
-def record_findings(repo_id: str, ws_root, findings, *, surface_bar: str = "medium") -> None:
+def record_findings(
+    repo_id: str, ws_root, findings, *, surface_bar: str = "medium", session_id: str = ""
+) -> None:
     """Persist canonical Finding rows, applying the surface bar at write time.
 
     Each finding is stored keyed by its ``match_key`` (a later finding
     sharing the same match_key overwrites the earlier row -- the
-    cross-session recurrence identity ``core/finding.py`` defines). A
-    finding below ``surface_bar`` (see ``_passes_surface_bar``; per-repo
-    configurable via ``review.surface_bar``, default "medium") is stored
-    ``shelved`` instead of whatever status it arrived with, and the batch's
-    shelf count is recorded as a check event so the shelf stays visible
-    without ever reaching a Stop surface. ``ws_root`` is stamped on every
-    row so a later scoped read (``undelivered_findings``,
-    ``compute_resurface``) never crosses workspace boundaries in a
-    shared-repo_id monorepo. No-op on an empty repo_id or an empty/invalid
-    finding list.
+    cross-session recurrence identity ``core/finding.py`` defines). Before
+    the overwrite, the prior row (if any) is read so the new row can carry
+    forward a ``recurrence`` count (prior sightings of this match_key) and
+    ``session_ids`` (the distinct sessions that raised it, ``session_id``
+    appended when given and not already present).
+
+    A finding below ``surface_bar`` (see ``_passes_surface_bar``; per-repo
+    configurable via ``review.surface_bar``, default "medium") is normally
+    stored ``shelved`` instead of whatever status it arrived with. The
+    exception: once the SAME match_key has recurred at least
+    ``SHELVED_PROMOTE_MIN_RECURRENCE`` times (default 1, i.e. the 2nd
+    sighting), it is promoted to ``pending`` instead of shelved again --
+    a below-bar finding a team keeps re-triggering is worth a human look
+    even though no single sighting cleared the bar. ``CHAMELEON_SHELVED_PROMOTION=0``
+    disables this promotion, so a recurring below-bar finding stays shelved
+    forever (the pre-recurrence behavior). Either the batch's shelf count or
+    its promotion count (never both -- a finding is one or the other) is
+    recorded as a check event so both stay visible without ever reaching a
+    Stop surface.
+
+    ``ws_root`` is stamped on every row so a later scoped read
+    (``undelivered_findings``, ``compute_resurface``) never crosses
+    workspace boundaries in a shared-repo_id monorepo. No-op on an empty
+    repo_id or an empty/invalid finding list.
     """
     items = [f for f in (findings or []) if getattr(f, "match_key", None)]
     if not repo_id or not items:
         return
     root = str(ws_root) if ws_root else ""
     shelved = 0
+    promoted = 0
 
     def _mutate(rows: dict) -> None:
-        nonlocal shelved
+        nonlocal shelved, promoted
+        promote_off = os.environ.get("CHAMELEON_SHELVED_PROMOTION") == "0"
+        min_recur = threshold_int("SHELVED_PROMOTE_MIN_RECURRENCE")
         for f in items:
+            prior = rows.get(f.match_key) if isinstance(rows.get(f.match_key), dict) else None
+            recurrence = int(prior.get("recurrence", 0)) + 1 if prior else 0
+            sessions = list(prior.get("session_ids") or []) if prior else []
+            if session_id and session_id not in sessions:
+                sessions.append(session_id)
             row = f.to_dict()
-            if not _passes_surface_bar(f, surface_bar):
+            row["recurrence"] = recurrence
+            row["session_ids"] = sessions
+            below_bar = not _passes_surface_bar(f, surface_bar)
+            if below_bar and not (recurrence >= min_recur and not promote_off):
                 row["status"] = "shelved"
                 shelved += 1
+            elif below_bar:
+                promoted += 1  # recurred: surfaces as pending despite being below-bar
             row["ws_root"] = root
             rows[f.match_key] = row
 
     _update_findings_rows(repo_id, _mutate)
     if shelved:
         _record_findings_check_event(repo_id, "shelved", reason=f"count={shelved}")
+    if promoted:
+        _record_findings_check_event(repo_id, "promoted", reason=f"count={promoted}")
+
+
+def shelved_findings(repo_id: str) -> list[dict]:
+    """Lock-free snapshot of every row currently ``status == "shelved"``.
+
+    Raw dicts, not ``Finding.from_dict``-adapted: a shelved row is a below-bar
+    candidate a later consumer (T7) may want to inspect wholesale, including
+    the ``recurrence``/``session_ids`` bookkeeping fields a canonical
+    ``Finding`` does not carry. Fails open to ``[]`` on any read error, same
+    as every other reader in this module.
+    """
+    if not repo_id:
+        return []
+    try:
+        rows = _read_findings_rows(repo_id)
+        return [
+            row for row in rows.values() if isinstance(row, dict) and row.get("status") == "shelved"
+        ]
+    except Exception:
+        return []
 
 
 def undelivered_findings(repo_id: str, *, ws_roots) -> list:

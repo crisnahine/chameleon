@@ -281,6 +281,7 @@ def _persist(request: JobRequest, findings: list[Finding]) -> None:
             str(request.repo_root),
             findings,
             surface_bar=_resolve_surface_bar(request.repo_root),
+            session_id=request.session_id,
         )
     except Exception as exc:  # noqa: BLE001 -- persistence must never crash the job
         _checkpoint(request, "persist_error", reason=repr(exc)[:200])
