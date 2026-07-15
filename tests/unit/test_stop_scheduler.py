@@ -51,6 +51,11 @@ def _isolate(tmp_path, monkeypatch):
     # module-level constants across every test in this file, never accumulate
     # events across test functions (or touch the developer's real /tmp).
     monkeypatch.setenv("TMPDIR", str(tmp_path))
+    # route()'s decision.model comes from judge_model_for_route, which reads
+    # these -- clear them so a developer's real shell env can never leak a
+    # non-default model into a decision.model assertion below.
+    for k in ("CHAMELEON_JUDGE_MODEL", "CHAMELEON_JUDGE_MODEL_HIGH", "CHAMELEON_JUDGE_TIERING"):
+        monkeypatch.delenv(k, raising=False)
     yield
 
 
@@ -222,7 +227,10 @@ def test_route_intent_forced_ignores_risk_tier(tmp_path, monkeypatch):
     assert decision.intent_tokens == ("balance == 42",)
     assert decision.files == (str(f),)
     assert decision.lens_names == ("correctness", "duplication", "idiom")
-    assert decision.model  # a validated model string, not None
+    # intent_forced is a high-risk route on the reviewer model ladder: the
+    # base model must be escalated, end to end through route() itself, not
+    # just at judge_model_for_route's own unit level.
+    assert decision.model == "opus"
 
 
 def test_route_first_low_risk_spawns_once(tmp_path, monkeypatch):
@@ -245,6 +253,8 @@ def test_route_first_low_risk_spawns_once(tmp_path, monkeypatch):
     assert decision.spawn is True
     assert decision.reason == "first_low_risk"
     assert decision.files == (str(f),)
+    # A low-risk route stays on the base model -- no escalation.
+    assert decision.model == "sonnet"
 
 
 def test_route_low_risk_skips_after_first_spawn(tmp_path, monkeypatch):
@@ -288,6 +298,8 @@ def test_route_security_surface_is_risk_high(tmp_path, monkeypatch):
 
     assert decision.spawn is True
     assert decision.reason == "risk_high"
+    # risk_high is a high-risk route: escalated end to end through route().
+    assert decision.model == "opus"
 
 
 def test_route_unarchetyped_file_is_risk_elevated(tmp_path, monkeypatch):
@@ -309,6 +321,8 @@ def test_route_unarchetyped_file_is_risk_elevated(tmp_path, monkeypatch):
 
     assert decision.spawn is True
     assert decision.reason == "risk_elevated"
+    # risk_elevated is NOT one of the high-risk routes that escalate.
+    assert decision.model == "sonnet"
 
 
 # --- JobRequest JSON round trip -------------------------------------------------

@@ -26,6 +26,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   once-per-session Stop-hook self-review interrupt; `enforcement.idiom_review`
   still gates it, and a compliant turn shows nothing at all.
 
+### Fixed
+- The turn-end resurface re-check (an unaddressed HIGH finding "resurfaces
+  once") was never wired into the live Stop pipeline: `stop_gates` still
+  called the pre-cutover drift.db-backed helper, which had no findings to
+  read since the review job persists to the new canonical ledger instead. It
+  now calls that ledger's own `recheck_and_resurface` directly, and a
+  resurfaced finding is a TERMINAL delivery status, so the one-shot re-nag
+  can no longer loop back through ordinary delivery and re-arm itself.
+- The reviewer model ladder (`CHAMELEON_JUDGE_MODEL_HIGH`, escalating to a
+  stronger model on a `risk_high`/`intent_forced` route) never actually
+  escalated: it short-circuited to the base model unless a flag only the
+  deleted synchronous judge child ever set. Since every review now runs
+  detached by construction, the ladder escalates unconditionally.
+
 ### Removed
 - The synchronous correctness-judge spawn, the route/gate choreography
   (`_correctness_judge_route`/`_gate`, `_multi_lens_review_lines`,
@@ -33,6 +47,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `judge_async.py`, and the once-per-session idiom-review interrupt
   (`_idiom_review_gate`) — all absorbed by the new `stop/scheduler.py`,
   `stop/job.py`, `stop/lenses/`, and `stop/verify.py`.
+- The pre-cutover drift.db-backed finding->fix ledger (`_ledger_persist` /
+  `_ledger_recheck_and_resurface` in `stop/gates.py`, `record_judge_finding`
+  / `open_judge_findings` / `mark_judge_finding` in `drift/observations.py`),
+  superseded by `review_ledger.py`'s canonical finding-lifecycle ledger. Any
+  HIGH finding it was still holding open from before the cutover is not
+  migrated (low impact, unlike the `.judge_pending.<session>.json` queue,
+  which is migrated).
 
 ## [3.3.0] - 2026-07-14
 

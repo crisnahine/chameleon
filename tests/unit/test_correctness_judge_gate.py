@@ -604,6 +604,84 @@ def test_judge_wait_multiple_findings_fold_into_one_review_block(make_trusted_re
     assert ctx.count("[\U0001f98e") == 1
 
 
+def test_resurface_wired_into_live_stop_pipeline(make_trusted_repo):
+    """The finding->fix loop's resurface re-check must run through the REAL
+    stop_backstop -> stop_gates chain, not just review_ledger's own
+    unit-level API -- a naive cutover left pipeline.py calling the dead
+    drift.db-backed helper while findings landed in the new review_ledger
+    store, so nothing ever resurfaced in production even though the
+    ledger-level logic was correct in isolation."""
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo()
+    _touch_edited_file(file_path, data_dir, sid)
+
+    from chameleon_mcp import review_ledger
+    from chameleon_mcp.core.finding import Finding, compute_match_key
+
+    finding = Finding(
+        id=compute_match_key("leftover bug from last turn", "src/Widget.ts", "correctness"),
+        kind="correctness",
+        severity="high",
+        confidence=0.9,
+        file="src/Widget.ts",
+        span=(12, 12),
+        claim="leftover bug from last turn",
+        evidence="",
+        excerpt_sha="",
+        excerpt="",
+        source_lens="correctness",
+        status="pending",
+        created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    )
+    review_ledger.record_findings(REPO_ID, str(repo), [finding])
+
+    out, calls = _run_stop(_payload(repo, sid), env={"CHAMELEON_ENFORCE": "1"})
+
+    ctx = out["hookSpecificOutput"]["additionalContext"]
+    assert "unaddressed high-severity" in ctx
+    assert "src/Widget.ts:12" in ctx
+
+    rows = review_ledger._read_findings_rows(REPO_ID)
+    assert rows[finding.match_key]["status"] == "resurfaced"
+
+
+def test_resurface_kill_switch_suppresses_resurface_line(make_trusted_repo):
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo()
+    _touch_edited_file(file_path, data_dir, sid)
+
+    from chameleon_mcp import review_ledger
+    from chameleon_mcp.core.finding import Finding, compute_match_key
+
+    finding = Finding(
+        id=compute_match_key("leftover bug, ledger off", "src/Widget.ts", "correctness"),
+        kind="correctness",
+        severity="high",
+        confidence=0.9,
+        file="src/Widget.ts",
+        span=(12, 12),
+        claim="leftover bug, ledger off",
+        evidence="",
+        excerpt_sha="",
+        excerpt="",
+        source_lens="correctness",
+        status="pending",
+        created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    )
+    review_ledger.record_findings(REPO_ID, str(repo), [finding])
+
+    out, calls = _run_stop(
+        _payload(repo, sid), env={"CHAMELEON_ENFORCE": "1", "CHAMELEON_FINDING_LEDGER": "0"}
+    )
+
+    ctx = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
+    assert "unaddressed high-severity" not in ctx
+
+    # The kill switch skips the recheck entirely -- the row is left untouched
+    # rather than silently marked resurfaced/addressed behind the operator's
+    # back.
+    rows = review_ledger._read_findings_rows(REPO_ID)
+    assert rows[finding.match_key]["status"] == "pending"
+
+
 def test_judge_wait_off_by_default_no_in_turn_render(make_trusted_repo):
     """Without CHAMELEON_JUDGE_WAIT, an instantly-completing job's finding
     still does NOT render in-turn -- it stays pending for the real delivery

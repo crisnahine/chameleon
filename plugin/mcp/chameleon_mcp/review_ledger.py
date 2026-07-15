@@ -1211,11 +1211,16 @@ def read_session_attestations(
 # use the same flock + atomic-write discipline as core/idiom_store.py: a
 # concurrent detached job and a live Stop must never interleave a partial file.
 #
-# Additive alongside the pre-existing per-event judge_findings table in
-# drift/observations.py (record_judge_finding / open_judge_findings /
-# mark_judge_finding) and stop/gates.py's _ledger_persist /
-# _ledger_recheck_and_resurface, which keep running unchanged against that
-# older store until the pipeline that calls them is switched over.
+# This store is wired into the live Stop pipeline (stop/pipeline.py calls
+# recheck_and_resurface directly). It superseded the pre-existing per-event
+# judge_findings table in drift.db (record_judge_finding / open_judge_findings
+# / mark_judge_finding in drift/observations.py, and stop/gates.py's
+# _ledger_persist / _ledger_recheck_and_resurface) -- that older store's write
+# side lost its only caller in the async-first cutover, and its read/resurface
+# side has since been retired too. Any HIGH finding it was still holding open
+# from before the cutover is not migrated (a documented, low-impact gap --
+# unlike the .judge_pending.<session>.json queue, which IS migrated via
+# migrate_pending_queue below).
 
 _FINDINGS_LEDGER_FILENAME = "findings_ledger.json"
 _RESURFACE_MAX_LINES = 8
@@ -1324,7 +1329,20 @@ def record_findings(repo_id: str, ws_root, findings) -> None:
 
 
 def undelivered_findings(repo_id: str, *, ws_roots) -> list:
-    """Pending or resurfaced rows scoped to ``ws_roots``, oldest first.
+    """Pending rows scoped to ``ws_roots``, oldest first.
+
+    ``resurfaced`` rows are deliberately EXCLUDED: a resurfaced finding
+    already got its one-shot inline re-nag from ``recheck_and_resurface``,
+    and that emission is meant to be its SOLE re-appearance. If this
+    function returned resurfaced rows too, an ordinary delivery pass
+    (UserPromptSubmit's ``deliver_pending_findings``, SessionStart's
+    ``deliver_dead_session_findings``, or the job's own cached-payload
+    render) would hand the row's match_key to ``mark_delivered``, flipping
+    it back to ``delivered`` -- and the NEXT Stop's ``recheck_and_resurface``
+    treats ``delivered`` as open-and-eligible, so it would resurface the
+    same finding again, forever. Excluding it here (paired with
+    ``mark_delivered`` refusing a resurfaced row as a source state) makes
+    ``resurfaced`` a true terminal status for ordinary delivery.
 
     Scoping mirrors the pre-existing judge_findings ledger's ws_root
     discipline (drift/observations.py): a shared repo_id can span several
@@ -1341,7 +1359,7 @@ def undelivered_findings(repo_id: str, *, ws_roots) -> list:
     roots = {str(r) for r in (ws_roots or []) if r}
     out = []
     for row in _read_findings_rows(repo_id).values():
-        if not isinstance(row, dict) or row.get("status") not in ("pending", "resurfaced"):
+        if not isinstance(row, dict) or row.get("status") != "pending":
             continue
         if roots and str(row.get("ws_root") or "") not in roots:
             continue
@@ -1380,13 +1398,20 @@ def _transition_status(repo_id: str, match_keys, allowed_from, new_status: str) 
 
 
 def mark_delivered(repo_id: str, match_keys) -> None:
-    """pending|resurfaced -> delivered.
+    """pending -> delivered.
+
+    ``resurfaced`` is deliberately NOT an accepted source state: it is a
+    terminal status for ordinary delivery (see ``undelivered_findings``), so
+    a resurfaced row's match_key reaching this function (it should not, since
+    ``undelivered_findings`` never returns one -- this is defense in depth)
+    is a no-op rather than a transition back to ``delivered``, which would
+    re-arm the row for another resurface next Stop.
 
     Advances the repo-keyed delivery cursor (spec section 3.5: cursors are
     keyed by repo_id, not session) whenever at least one row actually
     transitioned, so a later reader can tell delivery happened and when.
     """
-    moved = _transition_status(repo_id, match_keys, {"pending", "resurfaced"}, "delivered")
+    moved = _transition_status(repo_id, match_keys, {"pending"}, "delivered")
     if moved:
         try:
             from chameleon_mcp.core.session_state import update_delivery_cursor
@@ -1408,15 +1433,19 @@ def mark_resurfaced(repo_id: str, match_keys) -> None:
 
 
 def recheck_and_resurface(repo_id: str, ws_root) -> list:
-    """Canonical-row port of stop/gates.py's ``_ledger_recheck_and_resurface``.
+    """Canonical-row successor to the retired ``stop/gates.py``
+    ``_ledger_recheck_and_resurface`` (drift.db's judge_findings table). This
+    was written as a NEW function rather than an in-place port of the legacy
+    one, since the two read disjoint stores (drift.db there, this module's
+    findings_ledger.json here); ``stop/pipeline.py``'s ``stop_gates`` calls
+    this function directly (the legacy one and its backing store were
+    retired once the switchover landed).
 
-    A NEW function rather than an in-place port of the legacy one: the two
-    read disjoint stores (drift.db's judge_findings table there, this
-    module's findings_ledger.json here), so porting in place would either
-    break the legacy store's still-green regression tests or require
-    dual-writing rows the legacy reader cannot understand. Not yet wired
-    into the live Stop pipeline -- a future pipeline change calls this
-    instead of the legacy function once the two stores are unified.
+    A resurfaced row is TERMINAL for ordinary delivery: ``undelivered_findings``
+    never returns a ``resurfaced`` row again, and ``mark_delivered`` refuses
+    one as a source state, so the ``<chameleon-context>`` block this function
+    returns is the finding's SOLE re-appearance -- it cannot loop back through
+    UserPromptSubmit/SessionStart delivery and re-arm itself for another nag.
 
     At Stop, before this turn's own findings persist: every open
     (pending/delivered/resurfaced) row scoped to ``ws_root`` is re-checked.

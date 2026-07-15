@@ -202,7 +202,18 @@ def test_high_severity_unchanged_resurfaces_once_then_not_again(tmp_path):
     rows = review_ledger._read_findings_rows(REPO)
     assert rows[f.match_key]["status"] == "resurfaced"
 
-    # Already resurfaced, still unchanged -> no second nag.
+    # A delivery pass runs between the two rechecks, mirroring the real
+    # Stop -> UserPromptSubmit -> Stop ordering. `resurfaced` must be
+    # TERMINAL for ordinary delivery: this must not move the row back to
+    # "delivered" and re-arm the resurface (the bug a naive wiring produced
+    # -- delivery kept flipping resurfaced rows back to delivered, so the
+    # next recheck saw "delivered" again and nagged forever).
+    review_ledger.mark_delivered(REPO, [f.match_key])
+    rows = review_ledger._read_findings_rows(REPO)
+    assert rows[f.match_key]["status"] == "resurfaced"  # unchanged: not a valid transition
+
+    # Already resurfaced, still unchanged, and the interleaved delivery
+    # attempt was a no-op -> no second nag.
     assert review_ledger.recheck_and_resurface(REPO, str(repo)) == []
 
 

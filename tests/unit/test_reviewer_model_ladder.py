@@ -46,43 +46,40 @@ def test_valid_model_rejects_unknown(m):
 # --- judge_model_for_route ---------------------------------------------------
 
 
-@pytest.fixture
-def _detached(monkeypatch):
-    # The escalation only fires on the detached async path (the sync 45s/55s
-    # budget can't afford the slower model). Simulate the detached child.
-    monkeypatch.setattr(judge, "_RUNNING_DETACHED", True)
-
-
-def test_high_routes_escalate_to_opus_when_detached(_detached):
+def test_high_routes_escalate_to_opus():
+    # Every review now runs inside the detached job by construction
+    # (async-first cutover) -- the ladder escalates unconditionally, with no
+    # _RUNNING_DETACHED dance required.
     assert judge.judge_model_for_route("risk_high") == "opus"
     assert judge.judge_model_for_route("intent_forced") == "opus"
 
 
-def test_sync_path_does_not_escalate_high_route():
-    # NOT detached (the default sync Stop path): a high route keeps the base
-    # model, because opus under the 45s sync budget would time out and lose
-    # findings on exactly the high-risk turns -- a coverage regression.
+def test_escalates_even_when_not_marked_detached():
+    # Regression pin: the historical gate (`if not _RUNNING_DETACHED: return
+    # base`) is gone. mark_detached_run() is never called post-cutover, so
+    # _RUNNING_DETACHED is permanently False in production -- the ladder must
+    # not depend on it to escalate.
     assert judge._RUNNING_DETACHED is False
-    assert judge.judge_model_for_route("risk_high") == "sonnet"
-    assert judge.judge_model_for_route("intent_forced") == "sonnet"
+    assert judge.judge_model_for_route("risk_high") == "opus"
+    assert judge.judge_model_for_route("intent_forced") == "opus"
 
 
-def test_low_routes_keep_sonnet(_detached):
+def test_low_routes_keep_sonnet():
     for reason in ("risk_elevated", "first_low_risk", None, "anything_else"):
         assert judge.judge_model_for_route(reason) == "sonnet"
 
 
-def test_tiering_kill_switch_flattens_high_route(monkeypatch, _detached):
+def test_tiering_kill_switch_flattens_high_route(monkeypatch):
     monkeypatch.setenv("CHAMELEON_JUDGE_TIERING", "0")
     assert judge.judge_model_for_route("risk_high") == "sonnet"
 
 
-def test_custom_high_model_used(monkeypatch, _detached):
+def test_custom_high_model_used(monkeypatch):
     monkeypatch.setenv("CHAMELEON_JUDGE_MODEL_HIGH", "fable")
     assert judge.judge_model_for_route("risk_high") == "fable"
 
 
-def test_garbage_high_model_falls_back_to_base_never_spawned(monkeypatch, _detached):
+def test_garbage_high_model_falls_back_to_base_never_spawned(monkeypatch):
     # Raise-only: an unrecognized HIGH model must fall back to the valid base,
     # never be spawned (a garbage --model fail-opens the judge to zero findings).
     monkeypatch.setenv("CHAMELEON_JUDGE_MODEL_HIGH", "rm -rf /")

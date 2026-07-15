@@ -1070,12 +1070,13 @@ next turn to deliver into (see the `environment-variables.md` entry).
     parse exception inside one grounding stage skips just that stage's
     contribution and still lets the review spawn and return findings). Model:
     `CHAMELEON_JUDGE_MODEL` (default `sonnet`). The **reviewer model ladder**
-    (`judge_model_for_route`, `CHAMELEON_JUDGE_MODEL_HIGH`) that was meant to
-    escalate a high-risk route to a stronger model is currently INERT: its
-    escalation branch is gated on a flag (`judge._RUNNING_DETACHED`) that
-    nothing in the new pipeline sets, so every route reads the base model
-    regardless of risk — see the `CHAMELEON_JUDGE_MODEL_HIGH` entry in
-    `environment-variables.md` for the open follow-up.
+    (`judge_model_for_route`, `CHAMELEON_JUDGE_MODEL_HIGH`, default `opus`)
+    escalates a `risk_high`/`intent_forced` route to a stronger model;
+    `risk_elevated`/`first_low_risk` keep the base model. Unconditional since
+    every review now runs inside the detached job (no separate synchronous
+    path left to protect from a slower model, unlike the pre-3.4.0 ladder) —
+    `CHAMELEON_JUDGE_TIERING=0` flattens every route back to the base model.
+    See the `CHAMELEON_JUDGE_MODEL_HIGH` entry in `environment-variables.md`.
   - **Duplication** (`enforcement.duplication_review`, default on,
     `stop/lenses/duplication.py`). Each new function is matched by body hash
     against the committed function catalog and functions added earlier this
@@ -1116,18 +1117,26 @@ next turn to deliver into (see the `environment-variables.md` entry).
   VERIFY survivor via `record_findings`; a finding below the built-in severity
   surface bar (medium+ surfaces even unverified, low only when
   `verified=="confirmed"`) is stored `status="shelved"` instead, with a check
-  event. Delivery reads `undelivered_findings` and marks rows
-  `delivered`/`addressed`/`resurfaced` as they are shown, re-addressed (the
-  cited file changed since review), or re-surfaced; an unaddressed HIGH
-  finding resurfaces exactly once. A stale finding (digest changed since
-  creation) renders `[stale]` rather than being dropped — the pre-3.4.0
-  silent-drop behavior this replaced is gone by design. This is a DIFFERENT,
-  newer mechanism than the older `judge_findings` table in drift.db
-  (`CHAMELEON_FINDING_LEDGER`, `_ledger_persist`/`_ledger_recheck_and_resurface`
-  in `stop/gates.py`): that table's write side (`_ledger_persist`) has no
-  live caller post-cutover, so it no longer receives new rows, while its
-  read/resurface side stays wired and still resurfaces any pre-3.4.0 rows
-  left over from before the migration.
+  event. Delivery reads `undelivered_findings` (`pending` rows only) and
+  marks rows `delivered`/`addressed` as they are shown or re-addressed (the
+  cited file changed since review). Separately, at the START of the next
+  Stop (`CHAMELEON_FINDING_LEDGER=0` to disable), before that turn's own
+  gates persist anything, `recheck_and_resurface` re-checks every open row
+  and surfaces an unaddressed HIGH/blocker finding exactly once via a
+  `<chameleon-context>` block, marking it `resurfaced` — a TERMINAL status
+  `undelivered_findings` never returns again, so the one-shot resurface line
+  is the finding's sole re-appearance rather than looping back through
+  ordinary delivery and re-arming itself. A stale finding (digest changed
+  since creation) renders `[stale]` rather than being dropped — the pre-3.4.0
+  silent-drop behavior this replaced is gone by design. This superseded the
+  older `judge_findings` table in drift.db (`_ledger_persist`/
+  `_ledger_recheck_and_resurface` in `stop/gates.py`, `record_judge_finding`/
+  `open_judge_findings`/`mark_judge_finding` in `drift/observations.py`),
+  which the async-first cutover left wired to nothing; that store and its
+  functions have been retired. Any HIGH finding it was still holding open
+  from before the cutover is not migrated (a documented, low-impact gap —
+  unlike the `.judge_pending.<session>.json` queue, which IS migrated via
+  `migrate_pending_queue`).
 
 ---
 
@@ -1425,18 +1434,20 @@ CREATE TABLE judge_findings (
 trailing window (default 14 days). The SessionStart banner fires only when the
 score and the observation count both clear their floors (default 0.4 over at
 least 10 observations) and a cooldown marker is older than its TTL (default 7
-days). `rule_overrides`, `decision_log`, and `judge_findings` are durable
-because the questions they answer (is a convention fighting the team; what did
-chameleon know when a defect escaped; was a surfaced finding ever acted on)
-span many profile revisions; they are bounded by an age-then-recency trim, not
-drop-and-recreate. `judge_findings` backs the finding->fix ledger (see
-[Enforcement](#enforcement)): `fingerprint` is the per-(lens, file, locus)
-dedup key, `anchor_digest` is the reviewed file's content digest at review
-time (the addressed/still-open proxy), `status` walks open / addressed /
-resurfaced / ignored, and `ws_root` scopes each row to the workspace that
-wrote it so, in a monorepo whose workspaces share one repo_id, one workspace's
-Stop cannot mark a sibling's findings addressed. Its DDL is additive and
-idempotent — no drift schema bump.
+days). `rule_overrides` and `decision_log` are durable because the questions
+they answer (is a convention fighting the team; what did chameleon know when
+a defect escaped) span many profile revisions; they are bounded by an
+age-then-recency trim, not drop-and-recreate. `judge_findings` backed the
+pre-3.4.0 finding->fix ledger the same way (`fingerprint` the per-(lens,
+file, locus) dedup key, `anchor_digest` the reviewed file's content digest at
+review time, `status` walking open / addressed / resurfaced / ignored,
+`ws_root` scoping each row to the workspace that wrote it) but is retired:
+the async-first cutover moved the finding->fix loop to `review_ledger.py`'s
+`findings_ledger.json` (see [Enforcement](#enforcement)), and nothing reads
+or writes this table anymore. Its DDL is left in place (a stale
+`judge_findings` row from before the cutover is not migrated — a documented,
+low-impact gap) rather than dropped, since `drift.db` is a cache a schema
+bump can drop-and-recreate freely anyway.
 
 (There is no `files` table; the old per-file cache table was removed when it lost
 its last reader.)

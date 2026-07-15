@@ -1,18 +1,28 @@
-"""Stop turn-end block-gate machinery: the lint re-check, the finding->fix
-ledger, and the crossfile-existence deny predicate.
+"""Stop turn-end block-gate machinery: the lint re-check and the
+crossfile-existence deny predicate.
 
 ``_stop_file_still_blockable`` is the live re-lint the Stop backstop runs on
 every candidate file whose per-edit verify armed a blockable flag; a hard
 violation still enforceable on the live content is what actually refuses the
-turn. ``_ledger_persist`` / ``_ledger_recheck_and_resurface`` are the
-finding->fix loop: findings a reviewer surfaced this turn are persisted with a
-content-digest anchor, and the NEXT Stop re-checks each open one before this
-turn's findings persist, re-surfacing an unaddressed high-severity finding
-exactly once. ``_confirmed_crossfile_break_sites`` is the strict F2/F3
-predicate that decides whether a removed export is deny-eligible (never the
-advisory's keep-biased check). ``_stop_block_scope`` /
-``_effective_stop_blocks`` are the shared per-workspace anti-loop block-cap
-accounting both the lint backstop and the idiom-review gate charge against.
+turn. ``_confirmed_crossfile_break_sites`` is the strict F2/F3 predicate that
+decides whether a removed export is deny-eligible (never the advisory's
+keep-biased check). ``_stop_block_scope`` / ``_effective_stop_blocks`` are the
+shared per-workspace anti-loop block-cap accounting both the lint backstop and
+the idiom-review gate charge against.
+
+The finding->fix loop (findings a reviewer surfaced persisted with a
+content-digest anchor, re-checked and re-surfaced once at the next Stop) used
+to live here too (``_ledger_persist`` / ``_ledger_recheck_and_resurface``,
+backed by drift.db's ``judge_findings`` table). The async-first cutover
+switched the live Stop pipeline over to ``review_ledger.py``'s canonical
+finding-lifecycle ledger (``recheck_and_resurface`` / ``record_findings`` /
+``undelivered_findings``), leaving this module's copy with no caller; it and
+its drift.db backing (``record_judge_finding`` / ``open_judge_findings`` /
+``mark_judge_finding`` in ``drift/observations.py``) were retired. Any HIGH
+finding the old store was still holding open from before the cutover is not
+migrated (a documented, low-impact gap -- unlike the
+``.judge_pending.<session>.json`` queue, which IS migrated via
+``review_ledger.migrate_pending_queue``).
 
 Extracted verbatim from ``hook_helper.py``. Symbols still owned by
 ``hook_helper`` (shared with the advisory pipeline or other callers) are
@@ -25,162 +35,8 @@ deferring every non-stdlib import to call time.
 from __future__ import annotations
 
 import hashlib
-import os
 import re
-import time
 from pathlib import Path
-
-_FINDING_HIGH_CONFIDENCE = 0.7
-
-
-def _finding_fingerprint(lens: str, rel: str | None, line, message: str | None) -> str:
-    """Stable per-(lens, file, locus) dedup key so the same finding across turns
-    is one logical ledger row. Uses a message PREFIX (wording is stable enough at
-    80 chars; the full message drifts less than the line does under edits)."""
-    loc = line if isinstance(line, int) else ""
-    key = f"{lens}|{rel or ''}|{loc}|{(message or '')[:80]}"
-    return hashlib.sha256(key.encode("utf-8", "replace")).hexdigest()[:16]
-
-
-def _finding_severity(f: dict) -> str | None:
-    """Normalize a finding's severity across lens shapes: an explicit ``severity``
-    string wins; a correctness finding carries only ``confidence`` (0..1), mapped
-    to high at/above the confidence floor; a multi-lens finding surfaced by TWO
-    lenses independently agreeing reads high; else medium/unknown."""
-    sev = f.get("severity")
-    if isinstance(sev, str) and sev:
-        return sev
-    conf = f.get("confidence")
-    if isinstance(conf, (int, float)):
-        return "high" if conf >= _FINDING_HIGH_CONFIDENCE else "medium"
-    lenses = f.get("lenses")
-    if isinstance(lenses, list) and len(lenses) >= 2:
-        return "high"
-    return None
-
-
-def _finding_message(f: dict) -> str | None:
-    """The finding's human message across shapes: correctness uses ``message``,
-    the multi-lens synthesis uses ``claim``."""
-    m = f.get("message") or f.get("claim")
-    return m if isinstance(m, str) else None
-
-
-def _finding_is_high(severity: str | None) -> bool:
-    return isinstance(severity, str) and severity.strip().lower() in ("high", "block", "critical")
-
-
-def _ledger_persist(repo_id, session_id, repo_root: Path, lens: str, findings) -> None:
-    """Persist surfaced findings to the judge_findings ledger (the finding->fix
-    loop). ``findings`` is a list of ``{file, line, message, confidence?/severity?}``.
-    Records the reviewed file's content digest as the addressed/ignored anchor.
-    Gated by CHAMELEON_FINDING_LEDGER, fail-open, off the per-edit hot path."""
-    if os.environ.get("CHAMELEON_FINDING_LEDGER") == "0" or not repo_id or not findings:
-        return
-    try:
-        from chameleon_mcp import hook_helper as hh
-        from chameleon_mcp.drift.observations import record_judge_finding
-
-        for f in findings:
-            if not isinstance(f, dict):
-                continue
-            rel = f.get("file")
-            rel = rel if isinstance(rel, str) else None
-            line = f.get("line")
-            anchor = None
-            if rel:
-                try:
-                    anchor = hh._content_digest_16(
-                        (repo_root / rel).read_bytes()[:100_000].decode("utf-8", errors="replace")
-                    )
-                except OSError:
-                    anchor = None
-            record_judge_finding(
-                repo_id,
-                lens=lens,
-                fingerprint=_finding_fingerprint(lens, rel, line, _finding_message(f)),
-                severity=_finding_severity(f),
-                rel_path=rel,
-                line=line if isinstance(line, int) else None,
-                anchor_digest=anchor,
-                ws_root=str(repo_root),
-                session_id=session_id,
-            )
-    except Exception:
-        return
-
-
-def _ledger_recheck_and_resurface(repo_id, session_id, repo_root: Path) -> list[str]:
-    """At Stop, BEFORE this turn's findings persist: re-check every open ledger
-    finding against the reviewed file's CURRENT digest -- changed or gone since
-    review => addressed (mark + drop) -- and re-surface an unaddressed
-    high-severity finding ONCE (mark resurfaced, emit one advisory line). A
-    finding already resurfaced and still unchanged is left alone (no re-nag).
-    Gated, fail-open to []."""
-    if os.environ.get("CHAMELEON_FINDING_LEDGER") == "0" or not repo_id:
-        return []
-    try:
-        from chameleon_mcp import hook_helper as hh
-        from chameleon_mcp.drift.observations import mark_judge_finding, open_judge_findings
-        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
-
-        now = int(time.time())
-        resurfaced: list[dict] = []
-        # Scope to THIS workspace: in a shared-repo_id monorepo several workspaces
-        # share one drift.db, and a finding's rel_path is relative to the root
-        # that persisted it, so an unscoped re-check would mis-resolve a sibling
-        # workspace's findings against this root (file-not-here read as addressed).
-        for row in open_judge_findings(repo_id, ws_root=str(repo_root)):
-            fid = row.get("id")
-            rel = row.get("rel_path")
-            anchor = row.get("anchor_digest")
-            has_path = isinstance(rel, str)
-            current = None
-            if has_path:
-                try:
-                    current = hh._content_digest_16(
-                        (repo_root / rel).read_bytes()[:100_000].decode("utf-8", errors="replace")
-                    )
-                except OSError:
-                    current = None  # file gone since review -> treat as addressed
-            # Changed or gone => the cited content moved => addressed (a proxy;
-            # aggregate telemetry, never per-row enforcement). The digest proxy
-            # only applies to a finding that CITED a file: a file-less finding
-            # (rel_path=None -- a whole-diff or lens finding with no anchor) has no
-            # content to compare, so it must NOT be auto-addressed here (that
-            # silently loses a real high-severity finding); it falls through to the
-            # one-shot high-severity resurface below and otherwise stays open.
-            if has_path and (current is None or (anchor is not None and current != anchor)):
-                mark_judge_finding(repo_id, fid, status="addressed", resolved_at=now)
-                continue
-            # A file-less finding (no digest proxy) that is NOT high never
-            # resurfaces, so leaving it open would clog the recheck window forever.
-            # Resolve it here (its pre-fix fate); only a file-less HIGH finding
-            # escapes to the one-shot resurface below.
-            if not has_path and not _finding_is_high(row.get("severity")):
-                mark_judge_finding(repo_id, fid, status="addressed", resolved_at=now)
-                continue
-            # Unchanged and still 'open' and high-severity => one re-surface.
-            if row.get("status") == "open" and _finding_is_high(row.get("severity")):
-                mark_judge_finding(repo_id, fid, status="resurfaced")
-                resurfaced.append(row)
-        if not resurfaced:
-            return []
-        lines = [
-            f"[🦎 chameleon: {len(resurfaced)} unaddressed high-severity finding(s) "
-            "from a previous turn's review, surfaced once more]",
-            "Advisory; verify each before acting -- they may be wrong, or already handled.",
-        ]
-        for row in resurfaced[:8]:
-            rel = row.get("rel_path")
-            loc = sanitize_for_chameleon_context(str(rel)) if rel else "?"
-            ln = row.get("line")
-            if isinstance(ln, int):
-                loc += f":{ln}"
-            lines.append(f"- {loc} ({sanitize_for_chameleon_context(str(row.get('lens') or '?'))})")
-        return lines
-    except Exception:
-        return []
 
 
 def _stop_block_scope(repo_root: Path) -> str:

@@ -6445,16 +6445,10 @@ _MACHINE_BLOCK_RE = re.compile(
 from chameleon_mcp.stop import gates as _stop_gates_mod
 
 _stop_file_still_blockable = _stop_gates_mod._stop_file_still_blockable
-_ledger_recheck_and_resurface = _stop_gates_mod._ledger_recheck_and_resurface
-_ledger_persist = _stop_gates_mod._ledger_persist
 _confirmed_crossfile_break_sites = _stop_gates_mod._confirmed_crossfile_break_sites
 _effective_stop_blocks = _stop_gates_mod._effective_stop_blocks
 _stop_block_scope = _stop_gates_mod._stop_block_scope
 _module_exports_at_head = _stop_gates_mod._module_exports_at_head
-_finding_fingerprint = _stop_gates_mod._finding_fingerprint
-_finding_severity = _stop_gates_mod._finding_severity
-_finding_message = _stop_gates_mod._finding_message
-_finding_is_high = _stop_gates_mod._finding_is_high
 
 
 # stop/scheduler.py + stop/judge_wait.py seams. Unlike the gates.py/advisories.py

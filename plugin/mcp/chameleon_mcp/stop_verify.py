@@ -33,9 +33,10 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-# Mirror hook_helper._FINDING_HIGH_CONFIDENCE: a correctness finding carries only a
-# 0..1 confidence; at/above this floor it reads high-severity (which drives both the
-# refuter model ladder and REPORT ranking).
+# A correctness finding carries only a 0..1 confidence; at/above this floor
+# it reads high-severity (which drives both the refuter model ladder and
+# REPORT ranking) -- the same threshold core.finding.Finding.from_judge_finding
+# uses for the same kind of finding.
 _HIGH_CONFIDENCE = 0.7
 _EXCERPT_CHAR_CAP = 4000
 _HEAD_FALLBACK_LINES = 50
@@ -79,9 +80,9 @@ def _field(f, *names):
 
 
 def _severity_for(f) -> str:
-    """Normalized severity across finding shapes (mirrors hook_helper._finding_severity):
-    an explicit ``severity`` string wins; a confidence at/above the high floor reads
-    high; two lenses independently agreeing reads high; else medium."""
+    """Normalized severity across finding shapes: an explicit ``severity``
+    string wins; a confidence at/above the high floor reads high; two lenses
+    independently agreeing reads high; else medium."""
     sev = _field(f, "severity")
     if isinstance(sev, str) and sev:
         return sev

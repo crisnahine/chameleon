@@ -36,8 +36,6 @@ def test_gate_seams_are_hook_helper_attributes():
 
     for name in (
         "_stop_file_still_blockable",
-        "_ledger_recheck_and_resurface",
-        "_ledger_persist",
         "_confirmed_crossfile_break_sites",
         "_effective_stop_blocks",
         "_stop_block_scope",

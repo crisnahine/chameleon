@@ -117,28 +117,31 @@ CREATE INDEX IF NOT EXISTS idx_decision_log_at ON decision_log(observed_at);
 CREATE INDEX IF NOT EXISTS idx_decision_log_path ON decision_log(rel_path, observed_at);
 CREATE INDEX IF NOT EXISTS idx_decision_log_digest ON decision_log(rel_path, content_digest);
 
--- Surfaced-finding ledger (the finding->fix loop). The correctness judge and the
--- multi-lens review can never block; nothing tracked whether a surfaced advisory
--- was ever acted on, so a dropped high-severity finding was simply lost and there
--- was zero telemetry on advisory efficacy. Each surfaced finding writes one row
--- here at Stop; the next Stop re-checks the anchor (the reviewed file's content
--- digest) to classify it addressed (the cited content changed) vs still-open, and
--- an unaddressed high-severity finding is re-surfaced ONCE. `fingerprint` is the
--- per-(lens, file, locus) dedup key so the same finding across turns is one
--- logical row; `anchor_digest` is the 16-hex content digest of the reviewed file
--- at review time (the addressed/ignored proxy); `status` is open / addressed /
--- ignored / resurfaced. Durable per-repo history (not reset on refresh), bounded
--- by the same two-stage age+recency trim as the other durable tables.
--- `ws_root` is the absolute workspace root that persisted the row. In a
--- monorepo whose sub-projects share ONE repo_id (a shared git remote), several
--- workspaces share one drift.db, and each workspace's turn-end Stop must
--- re-check only ITS OWN findings: without this discriminator the first
--- workspace to run would compute `<its root>/<the other workspace's rel_path>`,
--- find no such file, and wrongly mark every sibling workspace's finding
--- "addressed" (file-gone), silently defeating the re-surface loop for them. The
--- re-check filters on it; a legacy row (NULL ws_root) matches only the NULL
--- filter, so it is not attributed to any workspace. Absolute + machine-local,
--- which is correct: drift.db is a per-machine cache, never committed or shared.
+-- RETIRED: nothing reads or writes this table anymore (see below). Was the
+-- surfaced-finding ledger (the finding->fix loop): the correctness judge and
+-- the multi-lens review can
+-- never block; nothing tracked whether a surfaced advisory was ever acted
+-- on, so a dropped high-severity finding was simply lost with zero telemetry
+-- on advisory efficacy. Each surfaced finding wrote one row here at Stop; the
+-- next Stop re-checked the anchor (the reviewed file's content digest) to
+-- classify it addressed (the cited content changed) vs still-open, and an
+-- unaddressed high-severity finding re-surfaced ONCE. `fingerprint` was the
+-- per-(lens, file, locus) dedup key so the same finding across turns was one
+-- logical row; `anchor_digest` was the 16-hex content digest of the reviewed
+-- file at review time (the addressed/ignored proxy); `status` walked open /
+-- addressed / ignored / resurfaced. `ws_root` was the absolute workspace root
+-- that persisted the row, scoping a monorepo's shared-repo_id workspaces to
+-- their own findings.
+--
+-- The async-first cutover moved the finding->fix loop to `review_ledger.py`'s
+-- `findings_ledger.json` (one JSON row per repo, not a drift.db table); this
+-- table's writer (`record_judge_finding`) and reader
+-- (`open_judge_findings`/`mark_judge_finding`) were retired with it. Any HIGH
+-- finding left open here from before the cutover is not migrated -- a
+-- documented, low-impact gap (unlike the `.judge_pending.<session>.json`
+-- queue, which IS migrated via `review_ledger.migrate_pending_queue`). The
+-- DDL is left in place rather than dropped, since drift.db is a cache a
+-- schema bump can drop-and-recreate freely anyway.
 CREATE TABLE IF NOT EXISTS judge_findings (
   id INTEGER PRIMARY KEY,
   session_id TEXT,

@@ -1342,6 +1342,21 @@ def _spawn_lost_auth(proc) -> bool:
 # take the generous fallback budget below: a spawn inside the Stop hook never
 # can, because the stop-backstop wrapper caps the whole hook at 55s and the
 # host kills hooks at 60s regardless of any threshold override.
+#
+# No longer consulted by judge_model_for_route (below): the reviewer model
+# ladder escalates unconditionally post-async-first-cutover, since every
+# review now runs inside the detached job with no separate synchronous path
+# left to protect from a slower model. Still read by _reviewer_timeout_seconds
+# for the one reviewer spawn that does not thread its own timeout
+# (duplication_review.judge_body_matches, called from
+# stop/lenses/duplication.py, which deliberately leaves model/timeout
+# resolution internal). mark_detached_run() has zero callers post-cutover
+# (the old async judge child that called it at process entry was deleted in
+# the cutover), so _RUNNING_DETACHED is permanently False in production today
+# and that fallback always reads the short sync budget rather than the
+# detached job's generous one -- a separate, low-impact gap. Wiring
+# mark_detached_run() into stop/job.py's own entry point would close it; left
+# as an open follow-up rather than folded into this fix.
 _RUNNING_DETACHED = False
 
 
@@ -1414,6 +1429,13 @@ def judge_model_for_route(reason: str | None) -> str:
     spawning a model id that would fail-open the judge to zero findings. So the
     ladder can only ever strengthen the reviewer or leave it unchanged, never
     silently disable it.
+
+    Unconditional (no detached-only gate): every review this function routes
+    for now runs inside the detached job (``stop/job.py``), which owns its own
+    generous wall-clock budget (``CHAMELEON_JOB_*_BUDGET_SECONDS``), not the
+    old 55s hook-wrapper cap that used to force the escalation onto an
+    async-only path. There is no remaining synchronous judge spawn to protect
+    from a slower model.
     """
     base = os.environ.get("CHAMELEON_JUDGE_MODEL", "sonnet")
     if not _valid_model(base):
@@ -1421,17 +1443,6 @@ def judge_model_for_route(reason: str | None) -> str:
     if os.environ.get("CHAMELEON_JUDGE_TIERING") == "0":
         return base
     if reason not in _JUDGE_HIGH_ROUTES:
-        return base
-    # Escalate ONLY where the budget supports the slower model: the detached
-    # async child runs under the generous fallback budget, but the synchronous
-    # Stop path is capped by the 55s hook wrapper (45s judge budget, shared with
-    # the duplication lens), where a slower model would time out and fail-open to
-    # ZERO findings on exactly the high-risk turns escalation is meant to
-    # strengthen -- a coverage regression, not a win. So the sync path keeps the
-    # base model; the escalation rides the detached path (CHAMELEON_JUDGE_ASYNC=1,
-    # or the auto-detach on a known bare-auth failure). This also keeps the
-    # ladder measured-not-guessed: the default sync turn is unchanged.
-    if not _RUNNING_DETACHED:
         return base
     high = os.environ.get("CHAMELEON_JUDGE_MODEL_HIGH", "opus")
     return high if _valid_model(high) else base
