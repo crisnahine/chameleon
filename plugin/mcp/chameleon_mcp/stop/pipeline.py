@@ -653,6 +653,37 @@ def stop_gates(ctx: RootContext) -> dict:
         return {}
 
 
+def _shown_idiom_slugs(repo_root: Path, state, session_doc) -> tuple[str, ...]:
+    """Idiom slugs this session has already shown the model, from either
+    signal that carries them (spec section 10.1's Tier-2/memory-channel dedup
+    must-keep).
+
+    ``session_doc.idioms_shown_slugs`` (``core.session_state.SessionDoc``) is
+    the native slug set. The per-edit Tier-2 block's ACTUAL shown signal
+    today is ``state.idioms_shown_names`` (the enforcement state's
+    ``### <name>`` header names -- see ``core.idiom_store``'s title/slug
+    split: idioms.md renders each record's TITLE as its header, not its
+    slug), so that set is translated into slugs via the loaded store's own
+    title->slug map, which the idiom lens then excludes from its scoped set
+    before deciding to spawn. Fails open to whatever slugs are already known
+    if the store cannot be loaded.
+    """
+    slugs: set[str] = {
+        str(s) for s in (getattr(session_doc, "idioms_shown_slugs", None) or ()) if s
+    }
+    names = {str(n) for n in (getattr(state, "idioms_shown_names", None) or ()) if n}
+    if names:
+        try:
+            from chameleon_mcp import hook_helper as hh
+            from chameleon_mcp.core.idiom_store import load_store
+
+            records = load_store(hh._enf_profile_dir(repo_root))
+            slugs |= {rec.slug for rec in records if rec.title in names}
+        except Exception:
+            pass
+    return tuple(sorted(slugs))
+
+
 def _run_review_job(
     *,
     repo_root: Path,
@@ -720,6 +751,7 @@ def _run_review_job(
             lens_names=decision.lens_names,
             model=decision.model or "sonnet",
             heartbeat_path=heartbeat,
+            shown_idiom_slugs=_shown_idiom_slugs(repo_root, state, session_doc),
         )
         # "spawned" records the DECISION (route reason, lens set) the instant
         # the slot is claimed -- before the detach attempt, mirroring the
@@ -738,7 +770,26 @@ def _run_review_job(
             detail={"lenses": list(decision.lens_names), "files": len(decision.files)},
         )
 
-        launched = hh._scheduler_launch_job(request)
+        try:
+            launched = hh._scheduler_launch_job(request)
+        except Exception:
+            # launch_job's OWN cleanup (_cleanup_failed_launch) only runs for
+            # the failure modes it anticipates (a request-file write failure,
+            # an unsupported platform, or an OSError from subprocess.Popen);
+            # anything else escaping it here would otherwise be swallowed by
+            # this function's own outer except below with the slot still
+            # claimed -- job_inflight set and the spend still charged -- for
+            # the rest of the heartbeat-staleness window, wedging this
+            # session's one-job-at-a-time budget on a launch that never
+            # actually started. Release it here exactly as a normal failed
+            # launch would.
+            from chameleon_mcp.stop.scheduler import _release_job_slot
+
+            _release_job_slot(repo_id, session_id or "")
+            hh._emit_check_event(
+                repo_id, session_id, "review_job", "degraded", "platform_unavailable"
+            )
+            return None
         if not launched:
             # Platform or spawn failure -- launch_job already rolled back the
             # slot claim (heartbeat unlinked, spend refunded); disclose the

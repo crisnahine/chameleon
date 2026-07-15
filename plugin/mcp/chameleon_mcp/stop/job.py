@@ -3,7 +3,9 @@
 
 Reads the request file, runs the turn's active lenses (in parallel, per
 spec section 5.1: "lenses 150s (parallel where the model allows)") under one
-``core.budget.TurnBudget`` anchored at process entry, runs VERIFY
+``core.budget.TurnBudget`` anchored at process entry, shadow-logs every RAW
+finding for precision sampling (``CHAMELEON_STOP_VERIFY``'s documented
+contract: "raw findings are still shadow-logged pre-VERIFY"), runs VERIFY
 (``stop/verify.py``) over whatever the lenses found, persists the surviving
 findings, and clears its session-doc job slot. It absorbs ``judge_async.py``'s
 role as the detached correctness-judge child, generalized to every lens.
@@ -122,6 +124,13 @@ def _run_lens_one(
         repo_root = request.repo_root
         profile_dir = hh._enf_profile_dir(repo_root)
         resolver = hh._archetype_resolver(repo_root, {"available": True})
+        # Only the idiom lens accepts shown_idiom_slugs -- correctness and
+        # duplication share this exact call shape and have no use for it, so
+        # it rides as a conditional kwarg rather than a parameter every lens
+        # runner must declare and ignore.
+        extra_kwargs: dict = {}
+        if name == "idiom":
+            extra_kwargs["shown_idiom_slugs"] = list(request.shown_idiom_slugs)
         result = runner(
             repo_root,
             profile_dir,
@@ -131,6 +140,7 @@ def _run_lens_one(
             budget=timeout,
             event_sink=_sink,
             model=model,
+            **extra_kwargs,
         )
         return list(result.findings)
     except Exception as exc:
@@ -200,6 +210,42 @@ def _run_verify(request: JobRequest, findings: list[Finding], budget: TurnBudget
         return list(findings)
 
 
+def _shadow_log_raw_findings(request: JobRequest, findings: list[Finding]) -> None:
+    """Shadow-log every RAW lens finding before VERIFY runs, for later
+    human-labeled precision sampling.
+
+    Mirrors the pre-cutover ``_correctness_judge_gate``'s emit exactly (same
+    hook name, rule, and shape: ``stop-correctness-judge`` /
+    ``correctness-judge-finding``), so a precision-sampling query written
+    against the old metric keeps working unchanged -- a finding VERIFY later
+    refutes is exactly the row a precision sample needs, so this must run
+    BEFORE ``_run_verify`` drops anything, and it must fire regardless of
+    what VERIFY later does. Never blocks (``would_block`` is always False --
+    a lens finding is advisory only).
+    """
+    if not findings:
+        return
+    try:
+        from chameleon_mcp.metrics import emit_hook_metric
+
+        for f in findings:
+            line = f.span[0] if f.span else None
+            emit_hook_metric(
+                "stop-correctness-judge",
+                elapsed_ms=0,
+                repo_id=request.repo_id,
+                advisory_emitted=True,
+                would_block=False,
+                rule="correctness-judge-finding",
+                # The lens reports a repo-relative path already; keep it as
+                # given rather than re-resolving against the working directory.
+                file_rel=f.file,
+                line=line,
+            )
+    except Exception as exc:  # noqa: BLE001 -- shadow logging must never crash the job
+        _checkpoint(request, "shadow_log_error", reason=repr(exc)[:200])
+
+
 def _persist(request: JobRequest, findings: list[Finding]) -> None:
     """Persist surviving findings to the canonical finding-lifecycle ledger.
 
@@ -266,6 +312,7 @@ def _run(request: JobRequest) -> None:
         token_ceiling=threshold_int("JOB_TOKEN_CEILING"),
     )
     findings = _run_lenses(request, budget)
+    _shadow_log_raw_findings(request, findings)
     verified = _run_verify(request, findings, budget)
     _persist(request, verified)
     _write_delivery_payload(request)

@@ -210,6 +210,7 @@ def run(
     budget: float | None = None,
     event_sink=None,
     model: str | None = None,
+    shown_idiom_slugs: list[str] | None = None,
 ) -> LensResult:
     """Run the scoped idiom review for one turn's edited ``files``.
 
@@ -218,10 +219,19 @@ def run(
     file's archetype via ``archetype_for`` and fails open per file), then
     filtered to idiom-governed files (a recognized source language). No
     governed files, or a scoped idiom set that comes back empty once the
-    store is filtered through ``idioms_for_scope``, both return
+    store is filtered through ``idioms_for_scope`` (or once every remaining
+    idiom is dropped by the already-shown dedup below), both return
     ``LensResult([], [("idiom_lens", "no_scoped_idioms")])`` WITHOUT
     spawning a reviewer -- computing diffs is cheap (no model call); only
     the spawn is the expensive step this lens is careful to skip.
+
+    ``shown_idiom_slugs`` (spec section 10.1's Tier-2/memory-channel dedup
+    must-keep) drops any scoped idiom the model already saw THIS session --
+    via the per-edit Tier-2 block or the wired conventions.md memory channel
+    -- from the scope BEFORE the spawn decision, so a turn whose edits touch
+    only already-surfaced idioms produces no findings and never spawns a
+    reviewer. An idiom not yet shown stays in scope and is still reviewed
+    even when it shares a turn with shown ones.
 
     Every check event this lens records is namespaced ``("idiom_lens",
     <detail>)`` (unlike the correctness lens's flat per-outcome kind
@@ -275,6 +285,19 @@ def run(
         # either.
         if not archetypes:
             scoped = [rec for rec in scoped if not rec.archetypes]
+
+        # Tier-2/memory-channel dedup (spec section 10.1 must-keep): an idiom
+        # the model already saw this session is dropped from scope before the
+        # spawn decision -- the scoped-review equivalent of the legacy
+        # per-edit gate's once-per-session marker, enforced here instead of as
+        # a separate turn-level interrupt.
+        shown = {s for s in (shown_idiom_slugs or ()) if isinstance(s, str) and s}
+        if shown:
+            deduped = [rec for rec in scoped if rec.slug not in shown]
+            if len(deduped) != len(scoped):
+                _sink(f"deduped_shown_slugs:{len(scoped) - len(deduped)}")
+            scoped = deduped
+
         if not scoped:
             _sink("no_scoped_idioms")
             return LensResult(findings=[], check_events=events)

@@ -409,6 +409,62 @@ def test_run_pipeline_error_is_caught(tmp_path, monkeypatch):
     )
 
 
+# --- already-shown slug dedup (spec section 10.1 must-keep) -----------------
+#
+# Ports the intent of the deleted test_mirror_carried_idiom_renders_gist_not_
+# full_text (the old per-edit-hook idiom gate never re-dumped an idiom the
+# memory channel already delivered): the async idiom LENS must never spawn a
+# reviewer over an idiom the model already saw this session.
+
+
+def test_run_shown_slug_excludes_only_scoped_idiom_no_spawn(tmp_path):
+    repo, profile = _repo(tmp_path)
+    upsert_idiom(profile, _rec())  # slug "wrap-fetches"
+    src = _write_ts(repo)
+    with patch.object(judge, "_spawn_reviewer_status") as spawn:
+        result = idiom.run(
+            repo, profile, [str(src)], lambda _p: None, shown_idiom_slugs=["wrap-fetches"]
+        )
+    spawn.assert_not_called()
+    assert result.findings == []
+    assert ("idiom_lens", "no_scoped_idioms") in result.check_events
+    assert any(
+        k == "idiom_lens" and d.startswith("deduped_shown_slugs:") for k, d in result.check_events
+    )
+
+
+def test_run_shown_slug_mix_only_unshown_idiom_reviewed(tmp_path):
+    repo, profile = _repo(tmp_path)
+    upsert_idiom(profile, _rec(slug="wrap-fetches", title="wrap-fetches"))
+    upsert_idiom(profile, _rec(slug="use-logger", title="use-logger"))
+    src = _write_ts(repo)
+    with patch.object(
+        judge, "_spawn_reviewer_status", return_value=(_result_line([]), None)
+    ) as spawn:
+        result = idiom.run(
+            repo, profile, [str(src)], lambda _p: None, shown_idiom_slugs=["wrap-fetches"]
+        )
+    spawn.assert_called_once()
+    prompt = spawn.call_args[0][0]
+    assert "use-logger" in prompt
+    assert "wrap-fetches" not in prompt
+    assert result.findings == []
+
+
+def test_run_no_shown_slugs_reviews_everything_as_before(tmp_path):
+    repo, profile = _repo(tmp_path)
+    upsert_idiom(profile, _rec())
+    src = _write_ts(repo)
+    with patch.object(
+        judge, "_spawn_reviewer_status", return_value=(_result_line([]), None)
+    ) as spawn:
+        result = idiom.run(repo, profile, [str(src)], lambda _p: None, shown_idiom_slugs=None)
+    spawn.assert_called_once()
+    assert not any(
+        k == "idiom_lens" and d.startswith("deduped_shown_slugs:") for k, d in result.check_events
+    )
+
+
 def test_run_archetype_resolver_raising_fails_open(tmp_path):
     repo, profile = _repo(tmp_path)
     upsert_idiom(profile, _rec(languages=[]))  # wildcard, so scope survives regardless

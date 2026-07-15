@@ -97,6 +97,16 @@ def _persisted_findings(repo: Path) -> list[Finding]:
     return review_ledger.undelivered_findings(REPO_ID, ws_roots=[str(repo)])
 
 
+def _shadow_log_rows() -> list[dict]:
+    from chameleon_mcp.metrics import _metrics_path
+
+    path = _metrics_path()
+    if not path.exists():
+        return []
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    return [r for r in rows if r.get("hook") == "stop-correctness-judge"]
+
+
 # --- argv / request-file edge cases -----------------------------------------
 
 
@@ -251,6 +261,88 @@ def test_job_does_not_self_disable_under_inherited_chameleon_disable(tmp_path, m
     # Findings were processed and persisted despite the inherited
     # CHAMELEON_DISABLE=1 -- job.py never reads it as a run/skip gate.
     assert len(_persisted_findings(repo)) == 1
+
+
+# --- pre-VERIFY shadow log: precision sampling sees refuted rows too --------
+
+
+def test_shadow_logs_raw_finding_before_verify_drops_it(tmp_path, monkeypatch):
+    heartbeat = scheduler.try_acquire_job_slot(REPO_ID, SID)
+    request_path, repo = _write_request(tmp_path, heartbeat)
+
+    finding = _stub_finding(
+        claim="raw finding that gets refuted", file="src/widget.ts", span=(7, 7)
+    )
+    monkeypatch.setattr(
+        lenses, "resolve_runner", lambda name: lambda *a, **k: LensResult(findings=[finding])
+    )
+    # VERIFY refutes (drops) the only finding.
+    monkeypatch.setattr(refuter, "run_batch", lambda *a, **k: [{"id": "0", "verdict": "refuted"}])
+
+    rc = job.main([str(request_path)])
+
+    assert rc == 0
+    # Dropped by VERIFY -- nothing persisted to the ledger.
+    assert _persisted_findings(repo) == []
+    # But the RAW finding was shadow-logged before VERIFY ran, matching the
+    # pre-cutover ``_correctness_judge_gate``'s emit shape exactly.
+    rows = _shadow_log_rows()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["repo_id"] == REPO_ID
+    assert row["rule"] == "correctness-judge-finding"
+    assert row["advisory_emitted"] is True
+    assert row["would_block"] is False
+    assert row["file_rel"] == "src/widget.ts"
+    assert row["line"] == 7
+
+
+def test_shadow_log_fires_for_every_raw_finding_regardless_of_verify_outcome(tmp_path, monkeypatch):
+    heartbeat = scheduler.try_acquire_job_slot(REPO_ID, SID)
+    request_path, repo = _write_request(tmp_path, heartbeat)
+
+    kept = _stub_finding(id="kept", claim="kept finding")
+    dropped = _stub_finding(id="dropped", claim="dropped finding")
+    monkeypatch.setattr(
+        lenses, "resolve_runner", lambda name: lambda *a, **k: LensResult(findings=[kept, dropped])
+    )
+
+    def _batch(_root, findings, *_a, **_k):
+        verdicts = []
+        for f in findings:
+            verdicts.append(
+                {
+                    "id": f["id"],
+                    "verdict": "confirmed" if f["claim"] == "kept finding" else "refuted",
+                }
+            )
+        return verdicts
+
+    monkeypatch.setattr(refuter, "run_batch", _batch)
+
+    rc = job.main([str(request_path)])
+
+    assert rc == 0
+    # Only the confirmed finding survives to the ledger...
+    persisted = _persisted_findings(repo)
+    assert len(persisted) == 1
+    assert persisted[0].claim == "kept finding"
+    # ...but BOTH raw findings were shadow-logged pre-VERIFY.
+    rows = _shadow_log_rows()
+    assert len(rows) == 2
+
+
+def test_no_shadow_log_rows_when_lenses_find_nothing(tmp_path, monkeypatch):
+    heartbeat = scheduler.try_acquire_job_slot(REPO_ID, SID)
+    request_path, _repo = _write_request(tmp_path, heartbeat)
+    monkeypatch.setattr(
+        lenses, "resolve_runner", lambda name: lambda *a, **k: LensResult(findings=[])
+    )
+
+    rc = job.main([str(request_path)])
+
+    assert rc == 0
+    assert _shadow_log_rows() == []
 
 
 # --- delivery payload: written at job end (spec section 3.5) ----------------

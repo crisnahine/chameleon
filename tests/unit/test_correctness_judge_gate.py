@@ -436,6 +436,31 @@ def test_fails_open_when_route_raises(make_trusted_repo):
     assert out.get("decision") != "block"
 
 
+def test_non_oserror_from_launch_job_still_releases_the_slot(make_trusted_repo):
+    # launch_job's own cleanup (_cleanup_failed_launch) only catches OSError
+    # around subprocess.Popen. A non-OSError escaping it must not leave the
+    # session's single-inflight slot claimed (job_inflight set, review_spawns
+    # charged) forever -- _run_review_job must release it itself.
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo()
+    _touch_edited_file(file_path, data_dir, sid)
+
+    def _raise(_request):
+        raise RuntimeError("launch exploded, not an OSError")
+
+    out, calls = _run_stop(_payload(repo, sid), env={"CHAMELEON_ENFORCE": "1"}, launch_job=_raise)
+
+    assert len(calls) == 1
+    assert out.get("decision") != "block"
+    events = _events(sid)
+    assert any(
+        e["status"] == "degraded" and e.get("reason") == "platform_unavailable" for e in events
+    )
+    # The slot claim is fully rolled back, not left wedged for the rest of
+    # the heartbeat-staleness window.
+    assert _session_doc(sid).review_spawns == 0
+    assert _session_doc(sid).job_inflight == ""
+
+
 def test_judge_wait_renders_findings_in_turn(make_trusted_repo):
     """CHAMELEON_JUDGE_WAIT=1: a job that clears its slot instantly (as the
     real detached runner's ``finally`` block does) and leaves a ledger row
@@ -479,6 +504,104 @@ def test_judge_wait_renders_findings_in_turn(make_trusted_repo):
     ctx = out["hookSpecificOutput"]["additionalContext"]
     assert "dropped await on save()" in ctx
     assert "src/Widget.ts:12" in ctx
+
+
+def test_shown_idiom_names_translate_to_slugs_in_job_request(make_trusted_repo):
+    # spec section 10.1's Tier-2/memory-channel dedup must-keep: the shown
+    # signal the per-edit hook actually populates is idioms_shown_names (the
+    # idiom's TITLE, per core.idiom_store's title/slug split), so the
+    # scheduler must translate it into the taught idiom's real slug before
+    # handing it to the job the idiom lens will read it from.
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo()
+
+    from chameleon_mcp.core.idiom_store import IdiomRecord, upsert_idiom
+
+    upsert_idiom(
+        profile_dir,
+        IdiomRecord(
+            slug="wrap-fetches",
+            title="wrap-fetches",
+            rationale="Always wrap fetches in the apiClient helper.",
+            languages=["typescript"],
+            archetypes=[],
+            paths=[],
+            status="active",
+            added_date="2026-07-15",
+            rank=1,
+        ),
+    )
+    _touch_edited_file(file_path, data_dir, sid)
+    st = EnforcementState()
+    st.files[file_path] = FileState()
+    st.idioms_shown_names = {"wrap-fetches"}
+    save_state(st, data_dir, sid)
+
+    out, calls = _run_stop(_payload(repo, sid), env={"CHAMELEON_ENFORCE": "1"})
+
+    assert len(calls) == 1
+    assert calls[0].shown_idiom_slugs == ("wrap-fetches",)
+    # The route decision itself is unaffected -- the shown-slug exclusion is
+    # the idiom LENS's own job, not the scheduler's route.
+    assert out.get("decision") != "block"
+
+
+def test_no_shown_idiom_names_yields_empty_shown_slugs(make_trusted_repo):
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo()
+    _touch_edited_file(file_path, data_dir, sid)
+
+    out, calls = _run_stop(_payload(repo, sid), env={"CHAMELEON_ENFORCE": "1"})
+
+    assert len(calls) == 1
+    assert calls[0].shown_idiom_slugs == ()
+
+
+def test_judge_wait_multiple_findings_fold_into_one_review_block(make_trusted_repo):
+    # Single-emit: several surviving findings from one job must still render
+    # as ONE model-review context block (one header), never one per finding
+    # -- structurally guaranteed by _run_review_job being the only call site
+    # and render_findings emitting exactly one header per call, pinned here
+    # end-to-end through the real Stop pipeline.
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo()
+    _touch_edited_file(file_path, data_dir, sid)
+
+    def _instant_job_two_findings(request):
+        from chameleon_mcp.core.finding import Finding, compute_match_key
+        from chameleon_mcp.stop.scheduler import clear_job_slot
+
+        clear_job_slot(request.repo_id, request.session_id)
+        findings = [
+            Finding(
+                id=compute_match_key(f"issue {i}", "src/Widget.ts", "correctness"),
+                kind="correctness",
+                severity="high",
+                confidence=0.9,
+                file="src/Widget.ts",
+                span=(i, i),
+                claim=f"issue {i}",
+                evidence="",
+                excerpt_sha="",
+                excerpt="",
+                source_lens="correctness",
+                status="pending",
+                created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            )
+            for i in (10, 20)
+        ]
+        from chameleon_mcp import review_ledger
+
+        review_ledger.record_findings(request.repo_id, str(request.repo_root), findings)
+        return True
+
+    out, calls = _run_stop(
+        _payload(repo, sid),
+        env={"CHAMELEON_ENFORCE": "1", "CHAMELEON_JUDGE_WAIT": "1"},
+        launch_job=_instant_job_two_findings,
+    )
+
+    assert len(calls) == 1
+    ctx = out["hookSpecificOutput"]["additionalContext"]
+    assert "issue 10" in ctx and "issue 20" in ctx
+    assert ctx.count("[\U0001f98e") == 1
 
 
 def test_judge_wait_off_by_default_no_in_turn_render(make_trusted_repo):

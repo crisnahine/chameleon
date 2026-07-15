@@ -134,9 +134,18 @@ class JobRequest:
         "intent_tokens": ["<str>", ...],
         "lens_names": ["<str>", ...],
         "model": "<str>",
-        "heartbeat_path": "<str, absolute path>"
+        "heartbeat_path": "<str, absolute path>",
+        "shown_idiom_slugs": ["<str>", ...]
     }
     ```
+
+    ``shown_idiom_slugs`` (spec section 10.1's Tier-2/memory-channel dedup
+    must-keep) is the current session's already-shown idiom slugs at route
+    time -- the idiom lens (``stop/lenses/idiom.py``) excludes these from its
+    scoped set before deciding to spawn, so an idiom the model already saw
+    this turn's Tier-2 block or the wired conventions.md memory channel is
+    never re-reviewed. Defaults to empty so a request file written before
+    this field existed still round-trips.
     """
 
     repo_root: Path
@@ -147,6 +156,7 @@ class JobRequest:
     lens_names: tuple[str, ...]
     model: str
     heartbeat_path: Path
+    shown_idiom_slugs: tuple[str, ...] = ()
 
     def to_dict(self) -> dict:
         return {
@@ -158,6 +168,7 @@ class JobRequest:
             "lens_names": list(self.lens_names),
             "model": self.model,
             "heartbeat_path": str(self.heartbeat_path),
+            "shown_idiom_slugs": list(self.shown_idiom_slugs),
         }
 
     @classmethod
@@ -171,6 +182,7 @@ class JobRequest:
             lens_names=tuple(str(n) for n in data.get("lens_names") or []),
             model=str(data.get("model") or ""),
             heartbeat_path=Path(str(data["heartbeat_path"])),
+            shown_idiom_slugs=tuple(str(s) for s in data.get("shown_idiom_slugs") or []),
         )
 
 
