@@ -4,6 +4,36 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.0] - 2026-07-15
+
+### Changed
+- Turn-end model review is now async-first: the Stop hook's deterministic
+  gates decide whether a turn warrants review and, if so, launch exactly ONE
+  detached background job (POSIX and Windows) that runs the correctness,
+  duplication, and idiom lenses, verifies every finding with an independent
+  refuter, persists survivors to a canonical Finding-lifecycle ledger with a
+  severity surface bar, and pre-renders a delivery payload — Stop itself
+  never waits on it, so a model review never delays turn end.
+- Findings deliver at the next UserPromptSubmit (multi-root aware), the next
+  Stop (an unaddressed HIGH resurfaces once), or SessionStart (dead
+  sessions) — never in the same turn that triggered the review, unless
+  `CHAMELEON_JUDGE_WAIT=1` makes Stop poll the job and render in-turn (for
+  harnesses/CI, which have no next turn to deliver into).
+- A finding whose cited file changed since review now renders `[stale]`
+  instead of being silently dropped.
+- Idiom review is now one lens of the turn-end review job, scoped by diff
+  hunks and citing the violated idiom's slug and lines, instead of a
+  once-per-session Stop-hook self-review interrupt; `enforcement.idiom_review`
+  still gates it, and a compliant turn shows nothing at all.
+
+### Removed
+- The synchronous correctness-judge spawn, the route/gate choreography
+  (`_correctness_judge_route`/`_gate`, `_multi_lens_review_lines`,
+  `_duplication_advisory_lines`), `lens_runner.py`, `lens_synthesis.py`,
+  `judge_async.py`, and the once-per-session idiom-review interrupt
+  (`_idiom_review_gate`) — all absorbed by the new `stop/scheduler.py`,
+  `stop/job.py`, `stop/lenses/`, and `stop/verify.py`.
+
 ## [3.3.0] - 2026-07-14
 
 ### Changed
