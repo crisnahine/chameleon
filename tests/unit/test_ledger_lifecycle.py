@@ -174,7 +174,48 @@ def test_undelivered_findings_scoped_by_ws_root():
     assert {f.claim for f in both} == {"workspace a finding", "workspace b finding"}
 
 
-# --- recheck_and_resurface: the resurface-once port -------------------------
+# --- compute_resurface / mark_resurfaced: the two-phase resurface port ------
+#
+# recheck_and_resurface split into a pure recheck (compute_resurface, never
+# writes "resurfaced") and a separate terminal commit (mark_resurfaced,
+# already covered above) so a multi-root Stop can defer the commit until it
+# knows a root's output actually reached the user (see stop/pipeline.py and
+# hook_helper.stop_backstop). These tests pin: compute never writes the
+# resurfaced transition, mark_resurfaced is the only thing that does, and
+# calling both together reproduces the old combined behavior exactly.
+
+
+def test_compute_resurface_does_not_write_resurfaced(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "a.ts").write_text("export const x = 1;\n", encoding="utf-8")
+
+    from chameleon_mcp.judge import _excerpt_digest
+    from chameleon_mcp.stop.verify import _excerpt_window
+
+    excerpt = _excerpt_window(repo, "src/a.ts", 1)
+    f = _finding(
+        claim="unaddressed logic bug",
+        severity="high",
+        file="src/a.ts",
+        span=(1, 1),
+        excerpt_sha=_excerpt_digest(excerpt) or "",
+    )
+    review_ledger.record_findings(REPO, str(repo), [f])
+
+    result = review_ledger.compute_resurface(REPO, str(repo))
+    assert result.lines and any("unaddressed high-severity" in ln for ln in result.lines)
+    assert any("src/a.ts:1" in ln for ln in result.lines)
+    assert result.match_keys == (f.match_key,)
+
+    # compute_resurface is PURE: the row is still pending, not resurfaced.
+    rows = review_ledger._read_findings_rows(REPO)
+    assert rows[f.match_key]["status"] == "pending"
+
+    # A second compute (no commit happened) still reports the same candidate
+    # -- it has no one-shot state of its own, only mark_resurfaced does.
+    result2 = review_ledger.compute_resurface(REPO, str(repo))
+    assert result2.match_keys == (f.match_key,)
 
 
 def test_high_severity_unchanged_resurfaces_once_then_not_again(tmp_path):
@@ -195,9 +236,12 @@ def test_high_severity_unchanged_resurfaces_once_then_not_again(tmp_path):
     )
     review_ledger.record_findings(REPO, str(repo), [f])
 
-    lines = review_ledger.recheck_and_resurface(REPO, str(repo))
-    assert lines and any("unaddressed high-severity" in ln for ln in lines)
-    assert any("src/a.ts:1" in ln for ln in lines)
+    # compute + immediate mark_resurfaced together reproduce the old combined
+    # recheck_and_resurface behavior exactly.
+    result = review_ledger.compute_resurface(REPO, str(repo))
+    assert result.lines and any("unaddressed high-severity" in ln for ln in result.lines)
+    assert any("src/a.ts:1" in ln for ln in result.lines)
+    review_ledger.mark_resurfaced(REPO, result.match_keys)
 
     rows = review_ledger._read_findings_rows(REPO)
     assert rows[f.match_key]["status"] == "resurfaced"
@@ -214,7 +258,9 @@ def test_high_severity_unchanged_resurfaces_once_then_not_again(tmp_path):
 
     # Already resurfaced, still unchanged, and the interleaved delivery
     # attempt was a no-op -> no second nag.
-    assert review_ledger.recheck_and_resurface(REPO, str(repo)) == []
+    assert review_ledger.compute_resurface(REPO, str(repo)) == review_ledger.ResurfaceResult(
+        lines=[], match_keys=()
+    )
 
 
 def test_file_changed_since_review_is_addressed_not_resurfaced(tmp_path):
@@ -237,7 +283,9 @@ def test_file_changed_since_review_is_addressed_not_resurfaced(tmp_path):
 
     (repo / "src" / "a.ts").write_text("export const x = 2; // fixed\n", encoding="utf-8")
 
-    assert review_ledger.recheck_and_resurface(REPO, str(repo)) == []
+    # The addressed transition is NOT deferred (see compute_resurface's
+    # docstring): dropping an addressed row is never a discard risk.
+    assert review_ledger.compute_resurface(REPO, str(repo)).match_keys == ()
     rows = review_ledger._read_findings_rows(REPO)
     assert rows[f.match_key]["status"] == "addressed"
 
@@ -248,7 +296,7 @@ def test_file_deleted_since_review_is_addressed(tmp_path):
     f = _finding(claim="deleted file finding", severity="high", file="src/gone.ts", span=(1, 1))
     review_ledger.record_findings(REPO, str(repo), [f])
 
-    assert review_ledger.recheck_and_resurface(REPO, str(repo)) == []
+    assert review_ledger.compute_resurface(REPO, str(repo)).match_keys == ()
     rows = review_ledger._read_findings_rows(REPO)
     assert rows[f.match_key]["status"] == "addressed"
 
@@ -259,11 +307,18 @@ def test_fileless_high_finding_resurfaces_not_silently_addressed(tmp_path):
     f = _finding(claim="whole-diff issue", severity="high", file="", span=(0, 0))
     review_ledger.record_findings(REPO, str(repo), [f])
 
-    lines = review_ledger.recheck_and_resurface(REPO, str(repo))
-    assert lines and any("unaddressed high-severity" in ln for ln in lines)
+    result = review_ledger.compute_resurface(REPO, str(repo))
+    assert result.lines and any("unaddressed high-severity" in ln for ln in result.lines)
+    assert result.match_keys == (f.match_key,)
+
+    # Still pending until committed.
+    rows = review_ledger._read_findings_rows(REPO)
+    assert rows[f.match_key]["status"] == "pending"
+
+    review_ledger.mark_resurfaced(REPO, result.match_keys)
 
     # Already resurfaced -> no second nag.
-    assert review_ledger.recheck_and_resurface(REPO, str(repo)) == []
+    assert review_ledger.compute_resurface(REPO, str(repo)).match_keys == ()
 
 
 def test_fileless_non_high_finding_is_addressed_not_left_open(tmp_path):
@@ -272,7 +327,7 @@ def test_fileless_non_high_finding_is_addressed_not_left_open(tmp_path):
     f = _finding(claim="fileless medium", severity="medium", file="", span=(0, 0))
     review_ledger.record_findings(REPO, str(repo), [f])
 
-    assert review_ledger.recheck_and_resurface(REPO, str(repo)) == []
+    assert review_ledger.compute_resurface(REPO, str(repo)).match_keys == ()
     rows = review_ledger._read_findings_rows(REPO)
     assert rows[f.match_key]["status"] == "addressed"
 
@@ -284,7 +339,7 @@ def test_medium_severity_never_resurfaces_but_stays_open(tmp_path):
     f = _finding(claim="medium unchanged", severity="medium", file="src/a.ts", span=(1, 1))
     review_ledger.record_findings(REPO, str(repo), [f])
 
-    assert review_ledger.recheck_and_resurface(REPO, str(repo)) == []
+    assert review_ledger.compute_resurface(REPO, str(repo)).match_keys == ()
     rows = review_ledger._read_findings_rows(REPO)
     assert rows[f.match_key]["status"] == "pending"  # untouched, still open
 
@@ -301,13 +356,14 @@ def test_shared_repo_id_monorepo_does_not_cross_resolve(tmp_path):
 
     # B's recheck must not touch A's finding (its rel_path does not exist
     # under B, and must not be wrongly read as "gone -> addressed").
-    assert review_ledger.recheck_and_resurface(REPO, str(ws_b)) == []
+    assert review_ledger.compute_resurface(REPO, str(ws_b)).match_keys == ()
     rows = review_ledger._read_findings_rows(REPO)
     assert rows[f.match_key]["status"] == "pending"
 
     # A's own recheck resurfaces it (file unchanged in A).
-    lines = review_ledger.recheck_and_resurface(REPO, str(ws_a))
-    assert lines and any("src/a.ts:1" in ln for ln in lines)
+    result = review_ledger.compute_resurface(REPO, str(ws_a))
+    assert result.lines and any("src/a.ts:1" in ln for ln in result.lines)
+    assert result.match_keys == (f.match_key,)
 
 
 # --- migrate_pending_queue: the one-time legacy merge (spec section 9) -----

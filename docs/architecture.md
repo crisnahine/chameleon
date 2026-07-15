@@ -1121,9 +1121,18 @@ next turn to deliver into (see the `environment-variables.md` entry).
   marks rows `delivered`/`addressed` as they are shown or re-addressed (the
   cited file changed since review). Separately, at the START of the next
   Stop (`CHAMELEON_FINDING_LEDGER=0` to disable), before that turn's own
-  gates persist anything, `recheck_and_resurface` re-checks every open row
-  and surfaces an unaddressed HIGH/blocker finding exactly once via a
-  `<chameleon-context>` block, marking it `resurfaced` — a TERMINAL status
+  gates persist anything, `compute_resurface` re-checks every open row and
+  surfaces an unaddressed HIGH/blocker finding exactly once via a
+  `<chameleon-context>` block folded into the ranked Stop assembler
+  (`stop/assemble.py`'s `assemble_stop_context`). `compute_resurface` is
+  deliberately split from the terminal commit: it never writes `resurfaced`
+  itself, only reporting the candidate rows' match_keys, because a multi-root
+  Stop's caller (`hook_helper.stop_backstop`) must not spend a row's one-shot
+  resurface on a turn whose output a LATER workspace's block ends up
+  discarding. `stop_backstop` calls `mark_resurfaced` once, after its whole
+  multi-root loop confirms no root blocked, for exactly the match_keys that
+  survived both the loop (not orphaned by a later block) and the ranked
+  packer's ceiling (not dropped for space) — `resurfaced` is a TERMINAL status
   `undelivered_findings` never returns again, so the one-shot resurface line
   is the finding's sole re-appearance rather than looping back through
   ordinary delivery and re-arming itself. A stale finding (digest changed

@@ -8098,7 +8098,13 @@ def stop_backstop() -> int:
     ungated. Discovery regroups the session's state by each file's workspace and
     runs the gate pipeline per workspace against its own profile, honoring
     per-workspace trust (never unioned) and spending at most one reviewer spawn
-    across the whole Stop. It short-circuits on the first blocking root (armed
+    across the whole Stop. Each root's ``stop_gates`` call computes candidate
+    finding-ledger resurface rows but does not commit them
+    (``review_ledger.compute_resurface``); this function commits
+    ``mark_resurfaced`` for a root's candidates ONLY after the whole loop
+    confirms no later root blocked, so an earlier non-blocking root's
+    one-shot resurface is never spent on a turn whose output a later block
+    ends up discarding. It short-circuits on the first blocking root (armed
     roots rank first), so the anti-loop cap is charged to one root per Stop;
     advisories from every non-blocking root are merged into one Stop context.
 
@@ -8170,6 +8176,13 @@ def stop_backstop() -> int:
         allow_spawn = True
         block_output: dict | None = None
         advisory_contexts: list[str] = []
+        # Per-root resurface commit ledger: (repo_id, match_keys) pairs pulled
+        # off each gated root's private ``_resurface_committed_keys`` output
+        # field (stop/pipeline.py's stop_gates -- see its docstring). Held
+        # here, uncommitted, until the loop finishes: a later root's block
+        # discards them all (the finding stays pending, reachable next Stop);
+        # otherwise every accumulated pair is committed once, after the loop.
+        resurface_commits: list[tuple[str, tuple[str, ...]]] = []
 
         def _attest(root: dict, suppressed_reason) -> None:
             if is_subagent or os.environ.get("CHAMELEON_ATTESTATION") == "0":
@@ -8214,6 +8227,9 @@ def stop_backstop() -> int:
                 # as the single-root path does.
                 block_output = out
                 break
+            committed_keys = out.get("_resurface_committed_keys")
+            if committed_keys:
+                resurface_commits.append((root["repo_id"], tuple(committed_keys)))
             ac = (out.get("hookSpecificOutput") or {}).get("additionalContext")
             if ac:
                 advisory_contexts.append(ac)
@@ -8223,8 +8239,21 @@ def stop_backstop() -> int:
                 allow_spawn = False
 
         if block_output is not None:
+            # A later root blocked: the whole Stop emits ONLY the block reason
+            # (below), discarding every non-blocking root's advisories --
+            # including any resurface candidates they packed. Committing
+            # nothing here is the fix: those findings stay pending, reachable
+            # on a later non-blocking Stop, instead of burning their one-shot
+            # resurface on a turn whose output never reaches the user.
             _emit(block_output)
             return 0
+        for _resurface_repo_id, _resurface_keys in resurface_commits:
+            try:
+                from chameleon_mcp import review_ledger
+
+                review_ledger.mark_resurfaced(_resurface_repo_id, _resurface_keys)
+            except Exception:
+                pass
         if advisory_contexts:
             _emit(
                 {

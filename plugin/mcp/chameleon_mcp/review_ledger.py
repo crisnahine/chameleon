@@ -60,6 +60,7 @@ import os
 import re
 import sqlite3
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from chameleon_mcp._thresholds import threshold_float, threshold_int
@@ -1212,7 +1213,10 @@ def read_session_attestations(
 # concurrent detached job and a live Stop must never interleave a partial file.
 #
 # This store is wired into the live Stop pipeline (stop/pipeline.py calls
-# recheck_and_resurface directly). It superseded the pre-existing per-event
+# compute_resurface directly, deferring the terminal mark_resurfaced commit
+# to hook_helper.stop_backstop once it knows the turn's output actually
+# reached the user -- see compute_resurface's own docstring). It superseded
+# the pre-existing per-event
 # judge_findings table in drift.db (record_judge_finding / open_judge_findings
 # / mark_judge_finding in drift/observations.py, and stop/gates.py's
 # _ledger_persist / _ledger_recheck_and_resurface) -- that older store's write
@@ -1303,7 +1307,7 @@ def record_findings(repo_id: str, ws_root, findings) -> None:
     shelf count is recorded as a check event so the shelf stays visible
     without ever reaching a Stop surface. ``ws_root`` is stamped on every
     row so a later scoped read (``undelivered_findings``,
-    ``recheck_and_resurface``) never crosses workspace boundaries in a
+    ``compute_resurface``) never crosses workspace boundaries in a
     shared-repo_id monorepo. No-op on an empty repo_id or an empty/invalid
     finding list.
     """
@@ -1332,17 +1336,18 @@ def undelivered_findings(repo_id: str, *, ws_roots) -> list:
     """Pending rows scoped to ``ws_roots``, oldest first.
 
     ``resurfaced`` rows are deliberately EXCLUDED: a resurfaced finding
-    already got its one-shot inline re-nag from ``recheck_and_resurface``,
-    and that emission is meant to be its SOLE re-appearance. If this
-    function returned resurfaced rows too, an ordinary delivery pass
-    (UserPromptSubmit's ``deliver_pending_findings``, SessionStart's
-    ``deliver_dead_session_findings``, or the job's own cached-payload
-    render) would hand the row's match_key to ``mark_delivered``, flipping
-    it back to ``delivered`` -- and the NEXT Stop's ``recheck_and_resurface``
-    treats ``delivered`` as open-and-eligible, so it would resurface the
-    same finding again, forever. Excluding it here (paired with
-    ``mark_delivered`` refusing a resurfaced row as a source state) makes
-    ``resurfaced`` a true terminal status for ordinary delivery.
+    already got its one-shot inline re-nag from ``compute_resurface`` +
+    ``mark_resurfaced``, and that emission is meant to be its SOLE
+    re-appearance. If this function returned resurfaced rows too, an
+    ordinary delivery pass (UserPromptSubmit's ``deliver_pending_findings``,
+    SessionStart's ``deliver_dead_session_findings``, or the job's own
+    cached-payload render) would hand the row's match_key to
+    ``mark_delivered``, flipping it back to ``delivered`` -- and the NEXT
+    Stop's ``compute_resurface`` treats ``delivered`` as open-and-eligible,
+    so it would resurface the same finding again, forever. Excluding it here
+    (paired with ``mark_delivered`` refusing a resurfaced row as a source
+    state) makes ``resurfaced`` a true terminal status for ordinary
+    delivery.
 
     Scoping keeps a shared repo_id's monorepo workspaces apart: a finding's
     file is relative to the root that persisted it, so an unscoped read would
@@ -1426,11 +1431,38 @@ def mark_addressed(repo_id: str, match_keys) -> None:
 
 
 def mark_resurfaced(repo_id: str, match_keys) -> None:
-    """pending|delivered -> resurfaced -- the one-shot HIGH re-nag."""
+    """pending|delivered -> resurfaced -- the one-shot HIGH re-nag.
+
+    The terminal commit half of ``compute_resurface``'s two-phase resurface:
+    that function only computes candidates, this function spends them. Call
+    it only once the caller knows the candidate's rendered resurface line
+    actually reached the user this turn (``hook_helper.stop_backstop`` calls
+    it after its multi-root loop confirms no later root blocked and the
+    ranked Stop assembler actually packed the item).
+    """
     _transition_status(repo_id, match_keys, {"pending", "delivered"}, "resurfaced")
 
 
-def recheck_and_resurface(repo_id: str, ws_root) -> list:
+@dataclass(frozen=True)
+class ResurfaceResult:
+    """The pure-recheck half of the resurface pipeline (see
+    ``compute_resurface``): the rendered advisory lines plus the EXACT
+    candidate match_keys the caller may later commit via ``mark_resurfaced``.
+
+    Marking a row ``resurfaced`` is a terminal, one-shot transition (see
+    ``mark_resurfaced``/``undelivered_findings``), so a caller whose emission
+    might still be discarded this turn -- a later blocking workspace in a
+    multi-root Stop, or an item the ranked Stop assembler drops for space --
+    must not spend it sight-unseen. ``compute_resurface`` never writes the
+    transition itself; ``match_keys`` is exactly what the caller commits once
+    it confirms this candidate's rendered line actually reached the user.
+    """
+
+    lines: list[str]
+    match_keys: tuple[str, ...]
+
+
+def compute_resurface(repo_id: str, ws_root) -> ResurfaceResult:
     """Canonical-row successor to the retired ``stop/gates.py``
     ``_ledger_recheck_and_resurface`` (drift.db's judge_findings table). This
     was written as a NEW function rather than an in-place port of the legacy
@@ -1439,28 +1471,37 @@ def recheck_and_resurface(repo_id: str, ws_root) -> list:
     this function directly (the legacy one and its backing store were
     retired once the switchover landed).
 
-    A resurfaced row is TERMINAL for ordinary delivery: ``undelivered_findings``
+    Split into a PURE recheck (this function) and a separate terminal commit
+    (``mark_resurfaced``) so a multi-root Stop cannot burn a row's one-shot
+    resurface on a turn whose output never reaches the user: an earlier
+    non-blocking root's resurface line could pack into its own output, then a
+    LATER root blocks and the whole Stop caller discards every non-blocking
+    root's advisories -- committing the transition here, before that outcome
+    is known, would silently lose the finding for good (``undelivered_findings``
     never returns a ``resurfaced`` row again, and ``mark_delivered`` refuses
-    one as a source state, so the ``<chameleon-context>`` block this function
-    returns is the finding's SOLE re-appearance -- it cannot loop back through
-    UserPromptSubmit/SessionStart delivery and re-arm itself for another nag.
+    one as a source state, so there is no second chance). The caller now
+    commits ``mark_resurfaced`` only once it knows this turn's assembled
+    output actually reached the user.
 
     At Stop, before this turn's own findings persist: every open
-    (pending/delivered/resurfaced) row scoped to ``ws_root`` is re-checked.
-    A row whose pinned excerpt no longer matches the file's current content
-    at that location -- or whose file is gone -- is marked addressed (the
-    reviewed content moved, so re-nagging is noise); a row with no pinned
-    excerpt is left as-is (staleness is never fabricated from data
-    absence). A fileless row that is not high/blocker severity is
-    addressed too (it has no anchor to ever re-check against, so leaving it
-    open would clog the recheck window forever). An unaddressed
-    high/blocker-severity row still open resurfaces exactly once
-    (pending/delivered -> resurfaced); a row already resurfaced and still
-    unchanged is left alone -- no second nag. Returns the advisory lines,
-    or [] when nothing resurfaces. Fail-open to [].
+    (pending/delivered/resurfaced) row scoped to ``ws_root`` is re-checked. A
+    row whose pinned excerpt no longer matches the file's current content at
+    that location -- or whose file is gone -- IS committed ``addressed``
+    here, inline (the reviewed content moved, so re-nagging is noise; unlike
+    the resurface transition, addressing a row is not a discard risk -- the
+    finding is gone regardless of whether this turn's output reaches the
+    user). A row with no pinned excerpt is left as-is (staleness is never
+    fabricated from data absence). A fileless row that is not high/blocker
+    severity is addressed too (it has no anchor to ever re-check against, so
+    leaving it open would clog the recheck window forever). An unaddressed
+    high/blocker-severity row still open (pending/delivered) is a resurface
+    CANDIDATE: its status is left untouched and its match_key rides
+    ``ResurfaceResult.match_keys`` for the caller to commit; a row already
+    resurfaced and still unchanged is left alone -- no second nag. Returns
+    ``ResurfaceResult([], ())`` when nothing resurfaces. Fail-open to empty.
     """
     if not repo_id:
-        return []
+        return ResurfaceResult(lines=[], match_keys=())
     try:
         root = str(ws_root)
 
@@ -1474,14 +1515,14 @@ def recheck_and_resurface(repo_id: str, ws_root) -> list:
             isinstance(r, dict) and r.get("ws_root") == root and r.get("status") in _OPEN_STATUSES
             for r in _read_findings_rows(repo_id).values()
         ):
-            return []
+            return ResurfaceResult(lines=[], match_keys=())
 
         from chameleon_mcp.judge import _excerpt_sha_stale
         from chameleon_mcp.sanitization import sanitize_for_chameleon_context
         from chameleon_mcp.stop.verify import _contained_rel, _excerpt_window
 
         root_path = Path(root)
-        resurfaced_rows: list[dict] = []
+        candidate_rows: list[dict] = []
 
         def _mutate(rows: dict) -> None:
             for row in rows.values():
@@ -1522,18 +1563,21 @@ def recheck_and_resurface(repo_id: str, ws_root) -> list:
                     row["status"] = "addressed"
                     continue
                 if status in ("pending", "delivered") and is_high:
-                    row["status"] = "resurfaced"
-                    resurfaced_rows.append(row)
+                    # Candidate only -- status is deliberately left untouched.
+                    # The caller decides whether this turn's output actually
+                    # reaches the user before spending the one-shot resurface
+                    # via mark_resurfaced.
+                    candidate_rows.append(dict(row))
 
         _update_findings_rows(repo_id, _mutate)
-        if not resurfaced_rows:
-            return []
+        if not candidate_rows:
+            return ResurfaceResult(lines=[], match_keys=())
         lines = [
-            f"[🦎 chameleon: {len(resurfaced_rows)} unaddressed high-severity finding(s) "
+            f"[🦎 chameleon: {len(candidate_rows)} unaddressed high-severity finding(s) "
             "from a previous turn's review, surfaced once more]",
             "Advisory; verify each before acting -- they may be wrong, or already handled.",
         ]
-        for row in resurfaced_rows[:_RESURFACE_MAX_LINES]:
+        for row in candidate_rows[:_RESURFACE_MAX_LINES]:
             file_ = row.get("file") or ""
             loc = sanitize_for_chameleon_context(str(file_)) if file_ else "?"
             span = row.get("span") or [0, 0]
@@ -1541,9 +1585,18 @@ def recheck_and_resurface(repo_id: str, ws_root) -> list:
                 loc += f":{span[0]}"
             lens = row.get("source_lens") or "?"
             lines.append(f"- {loc} ({sanitize_for_chameleon_context(str(lens))})")
-        return lines
+        # Every eligible candidate gets a match_key here, not just the
+        # _RESURFACE_MAX_LINES rendered above: the render cap only bounds
+        # what is SHOWN, matching the pre-split behavior where every eligible
+        # row transitioned to resurfaced regardless of the line cap.
+        match_keys = tuple(
+            row["match_key"]
+            for row in candidate_rows
+            if isinstance(row.get("match_key"), str) and row["match_key"]
+        )
+        return ResurfaceResult(lines=lines, match_keys=match_keys)
     except Exception:
-        return []
+        return ResurfaceResult(lines=[], match_keys=())
 
 
 def _finding_from_legacy_pending(raw: dict):

@@ -691,7 +691,7 @@ def test_resurface_kill_switch_suppresses_resurface_line(make_trusted_repo):
 
 def test_resurface_not_consumed_on_a_blocking_turn(make_trusted_repo):
     """A hard-block Stop returns a `decision: block` with NO additionalContext,
-    so a resurface line could never be shown on it. recheck_and_resurface must
+    so a resurface line could never be shown on it. compute_resurface must
     therefore NOT run on that path -- marking a row `resurfaced` is terminal
     (undelivered_findings never returns it, mark_delivered refuses it), so
     burning the one-shot resurface on a turn whose output is discarded would

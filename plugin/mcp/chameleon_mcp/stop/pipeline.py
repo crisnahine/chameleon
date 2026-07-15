@@ -48,6 +48,43 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+# The single header every Stop advisory emission shares once routed through
+# assemble_stop_context (spec section 6: "one [🦎] header, one disclaimer per
+# emission"), replacing the old per-block headers each deterministic advisory
+# used to carry independently.
+_STOP_EMISSION_HEADER = "chameleon: turn-end review"
+
+# Mirrors stop.assemble._DISCLAIMER exactly -- the one-line render every
+# render_findings() call emits directly below its own header. Duplicated here
+# (rather than imported) since it is the literal text _strip_embedded_header
+# matches against, not a shared behavioral contract.
+_RENDER_DISCLAIMER = "Advisory; verify each before acting -- they may be wrong."
+
+
+def _strip_embedded_header(wrapped_block: str) -> str:
+    """Drop a ``<chameleon-context>``-wrapped block's own leading
+    ``[🦎 ...]`` header + disclaimer pair, keeping the wrapper tags and the
+    body beneath.
+
+    Used for a source that already rendered its own header via
+    ``stop.assemble.render_findings`` (today: ``_run_review_job``'s
+    CHAMELEON_JUDGE_WAIT in-turn render) before this module folds it into the
+    single ranked Stop emission, which gives the WHOLE emission its own one
+    header (spec section 6: "one header, one disclaimer per emission") --
+    without this, a review-only turn would show two. Falls back to the block
+    unchanged if it does not match the expected wrapper shape (defensive;
+    every real caller today produces exactly this shape).
+    """
+    open_tag, close_tag = "<chameleon-context>\n", "\n</chameleon-context>"
+    if not (wrapped_block.startswith(open_tag) and wrapped_block.endswith(close_tag)):
+        return wrapped_block
+    body_lines = wrapped_block[len(open_tag) : -len(close_tag)].splitlines()
+    if body_lines and body_lines[0].startswith("[\U0001f98e "):
+        body_lines = body_lines[1:]
+        if body_lines and body_lines[0] == _RENDER_DISCLAIMER:
+            body_lines = body_lines[1:]
+    return open_tag + "\n".join(body_lines) + close_tag
+
 
 @dataclass
 class RootContext:
@@ -290,17 +327,33 @@ def stop_gates(ctx: RootContext) -> dict:
             # so it must happen ONLY on a turn that actually emits the resurface
             # line. A blocking Stop returns before this runs, leaving the finding
             # open to resurface on a later non-blocking Stop rather than burning
-            # its one shot on a turn whose output is discarded. Gated by
-            # CHAMELEON_FINDING_LEDGER at the call site (recheck_and_resurface is
-            # unconditional). Fail-open to [].
+            # its one shot on a turn whose output is discarded. That protects the
+            # BLOCKING root, but a multi-root Stop has one more failure mode: an
+            # EARLIER non-blocking root's resurface line packs into ITS output,
+            # and a LATER root then blocks -- the Stop caller (stop_backstop)
+            # discards every non-blocking root's advisories on a block, which
+            # would silently burn the earlier root's one-shot resurface for
+            # nothing. ``compute_resurface`` is therefore the PURE recheck: it
+            # still commits the ``addressed`` side inline (a finding whose file
+            # changed or vanished is gone regardless of whether this turn's
+            # output ever reaches the user), but leaves the terminal
+            # ``resurfaced`` write to ``review_ledger.mark_resurfaced``, called
+            # only by stop_backstop after the whole multi-root loop confirms no
+            # later root blocked AND the ranked assembler actually packed this
+            # root's resurface item. Gated by CHAMELEON_FINDING_LEDGER at the
+            # call site (compute_resurface is unconditional). Fail-open to [].
             resurface_lines: list[str] = []
+            resurface_match_keys: tuple[str, ...] = ()
             if repo_id and os.environ.get("CHAMELEON_FINDING_LEDGER") != "0":
                 try:
                     from chameleon_mcp import review_ledger
 
-                    resurface_lines = review_ledger.recheck_and_resurface(repo_id, repo_root)
+                    resurface_result = review_ledger.compute_resurface(repo_id, repo_root)
+                    resurface_lines = resurface_result.lines
+                    resurface_match_keys = resurface_result.match_keys
                 except Exception:
                     resurface_lines = []
+                    resurface_match_keys = ()
 
             review_context: str | None = None
             if allow_model_spawn:
@@ -424,55 +477,121 @@ def stop_gates(ctx: RootContext) -> dict:
                     cfg=cfg,
                 )
 
-            context_blocks: list[str] = []
+            # Ranked, budgeted single emission (spec section 6) in place of the
+            # old unbudgeted "\n\n".join(context_blocks): every source above
+            # becomes one EmissionItem at its rank tier, and
+            # assemble_stop_context greedy-packs them under
+            # STOP_RENDER_TOKEN_CEILING behind one header/disclaimer. Ranking
+            # preserves today's fixed source order (resurface, then
+            # review_context, then the 8 deterministic advisories in their
+            # existing order) since each tier is internally stable-sorted, so
+            # this is additive-to-ranked, not a reshuffle. The resurface item
+            # carries its candidate match_keys + droppable=False (the
+            # terminal-commit gate reads both): the caller (stop_backstop)
+            # commits ``mark_resurfaced`` only for the keys that survive here
+            # in ``packed_match_keys`` AND belong to a root whose output the
+            # multi-root loop did not later discard for a block.
+            from chameleon_mcp._thresholds import threshold_int
+            from chameleon_mcp.stop.assemble import (
+                PRIORITY_ADVISORY,
+                PRIORITY_DELIVERED_UNVERIFIED,
+                PRIORITY_RESURFACED,
+                EmissionItem,
+                assemble_stop_context,
+            )
+
+            items: list[EmissionItem] = []
             if resurface_lines:
-                context_blocks.append(
-                    "<chameleon-context>\n" + "\n".join(resurface_lines) + "\n</chameleon-context>"
+                items.append(
+                    EmissionItem(
+                        priority=PRIORITY_RESURFACED,
+                        text=(
+                            "<chameleon-context>\n"
+                            + "\n".join(resurface_lines)
+                            + "\n</chameleon-context>"
+                        ),
+                        match_keys=resurface_match_keys,
+                        droppable=False,
+                    )
                 )
             if review_context:
-                # Already <chameleon-context>-wrapped by judge_wait.wait_and_render.
-                context_blocks.append(review_context)
-            if reminder_lines:
-                context_blocks.append(
-                    "<chameleon-context>\n" + "\n".join(reminder_lines) + "\n</chameleon-context>"
+                # Already <chameleon-context>-wrapped by judge_wait.wait_and_render,
+                # and its findings' delivered transition already committed inside
+                # that render -- no match_keys ride here, there is nothing left
+                # for the caller to commit. render_findings gave it its own
+                # [🦎]/disclaimer pair; strip that so the outer assembler's
+                # header stays the emission's ONLY one (spec section 6: "one
+                # header, one disclaimer per emission") -- the finding lines
+                # (and any idiom durable-off hint) are untouched.
+                items.append(
+                    EmissionItem(
+                        priority=PRIORITY_DELIVERED_UNVERIFIED,
+                        text=_strip_embedded_header(review_context),
+                    )
                 )
-            if stale_lines:
-                context_blocks.append(
-                    "<chameleon-context>\n" + "\n".join(stale_lines) + "\n</chameleon-context>"
-                )
-            if cochange_lines:
-                context_blocks.append(
-                    "<chameleon-context>\n" + "\n".join(cochange_lines) + "\n</chameleon-context>"
-                )
-            if cochist_lines:
-                context_blocks.append(
-                    "<chameleon-context>\n" + "\n".join(cochist_lines) + "\n</chameleon-context>"
-                )
-            if crossfile_lines:
-                context_blocks.append(
-                    "<chameleon-context>\n" + "\n".join(crossfile_lines) + "\n</chameleon-context>"
-                )
-            if crossws_lines:
-                context_blocks.append(
-                    "<chameleon-context>\n" + "\n".join(crossws_lines) + "\n</chameleon-context>"
-                )
-            if testint_lines:
-                context_blocks.append(
-                    "<chameleon-context>\n" + "\n".join(testint_lines) + "\n</chameleon-context>"
-                )
-            if scope_lines:
-                context_blocks.append(
-                    "<chameleon-context>\n" + "\n".join(scope_lines) + "\n</chameleon-context>"
-                )
+            for lines in (
+                reminder_lines,
+                stale_lines,
+                cochange_lines,
+                cochist_lines,
+                crossfile_lines,
+                crossws_lines,
+                testint_lines,
+                scope_lines,
+            ):
+                if lines:
+                    items.append(
+                        EmissionItem(
+                            priority=PRIORITY_ADVISORY,
+                            text="<chameleon-context>\n"
+                            + "\n".join(lines)
+                            + "\n</chameleon-context>",
+                        )
+                    )
 
-            if context_blocks:
+            try:
+                assembled = assemble_stop_context(
+                    items,
+                    header=_STOP_EMISSION_HEADER,
+                    ceiling_tokens=threshold_int("STOP_RENDER_TOKEN_CEILING"),
+                )
+            except Exception:
+                # Fail-open: a packer bug must not erase every advisory this
+                # pass already computed successfully above. Fall back to the
+                # pre-ranked additive join (today's shape, minus ranking and
+                # the ceiling) rather than losing the turn's advisories
+                # outright. No resurface commit rides this path -- the
+                # candidates stay pending, exactly as an omitted-for-space
+                # item would.
+                joined = "\n\n".join(it.text for it in items)
+                if not joined:
+                    return {}
                 return {
                     "hookSpecificOutput": {
                         "hookEventName": "Stop",
-                        "additionalContext": "\n\n".join(context_blocks),
+                        "additionalContext": joined,
                     }
                 }
-            return {}
+            if not assembled.text:
+                return {}
+            result: dict = {
+                "hookSpecificOutput": {
+                    "hookEventName": "Stop",
+                    "additionalContext": assembled.text,
+                }
+            }
+            # Private side-channel, read and consumed only by stop_backstop's
+            # multi-root loop -- never forwarded to the emitted hook output
+            # (the caller extracts hookSpecificOutput.additionalContext
+            # separately from this dict; a direct single-root emit never
+            # reaches _emit with this key still attached in production, since
+            # stop_backstop always goes through the same root loop).
+            resurface_committed = tuple(
+                k for k in assembled.packed_match_keys if k in resurface_match_keys
+            )
+            if resurface_committed:
+                result["_resurface_committed_keys"] = resurface_committed
+            return result
 
         # Block decision first, THEN the advisory pipeline. An unresolved
         # violation only ever suppresses the Stop under enforce with cap budget
