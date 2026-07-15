@@ -294,6 +294,107 @@ def test_unresolvable_lens_name_fails_open(tmp_path, monkeypatch):
     assert any(e.get("status") == "lens_error" for e in events)
 
 
+# --- _run_lens_one: intent contract wiring -----------------------------------
+
+
+def _request_with_intent(
+    tmp_path: Path,
+    heartbeat: Path,
+    *,
+    lens_names=("correctness",),
+    intent_excerpts=("keep the public api stable",),
+    scope_lines=("don't touch auth",),
+) -> tuple[scheduler.JobRequest, Path]:
+    repo = tmp_path / "repo"
+    src = _write_source(repo)
+    request = scheduler.JobRequest(
+        repo_root=repo,
+        repo_id=REPO_ID,
+        session_id=SID,
+        files=(str(src),),
+        intent_tokens=(),
+        lens_names=lens_names,
+        model="sonnet",
+        heartbeat_path=heartbeat,
+        intent_excerpts=intent_excerpts,
+        scope_lines=scope_lines,
+    )
+    return request, repo
+
+
+def test_run_lens_one_passes_intent_contract_for_correctness(tmp_path, monkeypatch):
+    heartbeat = tmp_path / "hb"
+    heartbeat.write_text("", encoding="utf-8")
+    request, _repo = _request_with_intent(tmp_path, heartbeat)
+    captured: dict = {}
+
+    def _fake_runner(*_a, **kwargs):
+        captured.update(kwargs)
+        return LensResult(findings=[])
+
+    monkeypatch.setattr(lenses, "resolve_runner", lambda name: _fake_runner)
+    job._run_lens_one(request, "correctness", 30.0, "sonnet")
+
+    assert captured.get("intent_contract") == {
+        "excerpts": ["keep the public api stable"],
+        "scope_lines": ["don't touch auth"],
+    }
+
+
+def test_run_lens_one_omits_intent_contract_for_other_lenses(tmp_path, monkeypatch):
+    heartbeat = tmp_path / "hb"
+    heartbeat.write_text("", encoding="utf-8")
+    request, _repo = _request_with_intent(tmp_path, heartbeat, lens_names=("idiom",))
+    captured: dict = {}
+
+    def _fake_runner(*_a, **kwargs):
+        captured.update(kwargs)
+        return LensResult(findings=[])
+
+    monkeypatch.setattr(lenses, "resolve_runner", lambda name: _fake_runner)
+    job._run_lens_one(request, "idiom", 30.0, "sonnet")
+
+    assert "intent_contract" not in captured
+
+
+def test_run_lens_one_no_captured_intent_omits_the_kwarg_entirely(tmp_path, monkeypatch):
+    # request carries no captured intent at all (both fields default empty,
+    # e.g. a prompt with no scoping phrase and nothing to persist) -- the
+    # correctness runner must see no intent_contract kwarg, not an empty one,
+    # so it falls through to its own default (None) and build_prompt stays
+    # byte-identical to the no-contract prompt.
+    heartbeat = tmp_path / "hb"
+    heartbeat.write_text("", encoding="utf-8")
+    request, _repo = _request_with_intent(tmp_path, heartbeat, intent_excerpts=(), scope_lines=())
+    captured: dict = {}
+
+    def _fake_runner(*_a, **kwargs):
+        captured.update(kwargs)
+        return LensResult(findings=[])
+
+    monkeypatch.setattr(lenses, "resolve_runner", lambda name: _fake_runner)
+    job._run_lens_one(request, "correctness", 30.0, "sonnet")
+
+    assert "intent_contract" not in captured
+
+
+def test_run_lens_one_env_kill_switch_suppresses_intent_contract(tmp_path, monkeypatch):
+    monkeypatch.setenv("CHAMELEON_INTENT_CONTRACT", "0")
+    heartbeat = tmp_path / "hb"
+    heartbeat.write_text("", encoding="utf-8")
+    request, _repo = _request_with_intent(tmp_path, heartbeat)
+    captured: dict = {}
+
+    def _fake_runner(*_a, **kwargs):
+        captured.update(kwargs)
+        return LensResult(findings=[])
+
+    monkeypatch.setattr(lenses, "resolve_runner", lambda name: _fake_runner)
+    job._run_lens_one(request, "correctness", 30.0, "sonnet")
+
+    assert "intent_contract" not in captured
+
+
 def test_lenses_run_concurrently_not_sequentially(tmp_path, monkeypatch):
     # Two lenses that each block on a shared Barrier(2) BOTH complete only if
     # the job runs them concurrently: the barrier releases only once both

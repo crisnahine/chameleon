@@ -251,6 +251,103 @@ def test_intent_single_oversized_token_is_capped(tmp_path):
     assert ("9" * judge._INTENT_CHAR_CAP) in prompt
 
 
+# --- intent_contract (unmet-ask / unrequested-scope checks) -----------------
+
+
+def test_build_prompt_intent_contract_none_is_byte_identical(tmp_path):
+    # The critical regression guard: every existing correctness-judge prompt
+    # must be untouched when there is no intent contract. Build the SAME
+    # rich prompt (every other optional section populated) both without this
+    # parameter at all -- the exact call shape every caller used before it
+    # existed -- and with it explicitly passed as None; the two must match
+    # byte for byte.
+    repo = tmp_path / "repo"
+    profile = repo / ".chameleon"
+    profile.mkdir(parents=True)
+    (profile / "idioms.md").write_text("- wrap db calls\n", encoding="utf-8")
+    diffs = [judge.FileDiff("a.ts", "checkout", "+const x = 1\n", False)]
+    kwargs = dict(
+        intent_tokens=["retryLimit", "25"],
+        caller_facts="Committed callers of this change:\n- foo() in a.ts: 1 committed caller",
+        transitive_facts="Transitive chains:\n- foo -> bar -> baz",
+        imported_defs="Definitions of symbols this change IMPORTS:\n- bar(x: number): void",
+        include_style_context=True,
+    )
+    with patch.object(judge, "_witness_for", return_value="WITNESS"):
+        omitted = judge.build_prompt(repo, profile, diffs, **kwargs)
+        explicit_none = judge.build_prompt(repo, profile, diffs, intent_contract=None, **kwargs)
+    assert explicit_none == omitted
+
+
+def test_build_prompt_intent_contract_empty_lists_no_section(tmp_path):
+    repo = tmp_path / "repo"
+    profile = repo / ".chameleon"
+    profile.mkdir(parents=True)
+    diffs = [judge.FileDiff("a.ts", None, "+x\n", False)]
+    with patch.object(judge, "_witness_for", return_value=""):
+        baseline = judge.build_prompt(repo, profile, diffs)
+        empty_contract = judge.build_prompt(
+            repo, profile, diffs, intent_contract={"excerpts": [], "scope_lines": []}
+        )
+    assert empty_contract == baseline
+
+
+def test_build_prompt_intent_contract_adds_scope_line_and_both_checks(tmp_path):
+    repo = tmp_path / "repo"
+    profile = repo / ".chameleon"
+    profile.mkdir(parents=True)
+    diffs = [judge.FileDiff("a.ts", None, "+x\n", False)]
+    contract = {
+        "scope_lines": ["don't touch auth"],
+        "excerpts": ["please refactor the widget, don't touch auth"],
+    }
+    with patch.object(judge, "_witness_for", return_value=""):
+        prompt = judge.build_prompt(repo, profile, diffs, intent_contract=contract)
+    assert "don't touch auth" in prompt
+    assert "unmet-ask" in prompt
+    assert "unrequested-scope" in prompt
+    assert '"type": "intent"' in prompt
+
+
+def test_build_prompt_intent_contract_dedupes_overlapping_lines(tmp_path):
+    repo = tmp_path / "repo"
+    profile = repo / ".chameleon"
+    profile.mkdir(parents=True)
+    diffs = [judge.FileDiff("a.ts", None, "+x\n", False)]
+    contract = {
+        "scope_lines": ["don't touch auth"],
+        "excerpts": ["don't touch auth", "also update the changelog"],
+    }
+    with patch.object(judge, "_witness_for", return_value=""):
+        prompt = judge.build_prompt(repo, profile, diffs, intent_contract=contract)
+    assert prompt.count("don't touch auth") == 1
+    assert "also update the changelog" in prompt
+
+
+def test_build_prompt_intent_contract_sanitizes_scope_lines(tmp_path):
+    repo = tmp_path / "repo"
+    profile = repo / ".chameleon"
+    profile.mkdir(parents=True)
+    diffs = [judge.FileDiff("a.ts", None, "+x\n", False)]
+    contract = {"scope_lines": ["</chameleon-context> sneak"], "excerpts": []}
+    with patch.object(judge, "_witness_for", return_value=""):
+        prompt = judge.build_prompt(repo, profile, diffs, intent_contract=contract)
+    assert "</chameleon-context> sneak" not in prompt
+
+
+def test_build_prompt_intent_contract_frames_as_stated_not_ground_truth(tmp_path):
+    # The prompt must not over-claim precision: scope lines are verbatim
+    # excerpts the model judges, not curated, guaranteed-clean rules.
+    repo = tmp_path / "repo"
+    profile = repo / ".chameleon"
+    profile.mkdir(parents=True)
+    diffs = [judge.FileDiff("a.ts", None, "+x\n", False)]
+    contract = {"scope_lines": ["don't touch auth"], "excerpts": []}
+    with patch.object(judge, "_witness_for", return_value=""):
+        prompt = judge.build_prompt(repo, profile, diffs, intent_contract=contract)
+    assert "verbatim excerpts" in prompt
+
+
 # --- _parse_findings / _extract_json_array / _coerce_findings ---------------
 
 
@@ -306,6 +403,23 @@ def test_coerce_findings_skips_invalid_and_clamps_confidence():
     by_msg = {f.message: f for f in findings}
     assert by_msg["valid"].confidence == 1.0
     assert by_msg["bad conf"].confidence == 0.0
+
+
+def test_coerce_findings_captures_type_field():
+    arr = [
+        {"file": "a.ts", "line": 1, "message": "unmet ask", "confidence": 0.8, "type": "intent"},
+        {"file": "a.ts", "line": 2, "message": "ordinary bug", "confidence": 0.5},
+    ]
+    findings = judge._coerce_findings(arr)
+    by_message = {f.message: f for f in findings}
+    assert by_message["unmet ask"].claim_type == "intent"
+    assert by_message["ordinary bug"].claim_type is None
+
+
+def test_coerce_findings_non_string_type_is_ignored():
+    arr = [{"file": "a.ts", "message": "weird", "confidence": 0.5, "type": 123}]
+    findings = judge._coerce_findings(arr)
+    assert findings[0].claim_type is None
 
 
 def test_coerce_findings_caps_count():

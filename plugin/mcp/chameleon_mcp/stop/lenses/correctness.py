@@ -31,6 +31,18 @@ if TYPE_CHECKING:
     from chameleon_mcp.stop.lenses import LensResult
 
 
+def _kind_for(jf) -> str:
+    """Map a judge finding's own ``claim_type`` to a canonical Finding kind.
+
+    Returns ``"intent"`` when the reviewer tagged this claim ``"type":
+    "intent"`` (an unmet-ask / unrequested-scope violation against the
+    intent contract); a missing, blank, or otherwise unrecognized
+    ``claim_type`` always reads as the lens's ordinary ``"correctness"``
+    kind instead -- this never raises on unexpected reviewer output.
+    """
+    return "intent" if getattr(jf, "claim_type", None) == "intent" else "correctness"
+
+
 def run(
     repo_root: Path,
     profile_dir: Path,
@@ -38,6 +50,7 @@ def run(
     archetype_for,
     *,
     intent_tokens: list[str] | None = None,
+    intent_contract: dict | None = None,
     budget: float | None = None,
     event_sink=None,
     model: str | None = None,
@@ -63,9 +76,18 @@ def run(
     caller that wants to react to events as they happen may still pass one.
 
     ``budget``, when given, becomes the spawn's wall-clock timeout in
-    seconds. This task threads it through loosely (a single spawn call, no
-    accounting for the evidence-building stages that precede it); the job
-    runner (Task 4) is where a per-stage hard budget is enforced.
+    seconds. Threaded through loosely (a single spawn call, no accounting for
+    the evidence-building stages that precede it); the job runner is where a
+    per-stage hard budget is enforced.
+
+    ``intent_contract``, when given a ``{"excerpts": [...], "scope_lines":
+    [...]}`` mapping with real content, is forwarded to ``judge.build_prompt``
+    unchanged (see that function for the prompt section it adds). Every raw
+    finding the reviewer returns is then routed by its own ``claim_type``: a
+    claim the reviewer tagged ``"type": "intent"`` becomes
+    ``Finding(kind="intent", ...)``; every other claim -- including every
+    claim when ``intent_contract`` is ``None`` -- keeps the lens's ordinary
+    ``kind="correctness"``.
     """
     from chameleon_mcp import judge
     from chameleon_mcp.core.finding import Finding
@@ -144,6 +166,7 @@ def run(
             caller_facts=caller_facts,
             transitive_facts=transitive_facts,
             imported_defs=imported_defs,
+            intent_contract=intent_contract,
         )
 
         timeout_s = int(budget) if isinstance(budget, (int, float)) and budget > 0 else None
@@ -162,7 +185,7 @@ def run(
         canonical = [
             Finding.from_judge_finding(
                 jf,
-                kind="correctness",
+                kind=_kind_for(jf),
                 source_lens="correctness",
                 intent_tokens=tuple(intent_tokens or ()),
                 created_at=created_at,

@@ -290,6 +290,30 @@ def test_from_judge_finding_match_key_ignores_confidence_and_line():
     assert a.id == b.id
 
 
+# --- correctness lens _kind_for (per-claim type -> Finding.kind) ------------
+
+
+def test_kind_for_intent_claim_type_returns_intent():
+    assert correctness_lens._kind_for(_jf(claim_type="intent")) == "intent"
+
+
+def test_kind_for_missing_claim_type_returns_correctness():
+    assert correctness_lens._kind_for(_jf()) == "correctness"
+
+
+def test_kind_for_other_claim_type_returns_correctness():
+    # A malformed/unrecognized type value must never crash and must never be
+    # trusted as a kind on its own -- only the literal "intent" string routes.
+    assert correctness_lens._kind_for(_jf(claim_type="something-else")) == "correctness"
+
+
+def test_kind_for_object_with_no_claim_type_attr_never_crashes():
+    class _Bare:
+        pass
+
+    assert correctness_lens._kind_for(_Bare()) == "correctness"
+
+
 # --- correctness lens run() --------------------------------------------------
 
 
@@ -365,6 +389,74 @@ def test_correctness_lens_run_produces_canonical_findings(tmp_path):
     # None-vs-"" normalized details separately.
     assert [kind for kind, _ in events] == [kind for kind, _ in result.check_events]
     assert [(d or "") for _, d in events] == [d for _, d in result.check_events]
+
+
+def test_correctness_lens_run_intent_contract_routes_type_intent_claim(tmp_path):
+    # A canned reviewer reply carrying one "type": "intent" claim (an
+    # unmet-ask/unrequested-scope violation) alongside one ordinary claim:
+    # the intent claim must route to kind="intent", the ordinary claim keeps
+    # kind="correctness", and both still carry the lens's intent_tokens.
+    repo = tmp_path / "plain"
+    repo.mkdir()
+    profile = repo / ".chameleon"
+    profile.mkdir()
+    p = _write_source(repo)
+
+    arr = [
+        {
+            "file": "src/widget.ts",
+            "line": 3,
+            "message": "the request asked to also update the changelog; not done here",
+            "confidence": 0.8,
+            "type": "intent",
+        },
+        {"file": "src/widget.ts", "line": 7, "message": "off by one", "confidence": 0.4},
+    ]
+    stream = _result_line(json.dumps(arr))
+    contract = {"excerpts": ["don't touch auth"], "scope_lines": ["don't touch auth"]}
+    with (
+        patch.object(judge, "_spawn_reviewer_status", return_value=(stream, None)),
+        patch.object(judge, "_witness_for", return_value=""),
+    ):
+        result = correctness_lens.run(
+            repo,
+            profile,
+            [str(p)],
+            lambda _p: "controller",
+            intent_tokens=["retry-count"],
+            intent_contract=contract,
+        )
+
+    assert len(result.findings) == 2
+    intent_finding = next(f for f in result.findings if f.kind == "intent")
+    correctness_finding = next(f for f in result.findings if f.kind == "correctness")
+    assert intent_finding.source_lens == "correctness"
+    assert intent_finding.intent_tokens == ("retry-count",)
+    assert correctness_finding.source_lens == "correctness"
+    assert correctness_finding.intent_tokens == ("retry-count",)
+
+
+def test_correctness_lens_run_no_intent_contract_defaults_to_correctness_kind(tmp_path):
+    repo = tmp_path / "plain"
+    repo.mkdir()
+    profile = repo / ".chameleon"
+    profile.mkdir()
+    p = _write_source(repo)
+
+    arr = [
+        {"file": "src/widget.ts", "line": 3, "message": "dropped await", "confidence": 0.9},
+        {"file": "src/widget.ts", "line": 7, "message": "off by one", "confidence": 0.4},
+    ]
+    stream = _result_line(json.dumps(arr))
+    with (
+        patch.object(judge, "_spawn_reviewer_status", return_value=(stream, None)),
+        patch.object(judge, "_witness_for", return_value=""),
+    ):
+        # intent_contract not passed -> defaults to None.
+        result = correctness_lens.run(repo, profile, [str(p)], lambda _p: None)
+
+    assert len(result.findings) == 2
+    assert all(f.kind == "correctness" for f in result.findings)
 
 
 def test_correctness_lens_run_spawn_failure_events_and_empty_findings(tmp_path):
@@ -468,6 +560,8 @@ def test_correctness_lens_run_facts_included_reaches_build_prompt(tmp_path, monk
         caller_facts=None,
         transitive_facts=None,
         imported_defs=None,
+        include_style_context=False,
+        intent_contract=None,
     ):
         captured["caller_facts"] = caller_facts
         return "prompt"
@@ -511,6 +605,8 @@ def test_correctness_lens_run_facts_disabled_via_config(tmp_path, monkeypatch):
         caller_facts=None,
         transitive_facts=None,
         imported_defs=None,
+        include_style_context=False,
+        intent_contract=None,
     ):
         captured["caller_facts"] = caller_facts
         return "prompt"

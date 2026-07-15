@@ -125,13 +125,21 @@ def _run_lens_one(
         repo_root = request.repo_root
         profile_dir = hh._enf_profile_dir(repo_root)
         resolver = hh._archetype_resolver(repo_root, {"available": True})
-        # Only the idiom lens accepts shown_idiom_slugs -- correctness and
-        # duplication share this exact call shape and have no use for it, so
-        # it rides as a conditional kwarg rather than a parameter every lens
-        # runner must declare and ignore.
+        # Only the idiom lens accepts shown_idiom_slugs, and only the
+        # correctness lens accepts intent_contract -- each rides as a
+        # conditional kwarg rather than a parameter every lens runner must
+        # declare and ignore.
         extra_kwargs: dict = {}
         if name == "idiom":
             extra_kwargs["shown_idiom_slugs"] = list(request.shown_idiom_slugs)
+        if name == "correctness" and os.environ.get("CHAMELEON_INTENT_CONTRACT") != "0":
+            excerpts = list(request.intent_excerpts)
+            scope_lines = list(request.scope_lines)
+            if excerpts or scope_lines:
+                extra_kwargs["intent_contract"] = {
+                    "excerpts": excerpts,
+                    "scope_lines": scope_lines,
+                }
         result = runner(
             repo_root,
             profile_dir,

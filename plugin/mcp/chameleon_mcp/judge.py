@@ -109,6 +109,13 @@ class Finding:
       ``{"cmd", "output_sha256"}`` -- a converted "unrun" check graduates to
       "run, with its output pinned by hash" without carrying the raw output.
     - ``suggested_fix``: an optional one-line fix the reviewer proposed.
+    - ``claim_type``: the reviewer's own ``"type"`` tag on this claim (e.g.
+      ``"intent"`` for an unmet-ask / unrequested-scope violation against the
+      intent contract; ``None`` for an ordinary correctness claim, which is
+      every claim when no intent contract rode in the prompt). Carried
+      separately from ``message``/``confidence`` so a caller can route the
+      claim to a different ``Finding.kind`` without reparsing the reviewer's
+      raw JSON.
     """
 
     message: str
@@ -118,6 +125,7 @@ class Finding:
     excerpt_sha: str | None = None
     evidence_cmds: list | None = None
     suggested_fix: str | None = None
+    claim_type: str | None = None
 
 
 def _excerpt_digest(text: str | None) -> str | None:
@@ -813,6 +821,7 @@ def build_prompt(
     transitive_facts: str | None = None,
     imported_defs: str | None = None,
     include_style_context: bool = False,
+    intent_contract: dict | None = None,
 ) -> str:
     """Assemble the reviewer prompt from diffs, the checklist, and caller facts.
 
@@ -841,6 +850,18 @@ def build_prompt(
     reviewer is told to ignore for style anyway. The flag is kept so a caller
     that genuinely wants convention context (e.g. a future style-aware lens)
     can opt back in.
+
+    ``intent_contract`` defaults to ``None`` and, when ``None`` or empty of
+    both keys, changes nothing about the prompt -- the exact prompt this
+    function produced before this parameter existed. When given a
+    ``{"excerpts": [...], "scope_lines": [...]}`` mapping with at least one
+    non-empty entry, an extra section is appended asking the reviewer to also
+    check the change against those verbatim excerpts for two things: a
+    stated ask the diff does not fulfil (an "unmet-ask" claim), and a stated
+    constraint the diff violates (an "unrequested-scope" claim). A claim of
+    either kind is asked to carry ``"type": "intent"`` in its JSON object, so
+    the caller can route it to a different ``Finding.kind`` than an ordinary
+    correctness claim.
     """
     sections: list[str] = [
         "You are an independent code reviewer giving a finished change a second "
@@ -933,6 +954,41 @@ def build_prompt(
             "mismatched string is a finding):"
         )
         sections.append(joined)
+
+    if intent_contract:
+        excerpts = intent_contract.get("excerpts") or []
+        scope = intent_contract.get("scope_lines") or []
+        combined: list[str] = []
+        seen: set[str] = set()
+        for lst in (scope, excerpts):
+            for line in lst:
+                if isinstance(line, str) and line.strip() and line not in seen:
+                    seen.add(line)
+                    combined.append(line)
+        if combined:
+            from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+            sections.append("")
+            sections.append(
+                "The user's stated constraints for this task (verbatim excerpts "
+                "from their prompt(s) -- not curated rules, and not necessarily "
+                "one clean sentence each: an excerpt may carry surrounding words "
+                "alongside the actual constraint, so read each for the real ask "
+                "or limit rather than treating every word in it as a hard "
+                "requirement):"
+            )
+            for line in combined:
+                sections.append("- " + sanitize_for_chameleon_context(line))
+            sections.append(
+                "Check the change against these excerpts in addition to the "
+                "checklist above. Flag a stated ask the diff does not fulfil as "
+                'an "unmet-ask" finding. Flag a change that violates a stated '
+                "constraint (something the user said to leave alone, not "
+                'change, or restrict) as an "unrequested-scope" finding. For '
+                'either kind, add "type": "intent" to that JSON object (along '
+                "with the usual file/line/message/confidence fields) so it can "
+                "be told apart from an ordinary correctness finding."
+            )
 
     if caller_facts:
         sections.append("")
@@ -1176,6 +1232,8 @@ def _coerce_findings(arr: list) -> list[Finding]:
         line = raw_line if isinstance(raw_line, int) and not isinstance(raw_line, bool) else None
         raw_fix = item.get("suggested_fix")
         suggested_fix = raw_fix.strip() if isinstance(raw_fix, str) and raw_fix.strip() else None
+        raw_type = item.get("type")
+        claim_type = raw_type.strip() if isinstance(raw_type, str) and raw_type.strip() else None
         out.append(
             Finding(
                 message=message.strip(),
@@ -1183,6 +1241,7 @@ def _coerce_findings(arr: list) -> list[Finding]:
                 file=file,
                 line=line,
                 suggested_fix=suggested_fix,
+                claim_type=claim_type,
             )
         )
     # Highest-confidence findings first; cap the list so advisory output stays
