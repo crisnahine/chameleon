@@ -259,6 +259,22 @@ def run(
         scoped = idioms_for_scope(
             records, languages=languages, archetypes=archetypes, paths=rel_paths
         )
+        # idioms_for_scope treats an empty set on EITHER side of a dimension as
+        # a wildcard. That is right for a record's own empty declaration, but
+        # wrong for the caller side of archetypes: governed files that resolve
+        # NO archetype at all (ordinary -- utility/script files the detector
+        # does not classify) yield an empty caller set, which would let an
+        # archetype-TAGGED idiom back into scope with no matching file. The
+        # spec's languages/archetypes/paths intersection requires a declared
+        # archetype to be matched by a touched file, so drop archetype-specific
+        # records here; wildcard records (empty rec.archetypes) rightly stay.
+        # languages has no symmetric hole: `governed` is BY CONSTRUCTION the
+        # files whose _governed_language is not None, so a non-empty governed
+        # set always yields a non-empty languages set; and rel_paths is one
+        # entry per governed file, so the paths dimension cannot be empty here
+        # either.
+        if not archetypes:
+            scoped = [rec for rec in scoped if not rec.archetypes]
         if not scoped:
             _sink("no_scoped_idioms")
             return LensResult(findings=[], check_events=events)

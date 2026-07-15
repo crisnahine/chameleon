@@ -159,6 +159,63 @@ def test_run_archetype_scoped_idiom_included_when_archetype_matches(tmp_path):
     spawn.assert_called_once()
 
 
+def test_run_archetype_scoped_idiom_excluded_when_no_file_resolves_an_archetype(tmp_path):
+    # idioms_for_scope reads an empty CALLER archetype set as a wildcard too,
+    # so without the lens's own post-filter an archetype-TAGGED idiom would
+    # leak into scope (and spawn a reviewer) on a turn whose governed files
+    # all resolve archetype None -- ordinary for utility/script files the
+    # detector doesn't classify. Spec section 5.2's intersection semantics:
+    # a declared archetype must be matched by a touched file.
+    repo, profile = _repo(tmp_path)
+    upsert_idiom(
+        profile,
+        _rec(slug="svc-only", title="svc-only", languages=[], archetypes=["service"]),
+    )
+    src = _write_ts(repo)
+    with patch.object(judge, "_spawn_reviewer_status") as spawn:
+        result = idiom.run(repo, profile, [str(src)], lambda _p: None)
+    spawn.assert_not_called()
+    assert result.findings == []
+    assert result.check_events == [("idiom_lens", "no_scoped_idioms")]
+
+
+def test_run_archetype_scoped_idiom_kept_when_one_of_mixed_files_matches(tmp_path):
+    # One file resolves the matching archetype, another resolves None: the
+    # caller set is non-empty and intersects the record, so the idiom stays
+    # in scope (the post-filter only fires on an ALL-None turn).
+    repo, profile = _repo(tmp_path)
+    upsert_idiom(
+        profile,
+        _rec(slug="svc-only", title="svc-only", languages=[], archetypes=["service"]),
+    )
+    src_a = _write_ts(repo, rel="src/widget.ts")
+    src_b = _write_ts(repo, rel="src/service.ts")
+
+    def _resolver(path):
+        return "service" if path.endswith("service.ts") else None
+
+    with patch.object(
+        judge, "_spawn_reviewer_status", return_value=(_result_line([]), None)
+    ) as spawn:
+        idiom.run(repo, profile, [str(src_a), str(src_b)], _resolver)
+    spawn.assert_called_once()
+
+
+def test_run_wildcard_archetype_idiom_survives_all_none_archetype_turn(tmp_path):
+    # A record declaring NO archetypes is a genuine wildcard: it must stay in
+    # scope even when no touched file resolves an archetype -- the post-filter
+    # drops only archetype-SPECIFIC records.
+    repo, profile = _repo(tmp_path)
+    upsert_idiom(profile, _rec(languages=[], archetypes=[]))
+    src = _write_ts(repo)
+    with patch.object(
+        judge, "_spawn_reviewer_status", return_value=(_result_line([]), None)
+    ) as spawn:
+        result = idiom.run(repo, profile, [str(src)], lambda _p: None)
+    spawn.assert_called_once()
+    assert result.findings == []
+
+
 def test_run_path_scoped_idiom_included_when_glob_matches(tmp_path):
     repo, profile = _repo(tmp_path)
     upsert_idiom(
