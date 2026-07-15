@@ -54,3 +54,14 @@ def test_session_start_not_suppressed_still_injects(tmp_path, monkeypatch):
     # control: the gate must not fire when not suppressed — skill is injected
     assert out not in ("{}", "")
     assert "chameleon" in out.lower()
+    # Phase 4: the injection is the curated operational digest, not the full
+    # ~13.6k-char using-chameleon SKILL.md body.
+    ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    assert "operational digest" in ctx.lower()
+    # A line that lives ONLY in the full SKILL.md's ASCII flow diagram (dropped
+    # from the digest per the curation) must be absent.
+    assert "untrusted prompt (once) --> edit proceeds without canonical" not in ctx
+    # And the slash-command reference table (also dropped) must be absent.
+    assert "| Command | Purpose |" not in ctx
+    # Budget bound: nowhere near the old ~13,588-char full-skill dump.
+    assert len(ctx) < 6000
