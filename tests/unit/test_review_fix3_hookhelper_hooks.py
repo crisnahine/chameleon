@@ -28,7 +28,7 @@ from unittest.mock import patch
 
 from chameleon_mcp.enforcement_calibration import write_block_rules
 
-AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
+AWS_KEY = "AKIAIOSFODNN7EXAMPLE"  # chameleon-ignore secret-detected-in-content
 
 ACTIVE_SECRET_RULE = {"secret-detected-in-content": {"active": True, "fp_rate": 0.0, "sampled": 3}}
 ACTIVE_EVAL_RULE = {"eval-call": {"active": True, "fp_rate": 0.0, "sampled": 3}}
