@@ -16,6 +16,7 @@ import re
 import shutil
 import sys
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 
@@ -173,6 +174,28 @@ def find_by_slug(records: list[IdiomRecord], slug: str) -> IdiomRecord | None:
         if r.slug == slug:
             return r
     return None
+
+
+def titles_to_slugs(profile_dir: Path, titles: Iterable[str] | None) -> set[str]:
+    """Resolve rendered idiom TITLES back to their store slugs.
+
+    idioms.md and the per-edit Tier-2 block both render a record's TITLE as
+    its ``### <title>`` header, never its slug, so any "which idioms did the
+    model actually see" signal built from that surface carries titles, not
+    slugs -- this is the one place that translates between them, shared by
+    every caller instead of each re-deriving its own title/slug map. A title
+    with no matching record (renamed, deleted, or simply wrong) resolves to
+    nothing; callers never record a fabricated slug for it. Fails open to an
+    empty set if the store cannot be loaded.
+    """
+    wanted = {str(t) for t in (titles or ()) if t}
+    if not wanted:
+        return set()
+    try:
+        records = load_store(profile_dir)
+    except Exception:
+        return set()
+    return {rec.slug for rec in records if rec.title in wanted}
 
 
 def upsert_idiom(profile_dir: Path, record: IdiomRecord) -> None:

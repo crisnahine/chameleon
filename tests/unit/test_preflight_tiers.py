@@ -264,3 +264,108 @@ def test_tier1_pointer_surfaces_stale_trust_banner(tmp_path):
     # Confirms this is genuinely the Tier-1 path (no witness body).
     assert "Canonical witness" not in ctx
     assert "Trust is stale" in ctx
+
+
+# --- Tier-2 idiom-slug dual-write into SessionDoc.idioms_shown_slugs ------
+
+
+def _seed_idiom(profile_dir: Path, *, slug: str, title: str) -> None:
+    from chameleon_mcp.core.idiom_store import IdiomRecord, upsert_idiom
+
+    upsert_idiom(
+        profile_dir,
+        IdiomRecord(
+            slug=slug,
+            title=title,
+            rationale=f"{title} rationale.",
+            languages=["typescript"],
+            archetypes=[],
+            paths=[],
+            status="active",
+            added_date="2026-07-15",
+            rank=1,
+        ),
+    )
+
+
+def _idiom_block(title: str) -> str:
+    return f"### {title}\nLanguage: typescript\nStatus: active\nAlways do the {title} thing.\n"
+
+
+def test_tier2_records_rendered_idiom_slug_into_session_doc(tmp_path, monkeypatch):
+    """The Tier-2 recording site that populates
+    ``enforcement_state.idioms_shown_names`` must ALSO resolve the rendered
+    idiom's title to its store slug and record it on
+    ``SessionDoc.idioms_shown_slugs``, the structured per-session slug
+    signal."""
+    data_dir = tmp_path / "chameleon_data"
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(data_dir))
+    profile_dir = tmp_path / ".chameleon"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    _seed_idiom(profile_dir, slug="wrap-fetches", title="Wrap Fetches")
+
+    daemon_result = _make_pattern_context_result("component")
+    daemon_result["data"]["idioms"] = _idiom_block("Wrap Fetches")
+    repo_id = daemon_result["data"]["repo"]["id"]
+
+    result = _run_preflight_with_context(tmp_path, "component", daemon_result=daemon_result)
+    hook_output = result.get("hookSpecificOutput", {})
+    ctx = hook_output.get("additionalContext", "")
+    assert "Wrap Fetches" in ctx  # sanity: this really was the Tier-2 render
+
+    from chameleon_mcp.core.session_state import read_session_doc
+
+    doc = read_session_doc(repo_id, "test-session")
+    assert doc.idioms_shown_slugs == {"wrap-fetches"}
+
+
+def test_tier2_multiple_renders_accumulate_idiom_slugs(tmp_path, monkeypatch):
+    """A later Tier-2 render in the same session ADDS to the recorded slug
+    set (union), never replaces it -- matching ``update_session_doc``'s own
+    load-mutate-save merge discipline."""
+    data_dir = tmp_path / "chameleon_data"
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(data_dir))
+    profile_dir = tmp_path / ".chameleon"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    _seed_idiom(profile_dir, slug="wrap-fetches", title="Wrap Fetches")
+    _seed_idiom(profile_dir, slug="log-via-logger", title="Log Via Logger")
+
+    daemon_result_1 = _make_pattern_context_result("component")
+    daemon_result_1["data"]["idioms"] = _idiom_block("Wrap Fetches")
+    repo_id = daemon_result_1["data"]["repo"]["id"]
+    _run_preflight_with_context(tmp_path, "component", daemon_result=daemon_result_1)
+
+    daemon_result_2 = _make_pattern_context_result("hook")
+    daemon_result_2["data"]["idioms"] = _idiom_block("Log Via Logger")
+    _run_preflight_with_context(tmp_path, "hook", daemon_result=daemon_result_2)
+
+    from chameleon_mcp.core.session_state import read_session_doc
+
+    doc = read_session_doc(repo_id, "test-session")
+    assert doc.idioms_shown_slugs == {"wrap-fetches", "log-via-logger"}
+
+
+def test_tier2_unresolvable_idiom_title_skips_slug_without_crash(tmp_path, monkeypatch):
+    """An idiom title rendered into the Tier-2 block that matches no store
+    record (renamed, deleted, or simply a bug elsewhere) must be skipped --
+    never recorded as a fabricated slug, and never a crash."""
+    data_dir = tmp_path / "chameleon_data"
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(data_dir))
+    profile_dir = tmp_path / ".chameleon"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    # No idiom seeded in the store at all: "Ghost Idiom" resolves to nothing.
+
+    daemon_result = _make_pattern_context_result("component")
+    daemon_result["data"]["idioms"] = _idiom_block("Ghost Idiom")
+    repo_id = daemon_result["data"]["repo"]["id"]
+
+    result = _run_preflight_with_context(tmp_path, "component", daemon_result=daemon_result)
+    hook_output = result.get("hookSpecificOutput", {})
+    assert "hookSpecificOutput" in result  # the hook completed normally
+    ctx = hook_output.get("additionalContext", "")
+    assert "Ghost Idiom" in ctx  # sanity: it really rendered into Tier-2
+
+    from chameleon_mcp.core.session_state import read_session_doc
+
+    doc = read_session_doc(repo_id, "test-session")
+    assert doc.idioms_shown_slugs == set()

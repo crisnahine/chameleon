@@ -4020,13 +4020,38 @@ def preflight_and_advise() -> int:
         # predicate the Tier-2 branch below uses; the deny path (which seeds
         # archetypes_seen without showing anything) never reaches this.
         if (first_in_archetype or has_violations or not summary) and has_idioms:
+            shown_names: set[str] = set()
             try:
                 from chameleon_mcp.tools import _idiom_block_names
 
                 shaped = _shape_idioms_for_block(idioms_text, excerpt_content)
-                enforcement_state.idioms_shown_names |= _idiom_block_names(shaped)
+                shown_names = _idiom_block_names(shaped)
+                enforcement_state.idioms_shown_names |= shown_names
             except Exception:
                 pass
+            # Also resolve the titles this block actually rendered to their
+            # store slugs and record them on SessionDoc.idioms_shown_slugs --
+            # the structured, session-scoped counterpart to the name set
+            # above, additive and independent of it. Same title->slug map
+            # _shown_idiom_slugs uses to translate names for JobRequest, so a
+            # title with no matching record (renamed/deleted) is skipped
+            # rather than recording a fabricated slug. Isolated try/except: a
+            # slug-resolution or session-doc write failure must never affect
+            # the name recording above or the Tier-2 render itself.
+            if shown_names and repo_id and session_id and repo_root_path is not None:
+                try:
+                    from chameleon_mcp.core.idiom_store import titles_to_slugs
+                    from chameleon_mcp.core.session_state import update_session_doc
+
+                    shown_slugs = titles_to_slugs(_enf_profile_dir(repo_root_path), shown_names)
+                    if shown_slugs:
+                        update_session_doc(
+                            repo_id,
+                            session_id,
+                            lambda doc: doc.idioms_shown_slugs.update(shown_slugs),
+                        )
+                except Exception:
+                    pass
         try:
             enforcement.save_state(enforcement_state, repo_data, session_id)
         except Exception:

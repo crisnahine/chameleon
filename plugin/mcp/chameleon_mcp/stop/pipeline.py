@@ -787,10 +787,9 @@ def _shown_idiom_slugs(repo_root: Path, state, session_doc) -> tuple[str, ...]:
     if names:
         try:
             from chameleon_mcp import hook_helper as hh
-            from chameleon_mcp.core.idiom_store import load_store
+            from chameleon_mcp.core.idiom_store import titles_to_slugs
 
-            records = load_store(hh._enf_profile_dir(repo_root))
-            slugs |= {rec.slug for rec in records if rec.title in names}
+            slugs |= titles_to_slugs(hh._enf_profile_dir(repo_root), names)
         except Exception:
             pass
     return tuple(sorted(slugs))

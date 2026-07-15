@@ -11,6 +11,7 @@ from chameleon_mcp.core.idiom_store import (
     slug_for_title,
     store_dir,
     store_exists,
+    titles_to_slugs,
     upsert_idiom,
 )
 
@@ -174,3 +175,43 @@ def test_upsert_rejects_mutated_invalid_slug(tmp_path, monkeypatch):
     with pytest.raises(ValueError):
         upsert_idiom(profile, rec)
     assert not store_dir(profile).exists()
+
+
+def test_titles_to_slugs_resolves_matching_records(tmp_path, monkeypatch):
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    profile = _profile(tmp_path)
+    upsert_idiom(profile, _rec())
+    upsert_idiom(profile, _rec(slug="log-via-logger", title="Log Via Logger", rank=2))
+
+    assert titles_to_slugs(profile, {"use-api-client", "Log Via Logger"}) == {
+        "use-api-client",
+        "log-via-logger",
+    }
+
+
+def test_titles_to_slugs_skips_unresolvable_title(tmp_path, monkeypatch):
+    # A title with no matching store record (renamed, deleted, or simply
+    # wrong) must be silently skipped -- never a fabricated slug, never a
+    # crash.
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    profile = _profile(tmp_path)
+    upsert_idiom(profile, _rec())
+
+    assert titles_to_slugs(profile, {"use-api-client", "Ghost Idiom"}) == {"use-api-client"}
+
+
+def test_titles_to_slugs_empty_input_short_circuits(tmp_path, monkeypatch):
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    profile = _profile(tmp_path)
+    upsert_idiom(profile, _rec())
+
+    assert titles_to_slugs(profile, set()) == set()
+    assert titles_to_slugs(profile, None) == set()
+
+
+def test_titles_to_slugs_fails_open_on_unreadable_store(tmp_path):
+    # No CHAMELEON_PLUGIN_DATA set, no store directory materialized at all --
+    # load_store's own OSError guard fails open to [], so this resolves to an
+    # empty set rather than raising.
+    profile = tmp_path / "no" / "such" / "dir" / ".chameleon"
+    assert titles_to_slugs(profile, {"use-api-client"}) == set()

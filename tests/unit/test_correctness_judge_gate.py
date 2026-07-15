@@ -552,6 +552,26 @@ def test_shown_idiom_names_translate_to_slugs_in_job_request(make_trusted_repo):
     assert out.get("decision") != "block"
 
 
+def test_session_doc_idiom_slugs_flow_directly_into_job_request(make_trusted_repo):
+    # SessionDoc.idioms_shown_slugs is the native slug signal: sibling of
+    # test_shown_idiom_names_translate_to_slugs_in_job_request's
+    # idioms_shown_names path, this shows the scheduler reads a directly
+    # recorded slug too, with no title->slug lookup involved -- this session
+    # never sets idioms_shown_names or seeds an idiom store record at all.
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo()
+    _touch_edited_file(file_path, data_dir, sid)
+
+    from chameleon_mcp.core.session_state import update_session_doc
+
+    update_session_doc(REPO_ID, sid, lambda doc: doc.idioms_shown_slugs.add("wrap-fetches"))
+
+    out, calls = _run_stop(_payload(repo, sid), env={"CHAMELEON_ENFORCE": "1"})
+
+    assert len(calls) == 1
+    assert calls[0].shown_idiom_slugs == ("wrap-fetches",)
+    assert out.get("decision") != "block"
+
+
 def test_no_shown_idiom_names_yields_empty_shown_slugs(make_trusted_repo):
     repo, data_dir, sid, file_path, profile_dir = make_trusted_repo()
     _touch_edited_file(file_path, data_dir, sid)
