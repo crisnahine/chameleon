@@ -25,10 +25,27 @@ run is never silent: ``event_sink`` always receives a status naming why.
 Findings are returned in their input order; ranking for display belongs to
 the render stage, not here.
 
-Every finding also gets its excerpt attached here (``dataclasses.replace``,
-the deferral ``core.finding.Finding.from_judge_finding`` documented) --
-unconditionally, before any disabled/budget/CLI check, so delivery can detect
-staleness even on a turn where VERIFY itself never got to spawn a refuter.
+Kind gate: only single-file-local kinds -- ``correctness`` and ``idiom``
+(an idiom claim cites slug + offending lines in the edited file, so the
+excerpt covers the violation) -- are refutable. A ``duplication`` finding's
+evidence spans TWO locations ("X in fileA re-implements Y in fileB"); the
+refuter sees only fileA's excerpt and its "cannot tell -> refute" rule would
+systematically kill every one -- and each already survived an LLM
+confirmation (``duplication_review.judge_body_matches``) inside its own
+lens, so blind re-refutation is both wrong and a wasted spawn. Duplication
+findings pass through ``verified="confirmed"`` (pre-confirmed), every other
+non-refutable kind passes through ``verified="unverified"`` (no refutation
+target), and the exemption is disclosed via an ``("exempt", ...)`` event.
+This mirrors the legacy multi-lens gate, whose VERIFY eligibility was
+``lenses == ["correctness"]`` for the same two-location reason.
+
+Every REFUTABLE finding also gets its excerpt attached here
+(``dataclasses.replace``, the deferral ``core.finding.Finding
+.from_judge_finding`` documented) -- before any disabled/budget/CLI check,
+so delivery can detect staleness even on a turn where VERIFY itself never
+got to spawn a refuter. Exempt findings keep whatever excerpt they arrived
+with (a duplication finding's single-file window would misrepresent its
+two-location evidence).
 
 Spawns run ``retry=False``: the Stop/job path is on a hard wall-clock budget,
 so one refuter slot costs exactly one timeout window, never two.
@@ -49,6 +66,10 @@ _EXCERPT_CONTEXT_LINES = 25
 _EXCERPT_CHAR_CAP = 4000
 _HEAD_FALLBACK_LINES = 50
 _HIGH_SEVERITIES = ("blocker", "high")
+# Kinds whose claim a single-file excerpt window can actually support or
+# contradict (see the module docstring's kind-gate section). Everything else
+# is exempt from refutation and passes through annotated.
+_REFUTABLE_KINDS = ("correctness", "idiom")
 
 
 def _sink(event_sink, status: str, detail: str | None = None) -> None:
@@ -152,12 +173,13 @@ def _affordable_spawns(budget_seconds: float, timeout: int, max_spawns: int) -> 
 def _to_refuter_dict(idx: int, f: Finding) -> dict:
     """Adapt a canonical Finding to the refuter's finding shape.
 
-    ``id`` is the original list index (verdicts map back after the batch
-    reorders/caps). ``kind`` and ``evidence`` are read straight off the
-    Finding -- the fix for the pre-phase-3 ``kind: None`` / always-empty-
-    evidence drift (module docstring). ``intent_tokens`` rides along too, so
-    nothing on the canonical Finding is lost crossing into the refuter's
-    dict shape, even though today's prompt template does not yet render it.
+    ``id`` is the finding's index into ``_refute``'s refutable list
+    (verdicts map back after the batch reorders/caps). ``kind`` and
+    ``evidence`` are read straight off the Finding -- the fix for the
+    pre-phase-3 ``kind: None`` / always-empty-evidence drift (module
+    docstring). ``intent_tokens`` rides along too, so nothing on the
+    canonical Finding is lost crossing into the refuter's dict shape, even
+    though today's prompt template does not yet render it.
     """
     line = f.span[0] if f.span else None
     return {
@@ -172,6 +194,18 @@ def _to_refuter_dict(idx: int, f: Finding) -> dict:
     }
 
 
+def _annotate_exempt(f: Finding) -> Finding:
+    """Annotate a kind-exempt finding (see the module docstring's kind gate).
+
+    Duplication arrives pre-confirmed (it already survived
+    ``judge_body_matches``'s LLM confirmation inside its own lens), so it
+    reads ``confirmed``; any other exempt kind has no refutation target and
+    reads ``unverified``.
+    """
+    verdict = "confirmed" if f.kind == "duplication" else "unverified"
+    return dataclasses.replace(f, verified=verdict)
+
+
 def verify_findings(
     findings: list[Finding],
     *,
@@ -180,18 +214,52 @@ def verify_findings(
     event_sink=None,
 ) -> list[Finding]:
     """Independently VERIFY ``findings`` with the refuter. Never drops a
-    finding except one the refuter actively refutes; never silent about a
-    skip. See the module docstring for the full contract.
+    finding except a refutable-kind one the refuter actively refutes; exempt
+    kinds pass through annotated without a spawn; never silent about a skip
+    or an exemption. Output preserves input order. See the module docstring
+    for the full contract.
     """
     items = list(findings or [])
     if not items:
         return []
 
-    items = [_with_excerpt(repo_root, f) for f in items]
+    refutable_set = {i for i, f in enumerate(items) if f.kind in _REFUTABLE_KINDS}
+    exempt_idx = [i for i in range(len(items)) if i not in refutable_set]
 
+    # None marks a dropped (refuted) finding; exempt slots are final already.
+    results: dict[int, Finding | None] = {i: _annotate_exempt(items[i]) for i in exempt_idx}
+    if exempt_idx:
+        kinds = ",".join(sorted({items[i].kind for i in exempt_idx}))
+        _sink(event_sink, "exempt", f"count={len(exempt_idx)} kinds={kinds}")
+
+    ref_idx = sorted(refutable_set)
+    if ref_idx:
+        ref_items = [_with_excerpt(repo_root, items[i]) for i in ref_idx]
+        refuted = _refute(ref_items, repo_root=repo_root, budget=budget, event_sink=event_sink)
+        for orig, f in zip(ref_idx, refuted, strict=True):
+            results[orig] = f
+
+    return [results[i] for i in range(len(items)) if results[i] is not None]
+
+
+def _refute(
+    ref_items: list[Finding],
+    *,
+    repo_root: Path,
+    budget: TurnBudget,
+    event_sink=None,
+) -> list[Finding | None]:
+    """Run the refuter over the refutable findings.
+
+    Returns a list aligned index-for-index with ``ref_items``: each slot a
+    Finding annotated ``confirmed``/``unverified``, or None for one the
+    refuter actively refuted -- the only drop. Every skip seam (disabled,
+    CLI absent, no budget, no excerpts, exception) passes the whole set
+    through ``unverified`` with a ``("skipped", <why>)`` event.
+    """
     if os.environ.get("CHAMELEON_STOP_VERIFY") == "0":
         _sink(event_sink, "skipped", "disabled")
-        return [dataclasses.replace(f, verified="unverified") for f in items]
+        return [dataclasses.replace(f, verified="unverified") for f in ref_items]
 
     try:
         from chameleon_mcp import refuter
@@ -201,7 +269,7 @@ def verify_findings(
         absent = refuter.refuter_cli_absent()
         if absent is not None:
             _sink(event_sink, "skipped", absent)
-            return [dataclasses.replace(f, verified="unverified") for f in items]
+            return [dataclasses.replace(f, verified="unverified") for f in ref_items]
 
         remaining = budget.remaining_seconds()
         timeout = max(15, min(threshold_int("REFUTER_TIMEOUT_SECONDS"), int(remaining)))
@@ -209,12 +277,12 @@ def verify_findings(
         affordable = _affordable_spawns(remaining, timeout, max_spawns)
         if affordable <= 0:
             _sink(event_sink, "skipped", "no_budget")
-            return [dataclasses.replace(f, verified="unverified") for f in items]
+            return [dataclasses.replace(f, verified="unverified") for f in ref_items]
 
-        spawnable = [i for i, f in enumerate(items) if f.excerpt]
+        spawnable = [i for i, f in enumerate(ref_items) if f.excerpt]
         if not spawnable:
             _sink(event_sink, "skipped", "no_verifiable_excerpts")
-            return [dataclasses.replace(f, verified="unverified") for f in items]
+            return [dataclasses.replace(f, verified="unverified") for f in ref_items]
 
         model = os.environ.get("CHAMELEON_REFUTER_MODEL", "sonnet")
         if not _valid_model(model):
@@ -223,9 +291,11 @@ def verify_findings(
         # High severity first so a budget that cannot cover every spawnable
         # finding spends on the highest-stakes ones; the rest keep the cap's
         # "unverified" fallback below.
-        order = sorted(spawnable, key=lambda i: 0 if items[i].severity in _HIGH_SEVERITIES else 1)
-        ref_findings = [_to_refuter_dict(i, items[i]) for i in order]
-        excerpts = [items[i].excerpt for i in order]
+        order = sorted(
+            spawnable, key=lambda i: 0 if ref_items[i].severity in _HIGH_SEVERITIES else 1
+        )
+        ref_findings = [_to_refuter_dict(i, ref_items[i]) for i in order]
+        excerpts = [ref_items[i].excerpt for i in order]
         verdicts = refuter.run_batch(
             repo_root,
             ref_findings,
@@ -238,21 +308,21 @@ def verify_findings(
         )
     except Exception:  # noqa: BLE001 -- VERIFY must never drop a finding on failure
         _sink(event_sink, "skipped", "error")
-        return [dataclasses.replace(f, verified="unverified") for f in items]
+        return [dataclasses.replace(f, verified="unverified") for f in ref_items]
 
     verdict_by_id: dict = {}
     for v in verdicts or []:
         if isinstance(v, dict):
             verdict_by_id[v.get("id")] = v.get("verdict")
 
-    out: list[Finding] = []
+    out: list[Finding | None] = []
     refuted = confirmed = unverified = 0
-    for i, f in enumerate(items):
+    for i, f in enumerate(ref_items):
         verdict = verdict_by_id.get(str(i))
         if verdict == "refuted":
             refuted += 1
-            continue
-        if verdict == "confirmed":
+            out.append(None)
+        elif verdict == "confirmed":
             confirmed += 1
             out.append(dataclasses.replace(f, verified="confirmed"))
         else:

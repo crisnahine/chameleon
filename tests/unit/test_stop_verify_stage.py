@@ -187,12 +187,16 @@ def test_run_batch_exception_fails_open(tmp_path, monkeypatch):
 
 
 def test_refuter_dict_carries_kind_evidence_and_intent_tokens(tmp_path, monkeypatch):
+    # kind="idiom": a refutable kind (duplication is kind-exempt and never
+    # reaches the refuter at all -- see the kind-gate tests below), and one
+    # that still pins the drift death: the dict must carry the real kind,
+    # never the pre-phase-3 literal None.
     repo = _repo_with_file(tmp_path)
     finding = _finding(
-        kind="duplication",
-        claim="widget() re-implements gadget()",
-        evidence="src/a.py:3 duplicates src/b.py:9",
-        intent_tokens=("widget", "gadget"),
+        kind="idiom",
+        claim="idiom 'wrap-fetches' violated at src/a.py:3",
+        evidence="src/a.py:3 calls fetch() directly",
+        intent_tokens=("wrap-fetches",),
     )
     captured: dict = {}
 
@@ -206,10 +210,10 @@ def test_refuter_dict_carries_kind_evidence_and_intent_tokens(tmp_path, monkeypa
 
     assert len(captured["ref_findings"]) == 1
     d = captured["ref_findings"][0]
-    assert d["kind"] == "duplication"
-    assert d["evidence"] == "src/a.py:3 duplicates src/b.py:9"
-    assert d["intent_tokens"] == ["widget", "gadget"]
-    assert d["claim"] == "widget() re-implements gadget()"
+    assert d["kind"] == "idiom"
+    assert d["evidence"] == "src/a.py:3 calls fetch() directly"
+    assert d["intent_tokens"] == ["wrap-fetches"]
+    assert d["claim"] == "idiom 'wrap-fetches' violated at src/a.py:3"
 
 
 # --- excerpt attachment: happens regardless of VERIFY's own fate -----------
@@ -279,3 +283,140 @@ def test_completed_event_reports_counts(tmp_path, monkeypatch):
     )
 
     assert events == [("completed", "refuted=1 confirmed=1 unverified=1")]
+
+
+# --- the kind gate: duplication (and other non-local kinds) are exempt ------
+
+
+def _refuting_spawn_output() -> str:
+    """Stream-json stdout that run_one parses as an active REFUTATION -- the
+    strongest possible adversary for the exemption tests: if an exempt
+    finding ever reached the refuter, this verdict would drop it."""
+    import json as _json
+
+    return _json.dumps(
+        {"type": "result", "result": '[{"confirmed": false, "reason": "cannot see fileB"}]'}
+    )
+
+
+def test_duplication_never_sent_to_refuter_and_survives_confirmed(tmp_path, monkeypatch):
+    repo = _repo_with_file(tmp_path)
+    spawns: list = []
+
+    def recording_spawn(*a, **k):
+        spawns.append((a, k))
+        return (_refuting_spawn_output(), None)
+
+    monkeypatch.setattr(refuter, "_spawn_status", recording_spawn)
+    finding = _finding(
+        kind="duplication",
+        claim="widget() re-implements gadget() (src/b.py)",
+        evidence="",
+        file="src/a.py",
+        span=(3, 3),
+        confidence=1.0,
+    )
+
+    out = verify.verify_findings([finding], repo_root=repo, budget=_budget(), event_sink=None)
+
+    assert spawns == []  # never sent to the refuter
+    assert len(out) == 1
+    assert out[0].verified == "confirmed"  # pre-confirmed by judge_body_matches
+    assert out[0].claim == finding.claim
+
+
+def test_mixed_batch_correctness_refuted_duplication_exempt(tmp_path, monkeypatch):
+    repo = _repo_with_file(tmp_path)
+    captured: dict = {}
+
+    def fake_run_batch(repo_root, ref_findings, excerpts, **kw):
+        captured["ref_findings"] = ref_findings
+        return [{"id": "0", "verdict": "confirmed"}]
+
+    monkeypatch.setattr(refuter, "run_batch", fake_run_batch)
+    correctness = _finding(id="c1", kind="correctness", claim="null deref", span=(3, 3))
+    duplication = _finding(
+        id="d1",
+        kind="duplication",
+        claim="widget() re-implements gadget() (src/b.py)",
+        file="src/a.py",
+        span=(5, 5),
+        confidence=1.0,
+        excerpt="",
+    )
+    events = []
+
+    out = verify.verify_findings(
+        [correctness, duplication],
+        repo_root=repo,
+        budget=_budget(),
+        event_sink=lambda *a: events.append(a),
+    )
+
+    # Only the correctness finding crossed into the refuter.
+    assert [d["kind"] for d in captured["ref_findings"]] == ["correctness"]
+    # Both present, input order preserved, each with the right verdict.
+    assert [f.claim for f in out] == [correctness.claim, duplication.claim]
+    assert out[0].verified == "confirmed"  # via the refuter
+    assert out[1].verified == "confirmed"  # via the kind exemption
+    # The exempt duplication finding keeps its excerpt untouched ("").
+    assert out[1].excerpt == ""
+    assert ("exempt", "count=1 kinds=duplication") in events
+    assert ("completed", "refuted=0 confirmed=1 unverified=0") in events
+
+
+def test_exempt_event_fires_with_count_and_kinds(tmp_path):
+    repo = _repo_with_file(tmp_path)
+    findings = [
+        _finding(id="d1", kind="duplication", claim="dup one", span=(2, 2), confidence=1.0),
+        _finding(id="d2", kind="duplication", claim="dup two", span=(3, 3), confidence=1.0),
+        _finding(id="i1", kind="intent", claim="intent drift", span=(4, 4)),
+    ]
+    events = []
+
+    out = verify.verify_findings(
+        findings, repo_root=repo, budget=_budget(), event_sink=lambda *a: events.append(a)
+    )
+
+    assert events == [("exempt", "count=3 kinds=duplication,intent")]
+    assert [f.verified for f in out] == ["confirmed", "confirmed", "unverified"]
+
+
+def test_refuted_correctness_dropped_while_duplication_survives(tmp_path, monkeypatch):
+    """The forward risk the gate closes, end to end: a refuter that refutes
+    everything it sees kills the correctness finding but cannot touch the
+    pre-confirmed duplication finding."""
+    repo = _repo_with_file(tmp_path)
+    monkeypatch.setattr(refuter, "run_batch", lambda *a, **k: [{"id": "0", "verdict": "refuted"}])
+    correctness = _finding(id="c1", kind="correctness", claim="bogus claim", span=(3, 3))
+    duplication = _finding(
+        id="d1",
+        kind="duplication",
+        claim="widget() re-implements gadget() (src/b.py)",
+        span=(5, 5),
+        confidence=1.0,
+    )
+
+    out = verify.verify_findings(
+        [correctness, duplication], repo_root=repo, budget=_budget(), event_sink=None
+    )
+
+    assert [f.claim for f in out] == [duplication.claim]
+    assert out[0].verified == "confirmed"
+
+
+def test_all_exempt_batch_skips_refuter_even_when_disabled(tmp_path, monkeypatch):
+    """A batch with no refutable findings never consults the refuter machinery
+    at all -- no skip event fires (nothing was skippable), only the exemption
+    disclosure."""
+    repo = _repo_with_file(tmp_path)
+    monkeypatch.setenv("CHAMELEON_STOP_VERIFY", "0")
+    finding = _finding(kind="duplication", claim="dup", span=(3, 3), confidence=1.0)
+    events = []
+
+    out = verify.verify_findings(
+        [finding], repo_root=repo, budget=_budget(), event_sink=lambda *a: events.append(a)
+    )
+
+    assert events == [("exempt", "count=1 kinds=duplication")]
+    assert out[0].verified == "confirmed"
