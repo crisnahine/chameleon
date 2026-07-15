@@ -532,6 +532,101 @@ def test_correctness_lens_run_facts_disabled_via_config(tmp_path, monkeypatch):
     assert "judge_facts_included" not in events
 
 
+def test_correctness_lens_run_no_calls_index_skips_facts_but_still_reviews(tmp_path):
+    # Coverage-pin re-add (deleted with judge.run_correctness_judge's own
+    # wiring test, test_judge_caller_facts.py::
+    # test_run_judge_no_index_sinks_skipped_and_still_reviews): with no
+    # calls_index.json on disk at all (the index is genuinely absent, not
+    # just empty of matches), caller_facts_for_diffs returns "" and the
+    # facts stage sinks the skip reason -- but the review still proceeds to
+    # spawn and returns real findings, exactly as when facts are available.
+    repo, profile, src = _wired_repo(tmp_path)
+    arr = [{"file": "util.ts", "line": 1, "message": "off by one", "confidence": 0.8}]
+    events = []
+    with (
+        patch.object(
+            judge, "_spawn_reviewer_status", return_value=(_result_line(json.dumps(arr)), None)
+        ),
+        patch.object(judge, "_witness_for", return_value=""),
+    ):
+        result = correctness_lens.run(
+            repo,
+            profile,
+            [str(src)],
+            lambda _p: None,
+            event_sink=lambda kind, detail: events.append(kind),
+        )
+    assert "judge_facts_skipped_no_calls_index" in events
+    assert "judge_facts_included" not in events
+    assert len(result.findings) == 1
+    assert result.findings[0].claim == "off by one"
+
+
+def test_correctness_lens_run_facts_builder_failure_on_one_file_never_blocks_review(
+    tmp_path, monkeypatch
+):
+    # Coverage-pin re-add (deleted with judge.run_correctness_judge's own
+    # wiring test, test_judge_caller_facts.py::
+    # test_run_judge_facts_failure_never_blocks_review): a per-file parse
+    # blowup inside caller_facts_for_diffs's own builder step is swallowed
+    # THERE (test_judge_caller_facts.py::
+    # test_parse_exception_skips_file_never_raises pins that directly) and
+    # never reaches the lens's outer pipeline_error catch -- the healthy
+    # file's facts still render and the review still spawns and returns
+    # real findings. Distinct from test_correctness_lens_run_pipeline_error_
+    # is_caught, which replaces caller_facts_for_diffs itself with a raise.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    profile = repo / ".chameleon"
+    profile.mkdir()
+    a = repo / "a.ts"
+    a.write_text("export function boomer() { return 1 }\n", encoding="utf-8")
+    b = repo / "b.ts"
+    b.write_text("export function fmt() { return 1 }\n", encoding="utf-8")
+    _write_calls_index(
+        repo,
+        {
+            "a.ts": {
+                "boomer": {"callers": [_caller("c.ts", "use_a")], "total": 1, "truncated": False}
+            },
+            "b.ts": {
+                "fmt": {
+                    "callers": [_caller("c.ts", "use_b", line=5)],
+                    "total": 1,
+                    "truncated": False,
+                }
+            },
+        },
+    )
+
+    def boom_then_fn(root, path):
+        if str(path).endswith("a.ts"):
+            raise RuntimeError("parser exploded")
+        return [_fn("fmt", 1, 1)]
+
+    monkeypatch.setattr(judge, "_parse_changed_file", boom_then_fn)
+
+    arr = [{"file": "b.ts", "line": 1, "message": "dropped guard", "confidence": 0.8}]
+    events = []
+    with (
+        patch.object(
+            judge, "_spawn_reviewer_status", return_value=(_result_line(json.dumps(arr)), None)
+        ),
+        patch.object(judge, "_witness_for", return_value=""),
+    ):
+        result = correctness_lens.run(
+            repo,
+            profile,
+            [str(a), str(b)],
+            lambda _p: None,
+            event_sink=lambda kind, detail: events.append(kind),
+        )
+    assert "judge_facts_included" in events
+    assert "pipeline_error" not in events
+    assert len(result.findings) == 1
+    assert result.findings[0].claim == "dropped guard"
+
+
 def test_correctness_lens_run_imported_defs_disabled_via_config(tmp_path):
     repo, profile, src = _wired_repo(tmp_path)
     (profile / "config.json").write_text(
