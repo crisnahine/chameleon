@@ -14807,14 +14807,28 @@ def doctor(repo: str | None = None) -> dict:
             # "review_job" checks (stop/scheduler.py + stop/pipeline.py's
             # _run_review_job). The new vocabulary has no "spawned/completed"
             # equivalent (the detached job runner records no explicit success
-            # checkpoint), so per RECORD: a "review_job"/"degraded" (reason
-            # "platform_unavailable") means that record's launch failed; a
-            # "review_job"/"spawned" with no launch-failure companion in the
-            # SAME record means the job actually detached -- the closest
-            # available analog to "the reviewer ran".
+            # checkpoint), so a clean launch is inferred as a "review_job"/
+            # "spawned" with no launch-failure companion -- across the whole
+            # window, a net surplus of spawns over degradations.
+            #
+            # Both the spawn and the degrade tallies MUST sum the attestation's
+            # per-entry `count` (``_build_session_attestation`` collapses
+            # repeated identical (check, status, reason) events into ONE entry
+            # carrying a count), never len() of the entry list: review_job/
+            # degraded always carries the single reason "platform_unavailable",
+            # so counting ENTRIES reads any number of failures as exactly one --
+            # an 8-spawn/2-fail reviewer would false-warn (2 spawn entries > 1
+            # degrade entry is fine, but 1 spawn reason vs 1 degrade reason nets
+            # zero) and a 1-spawn/9-fail one would false-OK.
+            def _ev_count(e: dict) -> int:
+                c = e.get("count")
+                return c if isinstance(c, int) and not isinstance(c, bool) and c > 0 else 1
+
             judge_events: list[dict] = []
             degraded: list[dict] = []
             completed: list[dict] = []
+            review_spawned_count = 0
+            review_degraded_count = 0
             for rec in _records:
                 rec_checks = [e for e in (rec.get("checks") or []) if isinstance(e, dict)]
 
@@ -14840,11 +14854,16 @@ def doctor(repo: str | None = None) -> dict:
                     for e in review_events
                     if e.get("status") in ("degraded", "platform_unavailable")
                 ]
-                review_spawned = [e for e in review_events if e.get("status") == "spawned"]
                 degraded.extend(review_degraded)
-                net_completed = len(review_spawned) - len(review_degraded)
-                if net_completed > 0:
-                    completed.extend(review_spawned[:net_completed])
+                review_spawned_count += sum(
+                    _ev_count(e) for e in review_events if e.get("status") == "spawned"
+                )
+                review_degraded_count += sum(_ev_count(e) for e in review_degraded)
+            # A net surplus of review-job spawns over launch failures means at
+            # least one clean detach in the window -- the review_job analog to
+            # the correctness check's "spawned/completed" success signal.
+            if review_spawned_count - review_degraded_count > 0:
+                completed.append({"check": "review_job", "status": "spawned"})
             if degraded and not completed:
                 judge_warn = True
                 _reasons = sorted({str(e.get("reason") or "unknown") for e in degraded})

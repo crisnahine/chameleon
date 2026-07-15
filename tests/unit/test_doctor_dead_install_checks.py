@@ -317,6 +317,69 @@ class TestJudgeSpawnHealth:
         )
         assert _check("judge_spawn_health")["status"] == "ok"
 
+    # -- count-summing: attestation collapses identical-reason events into one
+    #    entry with a `count`; the health check must sum counts, not len(entries).
+    #    review_job/degraded always carries the single reason
+    #    "platform_unavailable", so len(entries) reads any N failures as 1.
+
+    def test_mostly_healthy_reviewer_with_a_few_failures_is_ok(self, tmp_path, monkeypatch):
+        # 8 clean spawns, 2 launch failures: both collapse into ONE entry each
+        # (same status+reason), carrying count. Summing counts nets +6 => OK;
+        # len(entries) would net 0 (1 spawn entry - 1 degrade entry) => false warn.
+        repo = tmp_path / "repo"
+        _make_profile(repo)
+        monkeypatch.chdir(repo)
+        repo_id = tools._compute_repo_id(repo.resolve())
+        _attest(
+            repo_id,
+            "s1",
+            [
+                {"check": "review_job", "status": "spawned", "reason": "risk_high", "count": 8},
+                {
+                    "check": "review_job",
+                    "status": "degraded",
+                    "reason": "platform_unavailable",
+                    "count": 2,
+                },
+            ],
+        )
+        assert _check("judge_spawn_health")["status"] == "ok"
+
+    def test_mostly_failing_reviewer_warns_despite_multiple_spawn_reasons(
+        self, tmp_path, monkeypatch
+    ):
+        # The false-NEGATIVE the len()-based heuristic shipped: two DISTINCT
+        # spawn route reasons (2 spawn entries) but only 2 total spawns, vs 9
+        # launch failures collapsed into ONE degrade entry (count=9). len()
+        # nets +1 (2 spawn entries - 1 degrade entry) => false OK (the §3.1
+        # silent downgrade). Summing counts nets -7 => WARN, correctly.
+        repo = tmp_path / "repo"
+        _make_profile(repo)
+        monkeypatch.chdir(repo)
+        repo_id = tools._compute_repo_id(repo.resolve())
+        _attest(
+            repo_id,
+            "s1",
+            [
+                {"check": "review_job", "status": "spawned", "reason": "risk_high", "count": 1},
+                {
+                    "check": "review_job",
+                    "status": "spawned",
+                    "reason": "first_low_risk",
+                    "count": 1,
+                },
+                {
+                    "check": "review_job",
+                    "status": "degraded",
+                    "reason": "platform_unavailable",
+                    "count": 9,
+                },
+            ],
+        )
+        c = _check("judge_spawn_health")
+        assert c["status"] == "warn"
+        assert "platform_unavailable" in str(c["detail"])
+
 
 # --------------------------------------------------------------------------
 # advisory_emission
