@@ -4,6 +4,40 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.0] - 2026-07-16
+
+### Changed
+- Every Stop turn-end emission (block reason, resurfaced findings, delivered
+  findings, deterministic advisories, idiom nudges) is now assembled by one
+  ranked, token-budgeted packer under a single header instead of concatenating
+  independently-capped blocks: higher-priority items pack first, an item that
+  does not fit whole stays `pending` for the next delivery point (never
+  truncated mid-item), and a hard block emits only the block reason.
+- SessionStart now injects a compact ~3.6k-char operational digest of the
+  using-chameleon skill instead of the full ~13.6k-char skill body, and budgets
+  the whole SessionStart emission (conventions, digest, banners, dead-session
+  delivery) under one ceiling with the digest as the only compressible part —
+  keeping the higher-authority conventions block inside the window models
+  actually follow.
+- The SessionStart memory-channel dedup is now per-item: when the wired
+  `conventions.md` mirror already carries part of the conventions block, only
+  the lines the mirror does not deliver are injected (the rest collapses to a
+  pointer), instead of re-injecting the whole block whenever the mirror was even
+  slightly behind.
+- "Which idioms were shown this session" is now tracked as structured slugs on
+  the session document, resolved directly at the Tier-2 injection site, and the
+  turn-end idiom lens dedups against that slug set; the two markdown
+  view-parsers and a dead renderer this replaced are retired.
+
+### Fixed
+- A finding delivered in-turn under `CHAMELEON_JUDGE_WAIT` is now marked
+  delivered only if it actually survives the Stop token budget, so a finding
+  dropped for space is no longer retired unseen — it stays `pending` for the
+  next delivery point.
+- A resurfaced HIGH finding on one workspace root is no longer burned when a
+  different root blocks the same Stop: its one-shot resurface commits only when
+  it actually reached the emitted text.
+
 ## [3.4.0] - 2026-07-15
 
 ### Changed
