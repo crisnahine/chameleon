@@ -707,6 +707,13 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # rechecks the detached job's session-doc slot / heartbeat while waiting
     # for it to finish inside the remaining hook budget (spec section 3.1).
     "JUDGE_WAIT_POLL_INTERVAL_SECONDS": 1.0,
+    # CHAMELEON_JUDGE_WAIT's own TurnBudget for polling the detached job from
+    # inside the Stop hook. The stop-backstop wrapper SIGKILLs the whole hook
+    # at 55s (plugin/hooks/stop-backstop); this leaves headroom for the gates
+    # and advisories that still run after the wait (render, attestation,
+    # process shutdown) rather than spending the full wrapper budget on the
+    # poll alone.
+    "JUDGE_WAIT_STOP_BUDGET_SECONDS": 35,
 }
 
 

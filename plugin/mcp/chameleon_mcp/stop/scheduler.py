@@ -67,12 +67,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # Check-event vocabulary this module records under the "review_job" check
-# name. Reused as-is by tests and (once Task 7 wires this scheduler into
-# stop/pipeline.py) by the session attestation: routed_skip_low_risk,
-# skipped_session_cap, skipped_digest_dup are emitted by route() below;
-# spawned / any launch-failure status are the CALLER's responsibility (see
-# launch_job's docstring) since only the caller has the turn_key/mode detail
-# worth recording.
+# name, read by ``stop/pipeline.py``'s ``_run_review_job`` and pinned by
+# tests: routed_skip_low_risk, skipped_session_cap, skipped_digest_dup are
+# emitted by route() below; spawned / any launch-failure status are the
+# CALLER's responsibility (see launch_job's docstring) since only the caller
+# has the route reason/lens-set detail worth recording. The session
+# attestation and the SessionStart health banner still read the pre-cutover
+# "correctness_judge" vocabulary (``_build_session_attestation`` /
+# ``_judge_spawn_health_banner`` in hook_helper.py) -- retargeting them to
+# "review_job" is a follow-up, not yet done.
 _CHECK_NAME = "review_job"
 
 
@@ -98,10 +101,11 @@ class RouteContext:
     """Read-only routing-relevant facts for one Stop invocation.
 
     Deliberately its own small type rather than ``stop.pipeline.RootContext``:
-    ``route()`` must stay importable and unit-testable without pulling in the
-    rest of the pipeline package (Task 7 wires the two together). ``files``
-    is the turn's edited absolute paths (pre-freshness-filter) -- the
-    caller's equivalent of the pre-phase-3 ``EnforcementState.files`` keys.
+    ``route()`` stays importable and unit-testable without pulling in the
+    rest of the pipeline package (``stop/pipeline.py``'s ``_run_review_job``
+    builds one from a ``RootContext`` on every Stop). ``files`` is the
+    turn's edited absolute paths (pre-freshness-filter) -- the caller's
+    equivalent of the pre-phase-3 ``EnforcementState.files`` keys.
     """
 
     repo_root: Path

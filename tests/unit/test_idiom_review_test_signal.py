@@ -1,14 +1,19 @@
-"""Tests for the test-run signal folded into the Stop idiom-review gate.
+"""Tests for the standalone test-run-reminder advisory (stop/advisories.py).
 
-When the turn edited a real source file (not just tests/docs) and no passing
-test runner was recorded in the session's exec log, the idiom-review directive
-gains a soft "run the suite" line. The signal never blocks on its own and never
-gates the idiom review; it only strengthens the directive text in enforce mode
-and emits a separate would-block metric in shadow mode.
+Extracted from the legacy idiom-review gate (spec: "the test-run reminder
+currently multiplexed through the idiom gate becomes its own tiny
+deterministic advisory"). It fires independently of
+``enforcement.idiom_review`` -- the idiom lens is a scoped detector inside
+the async review job now, with no Stop-time content of its own -- and never
+blocks: a turn that edited a real source file (not just tests/docs) with no
+recorded passing test run this session gets an advisory
+``additionalContext`` line, in every mode except ``off``.
 
-Reuses the make_trusted_repo harness shape from test_idiom_review.py and seeds
-the HMAC exec log directly so the gate's session_test_run_seen read has real,
-signed lines to consume.
+Reuses the make_trusted_repo harness shape from test_idiom_review.py and
+seeds the HMAC exec log directly so ``session_test_run_seen`` has real,
+signed lines to consume. ``stop.scheduler.launch_job`` is neutralized by the
+autouse conftest guard, so the review job never interferes with this
+advisory's own additionalContext.
 """
 
 from __future__ import annotations
@@ -81,6 +86,12 @@ def _env(tmp_path: Path) -> dict:
         "CHAMELEON_ENFORCE": "1",
         "CHAMELEON_HMAC_KEY_PATH": str(tmp_path / "hmac.key"),
         "TMPDIR": str(tmp_path),
+        # stop/scheduler.py's session-doc/heartbeat files resolve via
+        # profile.trust.repo_data_dir(repo_id), which reads this env var
+        # directly (NOT the patched hook_helper._plugin_data_dir) -- without
+        # it, the model-review routing every qualifying Stop now triggers
+        # would read/write the developer's REAL ~/.local/share/chameleon/.
+        "CHAMELEON_PLUGIN_DATA": str(tmp_path),
     }
 
 
@@ -110,12 +121,6 @@ def _touch(file_path: str, data_dir: Path, session_id: str, content: str = "expo
     save_state(st, data_dir, session_id)
 
 
-def _idioms(profile_dir: Path):
-    profile_dir.joinpath("idioms.md").write_text(
-        "- Always wrap DB calls in a transaction.\n", encoding="utf-8"
-    )
-
-
 def _seed_exec(tmp_path: Path, session_id: str, command: str, exit_code: int):
     with patch.dict(os.environ, _env(tmp_path), clear=False):
         from chameleon_mcp.exec_log import append_exec_log
@@ -123,69 +128,111 @@ def _seed_exec(tmp_path: Path, session_id: str, command: str, exit_code: int):
         append_exec_log(_REPO_ID, session_id=session_id, command=command, exit_code=exit_code)
 
 
-def test_source_edit_no_test_strengthens_directive(make_trusted_repo, tmp_path):
+def _ctx(out: dict) -> str:
+    return (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
+
+
+def test_source_edit_no_test_surfaces_advisory(make_trusted_repo, tmp_path):
     repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
     _touch(file_path, data_dir, sid)
-    _idioms(profile_dir)
     # No exec log at all -> no passing test seen.
 
     out = _run_stop(
-        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
-        env=_env(tmp_path),
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False}, env=_env(tmp_path)
     )
-    assert out.get("decision") == "block"
-    assert "test run" in out.get("reason", "").lower()
-    assert "run the suite" in out.get("reason", "").lower()
+    assert out.get("decision") != "block"
+    ctx = _ctx(out).lower()
+    assert "test run" in ctx
+    assert "run the suite" in ctx
 
 
-def test_passing_test_run_suppresses_nudge(make_trusted_repo, tmp_path):
+def test_passing_test_run_suppresses_advisory(make_trusted_repo, tmp_path):
     repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
     _touch(file_path, data_dir, sid)
-    _idioms(profile_dir)
     _seed_exec(tmp_path, sid, "pytest -q", 0)
 
     out = _run_stop(
-        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
-        env=_env(tmp_path),
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False}, env=_env(tmp_path)
     )
-    # Idiom review still fires, but the test-run line is gone.
-    assert out.get("decision") == "block"
-    assert "run the suite" not in out.get("reason", "").lower()
+    assert out.get("decision") != "block"
+    assert "run the suite" not in _ctx(out).lower()
 
 
 def test_failing_test_run_still_nudges(make_trusted_repo, tmp_path):
     repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
     _touch(file_path, data_dir, sid)
-    _idioms(profile_dir)
     _seed_exec(tmp_path, sid, "pytest", 1)  # non-zero: not a passing run
 
     out = _run_stop(
-        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
-        env=_env(tmp_path),
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False}, env=_env(tmp_path)
     )
-    assert out.get("decision") == "block"
-    assert "run the suite" in out.get("reason", "").lower()
+    assert "run the suite" in _ctx(out).lower()
 
 
 def test_only_test_file_edited_no_nudge(make_trusted_repo, tmp_path):
     repo, data_dir, sid, _file_path, profile_dir = make_trusted_repo(mode="enforce")
     test_file = str(repo / "src" / "Widget.test.ts")
     _touch(test_file, data_dir, sid)
-    _idioms(profile_dir)
     # No test command ran, but only a test file was edited -> no source nudge.
 
     out = _run_stop(
-        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
-        env=_env(tmp_path),
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False}, env=_env(tmp_path)
     )
-    assert out.get("decision") == "block"
-    assert "run the suite" not in out.get("reason", "").lower()
+    assert "run the suite" not in _ctx(out).lower()
+
+
+def test_docs_only_turn_no_nudge(make_trusted_repo, tmp_path):
+    repo, data_dir, sid, _file_path, profile_dir = make_trusted_repo(mode="enforce")
+    md_path = str(repo / "notes.md")
+    _touch(md_path, data_dir, sid, content="scratch\n")
+
+    out = _run_stop(
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False}, env=_env(tmp_path)
+    )
+    assert out == {}
+
+
+def test_off_mode_no_nudge(make_trusted_repo, tmp_path):
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="off")
+    _touch(file_path, data_dir, sid)
+
+    out = _run_stop(
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False}, env=_env(tmp_path)
+    )
+    assert out == {}
+
+
+def test_idiom_review_disabled_test_signal_still_fires(make_trusted_repo, tmp_path):
+    # enforcement.idiom_review:false disables idiom-lens content only (it now
+    # lives entirely inside the async review job); the reminder is a
+    # distinct, standalone advisory and must not be silenced by that switch.
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
+    profile_dir.joinpath("config.json").write_text(
+        json.dumps({"enforcement": {"mode": "enforce", "idiom_review": False}}),
+        encoding="utf-8",
+    )
+    _touch(file_path, data_dir, sid)
+
+    out = _run_stop(
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False}, env=_env(tmp_path)
+    )
+    assert out.get("decision") != "block"
+    assert "run the suite" in _ctx(out).lower()
+
+
+def test_inline_bare_ignore_suppresses_nudge(make_trusted_repo, tmp_path):
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
+    _touch(file_path, data_dir, sid, content="// chameleon-ignore\nexport const C = 1\n")
+
+    out = _run_stop(
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False}, env=_env(tmp_path)
+    )
+    assert "run the suite" not in _ctx(out).lower()
 
 
 def test_shadow_mode_emits_test_run_metric(make_trusted_repo, tmp_path):
     repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="shadow")
     _touch(file_path, data_dir, sid)
-    _idioms(profile_dir)
 
     seen = []
     with patch(
@@ -193,8 +240,7 @@ def test_shadow_mode_emits_test_run_metric(make_trusted_repo, tmp_path):
         side_effect=lambda hook, **kw: seen.append(hook),
     ):
         out = _run_stop(
-            {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
-            env=_env(tmp_path),
+            {"session_id": sid, "cwd": str(repo), "stop_hook_active": False}, env=_env(tmp_path)
         )
     assert out.get("decision") != "block"
     assert "stop-test-run-signal" in seen
@@ -203,7 +249,6 @@ def test_shadow_mode_emits_test_run_metric(make_trusted_repo, tmp_path):
 def test_shadow_mode_no_metric_when_test_ran(make_trusted_repo, tmp_path):
     repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="shadow")
     _touch(file_path, data_dir, sid)
-    _idioms(profile_dir)
     _seed_exec(tmp_path, sid, "pnpm test", 0)
 
     seen = []
@@ -212,7 +257,6 @@ def test_shadow_mode_no_metric_when_test_ran(make_trusted_repo, tmp_path):
         side_effect=lambda hook, **kw: seen.append(hook),
     ):
         _run_stop(
-            {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
-            env=_env(tmp_path),
+            {"session_id": sid, "cwd": str(repo), "stop_hook_active": False}, env=_env(tmp_path)
         )
     assert "stop-test-run-signal" not in seen

@@ -6437,6 +6437,48 @@ _finding_message = _stop_gates_mod._finding_message
 _finding_is_high = _stop_gates_mod._finding_is_high
 
 
+# stop/scheduler.py + stop/judge_wait.py seams. Unlike the gates.py/advisories.py
+# aliases above (plain value bindings -- fine because nothing monkeypatches those
+# modules' OWN attributes directly), these are wrapper FUNCTIONS with a deferred
+# import inside the body: the conftest test guard neutralizes real spawns by
+# patching `chameleon_mcp.stop.scheduler.launch_job` itself (the source module's
+# attribute), and a plain `_x = scheduler.launch_job` binding captured at this
+# module's import time would freeze the ORIGINAL function object, silently
+# bypassing that patch and reaching a real, billable `claude -p` chain. The
+# deferred import re-resolves the module attribute on every call, so both a
+# patch of `chameleon_mcp.stop.scheduler.<name>` AND a patch of
+# `chameleon_mcp.hook_helper._scheduler_<name>` (by string path) are honored --
+# mirroring the `_stop_gates`/`_discover_stop_roots` shim pattern below.
+def _scheduler_route(ctx, state, cfg):
+    from chameleon_mcp.stop import scheduler
+
+    return scheduler.route(ctx, state, cfg)
+
+
+def _scheduler_try_acquire_job_slot(repo_id, session_id):
+    from chameleon_mcp.stop import scheduler
+
+    return scheduler.try_acquire_job_slot(repo_id, session_id)
+
+
+def _scheduler_launch_job(request):
+    from chameleon_mcp.stop import scheduler
+
+    return scheduler.launch_job(request)
+
+
+def _scheduler_clear_job_slot(repo_id, session_id):
+    from chameleon_mcp.stop import scheduler
+
+    return scheduler.clear_job_slot(repo_id, session_id)
+
+
+def _judge_wait_and_render(**kwargs):
+    from chameleon_mcp.stop import judge_wait
+
+    return judge_wait.wait_and_render(**kwargs)
+
+
 # The stop-backstop wrapper SIGKILLs the hook at 55s measured from PROCESS start
 # (hooks/stop-backstop). The sync VERIFY stage anchors its remaining-budget math to
 # the same clock -- module import time, which for the one-shot hook process is within
@@ -8265,6 +8307,7 @@ _crossfile_existence_advisory_lines = _stop_advisories._crossfile_existence_advi
 _crossworkspace_existence_advisory_lines = _stop_advisories._crossworkspace_existence_advisory_lines
 _scope_drift_advisory_lines = _stop_advisories._scope_drift_advisory_lines
 _test_integrity_advisory_lines = _stop_advisories._test_integrity_advisory_lines
+_test_run_reminder_lines = _stop_advisories._test_run_reminder_lines
 
 
 # A single-line Python `from <module> import <names>` (relative or absolute).

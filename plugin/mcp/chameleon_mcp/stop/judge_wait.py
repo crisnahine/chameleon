@@ -22,12 +22,13 @@ freshest possible source -- falling back to a live ``deliver_for_root`` call
 when no payload exists (the job ran but had nothing to persist, or exited
 before ever reaching its render step).
 
-NOT wired into the live Stop pipeline yet. ``stop/scheduler.py``'s
-route/launch and ``stop/job.py``'s runner are not yet called from
-``stop/pipeline.py`` or ``hook_helper.stop_backstop`` (that wiring is a
-later task). This module is the poll-and-render helper that wiring will
-call once it lands; every test here drives a seeded heartbeat file /
-session doc / ledger row directly -- never a real launched job.
+Wired into the live Stop pipeline: ``stop/pipeline.py``'s ``_run_review_job``
+calls ``wait_and_render`` right after a successful ``scheduler.launch_job``,
+using its own ``TurnBudget`` (``JUDGE_WAIT_STOP_BUDGET_SECONDS``) so the poll
+never eats the whole Stop hook's wrapper cap. This module's own tests still
+drive a seeded heartbeat file / session doc / ledger row directly -- never a
+real launched job -- mirroring the pipeline-level tests' use of a mocked
+``scheduler.launch_job``.
 """
 
 from __future__ import annotations

@@ -275,10 +275,12 @@ def test_only_files_scopes_stop_gates(coord):
 
 
 def test_allow_model_spawn_false_suppresses_every_reviewer(coord):
-    # A non-first root (allow_model_spawn=False) must skip ALL three claude -p
-    # spawn sites -- correctness route/gate, multi-lens, AND the standalone
-    # duplication gate -- so the whole Stop pays for at most one reviewer.
-    # Nothing armed here, so the pass reaches the advisory pipeline.
+    # A non-first root (allow_model_spawn=False) must skip the scheduler
+    # route/launch entirely -- stop/scheduler.py is the ONLY code allowed to
+    # spawn a model post phase-3 cutover, replacing the old three separate
+    # claude -p spawn sites (correctness route/gate, multi-lens, standalone
+    # duplication) this test used to pin directly. Nothing armed here, so the
+    # pass reaches the advisory pipeline.
     st = EnforcementState()
     st.files[coord.api_file] = FileState(level=0, blockable_unresolved=False)
     save_state(st, coord.data["api"], coord.session_id)
@@ -286,10 +288,9 @@ def test_allow_model_spawn_false_suppresses_every_reviewer(coord):
     from chameleon_mcp import hook_helper
 
     with (
-        patch.object(hook_helper, "_correctness_judge_route") as route,
-        patch.object(hook_helper, "_correctness_judge_gate") as judge,
-        patch.object(hook_helper, "_multi_lens_review_lines") as lens,
-        patch.object(hook_helper, "_duplication_advisory_lines") as dup,
+        patch.object(hook_helper, "_scheduler_route") as route,
+        patch.object(hook_helper, "_scheduler_try_acquire_job_slot") as slot,
+        patch.object(hook_helper, "_scheduler_launch_job") as launch,
     ):
         hook_helper._stop_gates(
             payload={},
@@ -303,9 +304,38 @@ def test_allow_model_spawn_false_suppresses_every_reviewer(coord):
             allow_model_spawn=False,
         )
     route.assert_not_called()
-    judge.assert_not_called()
-    lens.assert_not_called()
-    dup.assert_not_called()
+    slot.assert_not_called()
+    launch.assert_not_called()
+
+
+def test_allow_model_spawn_true_reaches_the_scheduler(coord):
+    # The positive control for the test above: flipping allow_model_spawn
+    # back on for the SAME otherwise-clean root reaches the scheduler's route
+    # decision (proving the False case above suppresses it, not some
+    # unrelated gate ahead of it -- e.g. an unresolved-violation short
+    # circuit or a mode_off bail).
+    st = EnforcementState()
+    st.files[coord.api_file] = FileState(level=0, blockable_unresolved=False)
+    save_state(st, coord.data["api"], coord.session_id)
+
+    from chameleon_mcp import hook_helper
+    from chameleon_mcp.stop.scheduler import RouteDecision
+
+    with patch.object(
+        hook_helper, "_scheduler_route", return_value=RouteDecision(spawn=False, reason="mode_off")
+    ) as route:
+        hook_helper._stop_gates(
+            payload={},
+            repo_root=coord.roots["api"],
+            repo_id="id_api",
+            session_id=coord.session_id,
+            is_subagent=False,
+            repo_data=coord.data["api"],
+            daemon_state={"available": True},
+            only_files=set(),
+            allow_model_spawn=True,
+        )
+    route.assert_called_once()
 
 
 def test_shared_cap_is_per_workspace_not_starved(coord):

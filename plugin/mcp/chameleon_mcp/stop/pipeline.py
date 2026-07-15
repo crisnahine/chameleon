@@ -8,12 +8,14 @@ slice of a Stop invocation), ``stop_gates`` (the per-root gate pipeline
 ``stop_gates`` runs, in order: the ENFORCE/feature-flag kill switches, the
 live re-lint of every candidate file the per-edit verify armed, the unresolved
 hard-block decision, the crossfile-existence hard-block decision, then (when
-neither blocked) the turn-end advisory pipeline -- the idiom/principle review,
-the correctness-judge/multi-lens/duplication reviewer spawns, and the
-deterministic advisories (stale-test, change-set completeness, historical
-co-change, cross-file/cross-workspace existence, test integrity, scope
-drift). It never emits; the caller (``gate_one_root`` / ``stop_backstop``) is
-the sole place a hook-output dict reaches stdout.
+neither blocked) the turn-end advisory pipeline -- ``_run_review_job``
+(``stop/scheduler.py``'s route decision and, on a spawn, the detached review
+job launch; async-first per spec section 3.1, so it emits an in-turn
+``additionalContext`` block only under ``CHAMELEON_JUDGE_WAIT``), the
+test-run reminder, and the deterministic advisories (stale-test, change-set
+completeness, historical co-change, cross-file/cross-workspace existence,
+test integrity, scope drift). It never emits; the caller (``gate_one_root`` /
+``stop_backstop``) is the sole place a hook-output dict reaches stdout.
 
 ``discover_stop_roots`` globs every workspace root the session touched (each
 per-edit hook writes state under the edited file's OWN workspace repo_id, not
@@ -27,15 +29,17 @@ distinct run-root.
 Extracted verbatim from ``hook_helper.py``'s ``_stop_gates``/
 ``_discover_stop_roots``/``_gate_one_root``/``_write_session_attestation`` (the
 call-sites of all four are frozen -- see their shims in ``hook_helper.py``).
-Symbols still owned by ``hook_helper`` (the judge/multi-lens/duplication spawn
-machinery, ``_build_session_attestation``, and every other hook_helper-resident
-helper, including the ``stop/gates.py`` and ``stop/advisories.py`` extractions
-re-exported as hook_helper module attributes) are resolved late-bound via a
-deferred ``from chameleon_mcp import hook_helper as hh`` import inside each
-function, so a test that patches ``chameleon_mcp.hook_helper.<name>`` stays
-effective for a call made from this module -- and so this module's own
-top-level imports stay stdlib-only, mirroring hook_helper's own pattern of
-deferring every non-stdlib import to call time.
+The pre-async-first judge/multi-lens/duplication/idiom-gate machinery still
+lives in ``hook_helper.py`` (uncalled from this pipeline; a later task deletes
+it) alongside ``_build_session_attestation`` and every other hook_helper-
+resident helper, including the ``stop/gates.py`` and ``stop/advisories.py``
+extractions re-exported as hook_helper module attributes -- all resolved
+late-bound via a deferred ``from chameleon_mcp import hook_helper as hh``
+import inside each function, so a test that patches
+``chameleon_mcp.hook_helper.<name>`` stays effective for a call made from this
+module -- and so this module's own top-level imports stay stdlib-only,
+mirroring hook_helper's own pattern of deferring every non-stdlib import to
+call time.
 """
 
 from __future__ import annotations
@@ -81,10 +85,10 @@ def stop_gates(ctx: RootContext) -> dict:
       scoping lets each workspace re-lint against its own profile. In this mode
       the internal saves use ``prune_missing=False`` so root-A's save cannot
       delete root-B's just-deleted entry before root-B's scoped pass records it.
-    - ``allow_model_spawn``: when False, the correctness judge, multi-lens, AND
-      duplication gates (every ``claude -p`` spawn site) are skipped so the whole
-      Stop pays for at most one reviewer across all roots; deterministic
-      advisories still run.
+    - ``allow_model_spawn``: when False, the scheduler route/launch
+      (``_run_review_job`` -- the only remaining spawn site) is skipped
+      entirely so the whole Stop pays for at most one detached review job
+      across all roots; deterministic advisories still run.
 
     The multi-root caller short-circuits on the first blocking root (armed roots
     rank first), so ``stop_hook_blocks`` is incremented for exactly one root per
@@ -262,51 +266,30 @@ def stop_gates(ctx: RootContext) -> dict:
             # non-blocking case -- a clean turn, a shadow turn, an off turn, and a
             # capped/shadow turn that had an unresolved violation the backstop did
             # not block. Silencing these advisories whenever a would-block file was
-            # present (or the cap was spent) was a coverage gap. It leads with the
-            # reflexive idiom/principle review gate, which blocks once per session
-            # in enforce to force a self-review of the turn's edits, else allows
-            # the stop. Top-level Stop ONLY -- a
-            # SubagentStop must not run this whole-turn self-review: it would both
-            # false-block a subagent on its narrow task AND burn the once-per-
-            # session marker, so the real parent Stop then short-circuits and the
-            # turn-end review the enforcement is meant to force is silently
-            # skipped. Mirrors the is_subagent guard on every other top-level-only
-            # gate below (multi-lens, duplication, scope-drift, attestation).
-            gate = (
-                None
-                if is_subagent
-                else hh._idiom_review_gate(
-                    repo_root=repo_root,
-                    repo_id=repo_id,
-                    session_id=session_id,
-                    state=state,
-                    cfg=cfg,
-                    repo_data=repo_data,
-                    marker_scope=_ws_scope,
-                )
-            )
-            idiom_advisory: str | None = None
-            if gate is not None:
-                if gate.get("decision") == "block":
-                    return gate
-                # Shadow mode hands back the review as a non-blocking advisory;
-                # fold it into this Stop's context with the other advisories.
-                idiom_advisory = (gate.get("hookSpecificOutput") or {}).get("additionalContext")
-            # Whether the correctness judge will spawn its reviewer THIS Stop,
-            # routed per turn (digest freshness + risk facts + session budget)
-            # before the gate runs. The duplication gate reads this to defer
-            # when the judge is already paying for a spawn, so a single turn
-            # never fires two reviewer models.
+            # present (or the cap was spent) was a coverage gap.
+            #
+            # Async-first model review (spec section 3.1): ``stop/scheduler.py``
+            # decides whether to launch ONE detached review job covering
+            # whichever lenses (correctness/duplication/idiom) the repo's config
+            # enables -- it replaces the old idiom-review interrupt, the
+            # correctness-judge route/gate, the multi-lens pass, and the
+            # standalone duplication gate outright; there is nothing left for a
+            # five-boolean defer matrix to arbitrate. The idiom review is no
+            # longer a guaranteed once-per-session interrupt: it is a scoped
+            # detector lens inside the job (compliant turns hear nothing).
+            # SubagentStop never schedules -- the scheduler itself refuses
+            # (``RouteContext.is_subagent``), so this call is unconditional here.
             #
             # allow_model_spawn is False on every non-first root of a multi-root
-            # Stop: the reviewer budget (one claude -p across the whole 55s Stop)
-            # was spent by the ranked-first root. Skip the route computation
-            # entirely (its risk facts / blast-radius reads are the fixed cost we
-            # do not want to pay per root) and force a non-spawning route so the
-            # multi-lens, correctness, AND duplication gates below all read
-            # spawn=False. Deterministic advisories still run for this root.
+            # Stop: the reviewer budget (one job across the whole 55s Stop) was
+            # spent by the ranked-first root. Skip the route computation entirely
+            # (its risk facts / blast-radius reads are the fixed cost we do not
+            # want to pay per root) rather than force a non-spawning decision
+            # through the scheduler. Deterministic advisories still run for this
+            # root.
+            review_context: str | None = None
             if allow_model_spawn:
-                route = hh._correctness_judge_route(
+                review_context = _run_review_job(
                     repo_root=repo_root,
                     repo_id=repo_id,
                     session_id=session_id,
@@ -318,64 +301,26 @@ def stop_gates(ctx: RootContext) -> dict:
                 )
             else:
                 hh._emit_check_event(
-                    repo_id, session_id, "correctness_judge", "skipped", "multiroot_budget"
+                    repo_id, session_id, "review_job", "skipped", "multiroot_budget"
                 )
-                route = {
-                    "spawn": False,
-                    "fresh": [],
-                    "digests": {},
-                    "turn_key": None,
-                    "intent_tokens": [],
-                    "skip_reason": "multiroot_budget",
-                    "reason": None,
-                }
-            corr_spawning = bool(route.get("spawn"))
 
-            # Idiom gate did not block: the turn is free to end. Run the
-            # independent correctness judge (on by default, advisory only,
-            # per-turn routed). It never blocks; its findings ride out as
-            # additionalContext the model reads after the turn.
-            #
-            # When the multi-lens review is on (default on), ONE coordinated pass
-            # runs the correctness + duplication lenses together (no mutual defer)
-            # and REPLACES both the correctness gate here and the duplication gate
-            # below -- but ONLY on a turn the route actually spawns. On a low-risk
-            # turn the route skips (no reviewer spend), the lens pass bails, and
-            # then the standalone duplication gate below must still run so
-            # duplication is not silently starved for the rest of the session.
-            # Subagents keep the standard gate.
-            multilens_owns_dup = bool(
-                cfg.multi_lens_review and not is_subagent and route.get("spawn")
-            )
-            multilens_lines: list[str] = []
-            judged = None
-            # allow_model_spawn=False (a non-first root) skips the reviewer gates
-            # outright: the ranked-first root owns the session's one spawn. Both
-            # bail internally on a non-spawning route anyway, but skipping the call
-            # also spares the per-root fixed cost of their pre-spawn reads.
-            if allow_model_spawn:
-                if cfg.multi_lens_review and not is_subagent:
-                    multilens_lines = hh._multi_lens_review_lines(
-                        repo_root=repo_root,
-                        repo_id=repo_id,
-                        session_id=session_id,
-                        state=state,
-                        cfg=cfg,
-                        repo_data=repo_data,
-                        daemon_state=daemon_state,
-                        route=route,
-                    )
-                else:
-                    judged = hh._correctness_judge_gate(
-                        repo_root=repo_root,
-                        repo_id=repo_id,
-                        session_id=session_id,
-                        state=state,
-                        cfg=cfg,
-                        repo_data=repo_data,
-                        daemon_state=daemon_state,
-                        route=route,
-                    )
+            # Test-run reminder: real source edited, no passing test run seen
+            # this session. Extracted into its own deterministic advisory (it
+            # used to ride the idiom gate's once-per-session block); it fires
+            # independently of enforcement.idiom_review and of whether the
+            # review job above spawned. Top-level Stop only, mirroring the
+            # is_subagent guard on scope-drift below -- a subagent's narrow task
+            # is not the turn-ending point the reminder is aimed at; the parent
+            # Stop still gets it.
+            reminder_lines: list[str] = []
+            if not is_subagent:
+                reminder_lines = hh._test_run_reminder_lines(
+                    repo_root=repo_root,
+                    repo_id=repo_id,
+                    session_id=session_id,
+                    state=state,
+                    cfg=cfg,
+                )
 
             # Stale-test advisory: a turn that edited a paired source but left its
             # existing test untouched gets a coverage nudge. Advisory only, folded
@@ -436,47 +381,6 @@ def stop_gates(ctx: RootContext) -> dict:
                 repo_root=repo_root, state=state, cfg=cfg
             )
 
-            # Turn-end duplication: a function this turn introduced whose body
-            # matches an existing one (catalog or earlier this session) gets named
-            # so the author can reuse the original. Confirmed by a bounded judge
-            # spawn, skipped on a SubagentStop and when the correctness judge
-            # spawned a working reviewer this Stop, so a turn fires at most one
-            # reviewer. A FAST-DEGRADED judge spawn (nonzero exit, parse failure)
-            # does not defer: it finished quickly and left budget, so a
-            # permanently broken reviewer must not starve duplication review
-            # forever. A judge TIMEOUT is different -- it consumed the full 45s
-            # budget, so the duplication gate must still defer (route
-            # ["spawn_timed_out"]); a second sequential spawn would blow the 55s
-            # wall-clock cap and SIGKILL the process mid-review. Advisory only,
-            # folded into the same Stop context.
-            # Skipped only when the multi-lens pass OWNED duplication this turn
-            # (multi-lens on AND the route spawned). When multi-lens is on but the
-            # route skipped a low-risk turn, the lens pass bailed without running
-            # duplication, so the standalone gate must run here -- otherwise the
-            # default config silently starves duplication after the session's first
-            # spawn.
-            # allow_model_spawn gates the standalone duplication gate too: it
-            # spawns its own reviewer independently of the correctness route, so
-            # forcing route.spawn=False would REMOVE the defer and let a non-first
-            # root spawn a second claude -p, blowing the 55s wall cap. On a
-            # non-first root skip it entirely -- the ranked-first root already
-            # owns the session's one reviewer spawn.
-            dup_lines: list[str] = []
-            if allow_model_spawn and not is_subagent and not multilens_owns_dup:
-                _corr_active = bool(
-                    corr_spawning
-                    and (not route.get("spawn_failed") or route.get("spawn_timed_out"))
-                )
-                dup_lines = hh._duplication_advisory_lines(
-                    repo_root=repo_root,
-                    repo_id=repo_id,
-                    session_id=session_id,
-                    state=state,
-                    cfg=cfg,
-                    repo_data=repo_data,
-                    corr_spawning=_corr_active,
-                )
-
             # Turn-end test integrity: a turn that changed live source while
             # weakening tests (added skips, dropped assertions, deleted tests)
             # gets a deterministic advisory naming what was weakened. Zero model
@@ -510,12 +414,13 @@ def stop_gates(ctx: RootContext) -> dict:
                 context_blocks.append(
                     "<chameleon-context>\n" + "\n".join(resurface_lines) + "\n</chameleon-context>"
                 )
-            if idiom_advisory:
-                context_blocks.append(idiom_advisory)
-            if judged is not None:
-                jb = (judged.get("hookSpecificOutput") or {}).get("additionalContext")
-                if jb:
-                    context_blocks.append(jb)
+            if review_context:
+                # Already <chameleon-context>-wrapped by judge_wait.wait_and_render.
+                context_blocks.append(review_context)
+            if reminder_lines:
+                context_blocks.append(
+                    "<chameleon-context>\n" + "\n".join(reminder_lines) + "\n</chameleon-context>"
+                )
             if stale_lines:
                 context_blocks.append(
                     "<chameleon-context>\n" + "\n".join(stale_lines) + "\n</chameleon-context>"
@@ -535,14 +440,6 @@ def stop_gates(ctx: RootContext) -> dict:
             if crossws_lines:
                 context_blocks.append(
                     "<chameleon-context>\n" + "\n".join(crossws_lines) + "\n</chameleon-context>"
-                )
-            if dup_lines:
-                context_blocks.append(
-                    "<chameleon-context>\n" + "\n".join(dup_lines) + "\n</chameleon-context>"
-                )
-            if multilens_lines:
-                context_blocks.append(
-                    "<chameleon-context>\n" + "\n".join(multilens_lines) + "\n</chameleon-context>"
                 )
             if testint_lines:
                 context_blocks.append(
@@ -754,6 +651,121 @@ def stop_gates(ctx: RootContext) -> dict:
     except Exception as exc:
         hh._note_if_config_malformed(exc, repo_id, session_id, "stop_relint")
         return {}
+
+
+def _run_review_job(
+    *,
+    repo_root: Path,
+    repo_id: str,
+    session_id: str | None,
+    state,
+    cfg,
+    repo_data: Path,
+    daemon_state: dict | None,
+    is_subagent: bool,
+) -> str | None:
+    """Route, and maybe launch, this turn's detached review job.
+
+    The async-first replacement (spec section 3.1) for the deleted
+    correctness-judge route/gate, multi-lens pass, and standalone
+    duplication gate: ONE scheduler decision, at most ONE detached job,
+    covering whichever lenses (correctness/duplication/idiom) the repo's
+    config enables -- ``stop/scheduler.py`` is "the only code allowed to
+    spawn a model" (its own module docstring). SubagentStop never schedules;
+    the scheduler itself refuses on ``RouteContext.is_subagent``, so this
+    function does not special-case it either.
+
+    Returns the CHAMELEON_JUDGE_WAIT in-turn render (already
+    ``<chameleon-context>``-wrapped) when that flag is set -- the harness/eval
+    synchronous-wait path over an otherwise async-first job. Otherwise None:
+    an ordinary turn emits NO model-review findings in-turn; they arrive at
+    the next UserPromptSubmit or a later dead-session SessionStart
+    (``stop/delivery.py``, wired in Task 6). Fails open to None at every
+    seam -- an exception here costs this Stop's review, never the turn.
+    """
+    from chameleon_mcp import hook_helper as hh
+
+    try:
+        from chameleon_mcp.core.session_state import read_session_doc
+        from chameleon_mcp.stop.scheduler import JobRequest, RouteContext
+
+        session_doc = read_session_doc(repo_id, session_id or "")
+        route_ctx = RouteContext(
+            repo_root=repo_root,
+            repo_id=repo_id,
+            session_id=session_id,
+            repo_data=repo_data,
+            is_subagent=is_subagent,
+            files=tuple(state.files.keys()),
+            daemon_state=daemon_state,
+        )
+        decision = hh._scheduler_route(route_ctx, session_doc, cfg)
+        if not decision.spawn:
+            return None
+
+        heartbeat = hh._scheduler_try_acquire_job_slot(repo_id, session_id or "")
+        if heartbeat is None:
+            # Another job already owns this session's one slot; not this
+            # Stop's turn to review. Explicit event per spec section 8
+            # ("every skipped stage ... replaced by an explicit check event").
+            hh._emit_check_event(repo_id, session_id, "review_job", "skipped", "job_inflight")
+            return None
+
+        request = JobRequest(
+            repo_root=repo_root,
+            repo_id=repo_id,
+            session_id=session_id or "",
+            files=decision.files,
+            intent_tokens=decision.intent_tokens,
+            lens_names=decision.lens_names,
+            model=decision.model or "sonnet",
+            heartbeat_path=heartbeat,
+        )
+        # "spawned" records the DECISION (route reason, lens set) the instant
+        # the slot is claimed -- before the detach attempt, mirroring the
+        # pre-phase-3 gate's own ordering ("budget spent + event emitted
+        # before the spawn runs," so a crash mid-launch is still on record).
+        # It does not assert the job is confirmed running; a detach failure
+        # right after this is a SEPARATE, additional disclosure below, never
+        # a replacement for it -- a test asserting "a spawn was decided for
+        # reason X" must not depend on the detach itself succeeding.
+        hh._emit_check_event(
+            repo_id,
+            session_id,
+            "review_job",
+            "spawned",
+            reason=decision.reason,
+            detail={"lenses": list(decision.lens_names), "files": len(decision.files)},
+        )
+
+        launched = hh._scheduler_launch_job(request)
+        if not launched:
+            # Platform or spawn failure -- launch_job already rolled back the
+            # slot claim (heartbeat unlinked, spend refunded); disclose the
+            # failure rather than staying silent (spec section 3.1: "review
+            # is skipped with an explicit check event").
+            hh._emit_check_event(
+                repo_id, session_id, "review_job", "degraded", "platform_unavailable"
+            )
+            return None
+
+        from chameleon_mcp._thresholds import threshold_int
+        from chameleon_mcp.core.budget import TurnBudget
+
+        budget = TurnBudget.for_hook(
+            total_seconds=float(threshold_int("JUDGE_WAIT_STOP_BUDGET_SECONDS")),
+            token_ceiling=threshold_int("REVIEW_RENDER_TOKEN_CEILING"),
+        )
+        return hh._judge_wait_and_render(
+            repo_id=repo_id,
+            repo_data=repo_data,
+            ws_root=repo_root,
+            session_id=session_id or "",
+            heartbeat_path=heartbeat,
+            budget=budget,
+        )
+    except Exception:
+        return None
 
 
 def discover_stop_roots(cwd: Path, session_id) -> list[dict]:

@@ -28,10 +28,13 @@ Staleness (spec section 5.4, "one policy at every delivery point"): a
 finding's pinned excerpt is re-checked against the CURRENT on-disk excerpt at
 every one of these entry points; a mismatch annotates ``[stale]``, it is
 never dropped. Coexists with the legacy ``.judge_pending.<session>.json``
-path (``hook_helper._pending_findings_block``, still live --
-CHAMELEON_JUDGE_ASYNC=1 writes it, Task 7 retires it) rather than replacing
-it: ``review_ledger.migrate_pending_queue`` is the one bridge, folding any
-leftover legacy rows into the ledger so they flow through this path too.
+path (``hook_helper._pending_findings_block``, still callable, but no
+longer written by the live Stop pipeline -- the sync/async judge gates that
+used to write it are uncalled from ``stop/pipeline.py`` since the async-
+first cutover) rather than replacing it: ``review_ledger.migrate_pending_queue``
+is the one bridge, folding any leftover legacy rows (from a pre-cutover
+session, or CHAMELEON_JUDGE_ASYNC=1 before the cutover) into the ledger so
+they flow through this path too.
 """
 
 from __future__ import annotations

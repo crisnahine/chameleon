@@ -1439,3 +1439,111 @@ def _scope_drift_advisory_lines(
         ]
     except Exception:  # noqa: BLE001
         return []
+
+
+def _test_run_reminder_lines(
+    *,
+    repo_root: Path,
+    repo_id: str,
+    session_id: str | None,
+    state,
+    cfg,
+) -> list[str]:
+    """Turn-end nudge: real source edited, no passing test run seen this session.
+
+    Extracted from the legacy idiom-review gate, where it rode the SAME
+    once-per-session block the idiom/principle CONTENT did (the block is
+    gone: the idiom review is now a scoped detector lens, spec section 5.2).
+    Standalone, this builder follows every sibling in this module instead of
+    the deleted gate's guaranteed-once shape: it fires independently of
+    ``enforcement.idiom_review`` and re-checks THIS turn's edits on every
+    qualifying Stop, so it keeps nudging until a passing run is observed
+    rather than nagging exactly once per session. Advisory only; fails open
+    to [] on any error.
+    """
+    try:
+        if cfg.mode == "off":
+            return []
+        if not session_id:
+            return []
+
+        from chameleon_mcp.violation_class import ignored_rules
+
+        # An edited file that still exists and is not opted out via an inline
+        # bare `chameleon-ignore` directive in the touched file.
+        edited: list[str] = []
+        for path in state.files:
+            p = Path(path)
+            if not p.is_file():
+                continue
+            try:
+                content = p.read_bytes()[:100_000].decode("utf-8", errors="replace")
+            except OSError:
+                continue
+            if "" in (ignored_rules(content, file_path=path) or set()):
+                continue
+            edited.append(path)
+        if not edited:
+            return []
+
+        from chameleon_mcp.lint_engine import detect_language
+
+        def _governed_language(path: str) -> str | None:
+            # A notebook cell is Python source (detect_language('.ipynb') is
+            # None), same special case the idiom lens uses.
+            if path.lower().endswith(".ipynb"):
+                return "python"
+            return detect_language(path)
+
+        governed = [p for p in edited if _governed_language(p) is not None]
+        if not governed:
+            return []
+
+        from chameleon_mcp import hook_helper as hh
+
+        edited_source = False
+        for path in governed:
+            try:
+                rel = os.path.relpath(path, str(repo_root))
+            except ValueError:
+                rel = Path(path).name
+            if hh._is_source_for_test_signal(rel, language=_governed_language(path)):
+                edited_source = True
+                break
+        if not edited_source:
+            return []
+
+        from chameleon_mcp.exec_log import session_test_run_seen
+
+        if session_test_run_seen(repo_id, session_id):
+            return []
+
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+        names = ", ".join(sanitize_for_chameleon_context(Path(p).name) for p in governed[:5])
+
+        try:
+            from chameleon_mcp.metrics import emit_hook_metric
+
+            # Own metric name (unchanged from the legacy gate) so the nudge's
+            # real frequency stays independently measurable, decoupled from
+            # whatever the idiom/correctness surfaces report.
+            emit_hook_metric(
+                "stop-test-run-signal",
+                elapsed_ms=0,
+                repo_id=repo_id,
+                advisory_emitted=True,
+                would_block=False,
+            )
+        except Exception:
+            pass
+
+        return [
+            "[🦎 chameleon: no passing test run this turn]",
+            f"You edited {names} with no recorded passing test run. Run the suite "
+            "to confirm your changes pass before ending (skip only if a watch "
+            "process or CI is already running them). Advisory; the turn ends "
+            "normally.",
+        ]
+    except Exception:  # noqa: BLE001
+        return []
