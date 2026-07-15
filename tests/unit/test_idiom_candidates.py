@@ -108,8 +108,10 @@ def test_second_write_of_same_slug_merges_not_clobbers(tmp_path):
         session_ids=["s2"],
     )
     body = json.loads((candidates_dir(profile) / "dup-slug.json").read_text(encoding="utf-8"))
-    # occurrences bumps (2 + 1 = 3), never reset to the latest call's value alone.
-    assert body["occurrences"] == 3
+    # occurrences takes the max of prior (2) and the second call's total (1),
+    # never their sum -- the stored value is the authoritative running total,
+    # not an accumulator.
+    assert body["occurrences"] == 2
     # session_ids unions rather than replacing.
     assert set(body["session_ids"]) == {"s1", "s2"}
     # evidence appends -- both the original and the new line survive.
@@ -127,6 +129,56 @@ def test_second_write_with_same_evidence_does_not_duplicate_the_line(tmp_path):
     )
     body = json.loads((candidates_dir(profile) / "dup2.json").read_text(encoding="utf-8"))
     assert body["evidence"].count("same line") == 1
+
+
+def test_occurrences_is_authoritative_max_not_a_sum(tmp_path):
+    """The miner re-submits its caller's own current TOTAL sighting count on
+    every job run, including re-mining an unchanged ledger -- occurrences
+    must be idempotent under a repeat of the same total, and must still track
+    a genuine increase, never double-count by summing across calls."""
+    profile = _profile(tmp_path)
+    write_candidate(
+        profile,
+        slug="stable-slug",
+        title="t",
+        rationale="r",
+        source="learned",
+        evidence="e1",
+        occurrences=3,
+        session_ids=["s1"],
+    )
+    # Re-mining the SAME state resubmits the same total: idempotent, not 3+3=6.
+    write_candidate(
+        profile,
+        slug="stable-slug",
+        title="t",
+        rationale="r",
+        source="learned",
+        evidence="e2",
+        occurrences=3,
+        session_ids=["s2"],
+    )
+    body = json.loads((candidates_dir(profile) / "stable-slug.json").read_text(encoding="utf-8"))
+    assert body["occurrences"] == 3
+    # session_ids and evidence still merge normally -- only occurrences semantics changed.
+    assert set(body["session_ids"]) == {"s1", "s2"}
+    assert "e1" in body["evidence"]
+    assert "e2" in body["evidence"]
+
+    # A genuine new sighting raises the ledger's total, and the candidate
+    # tracks it -- max, not a floor.
+    write_candidate(
+        profile,
+        slug="stable-slug",
+        title="t",
+        rationale="r",
+        source="learned",
+        evidence="e3",
+        occurrences=5,
+        session_ids=["s3"],
+    )
+    body = json.loads((candidates_dir(profile) / "stable-slug.json").read_text(encoding="utf-8"))
+    assert body["occurrences"] == 5
 
 
 def test_merge_write_with_empty_title_and_rationale_preserves_originals(tmp_path):

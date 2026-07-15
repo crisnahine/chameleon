@@ -124,6 +124,26 @@ def test_signal2_recurring_finding_across_sessions_becomes_learned_candidate(tmp
     assert "getClient" in row["rationale"]
 
 
+def test_signal2_remining_unchanged_ledger_does_not_inflate_occurrences(tmp_path):
+    """Re-running the miner against an UNCHANGED ledger (a ledger row that
+    stays open across many Stop jobs is the common case) must be idempotent:
+    occurrences mirrors the ledger's authoritative recurrence count, it does
+    not climb by 3 on every job run."""
+    repo_root = _repo(tmp_path)
+    finding = _correctness_finding()
+    for sid in ("s1", "s2", "s3"):
+        review_ledger.record_findings(REPO_ID, str(repo_root), [finding], session_id=sid)
+
+    miner.run_miner(_request(repo_root), _budget())
+    (row,) = load_candidates(repo_root / ".chameleon")
+    assert row["occurrences"] == 3
+
+    # A second mine over the SAME, untouched ledger state.
+    miner.run_miner(_request(repo_root), _budget())
+    (row,) = load_candidates(repo_root / ".chameleon")
+    assert row["occurrences"] == 3
+
+
 def test_signal2_below_recurrence_floor_produces_no_candidate(tmp_path):
     repo_root = _repo(tmp_path)
     finding = _correctness_finding(claim="a one-off finding nobody else hit")
@@ -208,7 +228,10 @@ def test_signal1_addressed_idiom_finding_reinforces_existing_candidate_only(tmp_
     reinforced_row = rows["foo-idiom"]
     assert "original evidence" in reinforced_row["evidence"]
     assert "reinforced" in reinforced_row["evidence"]
-    assert reinforced_row["occurrences"] >= 2
+    # Reinforcement's contribution is the appended evidence line, not an
+    # occurrences bump: it passes occurrences=1, which under the authoritative
+    # max never raises a candidate above whatever it was already seeded at.
+    assert reinforced_row["occurrences"] == 1
 
 
 def test_signal1_pending_not_addressed_idiom_finding_is_not_reinforced(tmp_path):

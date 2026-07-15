@@ -15,12 +15,13 @@ hand-taught idiom uses.
 
 Writes are atomic per file (``write_candidate`` copies ``upsert_idiom``'s
 tmp-write + ``os.replace`` pattern) and MERGE rather than clobber: a second
-write of the same slug bumps ``occurrences``, unions ``session_ids``, and
-appends new ``evidence`` onto whatever the file already held, so repeated
-sightings of the same pattern across turns/sessions accumulate into one
-richer proposal instead of forking into duplicate files. New slugs are
-bounded by ``IDIOM_CANDIDATE_MAX`` (a merge into an EXISTING slug is never
-refused by the cap -- only minting a brand-new file is).
+write of the same slug takes ``occurrences`` to the larger of what's on disk
+and what the caller just passed, unions ``session_ids``, and appends new
+``evidence`` onto whatever the file already held, so repeated sightings of
+the same pattern across turns/sessions accumulate into one richer proposal
+instead of forking into duplicate files. New slugs are bounded by
+``IDIOM_CANDIDATE_MAX`` (a merge into an EXISTING slug is never refused by
+the cap -- only minting a brand-new file is).
 """
 
 from __future__ import annotations
@@ -79,13 +80,16 @@ def write_candidate(
     called with an empty string (the reinforcement signal deliberately passes
     both empty so it never overwrites a fuller proposal with a stub) and
     finally to ``slug`` itself if the file is brand new and both are empty.
-    ``occurrences`` accumulates (a fresh call reports how many NEW sightings
-    it is contributing, not the running total), ``session_ids`` unions in
-    insertion order, and ``evidence`` appends the new line onto the existing
-    trail (a byte-identical repeat is not duplicated). Silently declines to
-    create a file for a brand-new slug once ``IDIOM_CANDIDATE_MAX`` files
-    already exist -- the cap only ever blocks new proposals, never a merge
-    into one already on disk.
+    ``occurrences`` is the AUTHORITATIVE running total, not a delta: the
+    stored value is ``max(prior_occurrences, occurrences)``, so a caller
+    passes its own current total sighting count and re-submitting that same
+    total on an unchanged state is idempotent (never inflates), while a
+    genuinely higher total raises the stored value to match. ``session_ids``
+    unions in insertion order, and ``evidence`` appends the new line onto the
+    existing trail (a byte-identical repeat is not duplicated). Silently
+    declines to create a file for a brand-new slug once
+    ``IDIOM_CANDIDATE_MAX`` files already exist -- the cap only ever blocks
+    new proposals, never a merge into one already on disk.
 
     Raises ``ValueError`` for an invalid ``slug``/``source`` -- both are
     caller-controlled (derived deterministically, never raw model text), so a
@@ -138,7 +142,7 @@ def write_candidate(
         "archetypes": _merge_str_list(existing.get("archetypes") if existing else None, archetypes),
         "source": source,
         "evidence": merged_evidence,
-        "occurrences": prior_occurrences + max(0, int(occurrences)),
+        "occurrences": max(prior_occurrences, max(0, int(occurrences))),
         "session_ids": _merge_str_list(
             existing.get("session_ids") if existing else None, session_ids
         ),
