@@ -4,6 +4,35 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.0] - 2026-07-16
+
+### Added
+- A per-repo `review.surface_bar` config key (`high`/`medium`/`low`, default
+  `medium` = today's behavior) that gates which turn-end findings surface. A
+  finding below the bar is `shelved` rather than delivered, and a shelved
+  finding whose `match_key` recurs across sessions is auto-promoted to
+  `pending` on its second sighting (kill switch `CHAMELEON_SHELVED_PROMOTION`).
+  Shelved findings are browsable via `/chameleon-status` and
+  `/chameleon-explain`.
+- An `enforcement.calibration` config section that makes the existing
+  override-feedback rule-demotion per-repo tunable (thresholds and an
+  `auto_demote` off switch); defaults match the previous built-in values, so
+  an unconfigured repo is unchanged.
+- A task-aware intent contract: the review job now carries verbatim, secret-
+  scanned scope-constraint sentences extracted from the session's own prompts
+  ("don't touch X", "only change Y"), and the correctness lens gains two
+  checks — unmet-ask and unrequested-scope — emitting `kind: intent` findings
+  through the standard lifecycle (kill switch `CHAMELEON_INTENT_CONTRACT`).
+- A self-learning idiom miner that runs at the tail of the detached review job
+  (zero Stop-time cost) over three usage signals — recurring
+  correctness/duplication findings, over-overridden rules, and reinforced
+  idioms — and writes never-auto-adopted `.chameleon/idiom-candidates/*.json`
+  proposals. Candidates are surfaced by a one-line SessionStart note and a
+  "learned from usage" section in `/chameleon-auto-idiom`; nothing is adopted
+  without the same approval a hand-taught idiom needs, and the candidates
+  directory is deliberately not part of the trust-hashed profile surface
+  (kill switch `CHAMELEON_IDIOM_MINER`).
+
 ## [3.5.0] - 2026-07-16
 
 ### Changed
