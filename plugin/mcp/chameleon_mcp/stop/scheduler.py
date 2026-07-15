@@ -86,6 +86,14 @@ class RouteDecision:
     ``files`` is the fresh (not-yet-judged) subset of the turn's edited
     files that a spawned job should review -- empty when ``spawn`` is False.
     ``lens_names`` and ``model`` are likewise only meaningful when spawning.
+
+    ``intent_excerpts`` and ``scope_lines`` (Task 4's intent contract) are
+    the review job's carried evidence for the correctness lens's unmet-ask /
+    unrequested-scope checks: verbatim scope-constraint sentences captured
+    from the session's prompts (``intent_capture.recent_excerpts`` /
+    ``.scope_lines``), never full prompt prose. Both default to ``()`` so a
+    caller building a ``RouteDecision`` before this field existed, or a route
+    with no captured intent, carries an empty contract rather than crashing.
     """
 
     spawn: bool
@@ -94,6 +102,8 @@ class RouteDecision:
     model: str | None = None
     intent_tokens: tuple[str, ...] = ()
     files: tuple[str, ...] = ()
+    intent_excerpts: tuple[str, ...] = ()
+    scope_lines: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -135,7 +145,9 @@ class JobRequest:
         "lens_names": ["<str>", ...],
         "model": "<str>",
         "heartbeat_path": "<str, absolute path>",
-        "shown_idiom_slugs": ["<str>", ...]
+        "shown_idiom_slugs": ["<str>", ...],
+        "intent_excerpts": ["<str>", ...],
+        "scope_lines": ["<str>", ...]
     }
     ```
 
@@ -146,6 +158,13 @@ class JobRequest:
     this turn's Tier-2 block or the wired conventions.md memory channel is
     never re-reviewed. Defaults to empty so a request file written before
     this field existed still round-trips.
+
+    ``intent_excerpts`` and ``scope_lines`` (Task 4) are the intent contract
+    carried from the route decision (``RouteDecision.intent_excerpts`` /
+    ``.scope_lines``) into the job: verbatim scope-constraint sentences the
+    correctness lens's unmet-ask / unrequested-scope checks (Task 5) read,
+    never full prompt prose. Both default to ``()`` so a request file
+    written before this field existed still round-trips.
     """
 
     repo_root: Path
@@ -157,6 +176,8 @@ class JobRequest:
     model: str
     heartbeat_path: Path
     shown_idiom_slugs: tuple[str, ...] = ()
+    intent_excerpts: tuple[str, ...] = ()
+    scope_lines: tuple[str, ...] = ()
 
     def to_dict(self) -> dict:
         return {
@@ -169,6 +190,8 @@ class JobRequest:
             "model": self.model,
             "heartbeat_path": str(self.heartbeat_path),
             "shown_idiom_slugs": list(self.shown_idiom_slugs),
+            "intent_excerpts": list(self.intent_excerpts),
+            "scope_lines": list(self.scope_lines),
         }
 
     @classmethod
@@ -183,6 +206,8 @@ class JobRequest:
             model=str(data.get("model") or ""),
             heartbeat_path=Path(str(data["heartbeat_path"])),
             shown_idiom_slugs=tuple(str(s) for s in data.get("shown_idiom_slugs") or []),
+            intent_excerpts=tuple(str(s) for s in data.get("intent_excerpts") or []),
+            scope_lines=tuple(str(s) for s in data.get("scope_lines") or []),
         )
 
 
@@ -280,9 +305,14 @@ def _route_inner(ctx: RouteContext, state, lens_names: tuple[str, ...]) -> Route
         return RouteDecision(spawn=False, reason="session_cap")
 
     # Intent trigger: checkable tokens or a security-lens hit captured since
-    # the last spawn force the review regardless of risk tier.
+    # the last spawn force the review regardless of risk tier. The intent
+    # contract (Task 4) rides alongside on the same read: verbatim
+    # scope-constraint sentences (never full prompt prose) the correctness
+    # lens's unmet-ask / unrequested-scope checks (Task 5) consume.
     intent_tokens: tuple[str, ...] = ()
     security_intent = False
+    scope_lines: tuple[str, ...] = ()
+    intent_excerpts: tuple[str, ...] = ()
     try:
         from chameleon_mcp import intent_capture
         from chameleon_mcp.exec_log import read_check_events
@@ -307,9 +337,13 @@ def _route_inner(ctx: RouteContext, state, lens_names: tuple[str, ...]) -> Route
             since_ts = None
         intent_tokens = tuple(intent_capture.checkable_tokens(entries, since_ts))
         security_intent = intent_capture.security_intent_seen(entries, since_ts)
+        scope_lines = tuple(intent_capture.scope_lines(entries, since_ts))
+        intent_excerpts = tuple(intent_capture.recent_excerpts(entries, since_ts))
     except Exception:
         intent_tokens = ()
         security_intent = False
+        scope_lines = ()
+        intent_excerpts = ()
 
     from chameleon_mcp.judge import judge_model_for_route
 
@@ -321,6 +355,8 @@ def _route_inner(ctx: RouteContext, state, lens_names: tuple[str, ...]) -> Route
             model=judge_model_for_route("intent_forced"),
             intent_tokens=intent_tokens,
             files=tuple(fresh),
+            intent_excerpts=intent_excerpts,
+            scope_lines=scope_lines,
         )
 
     # Risk facts over the fresh set, every leg fail-open toward spawning.
@@ -380,6 +416,8 @@ def _route_inner(ctx: RouteContext, state, lens_names: tuple[str, ...]) -> Route
         model=judge_model_for_route(reason),
         intent_tokens=intent_tokens,
         files=tuple(fresh),
+        intent_excerpts=intent_excerpts,
+        scope_lines=scope_lines,
     )
 
 

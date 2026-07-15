@@ -20,8 +20,11 @@ from chameleon_mcp.intent_capture import (
     capture_intent,
     checkable_tokens,
     extract_assertions,
+    extract_scope_lines,
     read_intent,
     reap_stale_prefixed,
+    recent_excerpts,
+    scope_lines,
     security_intent_seen,
 )
 from chameleon_mcp.optouts import _safe_session_marker
@@ -212,12 +215,20 @@ def test_prompt_digest_and_shape(tmp_path):
     entries = read_intent(tmp_path, SID)
     assert len(entries) == 1
     e = entries[0]
-    assert set(e) == {"ts", "prompt_digest", "secret_suppressed", "tokens", "security"}
+    assert set(e) == {
+        "ts",
+        "prompt_digest",
+        "secret_suppressed",
+        "tokens",
+        "security",
+        "scope_lines",
+    }
     assert isinstance(e["ts"], float)
     assert len(e["prompt_digest"]) == 16
     assert e["tokens"]["numerals"] == ["25"]
     assert e["tokens"]["identifiers"] == ["retryLimit"]
     assert e["security"] is False
+    assert e["scope_lines"] == []
 
 
 def test_file_trim_keeps_newest_entries(tmp_path, monkeypatch):
@@ -398,3 +409,193 @@ def test_looks_credential_shaped_classification():
     assert not _looks_credential_shaped("get_user_by_id")
     assert not _looks_credential_shaped("convertHtmlToMarkdownV2")
     assert not _looks_credential_shaped("skipped_session_cap")
+
+
+# --- extract_scope_lines: the intent contract's verbatim scope-line channel ----
+
+
+def test_extract_scope_lines_returns_matching_sentences_verbatim():
+    # Split is on [.!?\n] only (no comma), so two scoping directives joined
+    # by a period are two independent sentences, each kept byte-for-byte
+    # (stripped, never paraphrased or reworded).
+    text = "Don't touch the auth module. Only change the retry count."
+    assert extract_scope_lines(text) == [
+        "Don't touch the auth module",
+        "Only change the retry count",
+    ]
+
+
+def test_extract_scope_lines_comma_joined_clauses_are_one_sentence():
+    # The same two directives joined by a comma instead of a period have no
+    # [.!?\n] delimiter between them, so they split as ONE sentence and
+    # persist as one scope line, not two -- the split rule is exactly
+    # [.!?\n], never comma-aware.
+    text = "don't touch the auth module, only change the retry count"
+    assert extract_scope_lines(text) == [text]
+
+
+def test_extract_scope_lines_no_scoping_phrase_returns_empty():
+    assert extract_scope_lines("please tidy up the docs and fix typos") == []
+
+
+def test_extract_scope_lines_empty_and_non_string_input():
+    assert extract_scope_lines("") == []
+    assert extract_scope_lines(None) == []  # type: ignore[arg-type]
+
+
+def test_extract_scope_lines_covers_every_owner_approved_phrase():
+    cases = {
+        "do not touch the migration files": "do not touch",
+        "only modify the docstring": "only modify",
+        "only edit the config": "only edit",
+        "leave the tests alone": "leave...alone",
+        "don't modify the schema": "don't modify",
+        "don't edit the lockfile": "don't edit",
+        "don't change the public API": "don't change",
+        "keep the endpoint as is": "keep...as is",
+        "keep the endpoint as-is": "keep...as-is",
+        "without changing the schema": "without changing",
+        "without touching the tests": "without touching",
+        "must not break backward compatibility": "must not",
+    }
+    for text, label in cases.items():
+        assert extract_scope_lines(text) == [text], f"phrase class {label!r} did not match"
+
+
+def test_extract_scope_lines_case_insensitive():
+    assert extract_scope_lines("DO NOT TOUCH the auth module") == ["DO NOT TOUCH the auth module"]
+
+
+def test_extract_scope_lines_over_long_line_truncated(monkeypatch):
+    monkeypatch.setenv("CHAMELEON_INTENT_SCOPE_LINE_MAX_CHARS", "20")
+    text = "don't touch the entire legacy authentication subsystem end to end"
+    out = extract_scope_lines(text)
+    assert len(out) == 1
+    assert len(out[0]) == 20
+    # Truncation keeps a verbatim PREFIX -- never rewritten, just shortened.
+    assert text.startswith(out[0])
+
+
+def test_extract_scope_lines_over_count_capped(monkeypatch):
+    monkeypatch.setenv("CHAMELEON_INTENT_SCOPE_LINES_MAX", "3")
+    text = ". ".join(f"must not break rule {n}" for n in range(10)) + "."
+    out = extract_scope_lines(text)
+    assert len(out) == 3
+    assert out == ["must not break rule 0", "must not break rule 1", "must not break rule 2"]
+
+
+def test_extract_scope_lines_hard_secret_line_dropped(tmp_path):
+    text = f'don\'t touch the deploy key "{AWS_KEY}"'
+    out = extract_scope_lines(text)
+    assert out == []
+
+
+def test_extract_scope_lines_credential_shaped_line_dropped(monkeypatch):
+    # Isolate the credential-SHAPE gate from the hard-secret scanner: force
+    # _has_hard_secret to False so only _looks_credential_shaped can drop
+    # this line, proving the extractor really runs both gates independently.
+    monkeypatch.setattr(intent_capture, "_has_hard_secret", lambda text: False)
+    overlong_pat = "ghp_" + "A1b2" * 10
+    text = f"{overlong_pat} must not leak into logs"
+    out = extract_scope_lines(text)
+    assert out == []
+
+
+def test_extract_scope_lines_disabled_via_intent_contract_env(monkeypatch):
+    monkeypatch.setenv("CHAMELEON_INTENT_CONTRACT", "0")
+    assert extract_scope_lines("don't touch the auth module, only change the retry count") == []
+
+
+def test_extract_scope_lines_enabled_by_default(monkeypatch):
+    monkeypatch.delenv("CHAMELEON_INTENT_CONTRACT", raising=False)
+    assert extract_scope_lines("don't touch the auth module") == ["don't touch the auth module"]
+
+
+# --- capture_intent: scope_lines persistence ------------------------------------
+
+
+def test_capture_intent_persists_scope_lines(tmp_path):
+    capture_intent(tmp_path, SID, "Don't touch the auth module. Please tidy the docs.")
+    entries = read_intent(tmp_path, SID)
+    assert len(entries) == 1
+    assert entries[0]["scope_lines"] == ["Don't touch the auth module"]
+
+
+def test_capture_intent_no_scoping_phrase_persists_empty_scope_lines(tmp_path):
+    capture_intent(tmp_path, SID, "please tidy the docs")
+    entries = read_intent(tmp_path, SID)
+    assert entries[0]["scope_lines"] == []
+
+
+def test_capture_intent_suppressed_prompt_persists_zero_scope_lines(tmp_path):
+    # The prompt names an explicit scoping phrase ("don't touch") AND carries
+    # a hard secret. The suppressed branch must win completely: zero tokens
+    # AND zero scope lines, never a partial persist of the scoping sentence.
+    capture_intent(tmp_path, SID, f'don\'t touch the deploy key "{AWS_KEY}"')
+    entries = read_intent(tmp_path, SID)
+    assert len(entries) == 1
+    assert entries[0]["secret_suppressed"] is True
+    assert entries[0]["tokens"] == {}
+    assert entries[0]["scope_lines"] == []
+    raw = _intent_path(tmp_path).read_text(encoding="utf-8")
+    assert AWS_KEY not in raw
+
+
+def test_capture_intent_disabled_intent_contract_persists_empty_scope_lines(tmp_path, monkeypatch):
+    monkeypatch.setenv("CHAMELEON_INTENT_CONTRACT", "0")
+    capture_intent(tmp_path, SID, "don't touch the auth module")
+    entries = read_intent(tmp_path, SID)
+    assert entries[0]["scope_lines"] == []
+
+
+# --- scope_lines / recent_excerpts readers --------------------------------------
+
+
+def test_scope_lines_reader_flattens_and_dedupes(tmp_path):
+    capture_intent(tmp_path, SID, "don't touch the auth module")
+    capture_intent(tmp_path, SID, "don't touch the auth module. only change the retry count.")
+    out = scope_lines(read_intent(tmp_path, SID))
+    assert out == ["don't touch the auth module", "only change the retry count"]
+
+
+def test_scope_lines_reader_since_ts_filtering(tmp_path):
+    capture_intent(tmp_path, SID, "don't touch the old module")
+    cut = time.time()
+    time.sleep(0.01)
+    capture_intent(tmp_path, SID, "don't touch the new module")
+    out = scope_lines(read_intent(tmp_path, SID), since_ts=cut)
+    assert out == ["don't touch the new module"]
+
+
+def test_scope_lines_reader_skips_suppressed_entries(tmp_path):
+    capture_intent(tmp_path, SID, f'don\'t touch the deploy key "{AWS_KEY}"')
+    capture_intent(tmp_path, SID, "don't touch the auth module")
+    out = scope_lines(read_intent(tmp_path, SID))
+    assert out == ["don't touch the auth module"]
+
+
+def test_scope_lines_reader_missing_field_fails_open(tmp_path):
+    # An entry captured before this field existed has no "scope_lines" key at
+    # all; the reader must skip it silently, never raise.
+    path = _intent_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(
+            json.dumps(
+                {
+                    "ts": time.time(),
+                    "prompt_digest": "0" * 16,
+                    "secret_suppressed": False,
+                    "tokens": {"numerals": [], "identifiers": [], "quoted": []},
+                    "security": False,
+                }
+            )
+            + "\n"
+        )
+    assert scope_lines(read_intent(tmp_path, SID)) == []
+
+
+def test_recent_excerpts_returns_same_verbatim_lines_as_scope_lines(tmp_path):
+    capture_intent(tmp_path, SID, "don't touch the auth module")
+    entries = read_intent(tmp_path, SID)
+    assert recent_excerpts(entries) == scope_lines(entries) == ["don't touch the auth module"]

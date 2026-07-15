@@ -8,14 +8,25 @@ routing reads these back: fresh checkable tokens force a reviewer spawn and
 ride into its prompt so the review can cross-check the change against what was
 actually asked.
 
-Privacy posture, stated plainly: only extracted tokens and a 16-hex-char
-prompt digest persist, locally, in a 0700 directory with 0600 files, size- and
-retention-capped. The deterministic hard-secret scanner runs over the whole
-prompt and over each token before anything is written; a prompt that trips it
-persists only ``secret_suppressed: true`` with zero tokens. That scanner covers
-the known hard kinds only -- a credential matching no pattern can still persist
-inside a quoted token, which is why the capture is bounded, swept after
-``INTENT_RETENTION_DAYS``, and killable with ``CHAMELEON_INTENT_CAPTURE=0``.
+Privacy posture, stated plainly: only extracted tokens, a 16-hex-char prompt
+digest, and a bounded set of verbatim SCOPE-CONSTRAINT SENTENCES persist,
+locally, in a 0700 directory with 0600 files, size- and retention-capped. The
+deterministic hard-secret scanner runs over the whole prompt and over each
+token before anything is written; a prompt that trips it persists only
+``secret_suppressed: true`` with zero tokens and zero scope lines. That
+scanner covers the known hard kinds only -- a credential matching no pattern
+can still persist inside a quoted token or a scope line, which is why the
+capture is bounded, swept after ``INTENT_RETENTION_DAYS``, and killable with
+``CHAMELEON_INTENT_CAPTURE=0``.
+
+The scope-line contract (``extract_scope_lines``, ``capture_intent``'s
+``scope_lines`` field) is a second, narrower channel than the tokens above:
+it never stores the prompt itself, only the SENTENCE(S) that matched an
+explicit scoping phrase ("don't touch X", "only change Y", "leave Z alone",
+...), each re-scanned by the same hard-secret and credential-shape gates as
+every token, capped in count and per-line length. It has its own kill switch,
+``CHAMELEON_INTENT_CONTRACT=0``, independent of ``CHAMELEON_INTENT_CAPTURE``
+(which disables capture -- tokens and scope lines both -- entirely).
 """
 
 from __future__ import annotations
@@ -68,6 +79,69 @@ _IDENTIFIER_RE = re.compile(
     r"|/[\w\-]+(?:/[\w\-]+)+"
     r"|\b(?:[\w\-]+/)+[\w\-]+\.[A-Za-z0-9]+\b"
 )
+
+
+# Explicit scoping phrases (case-insensitive): "don't/do not
+# touch/modify/edit/change", "only change/modify/edit", "leave X alone",
+# "keep X (as is)", "without changing/touching", "must not". A sentence
+# matching one of these names an explicit boundary the request drew around
+# the change -- the only class of prompt text the intent contract persists
+# verbatim (never a paraphrase or a summary of "what the user wants").
+_SCOPE_PHRASE_RE = re.compile(
+    r"\b(?:don't|do not)\s+(?:touch|modify|edit|change)\b"
+    r"|\bonly\s+(?:change|modify|edit)\b"
+    r"|\bleave\b.{0,60}?\balone\b"
+    r"|\bkeep\b.{0,60}?\bas[- ]is\b"
+    r"|\bwithout\s+(?:changing|touching)\b"
+    r"|\bmust\s+not\b",
+    re.IGNORECASE,
+)
+
+
+def extract_scope_lines(text: str) -> list[str]:
+    """Extract verbatim scope-constraint sentences from prompt text.
+
+    Splits ``text`` into sentences on ``[.!?\\n]`` and keeps, UNALTERED
+    beyond a ``str.strip()`` (never paraphrased, reworded, or summarized),
+    each sentence matching ``_SCOPE_PHRASE_RE``. Matches are capped at
+    ``INTENT_SCOPE_LINES_MAX`` (earliest-first, applied BEFORE the
+    per-line char cap and the secret scan below, so the cap governs how many
+    candidate sentences are considered at all, not how many survive
+    scanning). Each surviving candidate is then truncated to
+    ``INTENT_SCOPE_LINE_MAX_CHARS`` -- truncation only ever shortens a
+    verbatim prefix, it never rewrites -- and the truncated (i.e. the exact
+    text that would persist) is re-scanned with ``_has_hard_secret`` and
+    ``_looks_credential_shaped``; a line tripping either is dropped, the
+    same persistence gate ``capture_intent`` runs over every extracted
+    token. A prompt naming no scoping phrase returns ``[]``.
+
+    Gated on ``CHAMELEON_INTENT_CONTRACT``: returns ``[]`` unconditionally
+    when set to ``"0"``, independent of ``CHAMELEON_INTENT_CAPTURE`` (which
+    gates capture entirely). Fails open to ``[]`` on any error -- this must
+    never raise into ``capture_intent``'s hot path.
+    """
+    if os.environ.get("CHAMELEON_INTENT_CONTRACT") == "0":
+        return []
+    try:
+        if not isinstance(text, str) or not text:
+            return []
+        candidates: list[str] = []
+        for segment in re.split(r"[.!?\n]", text):
+            line = segment.strip()
+            if line and _SCOPE_PHRASE_RE.search(line):
+                candidates.append(line)
+        cap_count = threshold_int("INTENT_SCOPE_LINES_MAX")
+        cap_chars = threshold_int("INTENT_SCOPE_LINE_MAX_CHARS")
+        out: list[str] = []
+        for line in candidates[:cap_count]:
+            if len(line) > cap_chars:
+                line = line[:cap_chars]
+            if _has_hard_secret(line) or _looks_credential_shaped(line):
+                continue
+            out.append(line)
+        return out
+    except Exception:
+        return []
 
 
 def _intent_path(repo_data: Path, session_id: str | None) -> Path:
@@ -203,8 +277,10 @@ def capture_intent(repo_data: Path, session_id: str | None, prompt_text: str) ->
     an empty-token entry: it marks the turn's request as having named nothing
     checkable, which the scope-drift advisory relies on (a stale earlier
     prompt's identifiers must not govern a later bare "commit this" turn),
-    and it is a no-op for every token reader. Only the digest and flags
-    persist -- never prompt prose.
+    and it is a no-op for every token reader. Only the digest, flags, and
+    ``scope_lines`` persist -- never full prompt prose. ``scope_lines`` is
+    itself bounded and secret-scanned by ``extract_scope_lines`` and is
+    unconditionally empty on the suppressed branch.
     """
     try:
         if not isinstance(prompt_text, str) or not prompt_text:
@@ -218,6 +294,10 @@ def capture_intent(repo_data: Path, session_id: str | None, prompt_text: str) ->
                 "secret_suppressed": True,
                 "tokens": {},
                 "security": security,
+                # Never extract scope lines from a secret-bearing prompt: a
+                # matched scoping sentence could itself carry the secret the
+                # suppression above just refused to persist.
+                "scope_lines": [],
             }
         else:
             tokens = extract_assertions(prompt_text)
@@ -231,6 +311,7 @@ def capture_intent(repo_data: Path, session_id: str | None, prompt_text: str) ->
                 "secret_suppressed": False,
                 "tokens": tokens,
                 "security": security,
+                "scope_lines": extract_scope_lines(prompt_text),
             }
 
         path = _intent_path(repo_data, session_id)
@@ -327,6 +408,45 @@ def checkable_tokens(entries: list[dict], since_ts: float | None = None) -> list
                     seen.add(value)
                     out.append(value)
     return out
+
+
+def scope_lines(entries: list[dict], since_ts: float | None = None) -> list[str]:
+    """Flattened verbatim scope lines from non-suppressed entries newer than
+    ``since_ts``.
+
+    Mirrors ``checkable_tokens``'s shape exactly: ``since_ts=None`` means all
+    entries, order-preserving dedupe across entries so the review job's
+    intent contract sees each scope line once, oldest-first. An entry
+    captured before this field existed (or one whose ``scope_lines`` is
+    missing or malformed) contributes nothing, never an error.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for entry in entries or []:
+        if not isinstance(entry, dict) or entry.get("secret_suppressed"):
+            continue
+        ts = entry.get("ts")
+        if since_ts is not None and not (isinstance(ts, (int, float)) and ts > since_ts):
+            continue
+        for value in entry.get("scope_lines") or []:
+            if isinstance(value, str) and value not in seen:
+                seen.add(value)
+                out.append(value)
+    return out
+
+
+def recent_excerpts(entries: list[dict], since_ts: float | None = None) -> list[str]:
+    """Verbatim prompt excerpts for the review job's intent contract.
+
+    v1 stores no separate full-prompt prose -- ``capture_intent`` persists
+    only extracted tokens, digests, and the bounded, secret-scanned scope
+    lines a prompt's scoping sentences produced (``extract_scope_lines``).
+    The intent contract's "recent excerpts" are therefore exactly those
+    retained scope lines; this is a thin alias over ``scope_lines`` so a
+    later revision that captures a wider verbatim excerpt window can extend
+    this function alone without touching any caller.
+    """
+    return scope_lines(entries, since_ts)
 
 
 def identifier_tokens(entries: list[dict], since_ts: float | None = None) -> list[str]:

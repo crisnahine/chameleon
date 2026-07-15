@@ -233,6 +233,124 @@ def test_route_intent_forced_ignores_risk_tier(tmp_path, monkeypatch):
     assert decision.model == "opus"
 
 
+# --- intent contract (Task 4): scope lines / excerpts ride the decision --------
+
+
+def test_route_intent_forced_carries_scope_lines_and_excerpts(tmp_path, monkeypatch):
+    """The verbatim intent contract rides alongside the existing
+    checkable-token intent trigger on a forced spawn."""
+    repo = tmp_path / "repo"
+    f = _write_source(repo)
+    monkeypatch.setattr(
+        intent_capture, "checkable_tokens", lambda entries, since_ts=None: ["balance == 42"]
+    )
+    monkeypatch.setattr(
+        intent_capture, "security_intent_seen", lambda entries, since_ts=None: False
+    )
+    monkeypatch.setattr(
+        intent_capture,
+        "scope_lines",
+        lambda entries, since_ts=None: ["don't touch the auth module"],
+    )
+    monkeypatch.setattr(
+        intent_capture,
+        "recent_excerpts",
+        lambda entries, since_ts=None: ["don't touch the auth module"],
+    )
+    ctx = scheduler.RouteContext(
+        repo_root=repo,
+        repo_id=REPO_ID,
+        session_id=SID,
+        repo_data=tmp_path / "data",
+        is_subagent=False,
+        files=(str(f),),
+    )
+    cfg = EnforcementConfig()
+    state = SessionDoc()
+
+    decision = scheduler.route(ctx, state, cfg)
+
+    assert decision.spawn is True
+    assert decision.reason == "intent_forced"
+    assert decision.scope_lines == ("don't touch the auth module",)
+    assert decision.intent_excerpts == ("don't touch the auth module",)
+
+
+def test_route_first_low_risk_carries_scope_lines_and_excerpts(tmp_path, monkeypatch):
+    """A non-intent-forced spawn (ordinary risk-tier routing) carries the
+    same intent contract fields -- they are read once, on every route, not
+    only on the intent_forced branch."""
+    repo = tmp_path / "repo"
+    f = _write_source(repo)
+    _stub_low_risk(monkeypatch)
+    monkeypatch.setattr(intent_capture, "checkable_tokens", lambda entries, since_ts=None: [])
+    monkeypatch.setattr(
+        intent_capture, "security_intent_seen", lambda entries, since_ts=None: False
+    )
+    monkeypatch.setattr(
+        intent_capture,
+        "scope_lines",
+        lambda entries, since_ts=None: ["only change the retry count"],
+    )
+    monkeypatch.setattr(
+        intent_capture,
+        "recent_excerpts",
+        lambda entries, since_ts=None: ["only change the retry count"],
+    )
+    ctx = scheduler.RouteContext(
+        repo_root=repo,
+        repo_id=REPO_ID,
+        session_id=SID,
+        repo_data=tmp_path / "data",
+        is_subagent=False,
+        files=(str(f),),
+    )
+    cfg = EnforcementConfig()
+    state = SessionDoc(review_spawns=0)
+
+    decision = scheduler.route(ctx, state, cfg)
+
+    assert decision.spawn is True
+    assert decision.reason == "first_low_risk"
+    assert decision.scope_lines == ("only change the retry count",)
+    assert decision.intent_excerpts == ("only change the retry count",)
+
+
+def test_route_scope_lines_alone_do_not_force_spawn(tmp_path, monkeypatch):
+    """Additivity: the intent contract only rides ALONG an existing spawn
+    decision. Captured scope lines with no checkable tokens and no security
+    hit must not change whether the route spawns -- a low-risk, non-first
+    turn still skips exactly as it did before Task 4."""
+    repo = tmp_path / "repo"
+    f = _write_source(repo)
+    _stub_low_risk(monkeypatch)
+    monkeypatch.setattr(intent_capture, "checkable_tokens", lambda entries, since_ts=None: [])
+    monkeypatch.setattr(
+        intent_capture, "security_intent_seen", lambda entries, since_ts=None: False
+    )
+    monkeypatch.setattr(
+        intent_capture,
+        "scope_lines",
+        lambda entries, since_ts=None: ["don't touch the auth module"],
+    )
+    ctx = scheduler.RouteContext(
+        repo_root=repo,
+        repo_id=REPO_ID,
+        session_id=SID,
+        repo_data=tmp_path / "data",
+        is_subagent=False,
+        files=(str(f),),
+    )
+    cfg = EnforcementConfig()
+    state = SessionDoc(review_spawns=1)  # not the first spawn -> low risk skips
+
+    decision = scheduler.route(ctx, state, cfg)
+
+    # Equality against the plain skip decision also pins scope_lines and
+    # intent_excerpts back to their () defaults on a non-spawning route.
+    assert decision == scheduler.RouteDecision(spawn=False, reason="routed_skip_low_risk")
+
+
 def test_route_first_low_risk_spawns_once(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     f = _write_source(repo)
@@ -344,6 +462,55 @@ def test_job_request_json_round_trip(tmp_path):
     restored = scheduler.JobRequest.from_dict(payload)
 
     assert restored == req
+
+
+def test_job_request_intent_contract_round_trip(tmp_path):
+    """The intent contract fields (Task 4) round-trip through JSON exactly
+    like every other JobRequest field."""
+    req = scheduler.JobRequest(
+        repo_root=tmp_path / "repo",
+        repo_id=REPO_ID,
+        session_id=SID,
+        files=(str(tmp_path / "repo" / "a.ts"),),
+        intent_tokens=("tok",),
+        lens_names=("correctness", "idiom"),
+        model="sonnet",
+        heartbeat_path=tmp_path / "data" / ".job_heartbeat.abc",
+        intent_excerpts=("don't touch the auth module",),
+        scope_lines=("don't touch the auth module", "only change the retry count"),
+    )
+
+    payload = json.loads(json.dumps(req.to_dict()))
+    restored = scheduler.JobRequest.from_dict(payload)
+
+    assert restored == req
+    assert restored.intent_excerpts == ("don't touch the auth module",)
+    assert restored.scope_lines == (
+        "don't touch the auth module",
+        "only change the retry count",
+    )
+
+
+def test_job_request_from_dict_old_shape_defaults_to_empty_contract(tmp_path):
+    """A request file written before Task 4 (no intent_excerpts/scope_lines
+    keys, same shape ``shown_idiom_slugs`` had to handle for the prior
+    field) round-trips those two fields to () rather than raising."""
+    old_payload = {
+        "repo_root": str(tmp_path / "repo"),
+        "repo_id": REPO_ID,
+        "session_id": SID,
+        "files": [],
+        "intent_tokens": [],
+        "lens_names": ["correctness"],
+        "model": "sonnet",
+        "heartbeat_path": str(tmp_path / "data" / ".job_heartbeat.abc"),
+    }
+
+    restored = scheduler.JobRequest.from_dict(old_payload)
+
+    assert restored.intent_excerpts == ()
+    assert restored.scope_lines == ()
+    assert restored.shown_idiom_slugs == ()
 
 
 # --- try_acquire_job_slot -------------------------------------------------------

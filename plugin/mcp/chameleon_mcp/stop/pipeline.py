@@ -851,6 +851,8 @@ def _run_review_job(
             model=decision.model or "sonnet",
             heartbeat_path=heartbeat,
             shown_idiom_slugs=_shown_idiom_slugs(session_doc),
+            intent_excerpts=decision.intent_excerpts,
+            scope_lines=decision.scope_lines,
         )
         # "spawned" records the DECISION (route reason, lens set) the instant
         # the slot is claimed -- before the detach attempt, mirroring the

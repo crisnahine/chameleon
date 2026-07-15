@@ -556,6 +556,13 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # Age at which session-start sweeps reap intent and judge session files,
     # matching the session-marker reaper horizon.
     "INTENT_RETENTION_DAYS": 7,
+    # Bounds on the verbatim scope-line intent contract: at most this many
+    # matched scoping sentences persist per prompt, each truncated to at most
+    # this many characters, so a captured prompt's scope excerpts stay a small
+    # bounded addition to the intent file rather than a second copy of the
+    # prompt.
+    "INTENT_SCOPE_LINES_MAX": 8,
+    "INTENT_SCOPE_LINE_MAX_CHARS": 200,
     # Deadlines for the two cross-process profile locks. Both were unbounded
     # blocking flocks: one daemon grinding through a slow git-show extraction
     # held .materialize.lock while every other reader of the same repo wedged
