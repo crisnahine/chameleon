@@ -395,6 +395,42 @@ class TestUnhashableEnumValues:
 
 
 # --------------------------------------------------------------------------
+# review.surface_bar -- the finding surface bar (spec section 7.1)
+# --------------------------------------------------------------------------
+class TestReviewConfig:
+    def test_absent_file_defaults_to_medium(self, tmp_path: Path):
+        d = tmp_path / "profile"
+        d.mkdir()
+        assert load_config(d).review.surface_bar == "medium"
+
+    def test_surface_bar_high_parses(self, tmp_path: Path):
+        d = tmp_path / "profile"
+        _write(d, {"review": {"surface_bar": "high"}})
+        assert load_config(d).review.surface_bar == "high"
+
+    def test_surface_bar_invalid_value_rejected(self, tmp_path: Path):
+        d = tmp_path / "profile"
+        _write(d, {"review": {"surface_bar": "nonsense"}})
+        with pytest.raises(ChameleonConfigError, match="review.surface_bar"):
+            load_config(d)
+
+    def test_unknown_review_key_tolerated(self, tmp_path: Path):
+        # Mirrors _coerce_enforcement's compat posture: config.json is
+        # committed and travels via git to teammates on older engines, so an
+        # unknown key under review must not brick the whole section.
+        d = tmp_path / "profile"
+        _write(d, {"review": {"unknown_key": 1}})
+        cfg = load_config(d)
+        assert cfg.review.surface_bar == "medium"
+
+    def test_review_not_object_rejected(self, tmp_path: Path):
+        d = tmp_path / "profile"
+        _write(d, {"review": []})
+        with pytest.raises(ChameleonConfigError, match="`review` must be an object"):
+            load_config(d)
+
+
+# --------------------------------------------------------------------------
 # Unsafe-read path (symlink) -> ChameleonConfigError
 # --------------------------------------------------------------------------
 class TestUnsafeRead:

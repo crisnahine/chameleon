@@ -1276,13 +1276,26 @@ def _update_findings_rows(repo_id: str, mutate) -> None:
         _write_findings_rows(repo_id, rows)
 
 
-def _passes_surface_bar(finding) -> bool:
-    """Built-in default surface bar (spec section 7.1, hardcoded this phase):
-    medium and above surface even unverified; low surfaces only once
-    independently confirmed."""
-    if finding.severity == "low":
-        return finding.verified == "confirmed"
-    return True
+_SURFACE_BARS = ("high", "medium", "low")
+
+
+def _passes_surface_bar(finding, bar: str = "medium") -> bool:
+    """The finding surface bar (spec section 7.1), configurable per repo via
+    ``review.surface_bar``. An unrecognized ``bar`` falls back to "medium".
+
+    "low" surfaces every severity, even unverified. "medium" (the default,
+    and the pre-config built-in behavior) surfaces blocker/high/medium even
+    unverified; low surfaces only once independently confirmed. "high" raises
+    the floor to blocker/high; medium/low surface only once confirmed.
+    """
+    if bar not in _SURFACE_BARS:
+        bar = "medium"
+    if bar == "low":
+        return True
+    floor = ("blocker", "high") if bar == "high" else ("blocker", "high", "medium")
+    if finding.severity in floor:
+        return True
+    return finding.verified == "confirmed"
 
 
 def _record_findings_check_event(repo_id: str, status: str, *, reason: str | None = None) -> None:
@@ -1296,13 +1309,14 @@ def _record_findings_check_event(repo_id: str, status: str, *, reason: str | Non
         pass
 
 
-def record_findings(repo_id: str, ws_root, findings) -> None:
+def record_findings(repo_id: str, ws_root, findings, *, surface_bar: str = "medium") -> None:
     """Persist canonical Finding rows, applying the surface bar at write time.
 
     Each finding is stored keyed by its ``match_key`` (a later finding
     sharing the same match_key overwrites the earlier row -- the
     cross-session recurrence identity ``core/finding.py`` defines). A
-    finding below the surface bar (see ``_passes_surface_bar``) is stored
+    finding below ``surface_bar`` (see ``_passes_surface_bar``; per-repo
+    configurable via ``review.surface_bar``, default "medium") is stored
     ``shelved`` instead of whatever status it arrived with, and the batch's
     shelf count is recorded as a check event so the shelf stays visible
     without ever reaching a Stop surface. ``ws_root`` is stamped on every
@@ -1321,7 +1335,7 @@ def record_findings(repo_id: str, ws_root, findings) -> None:
         nonlocal shelved
         for f in items:
             row = f.to_dict()
-            if not _passes_surface_bar(f):
+            if not _passes_surface_bar(f, surface_bar):
                 row["status"] = "shelved"
                 shelved += 1
             row["ws_root"] = root

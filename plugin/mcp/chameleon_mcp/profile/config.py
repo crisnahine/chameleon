@@ -206,6 +206,16 @@ class EnforcementConfig:
 
 
 @dataclass(frozen=True)
+class ReviewConfig:
+    # surface_bar: the finding surface bar applied at record_findings time
+    # (spec section 7.1). "medium" (default) preserves the pre-config
+    # built-in behavior: blocker/high/medium always surface, low only once
+    # independently confirmed. "high" raises the floor to blocker/high; "low"
+    # surfaces everything, even unverified low findings.
+    surface_bar: str = "medium"  # "high" | "medium" | "low"
+
+
+@dataclass(frozen=True)
 class ChameleonConfig:
     schema_version: str = CURRENT_SCHEMA
     canonical_ref: str | None = None
@@ -218,6 +228,7 @@ class ChameleonConfig:
     auto_refresh: AutoRefreshConfig = field(default_factory=AutoRefreshConfig)
     trust: TrustConfig = field(default_factory=TrustConfig)
     enforcement: EnforcementConfig = field(default_factory=EnforcementConfig)
+    review: ReviewConfig = field(default_factory=ReviewConfig)
     auto_rename: bool = True
     # Stable identity for repos without a git remote. Bootstrap persists this so
     # moving/renaming the working tree on disk does not orphan the trust grant.
@@ -239,6 +250,8 @@ class ChameleonConfig:
 _VALID_AUTO_PRESERVE = frozenset({None, "pulled_from_remote", "always"})
 
 _VALID_ENFORCE_MODES = frozenset({"off", "shadow", "enforce"})
+
+_VALID_SURFACE_BARS = frozenset({"high", "medium", "low"})
 
 
 def _coerce_enforcement(raw: Any) -> EnforcementConfig:
@@ -372,6 +385,23 @@ def _coerce_enforcement(raw: Any) -> EnforcementConfig:
         multi_lens_review=multi_lens_review,
         intent_scope_advisory=intent_scope_advisory,
     )
+
+
+def _coerce_review(raw: Any) -> ReviewConfig:
+    if raw is None:
+        return ReviewConfig()
+    if not isinstance(raw, dict):
+        raise ChameleonConfigError(f"`review` must be an object, got {type(raw).__name__}")
+    # Unknown keys under `review` are tolerated (ignored), not rejected -- the
+    # same compat posture as `enforcement` (see _coerce_enforcement above):
+    # config.json is committed and trust-hashed, so it travels via git to
+    # teammates who may run a different chameleon version.
+    bar = raw.get("surface_bar", "medium")
+    if not isinstance(bar, str) or bar not in _VALID_SURFACE_BARS:
+        raise ChameleonConfigError(
+            f"`review.surface_bar` must be one of {sorted(_VALID_SURFACE_BARS)}, got {bar!r}"
+        )
+    return ReviewConfig(surface_bar=bar)
 
 
 def _coerce_auto_refresh(raw: Any) -> AutoRefreshConfig:
@@ -528,6 +558,7 @@ def load_config(profile_dir: Path) -> ChameleonConfig:
         auto_refresh=_coerce_auto_refresh(raw.get("auto_refresh")),
         trust=_coerce_trust(raw.get("trust")),
         enforcement=_coerce_enforcement(raw.get("enforcement")),
+        review=_coerce_review(raw.get("review")),
         auto_rename=auto_rename,
         repo_uuid=repo_uuid.strip() if repo_uuid else None,
     )

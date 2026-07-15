@@ -182,6 +182,38 @@ def test_main_persists_empty_findings_when_lenses_find_nothing(tmp_path, monkeyp
     assert _persisted_findings(repo) == []
 
 
+# --- _persist reads the repo's configured review.surface_bar ---------------
+
+
+def test_persist_shelves_below_configured_surface_bar(tmp_path, monkeypatch):
+    heartbeat = scheduler.try_acquire_job_slot(REPO_ID, SID)
+    request_path, repo = _write_request(tmp_path, heartbeat)
+
+    profile_dir = repo / ".chameleon"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    (profile_dir / "config.json").write_text(
+        json.dumps({"review": {"surface_bar": "high"}}), encoding="utf-8"
+    )
+
+    finding = _stub_finding(severity="medium", claim="medium finding")
+    monkeypatch.setattr(
+        lenses, "resolve_runner", lambda name: lambda *a, **k: LensResult(findings=[finding])
+    )
+    # No verdict for id "0" -> the finding passes through VERIFY unverified.
+    monkeypatch.setattr(refuter, "run_batch", lambda *a, **k: [])
+
+    rc = job.main([str(request_path)])
+
+    assert rc == 0
+    # A medium/unverified finding is below the configured "high" bar, so it
+    # is shelved rather than surfaced.
+    assert _persisted_findings(repo) == []
+    raw = review_ledger._read_findings_rows(REPO_ID)
+    assert len(raw) == 1
+    (row,) = raw.values()
+    assert row["status"] == "shelved"
+
+
 # --- fail-open: a lens exception never crashes the job ----------------------
 
 

@@ -247,6 +247,24 @@ def _shadow_log_raw_findings(request: JobRequest, findings: list[Finding]) -> No
         _checkpoint(request, "shadow_log_error", reason=repr(exc)[:200])
 
 
+def _resolve_surface_bar(repo_root: Path) -> str:
+    """The repo's configured ``review.surface_bar``, fail-open to "medium".
+
+    Reads the same ``config.json`` every other enforcement gate reads
+    (``hook_helper._enf_profile_dir`` -- worktree-aware, resolves to the main
+    worktree's profile). Any read/parse failure (missing profile, malformed
+    config, unrecognized section) falls back to the built-in default rather
+    than risking the job on a config read.
+    """
+    try:
+        from chameleon_mcp import hook_helper as hh
+        from chameleon_mcp.profile.config import load_config
+
+        return load_config(hh._enf_profile_dir(repo_root)).review.surface_bar
+    except Exception:
+        return "medium"
+
+
 def _persist(request: JobRequest, findings: list[Finding]) -> None:
     """Persist surviving findings to the canonical finding-lifecycle ledger.
 
@@ -258,7 +276,12 @@ def _persist(request: JobRequest, findings: list[Finding]) -> None:
     try:
         from chameleon_mcp import review_ledger
 
-        review_ledger.record_findings(request.repo_id, str(request.repo_root), findings)
+        review_ledger.record_findings(
+            request.repo_id,
+            str(request.repo_root),
+            findings,
+            surface_bar=_resolve_surface_bar(request.repo_root),
+        )
     except Exception as exc:  # noqa: BLE001 -- persistence must never crash the job
         _checkpoint(request, "persist_error", reason=repr(exc)[:200])
 

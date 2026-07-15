@@ -99,6 +99,76 @@ def test_record_findings_noop_on_empty_repo_id_or_empty_list():
     assert review_ledger.undelivered_findings(REPO, ws_roots=["/repo"]) == []
 
 
+# --- record_findings: the review.surface_bar override (spec section 7.1) ----
+#
+# surface_bar="medium" (the default, exercised by the tests above) must stay
+# behavior-identical to the pre-config built-in bar. These cover the other
+# two configurable settings.
+
+
+def test_surface_bar_high_shelves_medium_unverified():
+    f = _finding(severity="medium", verified="unverified", claim="medium claim")
+    review_ledger.record_findings(REPO, "/repo", [f], surface_bar="high")
+
+    assert review_ledger.undelivered_findings(REPO, ws_roots=["/repo"]) == []
+    raw = review_ledger._read_findings_rows(REPO)
+    (row,) = raw.values()
+    assert row["status"] == "shelved"
+
+    from chameleon_mcp.exec_log import read_check_events
+
+    events = read_check_events(REPO, "", limit=50)["events"]
+    assert any(e.get("check") == "findings_ledger" and e.get("status") == "shelved" for e in events)
+
+
+def test_surface_bar_high_keeps_high_pending():
+    f = _finding(severity="high", verified="unverified", claim="high claim")
+    review_ledger.record_findings(REPO, "/repo", [f], surface_bar="high")
+    rows = review_ledger.undelivered_findings(REPO, ws_roots=["/repo"])
+    assert len(rows) == 1
+    assert rows[0].status == "pending"
+
+
+def test_surface_bar_high_keeps_blocker_pending():
+    f = _finding(severity="blocker", verified="unverified", claim="blocker claim")
+    review_ledger.record_findings(REPO, "/repo", [f], surface_bar="high")
+    rows = review_ledger.undelivered_findings(REPO, ws_roots=["/repo"])
+    assert len(rows) == 1
+    assert rows[0].status == "pending"
+
+
+def test_surface_bar_high_shelves_low_unverified():
+    f = _finding(severity="low", verified="unverified", claim="low claim")
+    review_ledger.record_findings(REPO, "/repo", [f], surface_bar="high")
+    assert review_ledger.undelivered_findings(REPO, ws_roots=["/repo"]) == []
+
+
+def test_surface_bar_high_still_surfaces_medium_confirmed():
+    f = _finding(severity="medium", verified="confirmed", claim="medium confirmed claim")
+    review_ledger.record_findings(REPO, "/repo", [f], surface_bar="high")
+    rows = review_ledger.undelivered_findings(REPO, ws_roots=["/repo"])
+    assert len(rows) == 1
+    assert rows[0].status == "pending"
+
+
+def test_surface_bar_low_surfaces_every_severity_even_unverified():
+    findings = [
+        _finding(severity=sev, verified="unverified", claim=f"{sev} claim")
+        for sev in ("blocker", "high", "medium", "low")
+    ]
+    review_ledger.record_findings(REPO, "/repo", findings, surface_bar="low")
+    rows = review_ledger.undelivered_findings(REPO, ws_roots=["/repo"])
+    assert len(rows) == 4
+    assert all(r.status == "pending" for r in rows)
+
+
+def test_surface_bar_unrecognized_value_falls_back_to_medium():
+    f = _finding(severity="low", verified="unverified", claim="low claim")
+    review_ledger.record_findings(REPO, "/repo", [f], surface_bar="extreme")
+    # medium-bar fallback: low+unverified is still shelved, not surfaced by "low".
+    assert review_ledger.undelivered_findings(REPO, ws_roots=["/repo"]) == []
+
+
 # --- lifecycle transitions ---------------------------------------------------
 
 
