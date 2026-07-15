@@ -23,16 +23,6 @@ from chameleon_mcp.hook_helper import (
     _wired_mirror_text,
 )
 from chameleon_mcp.optouts import _safe_session_marker
-from chameleon_mcp.tools import _render_stop_idioms, parse_idiom_gist_names
-
-_IDIOMS_MD = (
-    "# idioms\n\n## active\n\n"
-    "### wrap-fetches\n"
-    "Always wrap fetches in the apiClient helper.\n\n"
-    "Example:\n```\napiClient.get('/x')\n```\n\n"
-    "### atomic-writes\n"
-    "Write profile artifacts inside atomic_profile_commit only.\n"
-)
 
 _MIRROR_MD = (
     "PROJECT CONVENTIONS — authoritative.\n\n"
@@ -49,73 +39,6 @@ _MIRROR_MD = (
 
 def _clear_cache():
     hh._WIRED_MIRROR_CACHE.clear()
-
-
-def _render(mirror_names=None, seen=None):
-    return _render_stop_idioms(
-        _IDIOMS_MD,
-        [],
-        seen or [],
-        char_cap=3000,
-        max_terse=25,
-        summary_max_chars=160,
-        edited_languages=None,
-        mirror_idiom_names=mirror_names,
-    )
-
-
-class TestRenderWithMirrorNames:
-    def test_mirrored_idiom_renders_as_gist_with_pointer(self):
-        out = _render(mirror_names={"wrap-fetches"})
-        assert "- wrap-fetches: Always wrap fetches in the apiClient helper." in out
-        assert "apiClient.get" not in out  # full block did not re-dump
-        assert "Full text for any you have not applied: .chameleon/idioms.md" in out
-        # the unmirrored idiom keeps full-text escalation
-        assert "### atomic-writes" in out
-
-    def test_no_mirror_names_keeps_v303_escalation(self):
-        out = _render(mirror_names=None)
-        assert "### wrap-fetches" in out
-        assert "apiClient.get" in out
-        assert "Full text for any you have not applied" not in out
-
-    def test_session_seen_idiom_needs_no_pointer(self):
-        out = _render(mirror_names=None, seen=["wrap-fetches", "atomic-writes"])
-        assert "- wrap-fetches:" in out
-        assert "Full text for any you have not applied" not in out
-
-    def test_mirror_name_not_in_idioms_md_changes_nothing(self):
-        out = _render(mirror_names={"no-such-idiom"})
-        assert "### wrap-fetches" in out
-        assert "### atomic-writes" in out
-
-    def test_idiom_in_both_seen_and_mirror_needs_no_pointer(self):
-        # Session-seen wins: the model already read the full block this
-        # session, so the shared idioms.md pointer must not appear.
-        out = _render(mirror_names={"wrap-fetches"}, seen=["wrap-fetches"])
-        assert "- wrap-fetches:" in out
-        assert "Full text for any you have not applied" not in out
-        assert "### atomic-writes" in out  # the unmirrored one still escalates
-
-
-class TestParseIdiomGistNames:
-    def test_names_parsed_from_team_idioms_section_only(self):
-        names = parse_idiom_gist_names(_MIRROR_MD)
-        assert names == {"wrap-fetches"}
-        # SHAPE / PRINCIPLES colon lines and the "+N more" tail never leak in
-        assert "unit-py" not in names
-        assert "keep-it" not in names
-
-    def test_no_section_returns_empty(self):
-        assert parse_idiom_gist_names("IMPORTS:\n- Prefer pathlib\n") == set()
-
-    def test_round_trips_through_the_real_renderer(self):
-        # Producer/consumer grammar coupling: what render_conventions_md emits,
-        # parse_idiom_gist_names must read back — this test is the contract.
-        from chameleon_mcp.conventions import render_conventions_md
-
-        mirror = render_conventions_md({"conventions": {}}, None, _IDIOMS_MD)
-        assert parse_idiom_gist_names(mirror) == {"wrap-fetches", "atomic-writes"}
 
 
 class TestWiredMirrorText:
@@ -228,12 +151,28 @@ class TestSnapshotMirrorIdioms:
     """SessionStart-side snapshot writes."""
 
     def _wired_repo(self, tmp_path, monkeypatch) -> tuple[Path, Path]:
+        from chameleon_mcp.core.idiom_store import IdiomRecord, upsert_idiom
+
         monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
         repo = tmp_path / "repo"
         profile = repo / ".chameleon"
         profile.mkdir(parents=True)
         (repo / "CLAUDE.local.md").write_text("@.chameleon/conventions.md\n", encoding="utf-8")
         (profile / "conventions.md").write_text(_MIRROR_MD, encoding="utf-8")
+        # The snapshot resolves each delivered gist NAME to its store slug, so
+        # a title with no matching record is dropped; seed the one the mirror
+        # actually carries (_MIRROR_MD's only real gist line, "wrap-fetches").
+        upsert_idiom(
+            profile,
+            IdiomRecord(
+                slug="wrap-fetches",
+                title="wrap-fetches",
+                rationale="Always wrap fetches in the apiClient helper.",
+                status="active",
+                added_date="2026-07-15",
+                rank=1,
+            ),
+        )
         _clear_cache()
         return repo, tmp_path / "data"
 

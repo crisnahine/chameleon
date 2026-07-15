@@ -107,16 +107,6 @@ def _coerce_nonneg_int(v, default: int = 0) -> int:
 class EnforcementState:
     archetypes_seen: set[str] = field(default_factory=set)
     archetypes_with_violations: set[str] = field(default_factory=set)
-    # Idiom NAMES (the '### <name>' headers) that were ACTUALLY rendered in a
-    # Tier-2 PreToolUse block this session -- computed from the shaped+char-capped
-    # text the block really showed, so an idiom truncated out of that block is NOT
-    # in this set. Name granularity, not archetype: the Tier-2 idioms region is
-    # capped, so "the archetype was seen" does not imply "all its idioms were
-    # shown." The deny path seeds archetypes_seen without emitting idioms and never
-    # touches this. The turn-end idiom self-review summarizes an idiom (name + gist)
-    # only when its name is in this set; otherwise it renders full text, so an idiom
-    # the model never saw is never reduced to a name.
-    idioms_shown_names: set[str] = field(default_factory=set)
     # "rel::rule_id" keys of change-set-completeness advisories already surfaced
     # this session. The same unresolved pairing (a new model still missing its
     # migration) would otherwise re-render verbatim on every consecutive Stop;
@@ -140,7 +130,6 @@ class EnforcementState:
         return {
             "archetypes_seen": sorted(self.archetypes_seen),
             "archetypes_with_violations": sorted(self.archetypes_with_violations),
-            "idioms_shown_names": sorted(self.idioms_shown_names),
             "cochange_shown": sorted(self.cochange_shown),
             "files": {k: v.to_dict() for k, v in self.files.items()},
             "stop_hook_blocks": self.stop_hook_blocks,
@@ -155,10 +144,6 @@ class EnforcementState:
         return cls(
             archetypes_seen=set(d.get("archetypes_seen", [])),
             archetypes_with_violations=set(d.get("archetypes_with_violations", [])),
-            # Absent in pre-upgrade state files: default empty -> the Stop gate
-            # treats every idiom as not-yet-shown and renders full text (safe,
-            # just more verbose) until the first Tier-2 emission repopulates it.
-            idioms_shown_names=set(d.get("idioms_shown_names", [])),
             # Absent in pre-upgrade state files: default empty -> every pending
             # cochange advisory renders once more, then dedups from there.
             cochange_shown={str(x) for x in d.get("cochange_shown", []) or []},
@@ -215,10 +200,6 @@ def _merge_states(disk: EnforcementState, mem: EnforcementState) -> EnforcementS
         archetypes_with_violations=(
             disk.archetypes_with_violations | mem.archetypes_with_violations
         ),
-        # Monotonic within a session, same as the archetype sets above: union so a
-        # concurrent writer (or a later posttool save) never wipes the Tier-2
-        # "idioms shown" signal the turn-end self-review reads.
-        idioms_shown_names=disk.idioms_shown_names | mem.idioms_shown_names,
         # Monotonic like the sets above: a surfaced advisory stays surfaced.
         cochange_shown=disk.cochange_shown | mem.cochange_shown,
         files=dict(disk.files),

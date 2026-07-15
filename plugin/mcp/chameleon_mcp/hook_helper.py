@@ -2051,33 +2051,44 @@ def session_start() -> int:
 _IDIOM_BLOCK_DEDUP_MAX_LINES = 400
 
 
+def _witness_dedup_idiom_lines(text: str, witness: str) -> str:
+    """Drop idiom lines that appear verbatim in the canonical witness body.
+
+    Complementarity: the model can read those off the witness, so repeating them
+    in the idioms section is noise. Bounded substring containment with an early
+    stop, no nested scan; a no-op when there is no witness. Shared by the block
+    renderer (`_shape_idioms_for_block`) and the shown-title computation
+    (`_idiom_titles_kept_after_shaping`) so both agree on exactly the same text
+    before the char cap is applied.
+    """
+    if not witness:
+        return text
+    kept: list[str] = []
+    checked = 0
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped and checked < _IDIOM_BLOCK_DEDUP_MAX_LINES:
+            checked += 1
+            if stripped in witness:
+                continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def _shape_idioms_for_block(idioms_text: str, witness: str) -> str:
     """Cap and dedup-vs-witness the idioms text for the per-edit block.
 
     Drops substantive idiom lines that appear verbatim in the canonical witness
-    body (complementarity: the model can read those off the witness, so repeating
-    them is noise), then caps to the same char budget the PostToolUse path uses.
-    Bounded substring containment with an early stop, no nested scan; dedup is
-    skipped when there is no witness. May return "" if every line was redundant.
+    body, then caps to the same char budget the PostToolUse path uses. May
+    return "" if every line was redundant.
     """
-    text = idioms_text
-    if witness:
-        kept: list[str] = []
-        checked = 0
-        for line in text.splitlines():
-            stripped = line.strip()
-            if stripped and checked < _IDIOM_BLOCK_DEDUP_MAX_LINES:
-                checked += 1
-                if stripped in witness:
-                    continue
-            kept.append(line)
-        text = "\n".join(kept)
+    text = _witness_dedup_idiom_lines(idioms_text, witness)
     if len(text) > _IDIOM_CONTEXT_CHAR_CAP:
         # Hard char cut so the model sees as much of the last idiom as fits -- most
         # idiom bodies are a single unwrapped paragraph line, so a line-boundary cut
         # would drop the whole description. A partial `### header` this can leave at
-        # the tail is handled downstream: _idiom_block_names never records a
-        # truncated tail block whose description did not actually appear.
+        # the tail is handled by `_idiom_titles_kept_after_shaping`, which never
+        # records a truncated tail block whose description did not actually appear.
         # Honest overflow: count idiom `### ` headers whose block starts ENTIRELY
         # past the cut (dropped outright), so the tail reports coverage loss instead
         # of a bare "truncated" the reader can't quantify. A repo that invests in
@@ -2085,9 +2096,9 @@ def _shape_idioms_for_block(idioms_text: str, witness: str) -> str:
         # more; the Stop review's full-text-for-unseen pass compensates the rest.
         cap = _IDIOM_CONTEXT_CHAR_CAP
         # Count dropped idiom BLOCKS fence-awarely (a `### ` inside an example code
-        # fence is not a header): parse the full text and the kept prefix with the
-        # same parser _idiom_block_names uses, and diff the block counts. Bounded to
-        # the idioms text, which the reorder+dedup upstream already trims.
+        # fence is not a header): parse the full text and the kept prefix, and diff
+        # the block counts. Bounded to the idioms text, which the reorder+dedup
+        # upstream already trims.
         try:
             from chameleon_mcp.tools import _parse_idiom_blocks
 
@@ -2103,6 +2114,41 @@ def _shape_idioms_for_block(idioms_text: str, witness: str) -> str:
         )
         text = text[:cap].rstrip() + tail
     return text
+
+
+def _idiom_titles_kept_after_shaping(idioms_text: str, witness: str) -> set[str]:
+    """Idiom TITLES whose block survives the same shaping `_shape_idioms_for_block`
+    applies (witness dedup, then char cap), so a caller can record exactly which
+    idioms a Tier-2 block actually rendered.
+
+    Computed from the block split itself -- against the pre-cap text and the
+    capped prefix -- rather than by re-parsing the rendered block's truncation
+    tail back out, so a later change to that tail's wording cannot desync this
+    from what `_shape_idioms_for_block` actually kept. The one subtlety is the
+    block the char cap lands IN: the hard cut can leave its header (and
+    metadata) with its description sliced away, or even a partial `### header`.
+    Such a tail block is NOT counted -- only if its description actually began
+    to appear -- so a never-read idiom is never recorded as shown.
+    """
+    from chameleon_mcp.tools import _parse_idiom_blocks, _summarize_idiom_block
+
+    text = _witness_dedup_idiom_lines(idioms_text, witness)
+    if len(text) <= _IDIOM_CONTEXT_CHAR_CAP:
+        _, blocks = _parse_idiom_blocks(text)
+        return {name.strip() for name, _arch, _body in blocks if name.strip()}
+    _, kept_blocks = _parse_idiom_blocks(text[:_IDIOM_CONTEXT_CHAR_CAP])
+    titles: set[str] = set()
+    for i, (name, _arch, block_text) in enumerate(kept_blocks):
+        nm = name.strip()
+        if not nm:
+            continue
+        # The last block when the text was truncated is the one the cut landed
+        # in: count it only if its description (first sentence) actually
+        # rendered.
+        if i == len(kept_blocks) - 1 and not _summarize_idiom_block(block_text, max_chars=40):
+            continue
+        titles.add(nm)
+    return titles
 
 
 # Bounds for the experimental nearby-collaborator-signatures section (R1). Kept
@@ -4011,47 +4057,38 @@ def preflight_and_advise() -> int:
         first_in_archetype = archetype_name not in enforcement_state.archetypes_seen
         has_violations = archetype_name in enforcement_state.archetypes_with_violations
         enforcement_state.archetypes_seen.add(archetype_name)
-        # Record the idiom NAMES this Tier-2 block actually renders, so the turn-end
-        # self-review can summarize exactly those (name + gist) and still show full
-        # text for any idiom truncated out of the block. Shape the idioms the SAME
-        # way the block below does (`_shape_idioms_for_block`, which dedups vs the
-        # witness and char-caps), then take the surviving `### ` names -- so a
-        # per-archetype "seen" is never over-claimed past the cap. Gated on the same
-        # predicate the Tier-2 branch below uses; the deny path (which seeds
-        # archetypes_seen without showing anything) never reaches this.
-        if (first_in_archetype or has_violations or not summary) and has_idioms:
-            shown_names: set[str] = set()
+        # Resolve the idiom TITLES this Tier-2 block actually rendered (surviving
+        # the SAME witness-dedup + char-cap shaping `_shape_idioms_for_block`
+        # applies) to their store slugs, and record those on
+        # SessionDoc.idioms_shown_slugs -- the session-scoped "already shown"
+        # signal the idiom lens dedups against before deciding to spawn. Name
+        # granularity, not archetype: the Tier-2 idioms region is capped, so
+        # "the archetype was seen" does not imply "all its idioms were shown."
+        # A title with no matching store record (renamed/deleted) is skipped
+        # rather than recording a fabricated slug. Gated on the same predicate
+        # the Tier-2 branch below uses; the deny path (which seeds
+        # archetypes_seen without emitting idioms) never reaches this.
+        if (
+            (first_in_archetype or has_violations or not summary)
+            and has_idioms
+            and repo_id
+            and session_id
+            and repo_root_path is not None
+        ):
             try:
-                from chameleon_mcp.tools import _idiom_block_names
+                from chameleon_mcp.core.idiom_store import titles_to_slugs
+                from chameleon_mcp.core.session_state import update_session_doc
 
-                shaped = _shape_idioms_for_block(idioms_text, excerpt_content)
-                shown_names = _idiom_block_names(shaped)
-                enforcement_state.idioms_shown_names |= shown_names
+                shown_names = _idiom_titles_kept_after_shaping(idioms_text, excerpt_content)
+                shown_slugs = titles_to_slugs(_enf_profile_dir(repo_root_path), shown_names)
+                if shown_slugs:
+                    update_session_doc(
+                        repo_id,
+                        session_id,
+                        lambda doc: doc.idioms_shown_slugs.update(shown_slugs),
+                    )
             except Exception:
                 pass
-            # Also resolve the titles this block actually rendered to their
-            # store slugs and record them on SessionDoc.idioms_shown_slugs --
-            # the structured, session-scoped counterpart to the name set
-            # above, additive and independent of it. Same title->slug map
-            # _shown_idiom_slugs uses to translate names for JobRequest, so a
-            # title with no matching record (renamed/deleted) is skipped
-            # rather than recording a fabricated slug. Isolated try/except: a
-            # slug-resolution or session-doc write failure must never affect
-            # the name recording above or the Tier-2 render itself.
-            if shown_names and repo_id and session_id and repo_root_path is not None:
-                try:
-                    from chameleon_mcp.core.idiom_store import titles_to_slugs
-                    from chameleon_mcp.core.session_state import update_session_doc
-
-                    shown_slugs = titles_to_slugs(_enf_profile_dir(repo_root_path), shown_names)
-                    if shown_slugs:
-                        update_session_doc(
-                            repo_id,
-                            session_id,
-                            lambda doc: doc.idioms_shown_slugs.update(shown_slugs),
-                        )
-                except Exception:
-                    pass
         try:
             enforcement.save_state(enforcement_state, repo_data, session_id)
         except Exception:
@@ -7382,35 +7419,71 @@ def _dedupe_conventions_block(conventions_block: str, delivered: str) -> str:
     return _MEMORY_CHANNEL_POINTER_PARTIAL + "\n\n" + partial
 
 
-# SessionStart-time snapshot of the idiom names the wired mirror DELIVERED to
-# this session. The Stop gate reads only this file: the live mirror is rewritten
-# by every teach, but Claude Code resolved the @import once at session load, so
-# a mid-session-taught idiom must never be treated as memory-channel-delivered.
+# SessionStart-time snapshot of the idiom slugs the wired mirror DELIVERED to
+# this session: the live mirror is rewritten by every teach, but Claude Code
+# resolved the @import once at session load, so a mid-session-taught idiom
+# must never be treated as memory-channel-delivered. Currently write-only
+# (no reader depends on it), kept so a future memory-channel-aware dedup has
+# session-scoped delivery data to read without redesigning this snapshot.
 _MIRROR_IDIOMS_SNAPSHOT = ".mirror_idioms.{session}"
 
 
+def _mirror_delivered_idiom_titles(mirror_text: str) -> set[str]:
+    """Idiom TITLES carried by a delivered mirror's TEAM IDIOMS section.
+
+    Inverse of ``tools.render_idiom_gists``' line grammar (``- name: gist``,
+    ``- (+N more; ...)`` overflow tail), scoped to the section under
+    ``tools.MIRROR_IDIOMS_HEADER`` because other mirror sections also use
+    colon list lines. A name containing a colon parses truncated and simply
+    fails to resolve against the store downstream -- the safe direction (that
+    idiom keeps full-text escalation at review time). Private to this
+    snapshot: the resolved output is the store SLUG, never this raw title.
+    """
+    names: set[str] = set()
+    in_section = False
+    for ln in mirror_text.splitlines():
+        if ln.startswith("TEAM IDIOMS"):
+            in_section = True
+            continue
+        if not in_section:
+            continue
+        if ln.startswith("- "):
+            if ln.startswith("- (+"):
+                continue  # the "+N more" overflow tail is not a name
+            names.add(ln[2:].split(":", 1)[0].strip())
+        elif ln.strip():
+            break  # next section header ends the idiom list
+    return {n for n in names if n}
+
+
 def _snapshot_mirror_idioms(repo_root: Path, session_id: str | None) -> None:
-    """Persist the delivered mirror's idiom names for this session's Stop gates.
+    """Persist the delivered mirror's idiom SLUGS for this session's records.
 
     Runs at SessionStart — the same moment Claude Code resolves the memory
-    channel's @import — so the snapshot is exactly what the model received.
-    Best-effort: no wiring or any error writes nothing, and a missing snapshot
-    reads as "no channel" (full-text escalation) at Stop.
+    channel's @import — so the snapshot reflects exactly what the model
+    received, resolved to the store's stable slug identity (a title with no
+    matching record is dropped, never recorded as a fabricated slug).
+    Best-effort: no wiring, no resolvable titles, or any error writes
+    nothing.
     """
     try:
         if not session_id:
             return
+        from chameleon_mcp.core.idiom_store import titles_to_slugs
         from chameleon_mcp.optouts import _safe_session_marker
         from chameleon_mcp.plugin_paths import plugin_data_dir
-        from chameleon_mcp.tools import _compute_repo_id, parse_idiom_gist_names
+        from chameleon_mcp.tools import _compute_repo_id
 
-        names = sorted(parse_idiom_gist_names(_wired_mirror_text(repo_root)))
-        if not names:
+        titles = _mirror_delivered_idiom_titles(_wired_mirror_text(repo_root))
+        if not titles:
+            return
+        slugs = sorted(titles_to_slugs(_enf_profile_dir(repo_root), titles))
+        if not slugs:
             return
         snap_dir = plugin_data_dir() / _compute_repo_id(repo_root)
         snap_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         snap = snap_dir / _MIRROR_IDIOMS_SNAPSHOT.format(session=_safe_session_marker(session_id))
-        snap.write_text(json.dumps(names), encoding="utf-8")
+        snap.write_text(json.dumps(slugs), encoding="utf-8")
         try:
             os.chmod(snap, 0o600)
         except OSError:

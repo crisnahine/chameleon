@@ -513,51 +513,12 @@ def test_judge_wait_renders_findings_in_turn(make_trusted_repo):
     assert "src/Widget.ts:12" in ctx
 
 
-def test_shown_idiom_names_translate_to_slugs_in_job_request(make_trusted_repo):
-    # spec section 10.1's Tier-2/memory-channel dedup must-keep: the shown
-    # signal the per-edit hook actually populates is idioms_shown_names (the
-    # idiom's TITLE, per core.idiom_store's title/slug split), so the
-    # scheduler must translate it into the taught idiom's real slug before
-    # handing it to the job the idiom lens will read it from.
-    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo()
-
-    from chameleon_mcp.core.idiom_store import IdiomRecord, upsert_idiom
-
-    upsert_idiom(
-        profile_dir,
-        IdiomRecord(
-            slug="wrap-fetches",
-            title="wrap-fetches",
-            rationale="Always wrap fetches in the apiClient helper.",
-            languages=["typescript"],
-            archetypes=[],
-            paths=[],
-            status="active",
-            added_date="2026-07-15",
-            rank=1,
-        ),
-    )
-    _touch_edited_file(file_path, data_dir, sid)
-    st = EnforcementState()
-    st.files[file_path] = FileState()
-    st.idioms_shown_names = {"wrap-fetches"}
-    save_state(st, data_dir, sid)
-
-    out, calls = _run_stop(_payload(repo, sid), env={"CHAMELEON_ENFORCE": "1"})
-
-    assert len(calls) == 1
-    assert calls[0].shown_idiom_slugs == ("wrap-fetches",)
-    # The route decision itself is unaffected -- the shown-slug exclusion is
-    # the idiom LENS's own job, not the scheduler's route.
-    assert out.get("decision") != "block"
-
-
 def test_session_doc_idiom_slugs_flow_directly_into_job_request(make_trusted_repo):
-    # SessionDoc.idioms_shown_slugs is the native slug signal: sibling of
-    # test_shown_idiom_names_translate_to_slugs_in_job_request's
-    # idioms_shown_names path, this shows the scheduler reads a directly
-    # recorded slug too, with no title->slug lookup involved -- this session
-    # never sets idioms_shown_names or seeds an idiom store record at all.
+    # spec section 10.1's Tier-2/memory-channel dedup must-keep: the shown
+    # signal is SessionDoc.idioms_shown_slugs, the native per-session slug set
+    # the per-edit hook writes -- the scheduler reads it directly (no
+    # title->slug lookup involved) and hands it to the job the idiom lens
+    # will exclude already-shown idioms from.
     repo, data_dir, sid, file_path, profile_dir = make_trusted_repo()
     _touch_edited_file(file_path, data_dir, sid)
 
@@ -569,10 +530,12 @@ def test_session_doc_idiom_slugs_flow_directly_into_job_request(make_trusted_rep
 
     assert len(calls) == 1
     assert calls[0].shown_idiom_slugs == ("wrap-fetches",)
+    # The route decision itself is unaffected -- the shown-slug exclusion is
+    # the idiom LENS's own job, not the scheduler's route.
     assert out.get("decision") != "block"
 
 
-def test_no_shown_idiom_names_yields_empty_shown_slugs(make_trusted_repo):
+def test_no_shown_idiom_slugs_yields_empty_shown_slugs(make_trusted_repo):
     repo, data_dir, sid, file_path, profile_dir = make_trusted_repo()
     _touch_edited_file(file_path, data_dir, sid)
 

@@ -412,7 +412,7 @@ def records_from_markdown(text: str) -> tuple[list[IdiomRecord], list[str]]:
         # Language:/Status: lines are metadata only in the PROSE region; a
         # fenced example (worst on deprecated blocks, which have no real
         # Language line) can contain the literal text "Language: python" as
-        # payload, not a real tag. Same sniff _render_stop_idioms uses.
+        # payload, not a real tag.
         pre_fence = raw.split("```", 1)[0]
         lang_m = _LANGUAGE_LINE_RE.search(pre_fence)
         languages = []

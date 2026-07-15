@@ -80,26 +80,17 @@ def test_render_matches_golden_and_is_deterministic():
     assert render_idioms_md(list(recs)) == text
 
 
-def test_round_trip_through_tools_parsers():
-    from chameleon_mcp.tools import (
-        _idiom_block_names,
-        _parse_idiom_blocks,
-        parse_idiom_gist_names,
-        render_idiom_gists,
-    )
+def test_block_parser_and_gist_renderer_round_trip():
+    from chameleon_mcp.tools import _parse_idiom_blocks, render_idiom_gists
 
     text = render_idioms_md(_two_records())
     # Active-only block parser sees exactly the active titles.
     _pre, blocks = _parse_idiom_blocks(text)
     assert [b[0] for b in blocks] == ["use-api-client"]
     assert blocks[0][1] == "service"
-    # Tier-2 seen-name recorder round-trips.
-    assert _idiom_block_names(text) == {"use-api-client"}
-    # Mirror gist grammar round-trips.
+    # Mirror gist grammar renders the active title + gist.
     gists = render_idiom_gists(text)
     assert gists.startswith("- use-api-client: Always use the apiClient helper")
-    mirror = "TEAM IDIOMS (taught; follow on every edit" + "):\n" + gists + "\n"
-    assert parse_idiom_gist_names(mirror) == {"use-api-client"}
 
 
 def test_fenced_deprecated_heading_cannot_truncate():

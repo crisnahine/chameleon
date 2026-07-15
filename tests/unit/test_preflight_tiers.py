@@ -293,11 +293,10 @@ def _idiom_block(title: str) -> str:
 
 
 def test_tier2_records_rendered_idiom_slug_into_session_doc(tmp_path, monkeypatch):
-    """The Tier-2 recording site that populates
-    ``enforcement_state.idioms_shown_names`` must ALSO resolve the rendered
-    idiom's title to its store slug and record it on
-    ``SessionDoc.idioms_shown_slugs``, the structured per-session slug
-    signal."""
+    """The Tier-2 recording site resolves each idiom title its block actually
+    rendered to the store's slug and records it on
+    ``SessionDoc.idioms_shown_slugs``, the structured per-session "already
+    shown" signal the idiom lens dedups against."""
     data_dir = tmp_path / "chameleon_data"
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(data_dir))
     profile_dir = tmp_path / ".chameleon"

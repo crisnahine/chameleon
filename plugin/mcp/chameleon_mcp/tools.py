@@ -1875,14 +1875,6 @@ def _classify_profile_load_failure(profile_file: Path) -> str:
 
 _IDIOM_ARCHETYPE_LINE_RE = re.compile(r"(?im)^[ \t]*Archetype:[ \t]*(.+?)[ \t]*$")
 
-_IDIOM_LANGUAGE_LINE_RE = re.compile(r"(?im)^[ \t]*Language:[ \t]*(.+?)[ \t]*$")
-
-# Language tags that scope an idiom to one language (the values teach writes
-# from profile.json). Any other Language: value — "any", a hand-edited tag, a
-# typo — never filters an idiom out: an unrecognized tag fails open to shown,
-# not silently hidden.
-_IDIOM_SCOPED_LANGUAGES = frozenset({"typescript", "ruby", "python"})
-
 
 def _reorder_idioms_by_archetypes(idioms_text: str, archetypes) -> str:
     """Surface idioms for the given archetypes FIRST so a downstream char-cap
@@ -2007,54 +1999,6 @@ def _parse_idiom_blocks(idioms_text: str):
     return preamble, blocks
 
 
-def _idiom_block_names(idioms_text: str) -> set[str]:
-    """The ``### <name>`` header names whose idiom body actually appeared in
-    ``idioms_text`` (fence-aware).
-
-    Fed the shaped+char-capped text a Tier-2 block actually rendered, this is the
-    set of idioms the model saw, which the enforcement state records as
-    ``idioms_shown_names``. An idiom truncated out of the capped block has no header
-    here, so it is absent. The one subtlety is the block the char cap landed IN: the
-    hard cut can leave its header (and metadata) with its description sliced away, or
-    even a partial ``### header``. Such a tail block is NOT counted -- only if its
-    description actually began to appear -- so a never-read idiom is never recorded
-    as shown (and so never reduced to a name at turn end), and a truncated partial
-    header never seeds a bogus name.
-    """
-    truncated = False
-    text = idioms_text
-    # _shape_idioms_for_block emits one of two char-cap tails: the legacy
-    # "(idioms truncated ...)" or the honest-count "+N idiom(s) not shown ...".
-    # Both mark that the cut landed inside the last block, so BOTH must strip the
-    # tail and trip the last-block skip guard -- otherwise a char-cut-sliced idiom
-    # (header only, description gone) is wrongly recorded as shown and the Stop
-    # review reduces a never-read idiom to a name (the v2.38.22 regression).
-    marker = text.rfind("\n... (idioms truncated")
-    if marker == -1:
-        alt = text.rfind("\n... +")
-        if alt != -1 and "idiom(s) not shown" in text[alt : alt + 64]:
-            marker = alt
-    if marker != -1:
-        truncated = True
-        text = text[:marker]
-    _pre, blocks = _parse_idiom_blocks(text)
-    names: set[str] = set()
-    for i, (name, _arch, block_text) in enumerate(blocks):
-        nm = name.strip()
-        if not nm:
-            continue
-        # The last block when the text was truncated is the one the cut landed in:
-        # count it only if its description (first sentence) actually rendered.
-        if (
-            truncated
-            and i == len(blocks) - 1
-            and not _summarize_idiom_block(block_text, max_chars=40)
-        ):
-            continue
-        names.add(nm)
-    return names
-
-
 def _summarize_idiom_block(block_text: str, *, max_chars: int) -> str:
     """First prose sentence of an idiom block, for the terse turn-end rendering.
 
@@ -2122,162 +2066,12 @@ def _elide_long_parens(text: str) -> str:
     return text
 
 
-def _render_stop_idioms(
-    idioms_text: str,
-    edited_archetypes,
-    seen_idiom_names,
-    *,
-    char_cap: int,
-    max_terse: int,
-    summary_max_chars: int,
-    edited_languages=None,
-    mirror_idiom_names=None,
-) -> str:
-    """Render idioms.md for the turn-end self-review: filter, summarize, escalate.
-
-    Four composed transforms over the parsed ``### `` blocks:
-
-    - Language filter: drop blocks whose ``Language`` tag is a recognized concrete
-      language (``_IDIOM_SCOPED_LANGUAGES``) the turn did not edit. Untagged,
-      ``any``, and unrecognized tags always survive (fail open to shown), and an
-      empty ``edited_languages`` disables the filter entirely (cannot scope).
-    - Filter (B): keep only blocks whose ``Archetype`` is one of ``edited_archetypes``
-      plus untagged/general blocks; drop other-archetype blocks (they do not govern
-      what was edited this turn). No archetype resolved -> keep all (cannot scope).
-    - Summarize (C): a block whose NAME is in ``seen_idiom_names`` -- i.e. this exact
-      idiom was actually rendered in a Tier-2 block this session -- OR in
-      ``mirror_idiom_names`` -- i.e. its gist is already delivered every session
-      through the wired ``.chameleon/conventions.md`` memory channel, the higher-
-      authority channel per the 2026-07-11 migration A/B -- renders as one
-      ``- name: summary`` line. Mirror-carried idioms the session has not otherwise
-      surfaced get one shared pointer line to idioms.md instead of a full re-dump.
-    - Escalate (E): a block whose name is in NEITHER set renders as its FULL text,
-      so an idiom the model has no channel for is never reduced to a name. The
-      seen set is per-idiom-name, computed from the char-capped text a Tier-2 block
-      actually showed, so an idiom truncated out of that block is correctly treated
-      as unseen (full) even when other idioms of the same archetype were shown.
-
-    All output is sanitized at the boundary. ``""`` when nothing is in scope (the
-    edited archetypes/languages are simply not governed by any idiom), which the
-    caller reads as "no idiom section" rather than an empty heading.
-    """
-    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
-
-    wanted = {a.strip().lower() for a in (edited_archetypes or []) if a and a.strip()}
-    seen = {n.strip() for n in (seen_idiom_names or []) if n and n.strip()}
-    mirrored = {n.strip() for n in (mirror_idiom_names or []) if n and n.strip()}
-    preamble, blocks = _parse_idiom_blocks(idioms_text)
-    if not blocks:
-        # Non-standard idioms.md (no '### ' headers): fall back to a whole-text cap
-        # so nothing is silently dropped.
-        s = sanitize_for_chameleon_context(idioms_text.strip())
-        if len(s) > char_cap:
-            s = s[:char_cap].rstrip() + "\n... (idioms truncated; see idioms.md)"
-        return s
-
-    langs = {ln.strip().lower() for ln in (edited_languages or []) if ln and ln.strip()}
-    if langs:
-        scoped = []
-        for b in blocks:
-            # Sniff only the metadata region before the first fence: a
-            # `Language:` line inside a fenced Example is example code, and
-            # matching it would drop an untagged idiom that must survive.
-            m = _IDIOM_LANGUAGE_LINE_RE.search(b[2].split("```", 1)[0])
-            tag = m.group(1).strip().lower() if m else None
-            if tag in _IDIOM_SCOPED_LANGUAGES and tag not in langs:
-                continue
-            scoped.append(b)
-        blocks = scoped
-
-    if wanted:
-        kept = [b for b in blocks if b[1] is None or b[1] in wanted]
-    else:
-        kept = list(blocks)
-    if not kept:
-        return ""
-
-    terse: list[tuple[str, str]] = []
-    full: list[str] = []
-    mirror_only = False
-    for name, _arch, text in kept:
-        nm = name.strip()
-        if nm in seen or nm in mirrored:
-            terse.append((name, _summarize_idiom_block(text, max_chars=summary_max_chars)))
-            if nm not in seen:
-                mirror_only = True
-        else:
-            full.append(text)
-
-    out: list[str] = []
-    if terse:
-        shown = terse[:max_terse]
-        for name, summary in shown:
-            out.append(f"- {name}: {summary}" if summary else f"- {name}")
-        overflow = len(terse) - len(shown)
-        if overflow > 0:
-            out.append(f"- (+{overflow} more; see idioms.md)")
-        if mirror_only:
-            # These gists ride the memory channel every session, but this session
-            # may not have read the full blocks: one shared pointer replaces the
-            # per-idiom full-text re-dump.
-            out.append("Full text for any you have not applied: .chameleon/idioms.md")
-    if full:
-        rendered: list[str] = []
-        total = 0
-        dropped = 0
-        for i, text in enumerate(full):
-            t = text.rstrip("\n")
-            # Always keep the first block whole (even if it alone exceeds the
-            # budget) so the model always gets at least one unseen idiom in full,
-            # never a mid-block cut that could read a counterexample as canonical.
-            if rendered and total + len(t) > char_cap:
-                dropped = len(full) - i
-                break
-            rendered.append(t)
-            total += len(t)
-        if terse:
-            out.append("")
-            out.append("Full text (idioms not yet surfaced this session):")
-        out.append("\n\n".join(rendered))
-        if dropped > 0:
-            out.append(f"\n(+{dropped} more; see idioms.md)")
-
-    return sanitize_for_chameleon_context("\n".join(out).strip())
-
-
-# Header line of the mirror's idiom-digest section. Owned here, next to the
-# producer (render_idiom_gists) and the consumer (parse_idiom_gist_names), so
-# the section grammar cannot drift between the renderer and the Stop gate.
+# Header line of the mirror's idiom-digest section. Owned here, next to its
+# producer (render_idiom_gists), so the section grammar stays a single source
+# of truth for what conventions.py's render_conventions_md emits.
 MIRROR_IDIOMS_HEADER = (
     "TEAM IDIOMS (taught; follow on every edit — full text with examples in .chameleon/idioms.md):"
 )
-
-
-def parse_idiom_gist_names(mirror_text: str) -> set[str]:
-    """Idiom names carried by a rendered mirror's TEAM IDIOMS section.
-
-    Inverse of :func:`render_idiom_gists`' line grammar (``- name: gist``,
-    ``- (+N more; ...)`` overflow tail), scoped to the section under
-    ``MIRROR_IDIOMS_HEADER`` because other mirror sections also use colon list
-    lines. A name containing a colon parses truncated and simply fails to match
-    downstream — the safe direction (that idiom keeps full-text escalation).
-    Empty set on no section / no names.
-    """
-    names: set[str] = set()
-    in_section = False
-    for ln in mirror_text.splitlines():
-        if ln.startswith("TEAM IDIOMS"):
-            in_section = True
-            continue
-        if not in_section:
-            continue
-        if ln.startswith("- "):
-            if ln.startswith("- (+"):
-                continue  # the "+N more" overflow tail is not a name
-            names.add(ln[2:].split(":", 1)[0].strip())
-        elif ln.strip():
-            break  # next section header ends the idiom list
-    return {n for n in names if n}
 
 
 def render_idiom_gists(idioms_text: str) -> str:

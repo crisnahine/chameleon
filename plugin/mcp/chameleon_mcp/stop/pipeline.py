@@ -765,33 +765,17 @@ def stop_gates(ctx: RootContext) -> dict:
         return {}
 
 
-def _shown_idiom_slugs(repo_root: Path, state, session_doc) -> tuple[str, ...]:
-    """Idiom slugs this session has already shown the model, from either
-    signal that carries them (spec section 10.1's Tier-2/memory-channel dedup
-    must-keep).
+def _shown_idiom_slugs(session_doc) -> tuple[str, ...]:
+    """Idiom slugs this session has already shown the model (spec section
+    10.1's Tier-2/memory-channel dedup must-keep), which the idiom lens
+    excludes from its scoped set before deciding to spawn.
 
     ``session_doc.idioms_shown_slugs`` (``core.session_state.SessionDoc``) is
-    the native slug set. The per-edit Tier-2 block's ACTUAL shown signal
-    today is ``state.idioms_shown_names`` (the enforcement state's
-    ``### <name>`` header names -- see ``core.idiom_store``'s title/slug
-    split: idioms.md renders each record's TITLE as its header, not its
-    slug), so that set is translated into slugs via the loaded store's own
-    title->slug map, which the idiom lens then excludes from its scoped set
-    before deciding to spawn. Fails open to whatever slugs are already known
-    if the store cannot be loaded.
+    the native slug set the per-edit Tier-2 block writes directly -- no
+    title->slug translation needed, since the recording site itself resolves
+    each rendered idiom's TITLE to its store slug before writing here.
     """
-    slugs: set[str] = {
-        str(s) for s in (getattr(session_doc, "idioms_shown_slugs", None) or ()) if s
-    }
-    names = {str(n) for n in (getattr(state, "idioms_shown_names", None) or ()) if n}
-    if names:
-        try:
-            from chameleon_mcp import hook_helper as hh
-            from chameleon_mcp.core.idiom_store import titles_to_slugs
-
-            slugs |= titles_to_slugs(hh._enf_profile_dir(repo_root), names)
-        except Exception:
-            pass
+    slugs = {str(s) for s in (getattr(session_doc, "idioms_shown_slugs", None) or ()) if s}
     return tuple(sorted(slugs))
 
 
@@ -866,7 +850,7 @@ def _run_review_job(
             lens_names=decision.lens_names,
             model=decision.model or "sonnet",
             heartbeat_path=heartbeat,
-            shown_idiom_slugs=_shown_idiom_slugs(repo_root, state, session_doc),
+            shown_idiom_slugs=_shown_idiom_slugs(session_doc),
         )
         # "spawned" records the DECISION (route reason, lens set) the instant
         # the slot is claimed -- before the detach attempt, mirroring the

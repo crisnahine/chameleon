@@ -298,9 +298,10 @@ def test_decoy_mirror_reciting_a_rule_out_of_section_does_not_suppress_it(tmp_pa
 
 
 def test_session_start_snapshots_delivered_idiom_gists(tmp_path, monkeypatch):
-    # The Stop gate reads a SessionStart-time snapshot (never the live mirror),
-    # so session_start must write it whenever the wired import delivers gists.
+    # session_start writes a SessionStart-time snapshot of the mirror's
+    # delivered idiom slugs whenever the wired import delivers gists.
     from chameleon_mcp.conventions import render_conventions_md
+    from chameleon_mcp.core.idiom_store import IdiomRecord, upsert_idiom
     from chameleon_mcp.hook_helper import _MIRROR_IDIOMS_SNAPSHOT
     from chameleon_mcp.optouts import _safe_session_marker
 
@@ -309,6 +310,19 @@ def test_session_start_snapshots_delivered_idiom_gists(tmp_path, monkeypatch):
     idioms = (repo / ".chameleon" / "idioms.md").read_text(encoding="utf-8")
     (repo / ".chameleon" / "conventions.md").write_text(
         render_conventions_md(_CONV, _PRINCIPLES, idioms)
+    )
+    # The snapshot resolves each delivered gist NAME to its store slug; seed
+    # the record _build_repo's raw idioms.md ("### wrap") describes.
+    upsert_idiom(
+        repo / ".chameleon",
+        IdiomRecord(
+            slug="wrap",
+            title="wrap",
+            rationale="Wrap fetches.",
+            status="active",
+            added_date="2026-07-15",
+            rank=1,
+        ),
     )
     _session_start_context(repo, monkeypatch)
     snap = (

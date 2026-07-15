@@ -35,22 +35,26 @@ def test_single_huge_idiom_keeps_generic_tail():
     assert "truncated" in tail
 
 
-def test_new_overflow_tail_recognized_as_truncation():
-    # v2.38.22 guard: _idiom_block_names must treat the "+N idiom(s) not shown"
-    # tail as truncation, so the last (char-cut, header-only) block is excluded
-    # from idioms_shown_names -- else the Stop review reduces a never-read idiom
-    # to a name. Deterministic: the shaped text is constructed directly so the
-    # test does not depend on where the char cut happens to land.
-    from chameleon_mcp.tools import _idiom_block_names
+def test_titles_kept_after_shaping_excludes_char_cut_tail_block():
+    # The block the char cap lands IN can have its header (and metadata)
+    # survive with its description sliced away entirely -- such a tail block
+    # must be excluded from the "shown" set, or the Stop review would reduce a
+    # never-read idiom to a name. Computed directly from the pre-cap block
+    # split (no re-parsing of the rendered tail marker), so the boundary is
+    # constructed exactly at the end of the second block's metadata line.
+    from chameleon_mcp.hook_helper import _IDIOM_CONTEXT_CHAR_CAP, _idiom_titles_kept_after_shaping
 
-    shaped = (
-        "### fully_shown\nStatus: active\nA real description sentence.\n"
-        "### boundary\nStatus: active\n"  # header only, description sliced away
-        "... +2 idiom(s) not shown (see .chameleon/idioms.md)"
-    )
-    names = _idiom_block_names(shaped)
-    assert "fully_shown" in names
-    assert "boundary" not in names
+    header2 = "### boundary\nStatus: active\n"
+    first_head = "### fully_shown\nStatus: active\nA real description sentence.\n"
+    pad = _IDIOM_CONTEXT_CHAR_CAP - len(first_head) - 1 - len(header2)
+    assert pad > 0
+    first = first_head + ("z" * pad) + "\n"
+    second = header2 + "The real description, sliced away by the cut.\n"
+    text = first + second
+    assert len(first) + len(header2) == _IDIOM_CONTEXT_CHAR_CAP
+
+    titles = _idiom_titles_kept_after_shaping(text, "")
+    assert titles == {"fully_shown"}
 
 
 def test_overflow_count_is_fence_aware():
