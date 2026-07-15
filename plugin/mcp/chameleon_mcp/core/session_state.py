@@ -143,6 +143,57 @@ def update_session_doc(
     return doc
 
 
+_CURSOR_FILENAME = ".delivery_cursor.json"
+
+
+def _cursor_path(repo_id: str) -> Path:
+    from chameleon_mcp.profile.trust import repo_data_dir
+
+    return repo_data_dir(repo_id) / _CURSOR_FILENAME
+
+
+def read_delivery_cursor(repo_id: str) -> str:
+    """Lock-free snapshot of the repo-keyed finding-delivery cursor.
+
+    Delivery is keyed by repo_id, not (session, repo_id) like every other
+    field on this module: a finding delivered in one session must not be
+    re-delivered to a different session of the same repo, so this lives in
+    its own per-repo file rather than on SessionDoc. Fails open to "" on any
+    read error.
+    """
+    try:
+        data = json.loads(_cursor_path(repo_id).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return ""
+    cursor = data.get("delivery_cursor") if isinstance(data, dict) else None
+    return cursor if isinstance(cursor, str) else ""
+
+
+def update_delivery_cursor(repo_id: str, cursor: str) -> None:
+    """Advance the repo-keyed delivery cursor under flock, atomic write.
+
+    Same load-then-atomic-replace discipline as ``update_session_doc``: a
+    cursor value a later reader trusts must never be torn by a concurrent
+    writer (a detached job and a live Stop can both deliver findings for
+    the same repo in overlapping sessions).
+    """
+    from chameleon_mcp.locks import acquire_advisory_lock
+
+    path = _cursor_path(repo_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(path.name + ".lock")
+    with acquire_advisory_lock(lock_path, blocking_timeout=10.0):
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(
+            json.dumps({"delivery_cursor": cursor}, separators=(",", ":")), encoding="utf-8"
+        )
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, path)
+
+
 def reap_stale_docs(repo_id: str, *, max_age_hours: int = 48) -> int:
     """Delete session docs (and their lock sidecars) older than max_age_hours.
 

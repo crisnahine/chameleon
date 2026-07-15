@@ -60,6 +60,7 @@ import os
 import re
 import sqlite3
 import time
+import uuid
 from pathlib import Path
 
 from chameleon_mcp._thresholds import threshold_float, threshold_int
@@ -1198,3 +1199,412 @@ def read_session_attestations(
         "total": total,
         "unverified": unverified,
     }
+
+
+# --- Finding-lifecycle ledger (canonical core.finding.Finding rows) --------------
+#
+# The single store for review findings across their lifecycle (core/finding.py:
+# pending -> delivered -> addressed | resurfaced (HIGH, once) -> expired, with a
+# below-bar shelved branch). One JSON file per repo -- NOT an append-only NDJSON
+# log like the audit surfaces above, since a row here is mutated in place as a
+# finding's status advances -- keyed by match_key so the same claim recurring
+# across sessions is one logical row, not a growing pile of duplicates. Writes
+# use the same flock + atomic-write discipline as core/idiom_store.py: a
+# concurrent detached job and a live Stop must never interleave a partial file.
+#
+# Additive alongside the pre-existing per-event judge_findings table in
+# drift/observations.py (record_judge_finding / open_judge_findings /
+# mark_judge_finding) and stop/gates.py's _ledger_persist /
+# _ledger_recheck_and_resurface, which keep running unchanged against that
+# older store until the pipeline that calls them is switched over.
+
+_FINDINGS_LEDGER_FILENAME = "findings_ledger.json"
+_RESURFACE_MAX_LINES = 8
+_OPEN_STATUSES = ("pending", "delivered", "resurfaced")
+_HIGH_SEVERITIES = ("blocker", "high")
+
+
+def _findings_ledger_path(repo_id: str) -> Path:
+    from chameleon_mcp.profile.trust import repo_data_dir
+
+    return repo_data_dir(repo_id) / _FINDINGS_LEDGER_FILENAME
+
+
+def _read_findings_rows(repo_id: str) -> dict:
+    """Lock-free snapshot of the raw ``{match_key: row}`` map; fails open to {}."""
+    try:
+        raw = json.loads(_findings_ledger_path(repo_id).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+    rows = raw.get("rows") if isinstance(raw, dict) else None
+    return rows if isinstance(rows, dict) else {}
+
+
+def _write_findings_rows(repo_id: str, rows: dict) -> None:
+    path = _findings_ledger_path(repo_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps({"rows": rows}, separators=(",", ":")), encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    os.replace(tmp, path)
+
+
+def _update_findings_rows(repo_id: str, mutate) -> None:
+    """Load-mutate-save the whole rows map under one flock, mirroring
+    core/idiom_store.py's per-write discipline: the read, the mutation, and
+    the atomic replace all happen while the lock is held, so a concurrent
+    writer never observes (or clobbers) a half-applied batch."""
+    from chameleon_mcp.locks import acquire_advisory_lock
+
+    path = _findings_ledger_path(repo_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(path.name + ".lock")
+    with acquire_advisory_lock(lock_path, blocking_timeout=10.0):
+        rows = _read_findings_rows(repo_id)
+        mutate(rows)
+        _write_findings_rows(repo_id, rows)
+
+
+def _passes_surface_bar(finding) -> bool:
+    """Built-in default surface bar (spec section 7.1, hardcoded this phase):
+    medium and above surface even unverified; low surfaces only once
+    independently confirmed."""
+    if finding.severity == "low":
+        return finding.verified == "confirmed"
+    return True
+
+
+def _record_findings_check_event(repo_id: str, status: str, *, reason: str | None = None) -> None:
+    try:
+        from chameleon_mcp.exec_log import append_check_event
+
+        append_check_event(
+            repo_id, session_id="", check="findings_ledger", status=status, reason=reason
+        )
+    except Exception:
+        pass
+
+
+def record_findings(repo_id: str, ws_root, findings) -> None:
+    """Persist canonical Finding rows, applying the surface bar at write time.
+
+    Each finding is stored keyed by its ``match_key`` (a later finding
+    sharing the same match_key overwrites the earlier row -- the
+    cross-session recurrence identity ``core/finding.py`` defines). A
+    finding below the surface bar (see ``_passes_surface_bar``) is stored
+    ``shelved`` instead of whatever status it arrived with, and the batch's
+    shelf count is recorded as a check event so the shelf stays visible
+    without ever reaching a Stop surface. ``ws_root`` is stamped on every
+    row so a later scoped read (``undelivered_findings``,
+    ``recheck_and_resurface``) never crosses workspace boundaries in a
+    shared-repo_id monorepo. No-op on an empty repo_id or an empty/invalid
+    finding list.
+    """
+    items = [f for f in (findings or []) if getattr(f, "match_key", None)]
+    if not repo_id or not items:
+        return
+    root = str(ws_root) if ws_root else ""
+    shelved = 0
+
+    def _mutate(rows: dict) -> None:
+        nonlocal shelved
+        for f in items:
+            row = f.to_dict()
+            if not _passes_surface_bar(f):
+                row["status"] = "shelved"
+                shelved += 1
+            row["ws_root"] = root
+            rows[f.match_key] = row
+
+    _update_findings_rows(repo_id, _mutate)
+    if shelved:
+        _record_findings_check_event(repo_id, "shelved", reason=f"count={shelved}")
+
+
+def undelivered_findings(repo_id: str, *, ws_roots) -> list:
+    """Pending or resurfaced rows scoped to ``ws_roots``, oldest first.
+
+    Scoping mirrors the pre-existing judge_findings ledger's ws_root
+    discipline (drift/observations.py): a shared repo_id can span several
+    monorepo workspaces, and a finding's file is relative to the root that
+    persisted it, so an unscoped read would hand one workspace's findings
+    to another's delivery pass. An empty/falsy ``ws_roots`` disables
+    scoping (every workspace's rows are returned) -- callers that know
+    their scope always pass it.
+    """
+    from chameleon_mcp.core.finding import Finding
+
+    if not repo_id:
+        return []
+    roots = {str(r) for r in (ws_roots or []) if r}
+    out = []
+    for row in _read_findings_rows(repo_id).values():
+        if not isinstance(row, dict) or row.get("status") not in ("pending", "resurfaced"):
+            continue
+        if roots and str(row.get("ws_root") or "") not in roots:
+            continue
+        try:
+            out.append(Finding.from_dict(row))
+        except Exception:
+            continue
+    out.sort(key=lambda f: f.created_at)
+    return out
+
+
+def _transition_status(repo_id: str, match_keys, allowed_from, new_status: str) -> int:
+    """Move each row in ``match_keys`` currently in ``allowed_from`` (any
+    status, when ``allowed_from`` is None) to ``new_status``. Unknown or
+    already-transitioned keys are skipped silently -- a stale or
+    double-delivered key is not an error. Returns the count actually moved.
+    """
+    keys = {k for k in (match_keys or []) if isinstance(k, str) and k}
+    if not repo_id or not keys:
+        return 0
+    moved = 0
+
+    def _mutate(rows: dict) -> None:
+        nonlocal moved
+        for mk in keys:
+            row = rows.get(mk)
+            if not isinstance(row, dict):
+                continue
+            if allowed_from is not None and row.get("status") not in allowed_from:
+                continue
+            row["status"] = new_status
+            moved += 1
+
+    _update_findings_rows(repo_id, _mutate)
+    return moved
+
+
+def mark_delivered(repo_id: str, match_keys) -> None:
+    """pending|resurfaced -> delivered.
+
+    Advances the repo-keyed delivery cursor (spec section 3.5: cursors are
+    keyed by repo_id, not session) whenever at least one row actually
+    transitioned, so a later reader can tell delivery happened and when.
+    """
+    moved = _transition_status(repo_id, match_keys, {"pending", "resurfaced"}, "delivered")
+    if moved:
+        try:
+            from chameleon_mcp.core.session_state import update_delivery_cursor
+
+            update_delivery_cursor(repo_id, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+        except Exception:
+            pass
+
+
+def mark_addressed(repo_id: str, match_keys) -> None:
+    """Any open status -> addressed. Idempotent: a row already addressed or
+    expired is left alone by the allowed-from set."""
+    _transition_status(repo_id, match_keys, set(_OPEN_STATUSES), "addressed")
+
+
+def mark_resurfaced(repo_id: str, match_keys) -> None:
+    """pending|delivered -> resurfaced -- the one-shot HIGH re-nag."""
+    _transition_status(repo_id, match_keys, {"pending", "delivered"}, "resurfaced")
+
+
+def recheck_and_resurface(repo_id: str, ws_root) -> list:
+    """Canonical-row port of stop/gates.py's ``_ledger_recheck_and_resurface``.
+
+    A NEW function rather than an in-place port of the legacy one: the two
+    read disjoint stores (drift.db's judge_findings table there, this
+    module's findings_ledger.json here), so porting in place would either
+    break the legacy store's still-green regression tests or require
+    dual-writing rows the legacy reader cannot understand. Not yet wired
+    into the live Stop pipeline -- a future pipeline change calls this
+    instead of the legacy function once the two stores are unified.
+
+    At Stop, before this turn's own findings persist: every open
+    (pending/delivered/resurfaced) row scoped to ``ws_root`` is re-checked.
+    A row whose pinned excerpt no longer matches the file's current content
+    at that location -- or whose file is gone -- is marked addressed (the
+    reviewed content moved, so re-nagging is noise); a row with no pinned
+    excerpt is left as-is (staleness is never fabricated from data
+    absence). A fileless row that is not high/blocker severity is
+    addressed too (it has no anchor to ever re-check against, so leaving it
+    open would clog the recheck window forever). An unaddressed
+    high/blocker-severity row still open resurfaces exactly once
+    (pending/delivered -> resurfaced); a row already resurfaced and still
+    unchanged is left alone -- no second nag. Returns the advisory lines,
+    or [] when nothing resurfaces. Fail-open to [].
+    """
+    if not repo_id:
+        return []
+    try:
+        from chameleon_mcp.judge import _excerpt_sha_stale
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+        from chameleon_mcp.stop.verify import _contained_rel, _excerpt_window
+
+        root = str(ws_root)
+        root_path = Path(root)
+        resurfaced_rows: list[dict] = []
+
+        def _mutate(rows: dict) -> None:
+            for row in rows.values():
+                if not isinstance(row, dict) or row.get("ws_root") != root:
+                    continue
+                status = row.get("status")
+                if status not in _OPEN_STATUSES:
+                    continue
+                file_ = row.get("file") or ""
+                has_file = bool(file_)
+                if has_file:
+                    try:
+                        contained = _contained_rel(root_path, file_)
+                        exists = contained is not None and (root_path / contained).is_file()
+                    except OSError:
+                        exists = False
+                    if not exists:
+                        row["status"] = "addressed"
+                        continue
+                    pinned_sha = row.get("excerpt_sha") or ""
+                    if pinned_sha:
+                        span = row.get("span") or [0, 0]
+                        line = (
+                            span[0]
+                            if isinstance(span, list)
+                            and span
+                            and isinstance(span[0], int)
+                            and span[0] > 0
+                            else None
+                        )
+                        current = _excerpt_window(root_path, file_, line)
+                        if _excerpt_sha_stale(pinned_sha, current):
+                            row["status"] = "addressed"
+                            continue
+                severity = row.get("severity")
+                is_high = severity in _HIGH_SEVERITIES
+                if not has_file and not is_high:
+                    row["status"] = "addressed"
+                    continue
+                if status in ("pending", "delivered") and is_high:
+                    row["status"] = "resurfaced"
+                    resurfaced_rows.append(row)
+
+        _update_findings_rows(repo_id, _mutate)
+        if not resurfaced_rows:
+            return []
+        lines = [
+            f"[🦎 chameleon: {len(resurfaced_rows)} unaddressed high-severity finding(s) "
+            "from a previous turn's review, surfaced once more]",
+            "Advisory; verify each before acting -- they may be wrong, or already handled.",
+        ]
+        for row in resurfaced_rows[:_RESURFACE_MAX_LINES]:
+            file_ = row.get("file") or ""
+            loc = sanitize_for_chameleon_context(str(file_)) if file_ else "?"
+            span = row.get("span") or [0, 0]
+            if isinstance(span, list) and span and isinstance(span[0], int) and span[0] > 0:
+                loc += f":{span[0]}"
+            lens = row.get("source_lens") or "?"
+            lines.append(f"- {loc} ({sanitize_for_chameleon_context(str(lens))})")
+        return lines
+    except Exception:
+        return []
+
+
+def _finding_from_legacy_pending(raw: dict):
+    """Adapt one legacy ``.judge_pending.<sid>.json`` finding entry (the
+    judge_async.py next-turn delivery payload's shape -- file/line/message/
+    confidence/verify/excerpt_sha/suggested_fix/evidence_cmds) into a
+    canonical Finding, or None when the entry has no usable message. Every
+    such entry was correctness-lens output (the only lens that ever wrote
+    that file), so ``kind``/``source_lens`` are fixed accordingly; severity
+    reuses the legacy confidence->high/medium split, matching what
+    ``stop/gates.py``'s pre-canonical ledger used for the same data.
+    """
+    from chameleon_mcp.core.finding import Finding
+
+    message = raw.get("message")
+    if not isinstance(message, str) or not message.strip():
+        return None
+    file_ = raw.get("file")
+    file_ = file_ if isinstance(file_, str) else ""
+    line = raw.get("line")
+    line = line if isinstance(line, int) and not isinstance(line, bool) and line > 0 else 0
+    try:
+        confidence = float(raw.get("confidence"))
+    except (TypeError, ValueError):
+        confidence = 0.5
+    confidence = max(0.0, min(1.0, confidence))
+    severity = "high" if confidence >= 0.7 else "medium"
+    verify_raw = raw.get("verify")
+    verified = verify_raw if verify_raw in ("confirmed", "unverified", "refuted") else "unverified"
+    excerpt_sha = raw.get("excerpt_sha")
+    excerpt_sha = excerpt_sha if isinstance(excerpt_sha, str) else ""
+    try:
+        return Finding(
+            id=uuid.uuid4().hex,
+            kind="correctness",
+            severity=severity,
+            confidence=confidence,
+            file=file_,
+            span=(line, line),
+            claim=message,
+            evidence="",
+            excerpt_sha=excerpt_sha,
+            excerpt="",
+            source_lens="correctness",
+            status="pending",
+            created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            verified=verified,
+        )
+    except ValueError:
+        return None
+
+
+def migrate_pending_queue(repo_id: str, ws_root) -> dict:
+    """One-time migration of the legacy async-judge pending queue
+    (``.judge_pending.<session-marker>.json``, the old next-turn
+    correctness-finding delivery staging file) into canonical ledger rows
+    (spec section 9). Each surviving finding enters the ledger as
+    ``pending``: the file's whole reason to exist was that the user had not
+    seen these findings yet, so "pending" (not yet delivered) -- not
+    "delivered" -- is what makes them reachable by a later
+    ``undelivered_findings`` read. Every legacy file found is deleted
+    whether or not it parsed, matching the file's original
+    one-shot-consumption contract at its old read site. Findings still go
+    through ``record_findings``'s surface bar, so a stale/low-confidence
+    legacy row shelves exactly like a freshly-produced one.
+
+    Returns ``{"files": int, "findings": int}``; both 0 on any failure or
+    when no legacy files exist. Fail-open, never raises.
+    """
+    if not repo_id:
+        return {"files": 0, "findings": 0}
+    try:
+        from chameleon_mcp.profile.trust import repo_data_dir
+
+        paths = sorted(repo_data_dir(repo_id).glob(".judge_pending.*.json"))
+    except OSError:
+        return {"files": 0, "findings": 0}
+    if not paths:
+        return {"files": 0, "findings": 0}
+
+    files_done = 0
+    total_findings = 0
+    for path in paths:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ValueError):
+            payload = None
+        findings = []
+        if isinstance(payload, dict):
+            for raw in payload.get("findings") or []:
+                if isinstance(raw, dict):
+                    f = _finding_from_legacy_pending(raw)
+                    if f is not None:
+                        findings.append(f)
+        if findings:
+            record_findings(repo_id, ws_root, findings)
+            total_findings += len(findings)
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        files_done += 1
+    return {"files": files_done, "findings": total_findings}

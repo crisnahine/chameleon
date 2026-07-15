@@ -16,11 +16,9 @@ from pathlib import Path
 
 import pytest
 
-from chameleon_mcp import refuter
+from chameleon_mcp import refuter, review_ledger
 from chameleon_mcp.core.finding import Finding
 from chameleon_mcp.core.session_state import read_session_doc
-from chameleon_mcp.optouts import _safe_session_marker
-from chameleon_mcp.profile.trust import repo_data_dir
 from chameleon_mcp.stop import job, lenses, scheduler
 from chameleon_mcp.stop.lenses import LensResult
 
@@ -95,8 +93,8 @@ def _events() -> list[dict]:
     return [e for e in out["events"] if e.get("check") == "review_job"]
 
 
-def _output_path() -> Path:
-    return repo_data_dir(REPO_ID) / f".job_findings.{_safe_session_marker(SID)}.json"
+def _persisted_findings(repo: Path) -> list[Finding]:
+    return review_ledger.undelivered_findings(REPO_ID, ws_roots=[str(repo)])
 
 
 # --- argv / request-file edge cases -----------------------------------------
@@ -134,7 +132,7 @@ def test_request_file_is_unlinked_after_load(tmp_path, monkeypatch):
 def test_main_runs_lenses_verify_persists_and_clears_slot(tmp_path, monkeypatch):
     heartbeat = scheduler.try_acquire_job_slot(REPO_ID, SID)
     assert heartbeat is not None
-    request_path, _repo = _write_request(tmp_path, heartbeat)
+    request_path, repo = _write_request(tmp_path, heartbeat)
 
     finding = _stub_finding()
     monkeypatch.setattr(
@@ -154,16 +152,15 @@ def test_main_runs_lenses_verify_persists_and_clears_slot(tmp_path, monkeypatch)
     # rolls back via _release_job_slot.
     assert doc.review_spawns == 1
 
-    payload = json.loads(_output_path().read_text(encoding="utf-8"))
-    assert payload["session_id"] == SID
-    assert len(payload["findings"]) == 1
-    assert payload["findings"][0]["claim"] == "stub finding"
-    assert payload["findings"][0]["verified"] == "confirmed"
+    persisted = _persisted_findings(repo)
+    assert len(persisted) == 1
+    assert persisted[0].claim == "stub finding"
+    assert persisted[0].verified == "confirmed"
 
 
 def test_main_persists_empty_findings_when_lenses_find_nothing(tmp_path, monkeypatch):
     heartbeat = scheduler.try_acquire_job_slot(REPO_ID, SID)
-    request_path, _repo = _write_request(tmp_path, heartbeat)
+    request_path, repo = _write_request(tmp_path, heartbeat)
     monkeypatch.setattr(
         lenses, "resolve_runner", lambda name: lambda *a, **k: LensResult(findings=[])
     )
@@ -171,8 +168,7 @@ def test_main_persists_empty_findings_when_lenses_find_nothing(tmp_path, monkeyp
     rc = job.main([str(request_path)])
 
     assert rc == 0
-    payload = json.loads(_output_path().read_text(encoding="utf-8"))
-    assert payload["findings"] == []
+    assert _persisted_findings(repo) == []
 
 
 # --- fail-open: a lens exception never crashes the job ----------------------
@@ -180,7 +176,7 @@ def test_main_persists_empty_findings_when_lenses_find_nothing(tmp_path, monkeyp
 
 def test_lens_exception_fails_open_job_still_returns_zero_and_emits_event(tmp_path, monkeypatch):
     heartbeat = scheduler.try_acquire_job_slot(REPO_ID, SID)
-    request_path, _repo = _write_request(tmp_path, heartbeat)
+    request_path, repo = _write_request(tmp_path, heartbeat)
 
     def _raising_runner(name):
         def _raise(*a, **k):
@@ -198,8 +194,7 @@ def test_lens_exception_fails_open_job_still_returns_zero_and_emits_event(tmp_pa
     doc = read_session_doc(REPO_ID, SID)
     assert doc.job_inflight == ""  # the slot is still cleared despite the failure
 
-    payload = json.loads(_output_path().read_text(encoding="utf-8"))
-    assert payload["findings"] == []
+    assert _persisted_findings(repo) == []
 
 
 def test_unresolvable_lens_name_fails_open(tmp_path, monkeypatch):
@@ -242,7 +237,7 @@ def test_heartbeat_touches_immediately_and_advances(tmp_path, monkeypatch):
 def test_job_does_not_self_disable_under_inherited_chameleon_disable(tmp_path, monkeypatch):
     monkeypatch.setenv("CHAMELEON_DISABLE", "1")
     heartbeat = scheduler.try_acquire_job_slot(REPO_ID, SID)
-    request_path, _repo = _write_request(tmp_path, heartbeat)
+    request_path, repo = _write_request(tmp_path, heartbeat)
 
     finding = _stub_finding()
     monkeypatch.setattr(
@@ -253,10 +248,9 @@ def test_job_does_not_self_disable_under_inherited_chameleon_disable(tmp_path, m
     rc = job.main([str(request_path)])
 
     assert rc == 0
-    payload = json.loads(_output_path().read_text(encoding="utf-8"))
     # Findings were processed and persisted despite the inherited
     # CHAMELEON_DISABLE=1 -- job.py never reads it as a run/skip gate.
-    assert len(payload["findings"]) == 1
+    assert len(_persisted_findings(repo)) == 1
 
 
 # --- scheduler.clear_job_slot: the deliberate divergence from _release_job_slot --
@@ -310,7 +304,7 @@ def test_main_through_real_lenses_never_spawns_claude(tmp_path, monkeypatch):
 
     heartbeat = scheduler.try_acquire_job_slot(REPO_ID, SID)
     assert heartbeat is not None
-    request_path, _repo = _write_request(
+    request_path, repo = _write_request(
         tmp_path, heartbeat, lens_names=("correctness", "duplication", "idiom")
     )
 
@@ -318,5 +312,4 @@ def test_main_through_real_lenses_never_spawns_claude(tmp_path, monkeypatch):
 
     assert rc == 0
     assert claude_calls == [], f"a real `claude` spawn was attempted: {claude_calls!r}"
-    payload = json.loads(_output_path().read_text(encoding="utf-8"))
-    assert payload["findings"] == []
+    assert _persisted_findings(repo) == []

@@ -22,22 +22,15 @@ the reviewer CHILDREN this job spawns (``claude -p``) never recurse into
 chameleon's own hooks; reading it here too would make every job read its own
 environment as "chameleon disabled" and silently no-op forever.
 
-Interim persistence seam (Task 5 builds the real one): findings are written
-to a job-output file, ``.job_findings.<session-marker>.json`` under the
-repo's plugin-data dir, as a JSON array of ``core.finding.Finding.to_dict()``
-rows. This is a NEW artifact, not the legacy ``.judge_pending.<sid>.json``
-judge_async.py still writes (that file, and the module writing it, stay
-live and untouched until Task 7) -- naming it distinctly avoids any
-collision with the still-production async-judge path this job runner is not
-yet wired to replace. A file was chosen over dual-writing into the existing
-``judge_findings`` drift.db table (``drift.observations.record_judge_finding``)
-because that table has no claim/excerpt/verified columns -- shoehorning the
-canonical Finding into it now would be throwaway work Task 5 replaces
-outright, and this job runner is not wired into the pipeline yet (Task 7),
-so writing into a table the STILL-LIVE legacy gates also write would risk
-row confusion the moment Task 7 does wire it in. Task 5 replaces this file
-with the canonical-row ledger API; Task 6's delivery/assemble stage is the
-first real reader and can point at either seam with a one-line change.
+Findings are persisted through ``review_ledger.record_findings`` -- the
+canonical finding-lifecycle ledger (one JSON row per match_key under the
+repo's plugin-data dir, keyed for cross-session recurrence; see
+core/finding.py's lifecycle and review_ledger.py's surface-bar/resurface
+API). That ledger is a NEW store, distinct from the legacy
+``.judge_pending.<sid>.json`` judge_async.py still writes and the
+``judge_findings`` drift.db table stop/gates.py's still-live gates read and
+write -- both keep running unchanged until the Stop pipeline is switched
+over to this job runner and the ledger's delivery/resurface API.
 
 Top-level imports stay stdlib-only; every non-stdlib symbol is resolved via
 a deferred import inside the function that needs it, mirroring the rest of
@@ -52,7 +45,6 @@ import json
 import os
 import sys
 import threading
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -208,34 +200,20 @@ def _run_verify(request: JobRequest, findings: list[Finding], budget: TurnBudget
         return list(findings)
 
 
-def _persist(request: JobRequest, findings: list[Finding]) -> Path | None:
-    """Write surviving findings to the interim job-output file. See the
-    module docstring's "Interim persistence seam" note for why this is a
-    file rather than a ledger row today."""
-    try:
-        from chameleon_mcp.optouts import _safe_session_marker
-        from chameleon_mcp.profile.trust import repo_data_dir
+def _persist(request: JobRequest, findings: list[Finding]) -> None:
+    """Persist surviving findings to the canonical finding-lifecycle ledger.
 
-        repo_data = repo_data_dir(request.repo_id)
-        repo_data.mkdir(parents=True, exist_ok=True, mode=0o700)
-        marker = _safe_session_marker(request.session_id)
-        path = repo_data / f".job_findings.{marker}.json"
-        payload = {
-            "session_id": request.session_id,
-            "completed_ts": time.time(),
-            "findings": [f.to_dict() for f in findings],
-        }
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
-        try:
-            os.chmod(tmp, 0o600)
-        except OSError:
-            pass
-        os.replace(tmp, path)
-        return path
+    See core/finding.py's lifecycle and review_ledger.record_findings's
+    surface bar for what happens to each finding from here.
+    """
+    if not findings:
+        return
+    try:
+        from chameleon_mcp import review_ledger
+
+        review_ledger.record_findings(request.repo_id, str(request.repo_root), findings)
     except Exception as exc:  # noqa: BLE001 -- persistence must never crash the job
         _checkpoint(request, "persist_error", reason=repr(exc)[:200])
-        return None
 
 
 def _run(request: JobRequest) -> None:
