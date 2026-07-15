@@ -324,7 +324,13 @@ def test_assemble_one_header_and_one_disclaimer():
     assert lines[1] == "Advisory; verify each before acting -- they may be wrong."
 
 
-def test_assemble_ranked_ordering_lower_priority_omitted_despite_appearing_first():
+def test_assemble_ranked_ordering_priority_beats_input_order():
+    # Real guard for the ranked sort: BOTH items individually fit the ceiling,
+    # but only ONE of them fits at a time. The low-priority idiom item appears
+    # FIRST in input order, so an input-order packer (no sort) would pack IT
+    # and drop the resurfaced item. The priority sort must flip that: the
+    # resurfaced item (priority 1) packs, the idiom item (priority 5) is
+    # omitted. Strip the sort in assemble_stop_context and this test fails.
     from chameleon_mcp.core.budget import approx_tokens
     from chameleon_mcp.stop.assemble import _DISCLAIMER
 
@@ -332,17 +338,24 @@ def test_assemble_ranked_ordering_lower_priority_omitted_despite_appearing_first
     header_line = f"[\U0001f98e {header}]"
     base_cost = approx_tokens("\n".join([header_line, _DISCLAIMER]))
 
-    resurfaced_text = "resurfaced HIGH finding still needs a look"
-    idiom_text = "idiom nudge " * 200  # far too large to also fit
+    # Two items, each of which individually fits, but not both together.
+    idiom_text = "idiom nudge suggestion here now"
+    resurfaced_text = "resurfaced HIGH finding here now"
+    idiom_cost = approx_tokens(idiom_text)
+    resurfaced_cost = approx_tokens(resurfaced_text)
 
-    ceiling = base_cost + approx_tokens(resurfaced_text)
+    # Room for the header/disclaimer + exactly ONE item, never both:
+    # base + max(cost) fits either alone, adding the second overflows.
+    ceiling = base_cost + max(idiom_cost, resurfaced_cost)
+    assert base_cost + idiom_cost <= ceiling  # idiom alone fits
+    assert base_cost + resurfaced_cost <= ceiling  # resurfaced alone fits
+    assert base_cost + idiom_cost + resurfaced_cost > ceiling  # both do not
 
-    # The idiom item (priority 5) is listed FIRST in the input, but the
-    # resurfaced item (priority 1) must win the ceiling regardless of order.
     idiom_item = EmissionItem(priority=PRIORITY_IDIOM, text=idiom_text, match_keys=("mk-idiom",))
     resurfaced_item = EmissionItem(
         priority=PRIORITY_RESURFACED, text=resurfaced_text, match_keys=("mk-resurface",)
     )
+    # Idiom FIRST in input -- only the priority sort makes resurfaced win.
     result = assemble_stop_context(
         [idiom_item, resurfaced_item], header=header, ceiling_tokens=ceiling
     )
