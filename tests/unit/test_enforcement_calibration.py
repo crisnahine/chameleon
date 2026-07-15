@@ -1152,3 +1152,152 @@ def test_calibration_writes_missing_convention_inert_reason(tmp_path):
     entry = result["naming-convention-violation"]
     assert entry["active"] is False
     assert entry["inert_reason"] == "missing-convention-data"
+
+
+# --------------------------------------------------------------------------
+# enforcement.calibration: tools._calibrate_block_rules_for_repo reads
+# cfg.enforcement.calibration and either skips apply_override_feedback_demotion
+# entirely (auto_demote=false) or forwards the configured thresholds to it,
+# instead of always driving it off the global _thresholds.py env defaults.
+# --------------------------------------------------------------------------
+
+
+def test_calibration_auto_demote_false_skips_demotion(tmp_path, monkeypatch):
+    from chameleon_mcp import enforcement_calibration as ec
+    from chameleon_mcp import tools as t
+    from chameleon_mcp.enforcement_calibration import load_block_rules
+
+    repo_root = (tmp_path / "repo").resolve()
+    profile_dir = repo_root / ".chameleon"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "config.json").write_text(
+        json.dumps({"enforcement": {"calibration": {"auto_demote": False}}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "chameleon_mcp.profile.loader.load_profile_dir", lambda profile_dir: object()
+    )
+    monkeypatch.setattr(
+        ec, "calibrate_block_rules", lambda root, loaded: {"phantom-import": {"active": True}}
+    )
+    demote_calls: list = []
+    monkeypatch.setattr(
+        ec,
+        "apply_override_feedback_demotion",
+        lambda *a, **k: demote_calls.append((a, k)) or a[0],
+    )
+    # A rate high enough (and with enough events/sessions) to demote under the
+    # DEFAULT thresholds -- proving the skip is due to auto_demote=false, not
+    # a thin-evidence floor.
+    monkeypatch.setattr(
+        t,
+        "_override_rates_for_demotion",
+        lambda repo_id, window_days=None: {
+            "phantom-import": {"rate": 0.95, "events": 50, "distinct_sessions": 8}
+        },
+    )
+
+    t._calibrate_block_rules_for_repo(repo_root)
+
+    assert demote_calls == []
+    verdicts = load_block_rules(profile_dir)
+    assert verdicts["phantom-import"]["active"] is True
+    assert "demotion_proposed" not in verdicts["phantom-import"]
+
+
+def test_calibration_custom_thresholds_forwarded(tmp_path, monkeypatch):
+    from chameleon_mcp import enforcement_calibration as ec
+    from chameleon_mcp import tools as t
+
+    repo_root = (tmp_path / "repo").resolve()
+    profile_dir = repo_root / ".chameleon"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "enforcement": {
+                    "calibration": {
+                        "override_rate_threshold": 0.9,
+                        "min_events": 42,
+                        "min_distinct_sessions": 7,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "chameleon_mcp.profile.loader.load_profile_dir", lambda profile_dir: object()
+    )
+    monkeypatch.setattr(
+        ec, "calibrate_block_rules", lambda root, loaded: {"phantom-import": {"active": True}}
+    )
+    calls: list = []
+
+    def _fake_demote(verdicts, override_rates, *, threshold, min_events, min_distinct_sessions):
+        calls.append(
+            {
+                "threshold": threshold,
+                "min_events": min_events,
+                "min_distinct_sessions": min_distinct_sessions,
+            }
+        )
+        return verdicts
+
+    monkeypatch.setattr(ec, "apply_override_feedback_demotion", _fake_demote)
+    monkeypatch.setattr(
+        t,
+        "_override_rates_for_demotion",
+        lambda repo_id, window_days=None: {
+            "phantom-import": {"rate": 0.95, "events": 50, "distinct_sessions": 8}
+        },
+    )
+
+    t._calibrate_block_rules_for_repo(repo_root)
+
+    assert calls == [{"threshold": 0.9, "min_events": 42, "min_distinct_sessions": 7}]
+
+
+def test_calibration_defaults_match_thresholds_when_no_config(tmp_path, monkeypatch):
+    # No config.json at all -- the caller must forward the SAME values the
+    # global _thresholds.py defaults produce, so behavior is byte-identical
+    # to before enforcement.calibration existed.
+    from chameleon_mcp import enforcement_calibration as ec
+    from chameleon_mcp import tools as t
+
+    repo_root = (tmp_path / "repo").resolve()
+    profile_dir = repo_root / ".chameleon"
+    profile_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(
+        "chameleon_mcp.profile.loader.load_profile_dir", lambda profile_dir: object()
+    )
+    monkeypatch.setattr(
+        ec, "calibrate_block_rules", lambda root, loaded: {"phantom-import": {"active": True}}
+    )
+    calls: list = []
+
+    def _fake_demote(verdicts, override_rates, *, threshold, min_events, min_distinct_sessions):
+        calls.append(
+            {
+                "threshold": threshold,
+                "min_events": min_events,
+                "min_distinct_sessions": min_distinct_sessions,
+            }
+        )
+        return verdicts
+
+    monkeypatch.setattr(ec, "apply_override_feedback_demotion", _fake_demote)
+    monkeypatch.setattr(
+        t,
+        "_override_rates_for_demotion",
+        lambda repo_id, window_days=None: {
+            "phantom-import": {"rate": 0.95, "events": 50, "distinct_sessions": 8}
+        },
+    )
+
+    t._calibrate_block_rules_for_repo(repo_root)
+
+    assert calls == [{"threshold": 0.5, "min_events": 5, "min_distinct_sessions": 2}]

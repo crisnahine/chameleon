@@ -1631,6 +1631,8 @@ under `enforcement` are tolerated for forward compatibility; unknown keys under
 | `enforcement.signature_contract_diff` | `true` | Deterministic caller-contract diff (tool-time). |
 | `enforcement.stale_test_advisory` / `changeset_completeness` / `crossfile_existence_advisory` / `test_integrity_review` / `intent_scope_advisory` | `true` | Deterministic turn-end advisories. |
 | `enforcement.crossfile_existence_block` | `false` | Opt-in deny: BLOCK a Stop where the turn removed a TS/Python export an indexed importer still uses (live-re-verified, HEAD-scoped, FP-free). Stop-only; `enforce` blocks, `shadow` logs `would_block`. Overridable with `chameleon-ignore removed-export-breaks-importers`. |
+| `enforcement.calibration.auto_demote` | `true` | Whether refresh-time override-feedback demotion (`apply_override_feedback_demotion`) runs at all. `false` leaves every calibrated-active block rule's verdict untouched regardless of override rate. |
+| `enforcement.calibration.override_rate_threshold` / `min_events` / `min_distinct_sessions` | `0.5` / `5` / `2` | Per-repo overrides for the demotion bar (fraction of fires overridden, minimum combined override+would-block events, minimum distinct sessions backing the evidence). Defaults equal the global `RULE_FP_DEMOTE_THRESHOLD` / `OVERRIDE_AUDIT_MIN_EVENTS` / `OVERRIDE_DEMOTION_MIN_SESSIONS` `_thresholds.py` values, so an absent section is byte-identical to pre-config behavior. |
 
 The full list of environment variables (kill switches, opt-in gates, model
 selectors, tuning knobs, and test-only overrides) lives in

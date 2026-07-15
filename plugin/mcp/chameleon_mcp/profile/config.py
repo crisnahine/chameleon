@@ -73,6 +73,24 @@ class TrustConfig:
 
 
 @dataclass(frozen=True)
+class CalibrationConfig:
+    # Per-repo tuning for the refresh-time override-feedback demotion already
+    # implemented by `apply_override_feedback_demotion` in
+    # enforcement_calibration.py: a calibrated-active block rule the team keeps
+    # overriding in practice drops to advisory. These fields replace that
+    # mechanism's global `_thresholds.py` env defaults with a per-repo knob and
+    # let a repo turn auto-demotion off entirely. The defaults below MUST equal
+    # RULE_FP_DEMOTE_THRESHOLD / OVERRIDE_AUDIT_MIN_EVENTS /
+    # OVERRIDE_DEMOTION_MIN_SESSIONS so a repo with no
+    # `enforcement.calibration` section behaves exactly as before this config
+    # surface existed.
+    auto_demote: bool = True
+    override_rate_threshold: float = 0.5
+    min_events: int = 5
+    min_distinct_sessions: int = 2
+
+
+@dataclass(frozen=True)
 class EnforcementConfig:
     # mode master switch: "off" = advisory only; "shadow" = log would-have-blocked
     # but never block; "enforce" = real deny/block. Default enforce. All blocking
@@ -203,6 +221,11 @@ class EnforcementConfig:
     # one spawn to the lens set, still advisory only, never a block. Set false to
     # restore the separate single-spawn correctness and duplication gates.
     multi_lens_review: bool = True
+    # calibration: per-repo tuning for the refresh-time override-feedback
+    # demotion (see CalibrationConfig above). Defaults mirror the global
+    # _thresholds.py values so a repo with no `enforcement.calibration`
+    # section keeps today's behavior byte-identical.
+    calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
 
 
 @dataclass(frozen=True)
@@ -252,6 +275,55 @@ _VALID_AUTO_PRESERVE = frozenset({None, "pulled_from_remote", "always"})
 _VALID_ENFORCE_MODES = frozenset({"off", "shadow", "enforce"})
 
 _VALID_SURFACE_BARS = frozenset({"high", "medium", "low"})
+
+
+def _coerce_calibration(raw: Any) -> CalibrationConfig:
+    if raw is None:
+        return CalibrationConfig()
+    if not isinstance(raw, dict):
+        raise ChameleonConfigError(
+            f"`enforcement.calibration` must be an object, got {type(raw).__name__}"
+        )
+    # Unknown keys under `enforcement.calibration` are tolerated (ignored), not
+    # rejected -- the same compat posture as `enforcement` itself (see
+    # _coerce_enforcement above): config.json travels via git to teammates who
+    # may run a different chameleon version.
+    auto_demote = raw.get("auto_demote", True)
+    if not isinstance(auto_demote, bool):
+        raise ChameleonConfigError(
+            f"`enforcement.calibration.auto_demote` must be bool, got {type(auto_demote).__name__}"
+        )
+    threshold = raw.get("override_rate_threshold", 0.5)
+    if (
+        isinstance(threshold, bool)
+        or not isinstance(threshold, int | float)
+        or not (0.0 <= float(threshold) <= 1.0)
+    ):
+        raise ChameleonConfigError(
+            "`enforcement.calibration.override_rate_threshold` must be a number "
+            f"in [0, 1], got {threshold!r}"
+        )
+    min_events = raw.get("min_events", 5)
+    if isinstance(min_events, bool) or not isinstance(min_events, int) or min_events < 1:
+        raise ChameleonConfigError(
+            f"`enforcement.calibration.min_events` must be a positive int, got {min_events!r}"
+        )
+    min_distinct_sessions = raw.get("min_distinct_sessions", 2)
+    if (
+        isinstance(min_distinct_sessions, bool)
+        or not isinstance(min_distinct_sessions, int)
+        or min_distinct_sessions < 1
+    ):
+        raise ChameleonConfigError(
+            "`enforcement.calibration.min_distinct_sessions` must be a positive "
+            f"int, got {min_distinct_sessions!r}"
+        )
+    return CalibrationConfig(
+        auto_demote=auto_demote,
+        override_rate_threshold=float(threshold),
+        min_events=min_events,
+        min_distinct_sessions=min_distinct_sessions,
+    )
 
 
 def _coerce_enforcement(raw: Any) -> EnforcementConfig:
@@ -365,6 +437,7 @@ def _coerce_enforcement(raw: Any) -> EnforcementConfig:
             "`enforcement.intent_scope_advisory` must be bool, got "
             f"{type(intent_scope_advisory).__name__}"
         )
+    calibration = _coerce_calibration(raw.get("calibration"))
     return EnforcementConfig(
         mode=mode,
         stop_backstop=stop_backstop,
@@ -384,6 +457,7 @@ def _coerce_enforcement(raw: Any) -> EnforcementConfig:
         test_integrity_review=test_integrity_review,
         multi_lens_review=multi_lens_review,
         intent_scope_advisory=intent_scope_advisory,
+        calibration=calibration,
     )
 
 

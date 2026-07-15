@@ -525,3 +525,100 @@ def test_enforcement_only_raises_on_torn_json(tmp_path):
     (d / "config.json").write_text('{"enforcement": {"mode": "enforce"', encoding="utf-8")
     with _pytest.raises(ChameleonConfigError):
         load_config_enforcement_only(d)
+
+
+# --------------------------------------------------------------------------
+# enforcement.calibration -- per-repo tuning for the refresh-time
+# override-feedback demotion (apply_override_feedback_demotion). Defaults
+# MUST equal the global _thresholds.py values (RULE_FP_DEMOTE_THRESHOLD=0.5,
+# OVERRIDE_AUDIT_MIN_EVENTS=5, OVERRIDE_DEMOTION_MIN_SESSIONS=2) so a repo
+# with no calibration section behaves exactly as before this surface existed.
+# --------------------------------------------------------------------------
+class TestCalibrationConfig:
+    def test_absent_section_returns_thresholds_defaults(self, tmp_path: Path):
+        from chameleon_mcp.profile.config import CalibrationConfig
+
+        d = tmp_path / "profile"
+        d.mkdir()
+        cal = load_config(d).enforcement.calibration
+        assert cal == CalibrationConfig(
+            auto_demote=True,
+            override_rate_threshold=0.5,
+            min_events=5,
+            min_distinct_sessions=2,
+        )
+
+    def test_custom_values_parse(self, tmp_path: Path):
+        d = tmp_path / "profile"
+        _write(
+            d,
+            {
+                "enforcement": {
+                    "calibration": {
+                        "auto_demote": False,
+                        "override_rate_threshold": 0.7,
+                    }
+                }
+            },
+        )
+        cal = load_config(d).enforcement.calibration
+        assert cal.auto_demote is False
+        assert cal.override_rate_threshold == 0.7
+        # untouched fields keep their own defaults
+        assert cal.min_events == 5
+        assert cal.min_distinct_sessions == 2
+
+    def test_non_bool_auto_demote_rejected(self, tmp_path: Path):
+        d = tmp_path / "profile"
+        _write(d, {"enforcement": {"calibration": {"auto_demote": "false"}}})
+        with pytest.raises(ChameleonConfigError, match="auto_demote"):
+            load_config(d)
+
+    def test_threshold_above_one_rejected(self, tmp_path: Path):
+        d = tmp_path / "profile"
+        _write(d, {"enforcement": {"calibration": {"override_rate_threshold": 1.1}}})
+        with pytest.raises(ChameleonConfigError, match="override_rate_threshold"):
+            load_config(d)
+
+    def test_threshold_below_zero_rejected(self, tmp_path: Path):
+        d = tmp_path / "profile"
+        _write(d, {"enforcement": {"calibration": {"override_rate_threshold": -0.1}}})
+        with pytest.raises(ChameleonConfigError, match="override_rate_threshold"):
+            load_config(d)
+
+    def test_min_events_below_one_rejected(self, tmp_path: Path):
+        d = tmp_path / "profile"
+        _write(d, {"enforcement": {"calibration": {"min_events": 0}}})
+        with pytest.raises(ChameleonConfigError, match="min_events"):
+            load_config(d)
+
+    def test_min_distinct_sessions_below_one_rejected(self, tmp_path: Path):
+        d = tmp_path / "profile"
+        _write(d, {"enforcement": {"calibration": {"min_distinct_sessions": 0}}})
+        with pytest.raises(ChameleonConfigError, match="min_distinct_sessions"):
+            load_config(d)
+
+    def test_unknown_nested_key_tolerated(self, tmp_path: Path):
+        # Mirrors _coerce_enforcement's compat posture: config.json is
+        # committed and travels via git to teammates on older engines, so an
+        # unknown key under enforcement.calibration must not brick the section.
+        d = tmp_path / "profile"
+        _write(d, {"enforcement": {"calibration": {"unknown_key": 1}}})
+        cal = load_config(d).enforcement.calibration
+        assert cal.auto_demote is True
+        assert cal.override_rate_threshold == 0.5
+
+    def test_calibration_not_object_rejected(self, tmp_path: Path):
+        d = tmp_path / "profile"
+        _write(d, {"enforcement": {"calibration": []}})
+        with pytest.raises(ChameleonConfigError, match="`enforcement.calibration` must be"):
+            load_config(d)
+
+    def test_enforcement_only_reads_calibration_too(self, tmp_path: Path):
+        # load_config_enforcement_only is the isolated reader the calibration
+        # caller uses (see tools._calibrate_block_rules_for_repo); it must
+        # carry the same calibration section as the full loader.
+        from chameleon_mcp.profile.config import load_config_enforcement_only
+
+        d = _write_config(tmp_path, {"enforcement": {"calibration": {"auto_demote": False}}})
+        assert load_config_enforcement_only(d).calibration.auto_demote is False

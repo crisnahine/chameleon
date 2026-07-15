@@ -9490,13 +9490,35 @@ def _calibrate_block_rules_for_repo(repo_root: Path) -> None:
         try:
             rates = _override_rates_for_demotion(_compute_repo_id(repo_root))
             if rates:
-                verdicts = apply_override_feedback_demotion(
-                    verdicts,
-                    rates,
-                    threshold=threshold_float("RULE_FP_DEMOTE_THRESHOLD"),
-                    min_events=threshold_int("OVERRIDE_AUDIT_MIN_EVENTS"),
-                    min_distinct_sessions=threshold_int("OVERRIDE_DEMOTION_MIN_SESSIONS"),
-                )
+                # `enforcement.calibration` makes the demotion thresholds
+                # per-repo tunable and lets a repo disable auto-demotion
+                # entirely. Read via the isolated enforcement-only loader (not
+                # the whole-config load_config) so a typo in an unrelated
+                # section (auto_refresh, trust, ...) cannot silently disable
+                # this feedback loop. Fail-open to the pre-config
+                # _thresholds-driven values -- identical to a repo with no
+                # `enforcement.calibration` section -- on any read error.
+                try:
+                    from chameleon_mcp.profile.config import load_config_enforcement_only
+
+                    cal = load_config_enforcement_only(profile_dir).calibration
+                    auto_demote = cal.auto_demote
+                    demote_threshold = cal.override_rate_threshold
+                    demote_min_events = cal.min_events
+                    demote_min_sessions = cal.min_distinct_sessions
+                except Exception:
+                    auto_demote = True
+                    demote_threshold = threshold_float("RULE_FP_DEMOTE_THRESHOLD")
+                    demote_min_events = threshold_int("OVERRIDE_AUDIT_MIN_EVENTS")
+                    demote_min_sessions = threshold_int("OVERRIDE_DEMOTION_MIN_SESSIONS")
+                if auto_demote:
+                    verdicts = apply_override_feedback_demotion(
+                        verdicts,
+                        rates,
+                        threshold=demote_threshold,
+                        min_events=demote_min_events,
+                        min_distinct_sessions=demote_min_sessions,
+                    )
         except Exception:
             pass
         write_block_rules(profile_dir, verdicts)
