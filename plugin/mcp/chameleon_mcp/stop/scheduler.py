@@ -467,6 +467,33 @@ def _release_job_slot(repo_id: str, session_id: str) -> None:
         pass
 
 
+def clear_job_slot(repo_id: str, session_id: str) -> None:
+    """Clear a COMPLETED job's inflight marker, WITHOUT refunding its spend.
+
+    Called once by the job runner (``stop/job.py``, Task 4) as it exits --
+    successfully or not -- so the single-inflight slot frees for a later
+    Stop to claim a new job. This is deliberately NOT ``_release_job_slot``:
+    that function is the failed-*launch* rollback (the job never actually
+    ran, so refunding its spend is correct -- a mere detach/filesystem
+    hiccup must not cost the session a real review). A job that ran DID
+    consume its one per-session spawn unit regardless of what it found or
+    whether every stage inside it degraded, so ``review_spawns`` stays
+    charged here; reusing ``_release_job_slot`` for this path would refund
+    that spend on every completion and let a session spawn unbounded jobs,
+    defeating ``CORRECTNESS_JUDGE_MAX_SPAWNS_PER_SESSION`` entirely.
+    """
+    from chameleon_mcp.core.session_state import update_session_doc
+
+    def _mutate(doc) -> None:
+        doc.job_inflight = ""
+        doc.job_started_at = 0.0
+
+    try:
+        update_session_doc(repo_id, session_id, _mutate)
+    except Exception:
+        pass
+
+
 def _job_env() -> dict[str, str]:
     """The detached job child's environment.
 

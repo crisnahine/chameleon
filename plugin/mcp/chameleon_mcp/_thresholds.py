@@ -660,6 +660,12 @@ DEFAULTS: Final[dict[str, int | float]] = {
     "JOB_LENS_BUDGET_SECONDS": 150,
     "JOB_VERIFY_BUDGET_SECONDS": 60,
     "JOB_RENDER_BUDGET_SECONDS": 10,
+    # The token side of the job's single core.budget.TurnBudget (constructed
+    # once at job entry, threaded through every stage per that module's own
+    # "constructed at entry, passed down explicitly" contract). Lenses and
+    # VERIFY spend only the wall-clock side; this ceiling exists for a later
+    # stage (render) that packs a delivery payload against a token budget.
+    "JOB_TOKEN_CEILING": 20_000,
     # How often the detached job refreshes its heartbeat file's mtime while
     # it runs. Must stay well under JOB_HEARTBEAT_STALE_SECONDS so a live job
     # never reads as dead between two heartbeat writes.
