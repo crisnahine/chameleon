@@ -37,8 +37,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The reviewer model ladder (`CHAMELEON_JUDGE_MODEL_HIGH`, escalating to a
   stronger model on a `risk_high`/`intent_forced` route) never actually
   escalated: it short-circuited to the base model unless a flag only the
-  deleted synchronous judge child ever set. Since every review now runs
-  detached by construction, the ladder escalates unconditionally.
+  now-deleted detached async-judge child ever set. Since every review now
+  runs detached by construction, the ladder escalates unconditionally.
 
 ### Removed
 - The synchronous correctness-judge spawn, the route/gate choreography

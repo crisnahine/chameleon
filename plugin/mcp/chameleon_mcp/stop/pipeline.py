@@ -186,24 +186,6 @@ def stop_gates(ctx: RootContext) -> dict:
         if daemon_state is None:
             daemon_state = {"available": True}
 
-        # Finding->fix loop re-check (#9): run BEFORE this Stop's gates persist
-        # their findings, so it only ever re-checks PRIOR-Stop findings. It marks
-        # each addressed (the cited file changed since review) or leaves it open,
-        # and returns re-surface lines for an unaddressed high-severity finding
-        # (once each; a resurfaced row is terminal for ordinary delivery -- see
-        # review_ledger.undelivered_findings -- so this is its one appearance).
-        # review_ledger.recheck_and_resurface is unconditional, so the
-        # CHAMELEON_FINDING_LEDGER kill switch is checked here at the call
-        # site. Fail-open to [] either way.
-        resurface_lines: list[str] = []
-        if repo_id and os.environ.get("CHAMELEON_FINDING_LEDGER") != "0":
-            try:
-                from chameleon_mcp import review_ledger
-
-                resurface_lines = review_ledger.recheck_and_resurface(repo_id, repo_root)
-            except Exception:
-                resurface_lines = []
-
         unresolved: list[str] = []
         # path -> enforceable hard rules still standing, so the shadow would_block
         # row can attribute the backstop block to the specific rules per file.
@@ -298,6 +280,28 @@ def stop_gates(ctx: RootContext) -> dict:
             # want to pay per root) rather than force a non-spawning decision
             # through the scheduler. Deterministic advisories still run for this
             # root.
+
+            # Finding->fix loop re-check (#9): re-check every PRIOR-Stop finding
+            # scoped to this workspace and re-surface an unaddressed high-severity
+            # one exactly once. Deliberately inside the advisory pipeline, not
+            # before the block decision: marking a row ``resurfaced`` is an
+            # irreversible terminal transition (``undelivered_findings`` never
+            # returns it again, ``mark_delivered`` refuses it as a source state),
+            # so it must happen ONLY on a turn that actually emits the resurface
+            # line. A blocking Stop returns before this runs, leaving the finding
+            # open to resurface on a later non-blocking Stop rather than burning
+            # its one shot on a turn whose output is discarded. Gated by
+            # CHAMELEON_FINDING_LEDGER at the call site (recheck_and_resurface is
+            # unconditional). Fail-open to [].
+            resurface_lines: list[str] = []
+            if repo_id and os.environ.get("CHAMELEON_FINDING_LEDGER") != "0":
+                try:
+                    from chameleon_mcp import review_ledger
+
+                    resurface_lines = review_ledger.recheck_and_resurface(repo_id, repo_root)
+                except Exception:
+                    resurface_lines = []
+
             review_context: str | None = None
             if allow_model_spawn:
                 review_context = _run_review_job(

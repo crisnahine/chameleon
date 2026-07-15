@@ -129,10 +129,11 @@ def deliver_for_root(
     if not live:
         return None
     if cached is not None and cached.text:
-        # Mark ONLY what the cached text represents. mark_delivered is a no-op
-        # for any key not currently pending/resurfaced, so a key already
-        # delivered elsewhere is harmless; an overflow key absent from
-        # match_keys stays pending for the next delivery point.
+        # Mark ONLY what the cached text represents. mark_delivered transitions
+        # a pending row and is a no-op for any other status (a key already
+        # delivered elsewhere, or a terminal resurfaced/addressed one), so
+        # marking is harmless; an overflow key absent from match_keys stays
+        # pending for the next delivery point.
         if cached.match_keys:
             mark_delivered(repo_id, cached.match_keys)
         return _wrap(cached.text)

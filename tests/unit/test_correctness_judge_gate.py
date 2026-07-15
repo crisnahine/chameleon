@@ -131,13 +131,17 @@ def _succeed_and_clear(request):
     return True
 
 
-def _run_stop(payload, env, *, launch_job=None, low_risk=False):
+def _run_stop(payload, env, *, launch_job=None, low_risk=False, still_blockable=False):
     """Drive stop_backstop with stop.scheduler.launch_job mocked.
 
     ``launch_job`` defaults to a stub recording every JobRequest and
     returning False (no real detach, slot released -- see
     ``_default_failed_launch``); pass a callable to observe/control the
-    outcome. Returns (emitted_json, launch_mock).
+    outcome. ``still_blockable`` forces the candidate re-lint's verdict
+    (``_stop_file_still_blockable``): the default False keeps every turn on
+    the non-blocking advisory path, True drives the hard-block branch (an
+    armed FileState plus an enforce-mode repo then returns a block decision).
+    Returns (emitted_json, launch_mock).
     """
     cap = []
     calls: list = []
@@ -152,7 +156,10 @@ def _run_stop(payload, env, *, launch_job=None, low_risk=False):
         out = stack.enter_context(patch("sys.stdout"))
         stack.enter_context(patch.dict(os.environ, env, clear=False))
         stack.enter_context(
-            patch("chameleon_mcp.hook_helper._stop_file_still_blockable", return_value=False)
+            patch(
+                "chameleon_mcp.hook_helper._stop_file_still_blockable",
+                return_value=still_blockable,
+            )
         )
         if low_risk:
             # Archetype resolves, the reverse index answers with zero importers,
@@ -678,6 +685,56 @@ def test_resurface_kill_switch_suppresses_resurface_line(make_trusted_repo):
     # The kill switch skips the recheck entirely -- the row is left untouched
     # rather than silently marked resurfaced/addressed behind the operator's
     # back.
+    rows = review_ledger._read_findings_rows(REPO_ID)
+    assert rows[finding.match_key]["status"] == "pending"
+
+
+def test_resurface_not_consumed_on_a_blocking_turn(make_trusted_repo):
+    """A hard-block Stop returns a `decision: block` with NO additionalContext,
+    so a resurface line could never be shown on it. recheck_and_resurface must
+    therefore NOT run on that path -- marking a row `resurfaced` is terminal
+    (undelivered_findings never returns it, mark_delivered refuses it), so
+    burning the one-shot resurface on a turn whose output is discarded would
+    lose the finding permanently. It must stay `pending` and resurface on a
+    LATER non-blocking Stop instead."""
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo()
+
+    # An ARMED, still-blockable file drives the hard-block branch (enforce mode
+    # from make_trusted_repo, cap not yet reached).
+    Path(file_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(file_path).write_text("x = 1\n", encoding="utf-8")
+    st = EnforcementState()
+    fs = FileState()
+    fs.blockable_unresolved = True
+    st.files[file_path] = fs
+    save_state(st, data_dir, sid)
+
+    from chameleon_mcp import review_ledger
+    from chameleon_mcp.core.finding import Finding, compute_match_key
+
+    finding = Finding(
+        id=compute_match_key("prior-turn HIGH bug", "src/Widget.ts", "correctness"),
+        kind="correctness",
+        severity="high",
+        confidence=0.9,
+        file="src/Widget.ts",
+        span=(12, 12),
+        claim="prior-turn HIGH bug",
+        evidence="",
+        excerpt_sha="",
+        excerpt="",
+        source_lens="correctness",
+        status="pending",
+        created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    )
+    review_ledger.record_findings(REPO_ID, str(repo), [finding])
+
+    out, calls = _run_stop(
+        _payload(repo, sid), env={"CHAMELEON_ENFORCE": "1"}, still_blockable=True
+    )
+
+    assert out.get("decision") == "block"
+    # The finding was NOT consumed: it stays pending, reachable next turn.
     rows = review_ledger._read_findings_rows(REPO_ID)
     assert rows[finding.match_key]["status"] == "pending"
 

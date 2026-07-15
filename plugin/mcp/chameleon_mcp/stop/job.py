@@ -28,12 +28,12 @@ Findings are persisted through ``review_ledger.record_findings`` -- the
 canonical finding-lifecycle ledger (one JSON row per match_key under the
 repo's plugin-data dir, keyed for cross-session recurrence; see
 core/finding.py's lifecycle and review_ledger.py's surface-bar/resurface
-API). That ledger is a NEW store, distinct from the legacy
+API). That ledger superseded two older stores: the legacy
 ``.judge_pending.<sid>.json`` queue (whose writer, the old async judge, is
 gone -- only pre-upgrade leftover files remain, migrated once into the
 ledger via ``review_ledger.migrate_pending_queue``) and the
-``judge_findings`` drift.db table stop/gates.py's still-live gates read and
-write.
+``judge_findings`` drift.db table the pre-cutover ``stop/gates.py`` gates
+read and wrote (now retired -- nothing reads or writes that table anymore).
 
 Top-level imports stay stdlib-only; every non-stdlib symbol is resolved via
 a deferred import inside the function that needs it, mirroring the rest of

@@ -1344,13 +1344,11 @@ def undelivered_findings(repo_id: str, *, ws_roots) -> list:
     ``mark_delivered`` refusing a resurfaced row as a source state) makes
     ``resurfaced`` a true terminal status for ordinary delivery.
 
-    Scoping mirrors the pre-existing judge_findings ledger's ws_root
-    discipline (drift/observations.py): a shared repo_id can span several
-    monorepo workspaces, and a finding's file is relative to the root that
-    persisted it, so an unscoped read would hand one workspace's findings
-    to another's delivery pass. An empty/falsy ``ws_roots`` disables
-    scoping (every workspace's rows are returned) -- callers that know
-    their scope always pass it.
+    Scoping keeps a shared repo_id's monorepo workspaces apart: a finding's
+    file is relative to the root that persisted it, so an unscoped read would
+    hand one workspace's findings to another's delivery pass. An empty/falsy
+    ``ws_roots`` disables scoping (every workspace's rows are returned) --
+    callers that know their scope always pass it.
     """
     from chameleon_mcp.core.finding import Finding
 
@@ -1464,11 +1462,24 @@ def recheck_and_resurface(repo_id: str, ws_root) -> list:
     if not repo_id:
         return []
     try:
+        root = str(ws_root)
+
+        # Runs on every non-blocking Stop, so avoid the flock + whole-file
+        # rewrite when there is provably nothing to do: a lock-free snapshot
+        # with no open row scoped to this workspace short-circuits before the
+        # write path. Benign TOCTOU -- a row a concurrent job adds after this
+        # check is freshly ``pending`` and must not resurface on the same turn
+        # anyway, so skipping it here (next Stop re-checks it) is correct.
+        if not any(
+            isinstance(r, dict) and r.get("ws_root") == root and r.get("status") in _OPEN_STATUSES
+            for r in _read_findings_rows(repo_id).values()
+        ):
+            return []
+
         from chameleon_mcp.judge import _excerpt_sha_stale
         from chameleon_mcp.sanitization import sanitize_for_chameleon_context
         from chameleon_mcp.stop.verify import _contained_rel, _excerpt_window
 
-        root = str(ws_root)
         root_path = Path(root)
         resurfaced_rows: list[dict] = []
 
