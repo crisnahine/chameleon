@@ -37,7 +37,6 @@ class SessionDoc:
     spawn_count: int = 0
     stop_blocks_by_root: dict[str, int] = field(default_factory=dict)
     intent_tokens: list[str] = field(default_factory=list)
-    delivery_cursor: str = ""
     # Detached-job scheduling (stop/scheduler.py). ``job_inflight`` is the
     # live job's heartbeat file path, "" when no job is running; a non-empty
     # value with a stale heartbeat is reclaimable (see
@@ -59,7 +58,6 @@ class SessionDoc:
             "spawn_count": self.spawn_count,
             "stop_blocks_by_root": dict(self.stop_blocks_by_root),
             "intent_tokens": list(self.intent_tokens),
-            "delivery_cursor": self.delivery_cursor,
             "job_inflight": self.job_inflight,
             "job_started_at": self.job_started_at,
             "review_spawns": self.review_spawns,
@@ -92,8 +90,6 @@ class SessionDoc:
                 else {}
             )
             doc.intent_tokens = [str(t) for t in data.get("intent_tokens") or []]
-            dc = data.get("delivery_cursor")
-            doc.delivery_cursor = dc if isinstance(dc, str) else ""
             ji = data.get("job_inflight")
             doc.job_inflight = ji if isinstance(ji, str) else ""
             jsa = data.get("job_started_at")

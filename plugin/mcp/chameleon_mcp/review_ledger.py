@@ -60,7 +60,6 @@ import os
 import re
 import sqlite3
 import time
-import uuid
 from pathlib import Path
 
 from chameleon_mcp._thresholds import threshold_float, threshold_int
@@ -1517,7 +1516,7 @@ def _finding_from_legacy_pending(raw: dict):
     reuses the legacy confidence->high/medium split, matching what
     ``stop/gates.py``'s pre-canonical ledger used for the same data.
     """
-    from chameleon_mcp.core.finding import Finding
+    from chameleon_mcp.core.finding import Finding, compute_match_key
 
     message = raw.get("message")
     if not isinstance(message, str) or not message.strip():
@@ -1538,7 +1537,10 @@ def _finding_from_legacy_pending(raw: dict):
     excerpt_sha = excerpt_sha if isinstance(excerpt_sha, str) else ""
     try:
         return Finding(
-            id=uuid.uuid4().hex,
+            # Pin id to the match_key (the convention every other Finding
+            # adapter follows), so a migrated finding's identity is stable and
+            # equal to what __post_init__ derives -- not a random uuid.
+            id=compute_match_key(message, file_, "correctness"),
             kind="correctness",
             severity=severity,
             confidence=confidence,

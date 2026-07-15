@@ -351,6 +351,8 @@ def test_migrate_pending_queue_converts_findings_to_canonical_pending_rows():
     assert row.severity == "high"
     assert row.verified == "confirmed"
     assert row.kind == "correctness"
+    # id follows the pinned convention (id == match_key), not a random uuid.
+    assert row.id == row.match_key
 
 
 def test_migrate_pending_queue_runs_once_per_file():
