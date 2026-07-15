@@ -115,32 +115,46 @@ def wait_and_render(
     heartbeat_path: Path,
     budget: TurnBudget,
     poll_interval: float | None = None,
-) -> str | None:
+) -> tuple[str | None, tuple[str, ...]]:
     """The full CHAMELEON_JUDGE_WAIT path: wait, then render in-turn.
 
-    A no-op (returns None immediately, no polling, no sleeping) unless
-    ``CHAMELEON_JUDGE_WAIT=1`` -- ordinary async turns must never pay even
-    one poll tick. Marks delivered exactly what it emits (via
-    ``stop.delivery``'s shared helpers), so a finding shown here is not
-    re-shown at the next real UserPromptSubmit.
+    A no-op (returns ``(None, ())`` immediately, no polling, no sleeping)
+    unless ``CHAMELEON_JUDGE_WAIT=1`` -- ordinary async turns must never pay
+    even one poll tick.
+
+    Returns ``(text, delivered_match_keys)``. Delivery is NOT committed here:
+    this render is folded into the ranked Stop assembler (``stop/pipeline.py``),
+    whose token ceiling can still DROP the block from the final emission, so
+    marking the findings delivered now would retire ones the user never saw.
+    ``deliver_for_root(commit_delivery=False)`` defers the transition and
+    hands back exactly the match_keys this text represents; the Stop caller
+    (``stop_backstop``) commits ``mark_delivered`` for them ONLY if the block
+    actually packed and no later root blocked. A dropped block leaves its
+    findings ``pending`` for the next real delivery point.
     """
     if not judge_wait_enabled():
-        return None
+        return (None, ())
 
     done = wait_for_job(repo_id, session_id, heartbeat_path, budget, poll_interval=poll_interval)
     if not done:
-        return None
+        return (None, ())
 
     from chameleon_mcp._thresholds import threshold_int
     from chameleon_mcp.stop.delivery import deliver_for_root
 
     try:
-        return deliver_for_root(
+        keys: list[str] = []
+        text = deliver_for_root(
             repo_id,
             repo_data,
             ws_root,
             session_id,
             ceiling_tokens=threshold_int("REVIEW_RENDER_TOKEN_CEILING"),
+            commit_delivery=False,
+            out_match_keys=keys,
         )
+        if not text:
+            return (None, ())
+        return (text, tuple(keys))
     except Exception:
-        return None
+        return (None, ())

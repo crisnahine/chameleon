@@ -778,3 +778,106 @@ def test_judge_wait_off_by_default_no_in_turn_render(make_trusted_repo):
     assert len(calls) == 1
     ctx = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
     assert "dropped await on save()" not in ctx
+
+
+def _record_review_finding_in_job(request, *, claim, severity):
+    from chameleon_mcp import review_ledger
+    from chameleon_mcp.core.finding import Finding, compute_match_key
+    from chameleon_mcp.stop.scheduler import clear_job_slot
+
+    clear_job_slot(request.repo_id, request.session_id)
+    finding = Finding(
+        id=compute_match_key(claim, "src/Widget.ts", "correctness"),
+        kind="correctness",
+        severity=severity,
+        confidence=0.9,
+        file="src/Widget.ts",
+        span=(12, 12),
+        claim=claim,
+        evidence="",
+        excerpt_sha="",
+        excerpt="",
+        source_lens="correctness",
+        status="pending",
+        created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    )
+    review_ledger.record_findings(request.repo_id, str(request.repo_root), [finding])
+    return finding.match_key
+
+
+def test_judge_wait_review_block_dropped_by_ceiling_stays_pending(make_trusted_repo):
+    """The Task-2 regression this fix closes: under CHAMELEON_JUDGE_WAIT the
+    review render is folded into the ranked Stop assembler, whose token
+    ceiling can DROP the block. Delivery must be GATED on the block actually
+    packing -- a dropped block must leave its finding `pending`, not
+    `delivered`. A MEDIUM finding is the worst case: unlike a HIGH it never
+    self-heals via the next-turn resurface re-check, so a delivered-but-shown-
+    nowhere MEDIUM would be permanently lost."""
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo()
+    _touch_edited_file(file_path, data_dir, sid)
+
+    mk_box = {}
+
+    def _instant_job(request):
+        mk_box["mk"] = _record_review_finding_in_job(
+            request, claim="medium review finding", severity="medium"
+        )
+        return True
+
+    # A ceiling of 1 token cannot fit the multi-line review block, so the
+    # ranked assembler drops it whole.
+    out, calls = _run_stop(
+        _payload(repo, sid),
+        env={
+            "CHAMELEON_ENFORCE": "1",
+            "CHAMELEON_JUDGE_WAIT": "1",
+            "CHAMELEON_STOP_RENDER_TOKEN_CEILING": "1",
+        },
+        launch_job=_instant_job,
+    )
+
+    assert len(calls) == 1
+    ctx = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
+    assert "medium review finding" not in ctx  # dropped by the ceiling
+
+    from chameleon_mcp import review_ledger
+
+    # The finding was NOT marked delivered: it stays pending, reachable at the
+    # next real delivery point rather than silently retired.
+    rows = review_ledger._read_findings_rows(REPO_ID)
+    assert rows[mk_box["mk"]]["status"] == "pending"
+    assert len(review_ledger.undelivered_findings(REPO_ID, ws_roots=[str(repo)])) == 1
+
+
+def test_judge_wait_review_block_packs_marks_delivered_exactly_once(make_trusted_repo):
+    """Positive control: with a normal ceiling the review block packs into the
+    emission and its finding IS marked `delivered` -- exactly once (a
+    `delivered` row never returns from undelivered_findings, so the next
+    delivery point cannot re-show it)."""
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo()
+    _touch_edited_file(file_path, data_dir, sid)
+
+    mk_box = {}
+
+    def _instant_job(request):
+        mk_box["mk"] = _record_review_finding_in_job(
+            request, claim="medium review finding", severity="medium"
+        )
+        return True
+
+    out, calls = _run_stop(
+        _payload(repo, sid),
+        env={"CHAMELEON_ENFORCE": "1", "CHAMELEON_JUDGE_WAIT": "1"},
+        launch_job=_instant_job,
+    )
+
+    assert len(calls) == 1
+    ctx = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
+    assert "medium review finding" in ctx  # packed into the emission
+
+    from chameleon_mcp import review_ledger
+
+    rows = review_ledger._read_findings_rows(REPO_ID)
+    assert rows[mk_box["mk"]]["status"] == "delivered"
+    # Delivered exactly once: not re-shown at the next delivery point.
+    assert review_ledger.undelivered_findings(REPO_ID, ws_roots=[str(repo)]) == []

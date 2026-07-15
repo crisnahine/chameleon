@@ -249,11 +249,16 @@ def clear_delivery_payload(repo_data: Path, session_id) -> None:
 #
 # ``render_findings`` above stays the order-preserving finding-list renderer
 # delivery/judge_wait already depend on. ``assemble_stop_context`` is the
-# Stop-side entry point: it owns the ranked packing across a heterogeneous
-# stream (block reason, resurfaced findings, delivered findings, deterministic
-# advisories, idiom nudges) into ONE emission under ONE header/disclaimer.
-# Wiring pipeline.py's ~12 independently-capped ``<chameleon-context>`` blocks
-# into this is later work; this module only adds the packer itself.
+# Stop-side entry point: it owns the ranked, ceiling-bounded packing across a
+# heterogeneous stream (block reason, resurfaced findings, delivered findings,
+# deterministic advisories, idiom nudges) into ONE budgeted emission. Its
+# ``header`` argument selects finding-line mode (a str: one leading [🦎]
+# header + disclaimer) vs Stop-emission mode (``None``: the items are already
+# individually [🦎]-headered <chameleon-context> blocks, so NO extra
+# top-level header is added and blocks are blank-line separated -- the
+# pre-ranking additive "\n\n".join, now ranked and budgeted). pipeline.py's
+# stop_gates funnels its resurface / review / deterministic-advisory blocks
+# through this in Stop-emission mode.
 
 # Lower number = higher priority = packed first.
 PRIORITY_BLOCK = 0
@@ -304,7 +309,7 @@ class AssembledStop:
 
 
 def assemble_stop_context(
-    items: list[EmissionItem], *, header: str, ceiling_tokens: int
+    items: list[EmissionItem], *, header: str | None, ceiling_tokens: int
 ) -> AssembledStop:
     """Rank-and-pack ``items`` into one Stop emission under ``ceiling_tokens``.
 
@@ -322,12 +327,25 @@ def assemble_stop_context(
     ``pending``. When more than one block item is present (should not happen
     in practice), the first in input order wins.
 
-    With no block present, items are greedy-packed whole in ranked order
-    under one ``[🦎 {header}]`` line + one disclaimer (both counted against
-    the ceiling, exactly like ``render_findings``). An item that does not fit
-    whole is omitted -- never truncated -- so it stays reachable at the next
-    delivery point. Returns ``AssembledStop("", ())`` when ``items`` is empty
-    or nothing fits.
+    With no block present, items are greedy-packed whole in ranked order. An
+    item that does not fit whole is omitted -- never truncated -- so it stays
+    reachable at the next delivery point. Returns ``AssembledStop("", ())``
+    when ``items`` is empty or nothing fits.
+
+    ``header`` selects the rendering mode:
+
+    - a string is finding-line mode (delivery-shaped): one ``[🦎 {header}]``
+      line + one disclaimer lead the emission (both counted against the
+      ceiling, exactly like ``render_findings``), then packed items follow,
+      joined with ``"\\n"`` -- for callers whose items are bare finding lines.
+    - ``None`` is Stop-emission mode: the items are ALREADY-wrapped,
+      individually ``[🦎]``-headered ``<chameleon-context>`` blocks (the Stop
+      pipeline's resurface / review / deterministic-advisory blocks), so NO
+      extra top-level header is prepended -- the emission keeps each block's
+      own pre-existing header, exactly as the pre-ranking additive
+      ``"\\n\\n".join(context_blocks)`` did -- and blocks are separated by a
+      blank line. Only the ranking + ceiling + packed-key accounting are new
+      on this path; the header count is unchanged.
     """
     from chameleon_mcp.core.budget import approx_tokens
 
@@ -340,21 +358,27 @@ def assemble_stop_context(
         return AssembledStop(text=block_items[0].text, packed_match_keys=())
 
     ceiling = max(0, int(ceiling_tokens))
-    lines = [f"[\U0001f98e {header}]", _DISCLAIMER]
-    spent = approx_tokens("\n".join(lines))
+    if header is not None:
+        prefix = [f"[\U0001f98e {header}]", _DISCLAIMER]
+        separator = "\n"
+    else:
+        prefix = []
+        separator = "\n\n"
+    spent = approx_tokens("\n".join(prefix)) if prefix else 0
+    packed_texts: list[str] = []
     packed_keys: list[str] = []
-    packed_any = False
     for it in sorted(entries, key=lambda item: item.priority):
         cost = approx_tokens(it.text)
         if spent + cost > ceiling:
             continue  # does not fit whole -- omitted, stays pending, never truncated
-        lines.append(it.text)
+        packed_texts.append(it.text)
         spent += cost
-        packed_any = True
         for key in it.match_keys:
             if key not in packed_keys:
                 packed_keys.append(key)
 
-    if not packed_any:
+    if not packed_texts:
         return AssembledStop(text="", packed_match_keys=())
-    return AssembledStop(text="\n".join(lines), packed_match_keys=tuple(packed_keys))
+    body = separator.join(packed_texts)
+    text = separator.join([*prefix, body]) if prefix else body
+    return AssembledStop(text=text, packed_match_keys=tuple(packed_keys))

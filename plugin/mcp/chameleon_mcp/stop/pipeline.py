@@ -48,43 +48,6 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-# The single header every Stop advisory emission shares once routed through
-# assemble_stop_context (spec section 6: "one [🦎] header, one disclaimer per
-# emission"), replacing the old per-block headers each deterministic advisory
-# used to carry independently.
-_STOP_EMISSION_HEADER = "chameleon: turn-end review"
-
-# Mirrors stop.assemble._DISCLAIMER exactly -- the one-line render every
-# render_findings() call emits directly below its own header. Duplicated here
-# (rather than imported) since it is the literal text _strip_embedded_header
-# matches against, not a shared behavioral contract.
-_RENDER_DISCLAIMER = "Advisory; verify each before acting -- they may be wrong."
-
-
-def _strip_embedded_header(wrapped_block: str) -> str:
-    """Drop a ``<chameleon-context>``-wrapped block's own leading
-    ``[🦎 ...]`` header + disclaimer pair, keeping the wrapper tags and the
-    body beneath.
-
-    Used for a source that already rendered its own header via
-    ``stop.assemble.render_findings`` (today: ``_run_review_job``'s
-    CHAMELEON_JUDGE_WAIT in-turn render) before this module folds it into the
-    single ranked Stop emission, which gives the WHOLE emission its own one
-    header (spec section 6: "one header, one disclaimer per emission") --
-    without this, a review-only turn would show two. Falls back to the block
-    unchanged if it does not match the expected wrapper shape (defensive;
-    every real caller today produces exactly this shape).
-    """
-    open_tag, close_tag = "<chameleon-context>\n", "\n</chameleon-context>"
-    if not (wrapped_block.startswith(open_tag) and wrapped_block.endswith(close_tag)):
-        return wrapped_block
-    body_lines = wrapped_block[len(open_tag) : -len(close_tag)].splitlines()
-    if body_lines and body_lines[0].startswith("[\U0001f98e "):
-        body_lines = body_lines[1:]
-        if body_lines and body_lines[0] == _RENDER_DISCLAIMER:
-            body_lines = body_lines[1:]
-    return open_tag + "\n".join(body_lines) + close_tag
-
 
 @dataclass
 class RootContext:
@@ -356,8 +319,16 @@ def stop_gates(ctx: RootContext) -> dict:
                     resurface_match_keys = ()
 
             review_context: str | None = None
+            # Under CHAMELEON_JUDGE_WAIT the review render's delivery is NOT
+            # committed inside _run_review_job (see its docstring): these are
+            # the findings its text represents, committed by the Stop caller
+            # only if the block survives the ranked pack below AND no later
+            # root blocks -- the same drop-safe two-phase the resurface path
+            # uses, so a ceiling-dropped review block never retires a finding
+            # the user never saw.
+            review_delivered_keys: tuple[str, ...] = ()
             if allow_model_spawn:
-                review_context = _run_review_job(
+                review_context, review_delivered_keys = _run_review_job(
                     repo_root=repo_root,
                     repo_id=repo_id,
                     session_id=session_id,
@@ -481,16 +452,22 @@ def stop_gates(ctx: RootContext) -> dict:
             # old unbudgeted "\n\n".join(context_blocks): every source above
             # becomes one EmissionItem at its rank tier, and
             # assemble_stop_context greedy-packs them under
-            # STOP_RENDER_TOKEN_CEILING behind one header/disclaimer. Ranking
-            # preserves today's fixed source order (resurface, then
-            # review_context, then the 8 deterministic advisories in their
-            # existing order) since each tier is internally stable-sorted, so
-            # this is additive-to-ranked, not a reshuffle. The resurface item
-            # carries its candidate match_keys + droppable=False (the
-            # terminal-commit gate reads both): the caller (stop_backstop)
-            # commits ``mark_resurfaced`` only for the keys that survive here
-            # in ``packed_match_keys`` AND belong to a root whose output the
-            # multi-root loop did not later discard for a block.
+            # STOP_RENDER_TOKEN_CEILING. header=None keeps the pre-ranking
+            # behavior: each item is ALREADY a [🦎]-headered
+            # <chameleon-context> block, so no extra top-level header is added
+            # (the emission keeps its per-block headers, blocks blank-line
+            # separated -- exactly the old additive join) and only the ranking
+            # + ceiling + packed-key accounting are new. Ranking preserves the
+            # old fixed source order (resurface, review, then the 8
+            # deterministic advisories) since each tier is stable-sorted.
+            #
+            # Two items carry match_keys for the drop-safe two-phase commit the
+            # caller (stop_backstop) runs AFTER the whole multi-root loop:
+            # resurface (mark_resurfaced) and, under JUDGE_WAIT, review
+            # (mark_delivered). Each is committed ONLY for the keys that packed
+            # here (in ``packed_match_keys``) AND belong to a root the loop did
+            # not later discard for a block -- a ceiling-dropped or
+            # block-discarded item leaves its findings reachable next turn.
             from chameleon_mcp._thresholds import threshold_int
             from chameleon_mcp.stop.assemble import (
                 PRIORITY_ADVISORY,
@@ -515,18 +492,16 @@ def stop_gates(ctx: RootContext) -> dict:
                     )
                 )
             if review_context:
-                # Already <chameleon-context>-wrapped by judge_wait.wait_and_render,
-                # and its findings' delivered transition already committed inside
-                # that render -- no match_keys ride here, there is nothing left
-                # for the caller to commit. render_findings gave it its own
-                # [🦎]/disclaimer pair; strip that so the outer assembler's
-                # header stays the emission's ONLY one (spec section 6: "one
-                # header, one disclaimer per emission") -- the finding lines
-                # (and any idiom durable-off hint) are untouched.
+                # Already <chameleon-context>-wrapped (with its own single
+                # [🦎] header) by judge_wait.wait_and_render. Its findings are
+                # NOT yet marked delivered (deferred, see review_delivered_keys
+                # above): they ride as this item's match_keys so the caller
+                # commits mark_delivered only if this block actually packs.
                 items.append(
                     EmissionItem(
                         priority=PRIORITY_DELIVERED_UNVERIFIED,
-                        text=_strip_embedded_header(review_context),
+                        text=review_context,
+                        match_keys=review_delivered_keys,
                     )
                 )
             for lines in (
@@ -552,7 +527,7 @@ def stop_gates(ctx: RootContext) -> dict:
             try:
                 assembled = assemble_stop_context(
                     items,
-                    header=_STOP_EMISSION_HEADER,
+                    header=None,
                     ceiling_tokens=threshold_int("STOP_RENDER_TOKEN_CEILING"),
                 )
             except Exception:
@@ -560,7 +535,7 @@ def stop_gates(ctx: RootContext) -> dict:
                 # pass already computed successfully above. Fall back to the
                 # pre-ranked additive join (today's shape, minus ranking and
                 # the ceiling) rather than losing the turn's advisories
-                # outright. No resurface commit rides this path -- the
+                # outright. No resurface/delivery commit rides this path -- the
                 # candidates stay pending, exactly as an omitted-for-space
                 # item would.
                 joined = "\n\n".join(it.text for it in items)
@@ -580,17 +555,20 @@ def stop_gates(ctx: RootContext) -> dict:
                     "additionalContext": assembled.text,
                 }
             }
-            # Private side-channel, read and consumed only by stop_backstop's
+            # Private side-channels, read and consumed only by stop_backstop's
             # multi-root loop -- never forwarded to the emitted hook output
             # (the caller extracts hookSpecificOutput.additionalContext
             # separately from this dict; a direct single-root emit never
-            # reaches _emit with this key still attached in production, since
-            # stop_backstop always goes through the same root loop).
-            resurface_committed = tuple(
-                k for k in assembled.packed_match_keys if k in resurface_match_keys
-            )
+            # reaches _emit with these keys still attached in production, since
+            # stop_backstop always goes through the same root loop, which reads
+            # and drops them). Each carries only the keys that actually packed.
+            packed = set(assembled.packed_match_keys)
+            resurface_committed = tuple(k for k in resurface_match_keys if k in packed)
             if resurface_committed:
                 result["_resurface_committed_keys"] = resurface_committed
+            review_committed = tuple(k for k in review_delivered_keys if k in packed)
+            if review_committed:
+                result["_review_delivered_keys"] = review_committed
             return result
 
         # Block decision first, THEN the advisory pipeline. An unresolved
@@ -828,7 +806,7 @@ def _run_review_job(
     repo_data: Path,
     daemon_state: dict | None,
     is_subagent: bool,
-) -> str | None:
+) -> tuple[str | None, tuple[str, ...]]:
     """Route, and maybe launch, this turn's detached review job.
 
     The async-first replacement (spec section 3.1) for the deleted
@@ -840,13 +818,17 @@ def _run_review_job(
     the scheduler itself refuses on ``RouteContext.is_subagent``, so this
     function does not special-case it either.
 
-    Returns the CHAMELEON_JUDGE_WAIT in-turn render (already
-    ``<chameleon-context>``-wrapped) when that flag is set -- the harness/eval
-    synchronous-wait path over an otherwise async-first job. Otherwise None:
-    an ordinary turn emits NO model-review findings in-turn; they arrive at
-    the next UserPromptSubmit or a later dead-session SessionStart
-    (``stop/delivery.py``, wired in Task 6). Fails open to None at every
-    seam -- an exception here costs this Stop's review, never the turn.
+    Returns ``(review_context, delivered_match_keys)``. Under
+    ``CHAMELEON_JUDGE_WAIT`` a non-None ``review_context`` is the in-turn
+    render (already ``<chameleon-context>``-wrapped); its
+    ``delivered_match_keys`` are the findings that render represents but that
+    are NOT yet committed delivered -- the caller commits them only if the
+    block survives the ranked Stop assembler and no later root blocks (so a
+    ceiling-dropped review block never retires a finding the user never saw).
+    Otherwise ``(None, ())``: an ordinary async turn emits no in-turn
+    findings; they arrive at the next UserPromptSubmit or a later
+    dead-session SessionStart. Fails open to ``(None, ())`` at every seam --
+    an exception here costs this Stop's review, never the turn.
     """
     from chameleon_mcp import hook_helper as hh
 
@@ -866,7 +848,7 @@ def _run_review_job(
         )
         decision = hh._scheduler_route(route_ctx, session_doc, cfg)
         if not decision.spawn:
-            return None
+            return (None, ())
 
         heartbeat = hh._scheduler_try_acquire_job_slot(repo_id, session_id or "")
         if heartbeat is None:
@@ -874,7 +856,7 @@ def _run_review_job(
             # Stop's turn to review. Explicit event per spec section 8
             # ("every skipped stage ... replaced by an explicit check event").
             hh._emit_check_event(repo_id, session_id, "review_job", "skipped", "job_inflight")
-            return None
+            return (None, ())
 
         request = JobRequest(
             repo_root=repo_root,
@@ -923,7 +905,7 @@ def _run_review_job(
             hh._emit_check_event(
                 repo_id, session_id, "review_job", "degraded", "platform_unavailable"
             )
-            return None
+            return (None, ())
         if not launched:
             # Platform or spawn failure -- launch_job already rolled back the
             # slot claim (heartbeat unlinked, spend refunded); disclose the
@@ -932,7 +914,7 @@ def _run_review_job(
             hh._emit_check_event(
                 repo_id, session_id, "review_job", "degraded", "platform_unavailable"
             )
-            return None
+            return (None, ())
 
         from chameleon_mcp._thresholds import threshold_int
         from chameleon_mcp.core.budget import TurnBudget
@@ -950,7 +932,7 @@ def _run_review_job(
             budget=budget,
         )
     except Exception:
-        return None
+        return (None, ())
 
 
 def discover_stop_roots(cwd: Path, session_id) -> list[dict]:

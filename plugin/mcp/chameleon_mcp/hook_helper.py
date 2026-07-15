@@ -8176,13 +8176,19 @@ def stop_backstop() -> int:
         allow_spawn = True
         block_output: dict | None = None
         advisory_contexts: list[str] = []
-        # Per-root resurface commit ledger: (repo_id, match_keys) pairs pulled
-        # off each gated root's private ``_resurface_committed_keys`` output
-        # field (stop/pipeline.py's stop_gates -- see its docstring). Held
-        # here, uncommitted, until the loop finishes: a later root's block
-        # discards them all (the finding stays pending, reachable next Stop);
-        # otherwise every accumulated pair is committed once, after the loop.
+        # Per-root deferred-commit ledgers: (repo_id, match_keys) pairs pulled
+        # off each gated root's private ``_resurface_committed_keys`` /
+        # ``_review_delivered_keys`` output fields (stop/pipeline.py's
+        # stop_gates -- see its docstring). Held here, uncommitted, until the
+        # loop finishes: a later root's block discards them all (the finding
+        # stays pending, reachable next Stop); otherwise every accumulated
+        # pair is committed once, after the loop. Two ledgers because the
+        # transitions differ -- resurface -> mark_resurfaced, JUDGE_WAIT review
+        # delivery -> mark_delivered -- but both defer for the same reason: a
+        # block-discarded or ceiling-dropped item must not retire a finding the
+        # user never saw.
         resurface_commits: list[tuple[str, tuple[str, ...]]] = []
+        review_delivery_commits: list[tuple[str, tuple[str, ...]]] = []
 
         def _attest(root: dict, suppressed_reason) -> None:
             if is_subagent or os.environ.get("CHAMELEON_ATTESTATION") == "0":
@@ -8230,6 +8236,9 @@ def stop_backstop() -> int:
             committed_keys = out.get("_resurface_committed_keys")
             if committed_keys:
                 resurface_commits.append((root["repo_id"], tuple(committed_keys)))
+            review_keys = out.get("_review_delivered_keys")
+            if review_keys:
+                review_delivery_commits.append((root["repo_id"], tuple(review_keys)))
             ac = (out.get("hookSpecificOutput") or {}).get("additionalContext")
             if ac:
                 advisory_contexts.append(ac)
@@ -8241,17 +8250,25 @@ def stop_backstop() -> int:
         if block_output is not None:
             # A later root blocked: the whole Stop emits ONLY the block reason
             # (below), discarding every non-blocking root's advisories --
-            # including any resurface candidates they packed. Committing
-            # nothing here is the fix: those findings stay pending, reachable
-            # on a later non-blocking Stop, instead of burning their one-shot
-            # resurface on a turn whose output never reaches the user.
+            # including any resurface candidates or JUDGE_WAIT review-delivery
+            # blocks they packed. Committing nothing here is the fix: those
+            # findings stay pending, reachable on a later non-blocking Stop,
+            # instead of retiring them on a turn whose output never reaches the
+            # user.
             _emit(block_output)
             return 0
-        for _resurface_repo_id, _resurface_keys in resurface_commits:
+        for _rid, _keys in resurface_commits:
             try:
                 from chameleon_mcp import review_ledger
 
-                review_ledger.mark_resurfaced(_resurface_repo_id, _resurface_keys)
+                review_ledger.mark_resurfaced(_rid, _keys)
+            except Exception:
+                pass
+        for _rid, _keys in review_delivery_commits:
+            try:
+                from chameleon_mcp import review_ledger
+
+                review_ledger.mark_delivered(_rid, _keys)
             except Exception:
                 pass
         if advisory_contexts:

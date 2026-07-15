@@ -180,7 +180,11 @@ def test_resurface_discarded_when_a_later_root_blocks(coord):
     """The appendix D section 3 repro: A heals + has a resurface candidate,
     B still blocks. The Stop must emit ONLY B's block reason, and A's
     finding must stay pending -- mark_resurfaced must NOT have been called
-    for it."""
+    for it.
+
+    Hardened so this cannot pass for the trivial reason "A never ran": a spy
+    on compute_resurface proves root A WAS gated and DID compute A's candidate
+    (so the discard is a real deferred-commit, not a skipped root)."""
     from chameleon_mcp import review_ledger
 
     _arm(coord.data["web"], coord.session_id, coord.web_file)
@@ -195,13 +199,27 @@ def test_resurface_discarded_when_a_later_root_blocks(coord):
         # web (root A) heals; api (root B) stays blockable.
         return path == coord.api_file
 
-    out = _run_stop(coord, _relint)
+    real_compute = review_ledger.compute_resurface
+    computed_for: list[str] = []
+
+    def _spy_compute(repo_id, ws_root):
+        result = real_compute(repo_id, ws_root)
+        if result.match_keys:
+            computed_for.append(repo_id)
+        return result
+
+    with patch.object(review_ledger, "compute_resurface", side_effect=_spy_compute):
+        out = _run_stop(coord, _relint)
 
     assert out.get("decision") == "block"
     assert "models.py" in out.get("reason", "")
     # A's resurface line must not have leaked into the block emission either.
     assert "unaddressed high-severity" not in out.get("reason", "")
 
+    # Root A really was gated and its candidate really was computed -- the
+    # finding stays pending because the COMMIT was deferred and then dropped,
+    # not because A never ran.
+    assert web_repo_id in computed_for
     rows = review_ledger._read_findings_rows(web_repo_id)
     assert rows[finding.match_key]["status"] == "pending"
 
@@ -229,6 +247,11 @@ def test_resurface_committed_when_no_later_root_blocks(coord):
     ctx = (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
     assert "unaddressed high-severity" in ctx
     assert "src/user.ts:1" in ctx
+    # No extra top-level Stop header is prepended (part-2 fix): the emission is
+    # the pre-Task-2 additive join of already-[🦎]-headered blocks, so it
+    # starts with a <chameleon-context> wrapper, not a bare top header line.
+    assert ctx.lstrip().startswith("<chameleon-context>")
+    assert "turn-end review" not in ctx  # the removed added header never appears
 
     rows = review_ledger._read_findings_rows(web_repo_id)
     assert rows[finding.match_key]["status"] == "resurfaced"
@@ -242,8 +265,6 @@ def test_ceiling_packs_resurface_over_lower_priority_advisory(coord):
     whole -- never a crash, never a truncated fragment."""
     from chameleon_mcp import review_ledger
     from chameleon_mcp.core.budget import approx_tokens
-    from chameleon_mcp.stop.assemble import _DISCLAIMER
-    from chameleon_mcp.stop.pipeline import _STOP_EMISSION_HEADER
 
     _arm(coord.data["web"], coord.session_id, coord.web_file)
 
@@ -252,15 +273,15 @@ def test_ceiling_packs_resurface_over_lower_priority_advisory(coord):
         web_repo_id, coord.roots["web"], file_rel="src/user.ts", claim="ceiling test bug"
     )
 
-    # Compute the EXACT ceiling that fits the header/disclaimer + the
-    # resurface block alone, leaving zero headroom for anything else --
+    # Compute the EXACT ceiling that fits the resurface block alone, leaving
+    # zero headroom for anything else. header=None on the Stop path adds NO
+    # top-level header/disclaimer (each block keeps its own header), so the
+    # ceiling seeds from 0 and equals the resurface block's own cost.
     # compute_resurface is pure, so this dry call does not disturb the real
     # one stop_backstop makes below.
     pre = review_ledger.compute_resurface(web_repo_id, str(coord.roots["web"]))
     resurface_block = "<chameleon-context>\n" + "\n".join(pre.lines) + "\n</chameleon-context>"
-    header_line = f"[\U0001f98e {_STOP_EMISSION_HEADER}]"
-    base_cost = approx_tokens("\n".join([header_line, _DISCLAIMER]))
-    tight_ceiling = base_cost + approx_tokens(resurface_block)
+    tight_ceiling = approx_tokens(resurface_block)
 
     def _relint(repo_root, path, **kw):
         return False  # heals -- falls through to the advisory pipeline

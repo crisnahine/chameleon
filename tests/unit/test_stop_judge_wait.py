@@ -93,7 +93,7 @@ def test_wait_and_render_is_a_noop_without_the_flag(tmp_path, monkeypatch):
         heartbeat_path=heartbeat,
         budget=_budget(-1.0),
     )
-    assert result is None
+    assert result == (None, ())
 
 
 # --- _job_done ---------------------------------------------------------------
@@ -164,11 +164,12 @@ def test_wait_and_render_emits_seeded_finding_once_job_done(tmp_path, monkeypatc
     monkeypatch.setenv("CHAMELEON_JUDGE_WAIT", "1")
     repo = tmp_path / "repo"
     repo.mkdir()
-    review_ledger.record_findings(REPO_ID, str(repo), [_finding()])
+    f = _finding()
+    review_ledger.record_findings(REPO_ID, str(repo), [f])
     heartbeat = tmp_path / "hb"
     heartbeat.write_text("x", encoding="utf-8")  # job_inflight never claimed -> already "done"
 
-    result = judge_wait.wait_and_render(
+    text, keys = judge_wait.wait_and_render(
         repo_id=REPO_ID,
         repo_data=tmp_path / REPO_ID,
         ws_root=repo,
@@ -177,8 +178,15 @@ def test_wait_and_render_emits_seeded_finding_once_job_done(tmp_path, monkeypatc
         budget=_budget(5.0),
     )
 
-    assert result is not None
-    assert "judge-wait finding" in result
+    assert text is not None
+    assert "judge-wait finding" in text
+    # Delivery is now DEFERRED (the Stop caller commits it only if the block
+    # actually packs into the ranked emission): wait_and_render reports the
+    # keys but leaves the finding pending, and a caller-side mark_delivered on
+    # those keys drains it -- mirroring compute_resurface / mark_resurfaced.
+    assert keys == (f.match_key,)
+    assert len(review_ledger.undelivered_findings(REPO_ID, ws_roots=[str(repo)])) == 1
+    review_ledger.mark_delivered(REPO_ID, keys)
     assert review_ledger.undelivered_findings(REPO_ID, ws_roots=[str(repo)]) == []
 
 
@@ -199,7 +207,7 @@ def test_wait_and_render_times_out_cleanly_leaves_finding_pending(tmp_path, monk
         budget=_budget(-1.0),  # already expired: no real sleeping in this test
     )
 
-    assert result is None
+    assert result == (None, ())
     assert len(review_ledger.undelivered_findings(REPO_ID, ws_roots=[str(repo)])) == 1
 
 
@@ -214,7 +222,7 @@ def test_wait_and_render_prefers_the_jobs_own_cached_payload(tmp_path, monkeypat
     heartbeat = tmp_path / "hb"
     heartbeat.write_text("x", encoding="utf-8")
 
-    result = judge_wait.wait_and_render(
+    text, keys = judge_wait.wait_and_render(
         repo_id=REPO_ID,
         repo_data=repo_data,
         ws_root=repo,
@@ -223,11 +231,13 @@ def test_wait_and_render_prefers_the_jobs_own_cached_payload(tmp_path, monkeypat
         budget=_budget(5.0),
     )
 
-    assert result is not None
-    assert "JOB-RENDERED PAYLOAD" in result
+    assert text is not None
+    assert "JOB-RENDERED PAYLOAD" in text
     assert assemble.read_delivery_payload(repo_data, SID) is None  # consumed
-    # The finding the payload represents is marked delivered.
-    assert review_ledger.undelivered_findings(REPO_ID, ws_roots=[str(repo)]) == []
+    # Delivery deferred: the payload's finding is reported but stays pending
+    # until the Stop caller commits it (the block may still be ceiling-dropped).
+    assert keys == (f.match_key,)
+    assert len(review_ledger.undelivered_findings(REPO_ID, ws_roots=[str(repo)])) == 1
 
 
 # --- end-to-end through the real job runner (no waiting needed) -------------
@@ -277,7 +287,7 @@ def test_real_job_then_judge_wait_finds_its_payload(tmp_path, monkeypatch):
     rc = job.main([str(request_path)])
     assert rc == 0
 
-    result = judge_wait.wait_and_render(
+    text, keys = judge_wait.wait_and_render(
         repo_id=REPO_ID,
         repo_data=tmp_path / REPO_ID,
         ws_root=repo,
@@ -285,5 +295,6 @@ def test_real_job_then_judge_wait_finds_its_payload(tmp_path, monkeypatch):
         heartbeat_path=heartbeat,
         budget=_budget(5.0),
     )
-    assert result is not None
-    assert "real job finding" in result
+    assert text is not None
+    assert "real job finding" in text
+    assert keys  # the finding it rendered is reported for the caller to commit

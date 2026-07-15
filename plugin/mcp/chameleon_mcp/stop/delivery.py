@@ -78,7 +78,15 @@ def _delivery_header(n: int) -> str:
     )
 
 
-def _render_and_mark(repo_id: str, findings: list[Finding], *, header: str, ceiling_tokens: int):
+def _render_and_mark(
+    repo_id: str,
+    findings: list[Finding],
+    *,
+    header: str,
+    ceiling_tokens: int,
+    commit: bool = True,
+    out_match_keys: list | None = None,
+):
     from chameleon_mcp.review_ledger import mark_delivered
     from chameleon_mcp.stop.assemble import render_findings
 
@@ -88,7 +96,15 @@ def _render_and_mark(repo_id: str, findings: list[Finding], *, header: str, ceil
     if not rendered.text:
         return None
     if rendered.delivered_match_keys:
-        mark_delivered(repo_id, rendered.delivered_match_keys)
+        # ``commit=False`` defers the delivered transition to the caller (the
+        # JUDGE_WAIT Stop path, which must not mark a finding delivered until
+        # it confirms the render actually reached the user -- see
+        # ``deliver_for_root``). It still reports the keys it WOULD have
+        # marked via ``out_match_keys`` so the caller can commit exactly them.
+        if commit:
+            mark_delivered(repo_id, rendered.delivered_match_keys)
+        if out_match_keys is not None:
+            out_match_keys.extend(rendered.delivered_match_keys)
     return rendered.text
 
 
@@ -97,7 +113,14 @@ def _wrap(text: str) -> str:
 
 
 def deliver_for_root(
-    repo_id: str, repo_data: Path, ws_root, session_id, *, ceiling_tokens: int
+    repo_id: str,
+    repo_data: Path,
+    ws_root,
+    session_id,
+    *,
+    ceiling_tokens: int,
+    commit_delivery: bool = True,
+    out_match_keys: list | None = None,
 ) -> str | None:
     """One workspace's delivery: the cached job payload if one exists for
     this exact (repo_data, session_id), else a live render.
@@ -118,6 +141,17 @@ def deliver_for_root(
     an overflow finding that was never shown (permanent loss). Any un-rendered
     remainder is left ``pending``, so a later delivery point surfaces it.
     Returns None when there is nothing to show.
+
+    ``commit_delivery=False`` DEFERS the delivered transition to the caller:
+    UserPromptSubmit and SessionStart keep the default True (they own the
+    emission, so what they render IS shown), but the JUDGE_WAIT Stop path
+    folds this block into the ranked Stop assembler, whose token ceiling can
+    still DROP it from the final emission -- committing delivered here would
+    then retire a finding the user never saw (the same class the resurface
+    two-phase closes). With it False, ``out_match_keys`` (a list the caller
+    passes) is extended with exactly the keys this render represents so the
+    caller can mark_delivered them ONLY if the block actually packs; a
+    dropped block leaves its findings ``pending`` for the next delivery point.
     """
     from chameleon_mcp.review_ledger import mark_delivered, undelivered_findings
     from chameleon_mcp.stop.assemble import clear_delivery_payload, read_delivery_payload
@@ -135,11 +169,19 @@ def deliver_for_root(
         # marking is harmless; an overflow key absent from match_keys stays
         # pending for the next delivery point.
         if cached.match_keys:
-            mark_delivered(repo_id, cached.match_keys)
+            if commit_delivery:
+                mark_delivered(repo_id, cached.match_keys)
+            if out_match_keys is not None:
+                out_match_keys.extend(cached.match_keys)
         return _wrap(cached.text)
     live = _annotate_staleness(ws_root, live)
     text = _render_and_mark(
-        repo_id, live, header=_delivery_header(len(live)), ceiling_tokens=ceiling_tokens
+        repo_id,
+        live,
+        header=_delivery_header(len(live)),
+        ceiling_tokens=ceiling_tokens,
+        commit=commit_delivery,
+        out_match_keys=out_match_keys,
     )
     return _wrap(text) if text else None
 
