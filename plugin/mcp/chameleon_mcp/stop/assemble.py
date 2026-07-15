@@ -8,13 +8,19 @@ whole under a provisional token ceiling (``core.budget.approx_tokens``). An
 item that does not fit whole is OMITTED from the render -- never truncated
 mid-item -- and the caller is told exactly which findings (by ``match_key``)
 made it in, so it marks delivered only those; an omitted item stays
-``pending`` for the next delivery point. This is NOT yet the full ranked
-``block > resurfaced HIGH > delivered verified > delivered unverified >
-deterministic advisories > idiom/nudge lines`` assembler spec section 6
-describes for every Stop/SessionStart emission -- that whole-surface
-unification is later work; this module only owns finding-list rendering for
-delivery (UserPromptSubmit, SessionStart, and the CHAMELEON_JUDGE_WAIT
-in-turn path all share it via ``stop/delivery.py`` and ``stop/judge_wait.py``).
+``pending`` for the next delivery point. It stays order-preserving only (no
+priority re-ordering); delivery (UserPromptSubmit, SessionStart, and the
+CHAMELEON_JUDGE_WAIT in-turn path) shares it via ``stop/delivery.py`` and
+``stop/judge_wait.py``.
+
+``assemble_stop_context`` is the ranked ``block > resurfaced HIGH >
+delivered verified > delivered unverified > deterministic advisories >
+idiom/nudge lines`` packer spec section 6 describes for the Stop emission: it
+sorts a heterogeneous ``EmissionItem`` stream by priority and greedy-packs it
+under one header/disclaimer, with a present block reason emitted alone.
+Wiring ``stop/pipeline.py``'s ~12 independently-capped
+``<chameleon-context>`` blocks through it is separate work; this module only
+owns the packer itself.
 
 ``write_delivery_payload``/``read_delivery_payload`` are the pre-rendered
 delivery-payload cache: the detached job (``stop/job.py``) renders its
@@ -237,3 +243,118 @@ def clear_delivery_payload(repo_data: Path, session_id) -> None:
         path.unlink(missing_ok=True)
     except OSError:
         pass
+
+
+# --- Ranked Stop assembler (spec section 6) ----------------------------------
+#
+# ``render_findings`` above stays the order-preserving finding-list renderer
+# delivery/judge_wait already depend on. ``assemble_stop_context`` is the
+# Stop-side entry point: it owns the ranked packing across a heterogeneous
+# stream (block reason, resurfaced findings, delivered findings, deterministic
+# advisories, idiom nudges) into ONE emission under ONE header/disclaimer.
+# Wiring pipeline.py's ~12 independently-capped ``<chameleon-context>`` blocks
+# into this is later work; this module only adds the packer itself.
+
+# Lower number = higher priority = packed first.
+PRIORITY_BLOCK = 0
+PRIORITY_RESURFACED = 1
+PRIORITY_DELIVERED_VERIFIED = 2
+PRIORITY_DELIVERED_UNVERIFIED = 3
+PRIORITY_ADVISORY = 4
+PRIORITY_IDIOM = 5
+
+
+@dataclass(frozen=True)
+class EmissionItem:
+    """One candidate block of text for a Stop emission.
+
+    ``priority`` is one of the module-level ``PRIORITY_*`` constants (lower
+    packs first). ``text`` is the fully-rendered block/line as it would
+    appear in the final emission -- the packer never reformats or truncates
+    it, only decides whether it fits whole. ``match_keys`` are the finding
+    match_keys this item represents, if any (a deterministic advisory or a
+    block reason typically carries none); when the item is packed, its keys
+    join ``AssembledStop.packed_match_keys`` so the caller commits ledger
+    delivered/resurfaced transitions only for what the human actually saw.
+    ``droppable`` is reserved for a caller that must force an item into every
+    emission regardless of ceiling (e.g. a block reason too large to defer,
+    spec section 6) -- unused by the packer today; a future caller wires it.
+    """
+
+    priority: int
+    text: str
+    match_keys: tuple[str, ...] = ()
+    droppable: bool = True
+
+
+@dataclass(frozen=True)
+class AssembledStop:
+    """The result of ``assemble_stop_context``.
+
+    ``text`` is what was actually emitted (``""`` when nothing packed).
+    ``packed_match_keys`` is the union of the packed items' ``match_keys`` --
+    exactly the findings the caller may now mark delivered/resurfaced. A
+    block-present emission always returns an empty tuple here: a block does
+    not "deliver" anything, so every finding it stood in front of stays
+    ``pending``.
+    """
+
+    text: str
+    packed_match_keys: tuple[str, ...]
+
+
+def assemble_stop_context(
+    items: list[EmissionItem], *, header: str, ceiling_tokens: int
+) -> AssembledStop:
+    """Rank-and-pack ``items`` into one Stop emission under ``ceiling_tokens``.
+
+    Spec section 6's ranked order: block reason > resurfaced HIGH > delivered
+    verified > delivered unverified > deterministic advisories > idiom/nudge
+    lines (the ``PRIORITY_*`` constants above, lower packs first). Sorting is
+    stable, so two items at the same priority keep their input order.
+
+    A present ``PRIORITY_BLOCK`` item short-circuits everything else: its
+    ``text`` is returned AS-IS (already the full, model-facing block reason
+    with its own decision) and nothing else packs alongside it -- "a hard
+    block emits only the block reason" (spec section 6). Because a block does
+    not deliver findings, ``packed_match_keys`` is empty even if the block
+    item itself carries ``match_keys``; every non-block item's findings stay
+    ``pending``. When more than one block item is present (should not happen
+    in practice), the first in input order wins.
+
+    With no block present, items are greedy-packed whole in ranked order
+    under one ``[🦎 {header}]`` line + one disclaimer (both counted against
+    the ceiling, exactly like ``render_findings``). An item that does not fit
+    whole is omitted -- never truncated -- so it stays reachable at the next
+    delivery point. Returns ``AssembledStop("", ())`` when ``items`` is empty
+    or nothing fits.
+    """
+    from chameleon_mcp.core.budget import approx_tokens
+
+    entries = list(items or [])
+    if not entries:
+        return AssembledStop(text="", packed_match_keys=())
+
+    block_items = [it for it in entries if it.priority == PRIORITY_BLOCK]
+    if block_items:
+        return AssembledStop(text=block_items[0].text, packed_match_keys=())
+
+    ceiling = max(0, int(ceiling_tokens))
+    lines = [f"[\U0001f98e {header}]", _DISCLAIMER]
+    spent = approx_tokens("\n".join(lines))
+    packed_keys: list[str] = []
+    packed_any = False
+    for it in sorted(entries, key=lambda item: item.priority):
+        cost = approx_tokens(it.text)
+        if spent + cost > ceiling:
+            continue  # does not fit whole -- omitted, stays pending, never truncated
+        lines.append(it.text)
+        spent += cost
+        packed_any = True
+        for key in it.match_keys:
+            if key not in packed_keys:
+                packed_keys.append(key)
+
+    if not packed_any:
+        return AssembledStop(text="", packed_match_keys=())
+    return AssembledStop(text="\n".join(lines), packed_match_keys=tuple(packed_keys))

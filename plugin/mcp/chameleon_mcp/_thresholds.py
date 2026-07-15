@@ -690,6 +690,15 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # whole is omitted from the render and stays `pending` for the next
     # delivery point, never truncated mid-item.
     "REVIEW_RENDER_TOKEN_CEILING": 800,
+    # stop/assemble.py's assemble_stop_context ceiling for one Stop emission,
+    # across every discovered workspace root (spec section 6: Stop <= 1,000
+    # tokens). Ranked greedy packing: block reason > resurfaced HIGH >
+    # delivered verified > delivered unverified > deterministic advisories >
+    # idiom/nudge lines. A present block reason short-circuits the whole
+    # emission (nothing else packs), so this ceiling only bounds the
+    # non-block ranked pack; an item that does not fit whole is omitted and
+    # stays `pending` for the next delivery point, never truncated mid-item.
+    "STOP_RENDER_TOKEN_CEILING": 1000,
     # SessionStart dead-session delivery's own, wider ceiling (spec section 6:
     # SessionStart <= 2,500 tokens) -- a session opener reads more than a
     # mid-turn nudge, and there is no 3s wrapper cap on this hook to protect.
