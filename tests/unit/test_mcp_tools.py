@@ -180,13 +180,13 @@ class TestDispatchers:
             fn = getattr(tools, action, None)
             assert callable(fn), f"dispatcher action {action!r} has no tools.{action}"
 
-    def test_action_sets_are_disjoint_and_total_32(self):
+    def test_action_sets_are_disjoint_and_total_34(self):
         all_actions = (
             list(server._LIFECYCLE_ACTIONS)
             + list(server._REVIEW_ACTIONS)
             + list(server._TELEMETRY_ACTIONS)
         )
-        assert len(all_actions) == len(set(all_actions)) == 32
+        assert len(all_actions) == len(set(all_actions)) == 34
 
     def test_dispatcher_docstrings_name_every_action(self):
         for tool_fn, actions in (
@@ -1444,3 +1444,153 @@ def test_get_canonical_excerpt_surfaces_resolved_repo_root_on_id_collision(tmp_p
 
     rules_out = tools.get_rules(shared_id)["data"]
     assert rules_out.get("repo_root") == str(clone_b.resolve())
+
+
+# --------------------------------------------------------------------------- #
+# T7: get_shelved_findings / list_idiom_candidates surfacing actions
+# --------------------------------------------------------------------------- #
+
+
+def _shelvable_finding(**over):
+    from chameleon_mcp.core.finding import Finding
+
+    base = dict(
+        id="f1",
+        kind="correctness",
+        severity="medium",
+        confidence=0.5,
+        file="src/a.ts",
+        span=(1, 1),
+        claim="a recurring finding",
+        evidence="",
+        excerpt_sha="",
+        excerpt="",
+        source_lens="correctness",
+        status="pending",
+        verified="unverified",
+        created_at="2026-07-16T00:00:00Z",
+    )
+    base.update(over)
+    return Finding(**base)
+
+
+class TestGetShelvedFindings:
+    def test_returns_shelved_rows_with_recurrence(self, trusted_repo):
+        from chameleon_mcp import review_ledger
+
+        repo_id = tools._compute_repo_id(trusted_repo)
+        below = _shelvable_finding(claim="below bar finding")
+        above = _shelvable_finding(claim="above bar finding", severity="high")
+        review_ledger.record_findings(repo_id, "/repo", [below, above], surface_bar="high")
+
+        res = tools.get_shelved_findings(str(trusted_repo))
+        _assert_envelope(res)
+        data = res["data"]
+        assert data["status"] == "ok"
+        assert data["count"] == 1
+        (row,) = data["findings"]
+        assert row["claim"] == "below bar finding"
+        assert row["severity"] == "medium"
+        assert row["file"] == "src/a.ts"
+        assert row["recurrence"] == 0
+        assert row["status"] == "shelved"
+
+    def test_empty_envelope_when_no_ledger(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+        monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+        repo = tmp_path / "bare_repo"
+        repo.mkdir()
+
+        res = tools.get_shelved_findings(str(repo))
+        _assert_envelope(res)
+        data = res["data"]
+        assert data["count"] == 0
+        assert data["findings"] == []
+
+    def test_bad_repo_arg_fails_structured(self):
+        data = tools.get_shelved_findings("")["data"]
+        assert data["status"] == "failed"
+        assert "error" in data
+
+    def test_telemetry_dispatcher_routes_to_shelved_findings(self, trusted_repo):
+        from chameleon_mcp import review_ledger
+
+        repo_id = tools._compute_repo_id(trusted_repo)
+        review_ledger.record_findings(repo_id, "/repo", [_shelvable_finding()], surface_bar="high")
+
+        res = server.chameleon_telemetry(
+            action="get_shelved_findings", params={"repo": str(trusted_repo)}
+        )
+        _assert_envelope(res)
+        assert res["data"]["count"] == 1
+        assert res["data"]["findings"][0]["status"] == "shelved"
+
+
+class TestListIdiomCandidates:
+    def test_returns_load_candidates_output(self, trusted_repo):
+        from chameleon_mcp.core.idiom_candidates import write_candidate
+
+        write_candidate(
+            trusted_repo / ".chameleon",
+            slug="prefer-api-client",
+            title="Prefer apiClient",
+            rationale="Every HTTP call in this repo goes through apiClient.",
+            source="learned",
+            evidence="match_key=abc file=src/x.ts",
+            occurrences=3,
+            session_ids=["s1", "s2"],
+        )
+
+        res = tools.list_idiom_candidates(str(trusted_repo))
+        _assert_envelope(res)
+        data = res["data"]
+        assert data["status"] == "ok"
+        assert data["count"] == 1
+        (row,) = data["candidates"]
+        assert row["slug"] == "prefer-api-client"
+        assert row["title"] == "Prefer apiClient"
+        assert row["occurrences"] == 3
+        assert set(row["session_ids"]) == {"s1", "s2"}
+
+    def test_empty_envelope_when_no_candidates_written(self, trusted_repo):
+        res = tools.list_idiom_candidates(str(trusted_repo))
+        _assert_envelope(res)
+        data = res["data"]
+        assert data["count"] == 0
+        assert data["candidates"] == []
+
+    def test_empty_envelope_when_no_profile(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+        monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+        repo = tmp_path / "bare_repo2"
+        repo.mkdir()
+
+        res = tools.list_idiom_candidates(str(repo))
+        _assert_envelope(res)
+        data = res["data"]
+        assert data["status"] == "no_repo"
+        assert data["count"] == 0
+        assert data["candidates"] == []
+
+    def test_bad_repo_arg_fails_structured(self):
+        data = tools.list_idiom_candidates("")["data"]
+        assert data["status"] == "failed"
+        assert "error" in data
+
+    def test_telemetry_dispatcher_routes_to_list_idiom_candidates(self, trusted_repo):
+        from chameleon_mcp.core.idiom_candidates import write_candidate
+
+        write_candidate(
+            trusted_repo / ".chameleon",
+            slug="a-slug",
+            title="t",
+            rationale="r",
+            source="learned",
+            evidence="e",
+        )
+        res = server.chameleon_telemetry(
+            action="list_idiom_candidates", params={"repo": str(trusted_repo)}
+        )
+        _assert_envelope(res)
+        assert res["data"]["count"] == 1
+        assert res["data"]["candidates"][0]["slug"] == "a-slug"

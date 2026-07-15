@@ -845,7 +845,7 @@ The review-gate workflow — 7 actions. All read-only except
 
 ### `chameleon_telemetry` dispatcher
 
-Observability and health — 12 actions, all read-only.
+Observability and health — 14 actions, all read-only.
 
 | Action | Purpose |
 |---|---|
@@ -856,8 +856,10 @@ Observability and health — 12 actions, all read-only.
 | `get_override_audit` | Per-rule inline-override rate and blanket share. |
 | `get_longitudinal_signals` | Structural-conformance and enforcement-outcome tracks, kept separate. |
 | `get_finding_fate_stats` | Per-lens precision (accepted vs declined) from the finding-fate ledger. |
+| `get_shelved_findings` | Below-surface-bar findings currently shelved, for `/chameleon-status`/`/chameleon-explain` browsing. |
 | `get_idiom_coverage` | Read-only map of guidance already captured. |
 | `check_idiom_candidates` | Novelty gate (novel/duplicate/covered/invalid) before teaching. |
+| `list_idiom_candidates` | Unapproved idiom proposals the self-learning miner derived from usage; nothing here is adopted. |
 | `get_prose_rule_candidates` | Doc-stated "use X not Y" rules, corroborated against the repo's imports. Propose-only. |
 | `daemon_status` | Advisor daemon liveness and version. |
 | `doctor` | Installation health triage. |

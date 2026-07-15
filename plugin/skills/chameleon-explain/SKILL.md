@@ -1,17 +1,18 @@
 ---
 name: chameleon-explain
-argument-hint: "[rule | file-path]"
-description: Use when the user explicitly invokes /chameleon-explain to drill down on one enforcement rule (its calibration, would-block frequency, inline-override rate) OR to replay what chameleon knew and did the last time a file was edited (post-incident gap analysis)
+argument-hint: "[rule | file-path | match_key]"
+description: Use when the user explicitly invokes /chameleon-explain to drill down on one enforcement rule (its calibration, would-block frequency, inline-override rate), to replay what chameleon knew and did the last time a file was edited (post-incident gap analysis), or to look up one shelved review finding by match_key
 ---
 
 # /chameleon-explain
 
-Two drill-downs share this command, dispatched on the argument shape:
+Three drill-downs share this command, dispatched on the argument shape:
 
 - `/chameleon-explain <rule>` — explain one enforcement rule: why it's active or demoted, how often it would have blocked real edits, how often the team overrode it. The drill-down behind the `/chameleon-status` enforcement summary.
 - `/chameleon-explain <file>` — replay what chameleon knew and did the last time that file was edited, and classify why the gate stayed silent. The recovery loop for a postmortem.
+- `/chameleon-explain <match_key>` - drill into one shelved review finding by its match_key (the 64-hex digest listed under `/chameleon-status`'s "Shelved findings" item). The recovery loop for guidance chameleon noticed but never delivered.
 
-Dispatch: if the argument names an existing file (or looks like a path — has a `/`, a known source extension, or matches a file in the repo), run the **file** flow. Otherwise treat it as a rule name and run the **rule** flow. With no argument, explain every rule that has activity (rule flow).
+A 64-character lowercase hex argument is a shelved-finding match_key, not a rule or a file: run the **shelved finding** flow. Dispatch: if the argument names an existing file (or looks like a path - has a `/`, a known source extension, or matches a file in the repo), run the **file** flow. Otherwise treat it as a rule name and run the **rule** flow. With no argument, explain every rule that has activity (rule flow).
 
 ---
 
@@ -87,8 +88,31 @@ The single question a postmortem must answer: did chameleon *not see* the file's
 
 One file, one row: the most-recent edit only. This is a per-edit replay, not a history view; it does not trend a file's edits over time or correlate across files. It reconstructs the last decision so a human can classify and route the miss; it does not itself decide whether the code was wrong.
 
+---
+
+# Shelved finding flow: `/chameleon-explain <match_key>`
+
+Drill into one shelved review finding by its `match_key`, the 64-hex sha256 digest each row carries. A shelved finding scored below the repo's `review.surface_bar` when the review job recorded it, so it never interrupted a turn on its own; this is the way to see one in full outside `/chameleon-status`'s summary list.
+
+Usage: `/chameleon-explain <match_key>` (the full 64-char digest, copied from `/chameleon-status`'s "Shelved findings" item).
+
+## The flow
+
+1. Resolve the repo via `chameleon-mcp::detect_repo(<file-path>)`.
+2. Call `chameleon-mcp::chameleon_telemetry(action="get_shelved_findings", params={"repo": <repo>})`.
+3. Find the row whose `match_key` equals the argument. If none matches, say so plainly - the finding may never have been shelved here, may already have promoted to `pending` (recurrence auto-promotion, see `/chameleon-status`), or may have been addressed and dropped by a later turn-end recheck. There is nothing to show in any of those cases.
+4. When found, print the full row: `severity`, `claim`, `file`, `kind`, `recurrence`, `session_ids`, `created_at`.
+
+## Honesty
+
+Shelved means below-bar at write time, nothing more. It is not a confirmed false positive (no human has dismissed it) and not a confirmed bug (it never reached the delivery pipeline that would have surfaced it for review). State it as unreviewed, not as either verdict.
+
+## Out of scope
+
+One row, one lookup. This does not list every shelved finding for the repo (`/chameleon-status` does that) and does not track a finding beyond the `recurrence` count and `session_ids` already on the row.
+
 ## Honesty Rules
 
-- Report only the real recorded state: the rule's actual calibration, would-block frequency, and inline-override rate, or the file's actual last-edit replay. Never fabricate a number, a rule, or an event the profile / telemetry does not hold.
-- If the data is missing (no telemetry, no recorded edit, an unknown rule), say so plainly; don't infer a plausible answer.
+- Report only the real recorded state: the rule's actual calibration, would-block frequency, and inline-override rate; the file's actual last-edit replay; or the shelved finding's actual recorded row. Never fabricate a number, a rule, an event, or a finding the profile / telemetry does not hold.
+- If the data is missing (no telemetry, no recorded edit, an unknown rule, no matching match_key), say so plainly; don't infer a plausible answer.
 - A post-incident replay names the gap between what chameleon knew and what it could not see honestly; it doesn't excuse the miss or decide whether the code was wrong.

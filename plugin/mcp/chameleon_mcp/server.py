@@ -362,8 +362,10 @@ _TELEMETRY_ACTIONS = (
     "get_override_audit",
     "get_longitudinal_signals",
     "get_finding_fate_stats",
+    "get_shelved_findings",
     "get_idiom_coverage",
     "check_idiom_candidates",
+    "list_idiom_candidates",
     "get_prose_rule_candidates",
     "daemon_status",
     "doctor",
@@ -542,6 +544,10 @@ def chameleon_telemetry(action: str, params: dict | None = None) -> dict:
       longitudinal health tracks for a repo.
     - get_finding_fate_stats(repo): Per-lens precision from the repo's
       finding-fate ledger (advisory).
+    - get_shelved_findings(repo): Below-surface-bar findings currently
+      shelved for a repo (severity/claim/file/recurrence per row) -- the
+      /chameleon-status and /chameleon-explain browsing surface. Shelved,
+      not delivered; recurs toward auto-promotion. Read-only.
     - get_idiom_coverage(repo): Map of guidance chameleon ALREADY captures
       for a repo. Read-only.
     - check_idiom_candidates(repo, candidates): Novelty gate for idiom
@@ -554,6 +560,12 @@ def chameleon_telemetry(action: str, params: dict | None = None) -> dict:
       convention, or lint/format rule), or `invalid`; `quality_warnings`
       flags missing example/counterexample and thin rationales. Writes still
       go through teach_profile_structured (append-only).
+    - list_idiom_candidates(repo): Unapproved idiom proposals the
+      self-learning miner derived from real usage (title, rationale,
+      evidence trail, occurrences, session_ids) -- the /chameleon-auto-idiom
+      "learned from usage" surface. NOTHING here is adopted; a candidate
+      becomes a real idiom only through the normal teach/auto-idiom approval
+      path. Read-only.
     - get_prose_rule_candidates(repo): Doc-stated "use X not Y" rules,
       corroborated against the repo's own imports. PROPOSE-only, read-only.
     - daemon_status(): Return current chameleon-mcp daemon status. Read-only.

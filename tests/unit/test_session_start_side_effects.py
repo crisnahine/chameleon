@@ -963,3 +963,185 @@ def test_drift_banner_respects_min_observations_env_override(tmp_path, monkeypat
         monkeypatch.delenv("CHAMELEON_DRIFT_BANNER_MIN_OBSERVATIONS", raising=False)
         importlib.reload(_th)
     _reset_drift_conn_cache()
+
+
+# --------------------------------------------------------------------------- #
+# (e) _idiom_candidates_note -- SessionStart "learned from usage" surfacing
+# --------------------------------------------------------------------------- #
+
+
+def test_idiom_candidates_note_fires_with_candidate_count(tmp_path):
+    from chameleon_mcp.core.idiom_candidates import write_candidate
+
+    profile_dir = tmp_path / "repo" / ".chameleon"
+    profile_dir.mkdir(parents=True)
+    write_candidate(
+        profile_dir,
+        slug="prefer-api-client",
+        title="Prefer apiClient",
+        rationale="r",
+        source="learned",
+        evidence="e",
+    )
+    write_candidate(
+        profile_dir,
+        slug="ban-console-log",
+        title="Ban console.log",
+        rationale="r",
+        source="learned",
+        evidence="e",
+    )
+
+    note = hh._idiom_candidates_note(profile_dir)
+
+    assert note is not None
+    assert "learned 2 idiom candidate(s) from usage" in note
+    assert "/chameleon-auto-idiom" in note
+    assert "nothing is adopted without your approval" in note
+
+
+def test_idiom_candidates_note_none_when_no_candidates(tmp_path):
+    profile_dir = tmp_path / "repo" / ".chameleon"
+    profile_dir.mkdir(parents=True)
+    assert hh._idiom_candidates_note(profile_dir) is None
+
+
+def test_idiom_candidates_note_none_when_profile_dir_absent(tmp_path):
+    # A repo that was never bootstrapped: profile_dir doesn't exist at all.
+    profile_dir = tmp_path / "repo" / ".chameleon"
+    assert hh._idiom_candidates_note(profile_dir) is None
+
+
+def test_idiom_candidates_note_none_and_no_crash_on_corrupt_candidates_dir(tmp_path):
+    # idiom-candidates exists as a FILE instead of a directory: load_candidates
+    # fails open to [] (glob raises NotADirectoryError, an OSError subclass), so
+    # the note is silently absent rather than raising.
+    profile_dir = tmp_path / "repo" / ".chameleon"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "idiom-candidates").write_text("not a directory", encoding="utf-8")
+
+    assert hh._idiom_candidates_note(profile_dir) is None
+
+
+def test_idiom_candidates_note_none_when_load_candidates_raises(tmp_path):
+    profile_dir = tmp_path / "repo" / ".chameleon"
+    profile_dir.mkdir(parents=True)
+    with patch(
+        "chameleon_mcp.core.idiom_candidates.load_candidates",
+        side_effect=RuntimeError("boom"),
+    ):
+        assert hh._idiom_candidates_note(profile_dir) is None
+
+
+def test_idiom_candidates_note_suppressed_by_miner_kill_switch(tmp_path, monkeypatch):
+    from chameleon_mcp.core.idiom_candidates import write_candidate
+
+    profile_dir = tmp_path / "repo" / ".chameleon"
+    profile_dir.mkdir(parents=True)
+    write_candidate(
+        profile_dir, slug="a-slug", title="t", rationale="r", source="learned", evidence="e"
+    )
+    monkeypatch.setenv("CHAMELEON_IDIOM_MINER", "0")
+
+    assert hh._idiom_candidates_note(profile_dir) is None
+
+
+def _run_session_start_for_idiom_note(repo, tmp_path, session_id="s1", repo_id="rid_idiom") -> str:
+    captured: list[str] = []
+    with (
+        patch("sys.stdin", io.StringIO(json.dumps({"session_id": session_id}))),
+        patch("sys.stdout") as mock_stdout,
+        patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
+        patch("chameleon_mcp.hook_helper._maybe_auto_refresh", lambda *a, **k: None),
+        patch("chameleon_mcp.hook_helper._wire_statusline_settings", lambda *a, **k: None),
+        patch("chameleon_mcp.hook_helper._drift_banner_for_repo", return_value=None),
+        patch("chameleon_mcp.profile.loader.find_repo_root", return_value=repo),
+        patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
+    ):
+        mock_stdout.write = lambda s: captured.append(s)
+        rc = hh.session_start()
+    assert rc == 0
+    return "".join(captured)
+
+
+def test_session_start_includes_idiom_candidates_note_when_present(tmp_path, monkeypatch):
+    """End-to-end: a profile with >=1 candidate file surfaces the note in the
+    real session_start() output, naming the count and pointing at the skill."""
+    from chameleon_mcp.core.idiom_candidates import write_candidate
+
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(_PLUGIN_ROOT))
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    _reset_drift_conn_cache()
+
+    repo = tmp_path / "repo"
+    (repo / ".chameleon").mkdir(parents=True)
+    write_candidate(
+        repo / ".chameleon",
+        slug="a-slug",
+        title="t",
+        rationale="r",
+        source="learned",
+        evidence="e",
+    )
+
+    out = _run_session_start_for_idiom_note(repo, tmp_path, repo_id="rid_idiom_note")
+
+    assert "learned 1 idiom candidate(s) from usage" in out
+    assert "/chameleon-auto-idiom" in out
+    _reset_drift_conn_cache()
+
+
+def test_session_start_omits_idiom_candidates_note_when_zero_candidates(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(_PLUGIN_ROOT))
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    _reset_drift_conn_cache()
+
+    repo = tmp_path / "repo"
+    (repo / ".chameleon").mkdir(parents=True)
+
+    out = _run_session_start_for_idiom_note(repo, tmp_path, repo_id="rid_idiom_note_zero")
+
+    assert "idiom candidate(s) from usage" not in out
+    _reset_drift_conn_cache()
+
+
+def test_session_start_omits_idiom_candidates_note_on_corrupt_candidates_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(_PLUGIN_ROOT))
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    _reset_drift_conn_cache()
+
+    repo = tmp_path / "repo"
+    (repo / ".chameleon").mkdir(parents=True)
+    (repo / ".chameleon" / "idiom-candidates").write_text("not a directory", encoding="utf-8")
+
+    out = _run_session_start_for_idiom_note(repo, tmp_path, repo_id="rid_idiom_note_corrupt")
+
+    assert "idiom candidate(s) from usage" not in out
+    _reset_drift_conn_cache()
+
+
+def test_session_start_suppresses_idiom_candidates_note_under_miner_kill_switch(
+    tmp_path, monkeypatch
+):
+    from chameleon_mcp.core.idiom_candidates import write_candidate
+
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(_PLUGIN_ROOT))
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_IDIOM_MINER", "0")
+    _reset_drift_conn_cache()
+
+    repo = tmp_path / "repo"
+    (repo / ".chameleon").mkdir(parents=True)
+    write_candidate(
+        repo / ".chameleon",
+        slug="a-slug",
+        title="t",
+        rationale="r",
+        source="learned",
+        evidence="e",
+    )
+
+    out = _run_session_start_for_idiom_note(repo, tmp_path, repo_id="rid_idiom_note_kill")
+
+    assert "idiom candidate(s) from usage" not in out
+    _reset_drift_conn_cache()

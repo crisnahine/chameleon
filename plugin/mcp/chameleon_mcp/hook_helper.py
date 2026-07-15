@@ -994,6 +994,37 @@ def _judge_spawn_health_banner(repo_root: Path, session_id: str | None = None) -
         return None
 
 
+def _idiom_candidates_note(profile_dir: Path) -> str | None:
+    """One-line SessionStart note when the self-learning miner has proposed
+    idiom candidates for this repo.
+
+    Side-effect-free, unlike the drift/production banners: it reports the
+    CURRENT candidate count rather than a one-shot alert, so there is no
+    cooldown marker to write -- recomputing it every session is cheap and
+    correct. Rides the miner's own kill switch (CHAMELEON_IDIOM_MINER=0
+    disables both the mine and this note; no separate env var), and fires
+    only when at least one candidate exists. session_start's own
+    is_chameleon_suppressed gate runs before any banner is assembled, so
+    this needs no optout check of its own. Fail-open: a missing profile, an
+    absent/corrupt candidates dir, or any other error all read as "nothing
+    to report" (None), never a crash.
+    """
+    if os.environ.get("CHAMELEON_IDIOM_MINER") == "0":
+        return None
+    try:
+        from chameleon_mcp.core.idiom_candidates import load_candidates
+
+        count = len(load_candidates(profile_dir))
+    except Exception:  # noqa: BLE001
+        return None
+    if count <= 0:
+        return None
+    return (
+        f"[🦎 chameleon] learned {count} idiom candidate(s) from usage; run "
+        "/chameleon-auto-idiom to review -- nothing is adopted without your approval."
+    )
+
+
 def _hook_error_log_path() -> Path:
     """Path the hook scripts append fail-open lines to (override-aware).
 
@@ -1948,6 +1979,7 @@ def session_start() -> int:
     judge_health_banner = _judge_spawn_health_banner(
         repo_root or _safe_cwd(), session_id=session_id
     )
+    idiom_candidates_note = _idiom_candidates_note(_enf_profile_dir(repo_root or _safe_cwd()))
     interpreter_banner = _interpreter_degraded_banner(
         repo_root or _safe_cwd(), session_id=session_id
     )
@@ -1983,6 +2015,7 @@ def session_start() -> int:
                 drift_banner,
                 production_banner,
                 judge_health_banner,
+                idiom_candidates_note,
                 interpreter_banner,
                 dead_session_banner,
                 "</chameleon-context>",
@@ -2027,6 +2060,9 @@ def session_start() -> int:
     if judge_health_banner:
         wrapped_parts.append("")
         wrapped_parts.append(judge_health_banner)
+    if idiom_candidates_note:
+        wrapped_parts.append("")
+        wrapped_parts.append(idiom_candidates_note)
     if interpreter_banner:
         wrapped_parts.append("")
         wrapped_parts.append(interpreter_banner)

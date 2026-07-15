@@ -6646,6 +6646,74 @@ def get_finding_fate_stats(repo: str) -> dict:
     return _envelope(stats)
 
 
+def get_shelved_findings(repo: str) -> dict:
+    """Below-surface-bar findings currently shelved for a repo.
+
+    A shelved row failed the repo's ``review.surface_bar`` (severity too low
+    to interrupt a turn) but is not discarded -- it recurs toward
+    auto-promotion (``CHAMELEON_SHELVED_PROMOTION`` /
+    ``SHELVED_PROMOTE_MIN_RECURRENCE``) and feeds the self-learning idiom
+    miner. Each row carries the canonical ``Finding`` fields (severity,
+    claim, file, kind, ...) plus ``recurrence`` and ``session_ids``. This is
+    the read-only browsing surface /chameleon-status and /chameleon-explain
+    use to show what chameleon noticed but did not surface -- nothing here
+    promotes, delivers, or drops a finding. Fail-open: a missing/corrupt
+    ledger returns an empty list rather than raising.
+    """
+    if not isinstance(repo, str) or not repo:
+        return _envelope({"status": "failed", "error": "expected repo path or repo_id hex digest"})
+    _repo_path, repo_id = _resolve_repo_arg(repo)
+    if repo_id is None:
+        return _envelope({"status": "no_repo", "repo_id": None, "count": 0, "findings": []})
+    try:
+        from chameleon_mcp.review_ledger import shelved_findings as _shelved_findings
+
+        rows = _shelved_findings(repo_id)
+    except Exception:
+        rows = []
+    return _envelope({"status": "ok", "repo_id": repo_id, "count": len(rows), "findings": rows})
+
+
+def list_idiom_candidates(repo: str) -> dict:
+    """Idiom candidates the self-learning miner has proposed for a repo.
+
+    Each row is an unapproved proposal (title, rationale, evidence trail,
+    ``occurrences``, ``session_ids``) the miner writes under
+    ``.chameleon/idiom-candidates/`` -- see ``core.idiom_candidates``. NONE
+    of this is adopted automatically: a candidate becomes a real idiom only
+    through the same ``/chameleon-teach`` (or ``/chameleon-auto-idiom``)
+    approval path a hand-taught idiom uses. This is the read-only browsing
+    surface /chameleon-auto-idiom calls to present "learned from usage"
+    candidates for review.
+
+    Unlike ``get_idiom_coverage``/``check_idiom_candidates``, this does NOT
+    gate on trust: the candidates directory is deliberately excluded from
+    the trust-hashed profile surface (hashing unreviewed miner output would
+    arm the trust gate on proposals nobody has seen yet), so it stays
+    readable regardless of trust state -- the human reviewing each
+    candidate before approval is the safety boundary here, not the trust
+    gate. Fail-open: a repo with no profile or no candidates directory
+    returns an empty list rather than raising.
+    """
+    if not isinstance(repo, str) or not repo:
+        return _envelope({"status": "failed", "error": "expected repo path or repo_id hex digest"})
+    repo_path, _repo_id = _resolve_repo_arg(repo)
+    if repo_path is None or not repo_path.is_dir():
+        return _envelope({"status": "no_repo", "count": 0, "candidates": []})
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    profile_dir = resolve_profile_root(repo_path) / ".chameleon"
+    if not profile_dir.is_dir():
+        return _envelope({"status": "no_repo", "count": 0, "candidates": []})
+    try:
+        from chameleon_mcp.core.idiom_candidates import load_candidates
+
+        rows = load_candidates(profile_dir)
+    except Exception:
+        rows = []
+    return _envelope({"status": "ok", "count": len(rows), "candidates": rows})
+
+
 def _normalize_decision_rel_path(repo_path: Path | None, file_path: str) -> str:
     """Repo-relative posix path for a decision_log lookup.
 

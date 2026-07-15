@@ -121,6 +121,11 @@ by `check_idiom_candidates`.
    When you save such a candidate, set `source` to note the drift origin, e.g.
    `"drift: import-preference-violation x6"`. Skip an archetype with no flagged
    rules; do not manufacture an anti-pattern the history does not evidence.
+3c. **Pull usage-derived candidates from the self-learning miner.** Call
+   `chameleon-mcp::chameleon_telemetry(action="list_idiom_candidates", params={"repo": <abs-repo-path>})`
+   and fold its rows into your candidate pool the same way as the drift
+   antipatterns above. See **Learned from usage** below for how to present and
+   draft these.
 4. **Draft at most 10 candidates.** Each candidate must have:
    - `slug` — `^[a-z][a-z0-9-]{2,63}$`, descriptive.
    - `rationale` — what to do AND why the team does it (one to three
@@ -186,6 +191,41 @@ by `check_idiom_candidates`.
 | Test data conventions | Factories-not-fixtures, builder helpers, network stubbing rules | spec/test dirs |
 | Base-class / decorator contract | An archetype has a framework/gem `dominant_base` or class decorator (`covered.class_contract`), and its members share a body shape: typed DSL macros + a required method (ActiveInteraction `string`/`integer` + `def execute`; NestJS `@Injectable` + `execute`). Propose the full shape as one idiom even though the bare base is `covered-by-inheritance`. | canonical witness + 3-5 archetype members |
 
+## Learned from usage
+
+A second source sits alongside the AST mining above: the self-learning miner
+(`stop/miner.py`) that runs as the last stage of the async turn-end review job.
+It watches three usage signals over real sessions - a correctness/duplication
+finding recurring across sessions, a rule the team keeps overriding, and an
+idiom-lens finding that reached `addressed` - and writes each as a proposal
+under `.chameleon/idiom-candidates/`. These never touch the live idiom store on
+their own; they sit there until a human looks at them.
+
+Call `chameleon-mcp::chameleon_telemetry(action="list_idiom_candidates",
+params={"repo": <abs-repo-path>})`. Each row carries `slug`, `title`,
+`rationale`, `evidence` (the trail: match keys, files, drift counts - whatever
+grounded the proposal), `occurrences`, and `session_ids`. Present every row in
+chat exactly like the other candidate sources: slug, rationale, the evidence
+trail, and how many times/sessions it recurred. A candidate with a high
+`occurrences` count across many `session_ids` is a stronger signal than a
+one-off AST match - say so.
+
+A miner row is a lead, not a finished candidate: it usually lacks a real code
+`example`/`counterexample`, so before it can be written you still draft it the
+same way as any other candidate - pull the real file(s) named in its evidence,
+confirm the pattern still holds, and write an example/counterexample from the
+actual code. Then it goes through the exact same pipeline as every other
+source: step 5's `check_idiom_candidates` gate, step 6's present-and-ask, and
+step 7's write, capped in the same 5-per-run write budget. A miner-derived
+candidate gets no shortcut through approval - the user picks it by number
+exactly like a hand-mined one.
+
+**Nothing here is adopted automatically.** Listing a candidate, even a
+usage-derived one with a dozen recurrences, changes nothing in `idioms.md` on
+its own. It becomes a real idiom only through the normal
+`teach_profile_structured` write in step 7, after the same `check_idiom_candidates`
+gate and the same explicit user approval every candidate in this skill needs.
+
 ## What is NOT a candidate (the covered map decides)
 
 - File naming/casing, import ordering, indent/quotes/semicolons — auto-derived
@@ -209,6 +249,7 @@ by `check_idiom_candidates`.
 | `teach_profile_structured` → `slug already exists` | The gate should have caught it; pick a new slug, re-check, re-present that one candidate. |
 | `teach_profile_structured` → `another /chameleon-teach is in progress` | Retry shortly; writes are flock-serialized. |
 | Zero novel candidates survive | Honest outcome — report "profile + existing idioms already cover what the repo evidences" and suggest `/chameleon-teach` for tribal knowledge only humans hold. |
+| `list_idiom_candidates` → empty `candidates` | Normal outcome, not an error - the miner hasn't proposed anything yet for this repo, or `CHAMELEON_IDIOM_MINER=0` is set. Skip the "Learned from usage" section in the report rather than claiming a failure. |
 
 ## Quality bar (apply before presenting)
 
