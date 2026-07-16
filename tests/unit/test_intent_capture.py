@@ -720,3 +720,31 @@ def test_recent_excerpts_returns_same_verbatim_lines_as_scope_lines(tmp_path):
     capture_intent(tmp_path, SID, "don't touch the auth module")
     entries = read_intent(tmp_path, SID)
     assert recent_excerpts(entries) == scope_lines(entries) == ["don't touch the auth module"]
+
+
+# --- extract_scope_lines: identifier-internal dots are not sentence boundaries -
+
+
+def test_extract_scope_lines_keeps_dotted_filename_object():
+    # A period inside a filename/module/version is part of the scope object,
+    # not a sentence boundary -- splitting there would drop the extension.
+    assert extract_scope_lines("don't touch config.json") == ["don't touch config.json"]
+    assert extract_scope_lines("leave package.json alone") == ["leave package.json alone"]
+    assert extract_scope_lines("do not touch app.py or db.py") == ["do not touch app.py or db.py"]
+    assert extract_scope_lines("keep v1.2.3 as is") == ["keep v1.2.3 as is"]
+    assert extract_scope_lines("do not modify foo.bar.baz") == ["do not modify foo.bar.baz"]
+
+
+def test_extract_scope_lines_real_sentence_period_still_splits():
+    # A period that is a genuine sentence terminator (flanked by a space or the
+    # end, not two word chars) still splits, so unrelated prose in a separate
+    # sentence is dropped and a dotted object in the scope sentence survives.
+    assert extract_scope_lines("please fix the login bug. do not touch config.json") == [
+        "do not touch config.json"
+    ]
+    assert extract_scope_lines("don't touch the auth module. it is fragile") == [
+        "don't touch the auth module"
+    ]
+    # A filename ending the sentence keeps its extension (the trailing period
+    # is a terminator; the identifier-internal one is not).
+    assert extract_scope_lines("do not touch config.json.") == ["do not touch config.json"]

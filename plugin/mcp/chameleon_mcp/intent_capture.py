@@ -118,6 +118,23 @@ _SCOPE_LEFT_BOUNDARY_RE = re.compile(
 # there would drop part of the object.
 _SCOPE_RIGHT_BOUNDARY_RE = re.compile(r"\b(?:because|since)\b", re.IGNORECASE)
 
+# Sentence terminators for the scope split. `!`, `?`, and newline always
+# terminate; a `.` terminates ONLY when it is not an identifier-internal dot
+# -- a period flanked by word characters on both sides (`config.json`,
+# `v1.2.3`, `foo.bar.baz`) is part of a filename/module/version a scope
+# directive names ("don't touch config.json"), not a sentence boundary, so
+# splitting there would drop the object's extension. The two `.`-alternatives
+# fire only when the period lacks a word char on one side; a flat alternation,
+# linear in input length (no catastrophic backtracking).
+#
+# Accepted residual: a sentence period with NO trailing space before the next
+# word ("config.json.Also do X") is, by local context alone, indistinguishable
+# from a dotted identifier ("app.UserModel", "Module.Handler"), so it is kept
+# whole rather than split. That deliberately favors never dropping a real scope
+# OBJECT over splitting a rare no-space run-on; the merged run-on is still
+# bounded by the per-clause char cap and narrowed by `_scope_clause_bounds`.
+_SENTENCE_SPLIT_RE = re.compile(r"[!?\n]|(?<!\w)\.|\.(?!\w)")
+
 
 def _scope_clause_bounds(sentence: str, start: int, end: int) -> tuple[int, int]:
     """Return the ``[left, right)`` bounds of the scope clause around a
@@ -144,8 +161,11 @@ def _scope_clause_bounds(sentence: str, start: int, end: int) -> tuple[int, int]
 def extract_scope_lines(text: str) -> list[str]:
     """Extract verbatim scope-constraint CLAUSES from prompt text.
 
-    Splits ``text`` into sentences on ``[.!?\\n]`` and matches
-    ``_SCOPE_PHRASE_RE`` against each FULL sentence (this is essential: it
+    Splits ``text`` into sentences on ``_SENTENCE_SPLIT_RE`` (``!``/``?``/
+    newline, and ``.`` except when it is an identifier-internal dot such as
+    ``config.json`` or ``v1.2.3`` -- so a filename/module a directive names
+    is not split off its object) and matches ``_SCOPE_PHRASE_RE`` against
+    each FULL sentence (this is essential: it
     protects multi-keyword phrases like "leave X alone" / "keep X as is"
     whose regex span crosses commas). For each match, ``_scope_clause_bounds``
     narrows the persisted text to a bounded clause around the phrase --
@@ -185,7 +205,7 @@ def extract_scope_lines(text: str) -> list[str]:
             return []
         candidates: list[str] = []
         seen: set[str] = set()
-        for segment in re.split(r"[.!?\n]", text):
+        for segment in _SENTENCE_SPLIT_RE.split(text):
             sentence = segment.strip()
             if not sentence:
                 continue
