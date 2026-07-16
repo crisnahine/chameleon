@@ -511,6 +511,127 @@ def test_extract_scope_lines_enabled_by_default(monkeypatch):
     assert extract_scope_lines("don't touch the auth module") == ["don't touch the auth module"]
 
 
+# --- extract_scope_lines: clause tightening around a run-on ---------------------
+#
+# The regex still matches against the FULL sentence (so a phrase span that
+# crosses commas, like "leave X alone", still matches whole) -- but the
+# PERSISTED text is now a bounded clause around the match, not the whole
+# sentence, so unrelated prose glued on by a punctuation-free run-on no
+# longer rides along.
+
+
+def test_extract_scope_lines_run_on_tightens_to_clause_dropping_unrelated_prose():
+    text = (
+        "please help me refactor the payment flow and while you are at it "
+        "do not touch the legacy billing reconciliation job because it is "
+        "fragile and has been in production for six years"
+    )
+    out = extract_scope_lines(text)
+    assert out == ["while you are at it do not touch the legacy billing reconciliation job"]
+    assert "refactor the payment flow" not in out[0]
+    assert "because it is fragile" not in out[0]
+
+
+def test_extract_scope_lines_plain_no_conjunction_prompt_unchanged():
+    # No conjunction and no reason marker means both bounds default to the
+    # sentence edges -- output is identical to the pre-tightening behavior.
+    text = "please do not touch the auth module"
+    assert extract_scope_lines(text) == [text]
+
+
+# --- extract_scope_lines: the object-preservation safety invariant -------------
+#
+# For every phrase form the regex matches, the scope OBJECT must survive the
+# new clause-narrowing -- this is the property a reviewer would hunt for a
+# regression in.
+
+
+def test_extract_scope_lines_object_after_phrase_kept():
+    # object AFTER the phrase, no reason marker -> right bound is the
+    # sentence end, so the object rides along untouched.
+    text = "do not touch the payments module"
+    out = extract_scope_lines(text)
+    assert out == [text]
+    assert "the payments module" in out[0]
+
+
+def test_extract_scope_lines_object_within_phrase_span_kept():
+    # object WITHIN the phrase's own match span ("leave ... alone",
+    # "keep ... as is") -> the whole match span is never a cut candidate.
+    assert extract_scope_lines("leave the payments module alone") == [
+        "leave the payments module alone"
+    ]
+    assert extract_scope_lines("keep the retry count as is") == ["keep the retry count as is"]
+
+
+def test_extract_scope_lines_object_before_phrase_via_comma_kept():
+    # object BEFORE the phrase, joined by a comma -> a comma is never a left
+    # boundary, so the preceding object is not cut.
+    text = "the auth module, leave it alone"
+    out = extract_scope_lines(text)
+    assert out == [text]
+    assert "the auth module" in out[0]
+
+
+def test_extract_scope_lines_compound_object_kept():
+    # compound object joined by "and" -> "and"/"or"/"but" are never right
+    # boundaries, so neither half of the compound object is dropped.
+    text = "don't touch billing and the retry logic"
+    out = extract_scope_lines(text)
+    assert out == [text]
+    assert "billing and the retry logic" in out[0]
+
+
+def test_extract_scope_lines_multi_comma_phrase_kept():
+    # the phrase's own match span crosses two commas -> the whole span,
+    # commas included, is never split.
+    text = "keep the retry count, which is 3, as is"
+    assert extract_scope_lines(text) == [text]
+
+
+def test_extract_scope_lines_run_on_secret_still_dropped():
+    # A secret inside the NARROWED clause (not the discarded leading prose)
+    # must still trip the hard-secret gate and be dropped.
+    text = f'refactor the flow and don\'t touch the deploy key "{AWS_KEY}" because it is sensitive'
+    assert extract_scope_lines(text) == []
+
+
+def test_extract_scope_lines_char_cap_applies_after_clause_narrowing(monkeypatch):
+    # The char cap must truncate the NARROWED clause, not the raw sentence:
+    # the dropped leading prose must never reappear via the cap's prefix.
+    monkeypatch.setenv("CHAMELEON_INTENT_SCOPE_LINE_MAX_CHARS", "20")
+    text = (
+        "please refactor the payment flow and don't touch the entire legacy "
+        "authentication subsystem end to end because it is fragile"
+    )
+    out = extract_scope_lines(text)
+    assert len(out) == 1
+    assert len(out[0]) == 20
+    assert "refactor the payment flow" not in out[0]
+    clause = "don't touch the entire legacy authentication subsystem end to end"
+    assert clause.startswith(out[0])
+
+
+def test_extract_scope_lines_multiple_matches_in_one_sentence_dedup():
+    # Two distinct matches in one sentence, each bounded by the other's
+    # conjunction, both widen back out to the same full clause and dedup to
+    # a single entry (order-preserving).
+    text = "don't touch the auth module, only change the retry count"
+    assert extract_scope_lines(text) == [text]
+
+
+def test_extract_scope_lines_pathological_input_completes_quickly():
+    # Thousands of left-boundary words before the match and thousands of
+    # right-boundary words after it -- both scans must stay linear, not
+    # blow up on an adversarial input.
+    text = ("and " * 5000) + "don't touch the module" + (" because" * 5000)
+    start = time.monotonic()
+    out = extract_scope_lines(text)
+    elapsed = time.monotonic() - start
+    assert elapsed < 3.0
+    assert out == ["don't touch the module"]
+
+
 # --- capture_intent: scope_lines persistence ------------------------------------
 
 

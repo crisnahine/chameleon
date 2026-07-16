@@ -9,7 +9,7 @@ ride into its prompt so the review can cross-check the change against what was
 actually asked.
 
 Privacy posture, stated plainly: only extracted tokens, a 16-hex-char prompt
-digest, and a bounded set of verbatim SCOPE-CONSTRAINT SENTENCES persist,
+digest, and a bounded set of verbatim SCOPE-CONSTRAINT CLAUSES persist,
 locally, in a 0700 directory with 0600 files, size- and retention-capped. The
 deterministic hard-secret scanner runs over the whole prompt and over each
 token before anything is written; a prompt that trips it persists only
@@ -21,10 +21,13 @@ capture is bounded, swept after ``INTENT_RETENTION_DAYS``, and killable with
 
 The scope-line contract (``extract_scope_lines``, ``capture_intent``'s
 ``scope_lines`` field) is a second, narrower channel than the tokens above:
-it never stores the prompt itself, only the SENTENCE(S) that matched an
-explicit scoping phrase ("don't touch X", "only change Y", "leave Z alone",
-...), each re-scanned by the same hard-secret and credential-shape gates as
-every token, capped in count and per-line length. It has its own kill switch,
+it never stores the prompt itself, only a bounded CLAUSE around each match of
+an explicit scoping phrase ("don't touch X", "only change Y", "leave Z
+alone", ...) -- narrowed off the matching sentence, not the whole (possibly
+run-on) sentence, so an unrelated preceding clause and a trailing reason
+clause are dropped while the scope object itself is never split -- each
+re-scanned by the same hard-secret and credential-shape gates as every
+token, capped in count and per-line length. It has its own kill switch,
 ``CHAMELEON_INTENT_CONTRACT=0``, independent of ``CHAMELEON_INTENT_CAPTURE``
 (which disables capture -- tokens and scope lines both -- entirely).
 """
@@ -97,17 +100,72 @@ _SCOPE_PHRASE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Coordinating/transitional conjunctions that mark the LEFT edge of a scope
+# clause: text before the nearest one (relative to a scope-phrase match) is
+# an unrelated preceding clause a punctuation-free run-on glued on, not part
+# of what the phrase scopes. Commas/semicolons/colons are deliberately absent
+# -- an object introduced via a comma ("the auth module, leave it alone")
+# must survive, so only whole-word conjunctions cut.
+_SCOPE_LEFT_BOUNDARY_RE = re.compile(
+    r"\b(?:and|but|or|nor|so|yet|then|also|plus|because|additionally)\b",
+    re.IGNORECASE,
+)
+
+# Reason markers that bound the RIGHT edge of a scope clause: text from here
+# on is the run-on's justification, not the scope itself. Deliberately
+# narrower than the left set -- "and"/"or"/"but" never cut on the right,
+# since a scope object can be compound ("don't touch A and B") and cutting
+# there would drop part of the object.
+_SCOPE_RIGHT_BOUNDARY_RE = re.compile(r"\b(?:because|since)\b", re.IGNORECASE)
+
+
+def _scope_clause_bounds(sentence: str, start: int, end: int) -> tuple[int, int]:
+    """Return the ``[left, right)`` bounds of the scope clause around a
+    ``_SCOPE_PHRASE_RE`` match spanning ``[start, end)`` in ``sentence``.
+
+    Left bound: the end of the nearest ``_SCOPE_LEFT_BOUNDARY_RE`` word
+    found strictly before ``start`` (cuts AFTER the conjunction, dropping
+    the unrelated clause before it), else ``0``. Right bound: the start of
+    the nearest ``_SCOPE_RIGHT_BOUNDARY_RE`` word found at or after ``end``
+    (drops a trailing reason clause), else ``len(sentence)``. Both scans are
+    bounded to the region outside ``[start, end)``, so a conjunction inside
+    the phrase's own match span is never treated as a boundary. Both regexes
+    are flat word alternations -- linear in sentence length, no nested
+    quantifiers, so this is safe on adversarial input.
+    """
+    left = 0
+    for m in _SCOPE_LEFT_BOUNDARY_RE.finditer(sentence, 0, start):
+        left = m.end()
+    right_match = _SCOPE_RIGHT_BOUNDARY_RE.search(sentence, end)
+    right = right_match.start() if right_match else len(sentence)
+    return left, right
+
 
 def extract_scope_lines(text: str) -> list[str]:
-    """Extract verbatim scope-constraint sentences from prompt text.
+    """Extract verbatim scope-constraint CLAUSES from prompt text.
 
-    Splits ``text`` into sentences on ``[.!?\\n]`` and keeps, UNALTERED
-    beyond a ``str.strip()`` (never paraphrased, reworded, or summarized),
-    each sentence matching ``_SCOPE_PHRASE_RE``. Matches are capped at
-    ``INTENT_SCOPE_LINES_MAX`` (earliest-first, applied BEFORE the
-    per-line char cap and the secret scan below, so the cap governs how many
-    candidate sentences are considered at all, not how many survive
-    scanning). Each surviving candidate is then truncated to
+    Splits ``text`` into sentences on ``[.!?\\n]`` and matches
+    ``_SCOPE_PHRASE_RE`` against each FULL sentence (this is essential: it
+    protects multi-keyword phrases like "leave X alone" / "keep X as is"
+    whose regex span crosses commas). For each match, ``_scope_clause_bounds``
+    narrows the persisted text to a bounded clause around the phrase --
+    dropping an unrelated preceding clause glued on by a coordinating
+    conjunction ("...refactor the payment flow AND while you are at it
+    don't touch X") and a trailing reason clause ("...don't touch X BECAUSE
+    it is fragile") -- instead of the whole (possibly run-on) sentence.
+    Every value inside the phrase's own match span is always kept intact
+    (a boundary word inside the span is never treated as a cut point), and
+    the right-hand scan never cuts on "and"/"or"/"but" so a compound scope
+    object ("don't touch A and B") is never split in half. UNALTERED beyond
+    the boundary trim and a ``str.strip()`` -- never paraphrased, reworded,
+    or summarized. A sentence with multiple matches yields one clause per
+    match, and identical clauses are deduped (order-preserving) before the
+    count cap below.
+
+    Clauses are capped at ``INTENT_SCOPE_LINES_MAX`` (earliest-first,
+    applied BEFORE the per-line char cap and the secret scan below, so the
+    cap governs how many candidate clauses are considered at all, not how
+    many survive scanning). Each surviving candidate is then truncated to
     ``INTENT_SCOPE_LINE_MAX_CHARS`` -- truncation only ever shortens a
     verbatim prefix, it never rewrites -- and the truncated (i.e. the exact
     text that would persist) is re-scanned with ``_has_hard_secret`` and
@@ -126,10 +184,17 @@ def extract_scope_lines(text: str) -> list[str]:
         if not isinstance(text, str) or not text:
             return []
         candidates: list[str] = []
+        seen: set[str] = set()
         for segment in re.split(r"[.!?\n]", text):
-            line = segment.strip()
-            if line and _SCOPE_PHRASE_RE.search(line):
-                candidates.append(line)
+            sentence = segment.strip()
+            if not sentence:
+                continue
+            for m in _SCOPE_PHRASE_RE.finditer(sentence):
+                left, right = _scope_clause_bounds(sentence, m.start(), m.end())
+                clause = sentence[left:right].strip()
+                if clause and clause not in seen:
+                    seen.add(clause)
+                    candidates.append(clause)
         cap_count = threshold_int("INTENT_SCOPE_LINES_MAX")
         cap_chars = threshold_int("INTENT_SCOPE_LINE_MAX_CHARS")
         out: list[str] = []
