@@ -18,8 +18,10 @@ from chameleon_mcp.symbol_index import REVERSE_INDEX_FILENAME, SCHEMA_VERSION
 def _write_reverse(repo: Path, targets: dict) -> None:
     cham = repo / ".chameleon"
     cham.mkdir(parents=True, exist_ok=True)
+    (cham / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     (cham / REVERSE_INDEX_FILENAME).write_text(
-        json.dumps({"schema_version": SCHEMA_VERSION, "targets": targets}), encoding="utf-8"
+        json.dumps({"schema_version": SCHEMA_VERSION, "targets": targets}),
+        encoding="utf-8",
     )
 
 

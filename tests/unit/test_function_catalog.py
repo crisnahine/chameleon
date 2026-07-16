@@ -129,6 +129,7 @@ class TestLoadCatalog:
     def _write(self, repo: Path, payload: dict):
         cham = repo / ".chameleon"
         cham.mkdir(parents=True, exist_ok=True)
+        (cham / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
         (cham / fc.FUNCTION_CATALOG_FILENAME).write_text(json.dumps(payload), encoding="utf-8")
 
     def test_missing_is_none(self, tmp_path):
@@ -140,6 +141,7 @@ class TestLoadCatalog:
     def test_corrupt_is_none(self, tmp_path):
         cham = tmp_path / ".chameleon"
         cham.mkdir()
+        (cham / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
         (cham / fc.FUNCTION_CATALOG_FILENAME).write_text("{not json", encoding="utf-8")
         assert fc.load_function_catalog(tmp_path) is None
 
@@ -154,7 +156,12 @@ class TestLoadCatalog:
                 "schema_version": fc.SCHEMA_VERSION,
                 "files": {
                     "src/fmt.ts": [
-                        {"name": "formatDate", "kind": "function", "arity": 1, "required": 1}
+                        {
+                            "name": "formatDate",
+                            "kind": "function",
+                            "arity": 1,
+                            "required": 1,
+                        }
                     ]
                 },
             },
@@ -172,7 +179,11 @@ class TestLoadCatalog:
             {
                 "schema_version": fc.SCHEMA_VERSION,
                 "files": {
-                    "a.ts": ["notadict", {"name": ""}, {"name": "ok", "arity": 0, "required": 0}]
+                    "a.ts": [
+                        "notadict",
+                        {"name": ""},
+                        {"name": "ok", "arity": 0, "required": 0},
+                    ]
                 },
             },
         )
@@ -185,7 +196,12 @@ def _cat(rows: list[tuple[str, int, int, str]]) -> fc.FunctionCatalog:
     return fc.FunctionCatalog(
         [
             fc.CatalogedFunction(
-                name=n, kind="function", file=f, arity=a, required=r, tokens=fc.name_tokens(n)
+                name=n,
+                kind="function",
+                file=f,
+                arity=a,
+                required=r,
+                tokens=fc.name_tokens(n),
             )
             for (n, a, r, f) in rows
         ]
@@ -313,7 +329,12 @@ class TestSelectCandidates:
         # a longer multi-token name, so the cap keeps the better lead.
         catalog = _cat(
             [
-                ("fieldReceivingAccountName", 1, 1, "noise.ts"),  # 4 tokens, low jaccard
+                (
+                    "fieldReceivingAccountName",
+                    1,
+                    1,
+                    "noise.ts",
+                ),  # 4 tokens, low jaccard
                 ("getFullName", 1, 1, "user.ts"),  # 2 tokens, higher jaccard
             ]
         )
@@ -374,6 +395,7 @@ class TestBodyHashFallback:
 
         cham = tmp_path / ".chameleon"
         cham.mkdir()
+        (cham / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
         (cham / fc.FUNCTION_CATALOG_FILENAME).write_text(json.dumps(payload), encoding="utf-8")
         catalog = fc.load_function_catalog(tmp_path)
         assert catalog is not None
@@ -403,6 +425,7 @@ class TestBodyHashFallback:
         payload = fc.build_function_catalog(files, tmp_path)
         cham = tmp_path / ".chameleon"
         cham.mkdir()
+        (cham / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
         (cham / fc.FUNCTION_CATALOG_FILENAME).write_text(json.dumps(payload), encoding="utf-8")
         catalog = fc.load_function_catalog(tmp_path)
         nf = fc.NewFunction(name="to_display_date", kind="method", arity=1, required=1)
@@ -455,6 +478,7 @@ class TestGenericVerbNameCloneSurfaces:
         payload = fc.build_function_catalog(files, tmp_path)
         cham = tmp_path / ".chameleon"
         cham.mkdir(exist_ok=True)
+        (cham / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
         (cham / fc.FUNCTION_CATALOG_FILENAME).write_text(json.dumps(payload), encoding="utf-8")
         return fc.load_function_catalog(tmp_path)
 
@@ -504,6 +528,7 @@ class TestParamRenamedCloneSurfaces:
         payload = fc.build_function_catalog(files, tmp_path)
         cham = tmp_path / ".chameleon"
         cham.mkdir(exist_ok=True)
+        (cham / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
         (cham / fc.FUNCTION_CATALOG_FILENAME).write_text(json.dumps(payload), encoding="utf-8")
         return fc.load_function_catalog(tmp_path)
 

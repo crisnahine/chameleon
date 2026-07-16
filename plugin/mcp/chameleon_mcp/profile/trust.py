@@ -385,6 +385,21 @@ def hash_profile(profile_dir: Path) -> str:
 def trust_state_for(repo_id: str) -> TrustRecord | None:
     """Read the .trust file for a repo. Returns None if not trusted."""
     trust_path = repo_data_dir(repo_id) / ".trust"
+    return _read_trust_record(trust_path)
+
+
+def trust_state_probe(repo_id: str) -> TrustRecord | None:
+    """``trust_state_for`` without repo_data_dir's create-if-missing side
+    effect. For pure existence probes (detect_repo's legacy-id re-trust hint)
+    that speculate about identities nothing else uses — the probe must never
+    mint a permanently-orphaned empty data directory per probed id.
+    """
+    from chameleon_mcp.plugin_paths import ensure_plugin_data_dir
+
+    return _read_trust_record(ensure_plugin_data_dir() / repo_id / ".trust")
+
+
+def _read_trust_record(trust_path: Path) -> TrustRecord | None:
     if not trust_path.is_file():
         return None
     try:

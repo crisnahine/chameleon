@@ -1187,7 +1187,12 @@ def detect_repo(file_path: str) -> dict:
     legacy_id = _legacy_path_repo_id(repo_root)
     legacy_trust_hint_value: str | dict | None = None
     legacy_repo_id_value: str | None = None
-    if trust is None and legacy_id != repo_id and trust_state_for(legacy_id) is not None:
+    # Probe form, not trust_state_for: this speculates about an identity that
+    # usually has no data, and the reading form would mkdir a permanently
+    # orphaned directory per probed repo.
+    from chameleon_mcp.profile.trust import trust_state_probe as _trust_state_probe
+
+    if trust is None and legacy_id != repo_id and _trust_state_probe(legacy_id) is not None:
         legacy_trust_hint_value = (
             "Trust record found at the legacy path-derived repo_id "
             f"{legacy_id[:8]}…; the canonical repo_id is now derived from the "
@@ -7233,6 +7238,19 @@ def _attempt_partial_refresh(
             conventions_text = _safe_read_profile_artifact_c(conventions_path_partial)
         except (OSError, FileNotFoundError, _UnsafeFileErrorC):
             conventions_text = None
+        # Stamp the carried artifact with this refresh's generation: the four
+        # re-derived artifacts below all get new_generation, and a carried
+        # conventions.json left one generation behind reads as a bundle
+        # mismatch to any cross-artifact consistency check (doctor) even
+        # though the content is current.
+        if conventions_text is not None:
+            try:
+                _conv_obj = json.loads(conventions_text)
+                if isinstance(_conv_obj, dict) and "generation" in _conv_obj:
+                    _conv_obj["generation"] = new_generation
+                    conventions_text = json.dumps(_conv_obj, indent=2, sort_keys=True)
+            except (ValueError, TypeError):
+                pass
 
     principles_text = ""
     principles_path = profile_dir / "principles.md"
@@ -8904,7 +8922,38 @@ def bootstrap_repo(
             from chameleon_mcp.drift.observations import reset_drift_baseline
 
             try:
-                reset_drift_baseline(repo_id)
+                # A first bootstrap of a no-remote repo may have just minted a
+                # repo_uuid into config.json, changing the repo's identity from
+                # the pre-uuid path hash this function locked under. Recompute
+                # (cache invalidated first — the same-process cache would
+                # otherwise serve the stale id for its whole TTL) so the drift
+                # baseline lands under the identity every later call resolves.
+                from chameleon_mcp.repo_id import invalidate_repo_id_cache
+
+                invalidate_repo_id_cache(repo_root)
+                final_repo_id = _compute_repo_id(repo_root)
+                reset_drift_baseline(final_repo_id)
+                if final_repo_id != repo_id:
+                    # The pre-uuid lock dir is now permanently unreachable
+                    # debris (it held only the transient lock files). Locks
+                    # were released by the with-block above. Sweep only if no
+                    # live claimant is contending: unlinking a lock file a
+                    # concurrent second bootstrap holds would let a third
+                    # claimant recreate it on a fresh inode, silently
+                    # splitting the mutual exclusion. A held lock skips the
+                    # sweep whole — the debris then outlives this call, which
+                    # is the bounded, safe outcome.
+                    try:
+                        with acquire_advisory_lock(lock_dir / ".bootstrap.lock"):
+                            for _lf in (".conventions.lock", ".idioms.lock"):
+                                with contextlib.suppress(OSError):
+                                    (lock_dir / _lf).unlink()
+                        with contextlib.suppress(OSError):
+                            (lock_dir / ".bootstrap.lock").unlink()
+                        with contextlib.suppress(OSError):
+                            lock_dir.rmdir()
+                    except LockHeldError:
+                        pass
             except Exception:
                 pass
         return result
@@ -14505,7 +14554,28 @@ def doctor(repo: str | None = None) -> dict:
         cwd_repo_id = None
 
     try:
-        if (cwd_profile_dir / "profile.json").is_file():
+        from chameleon_mcp.bootstrap.transaction import is_committed as _tx_is_committed
+
+        if (cwd_profile_dir / "profile.json").is_file() and not _tx_is_committed(cwd_profile_dir):
+            # Artifacts present but the COMMITTED sentinel is missing or
+            # marker-laden: a torn transaction or unresolved merge. Say so
+            # directly — the index loaders now refuse this state uniformly,
+            # and interpreting their refusal per-artifact would misreport it
+            # as "stale schema or oversize" while the repo_states section of
+            # this same doctor run reads the root as having no profile.
+            checks.append(
+                {
+                    "name": "profile_artifacts",
+                    "status": "warn",
+                    "detail": (
+                        "profile is uncommitted (COMMITTED sentinel missing or "
+                        "conflict-marked): a torn transaction or unresolved merge. "
+                        "Every loader refuses this state; run /chameleon-refresh "
+                        "to regenerate."
+                    ),
+                }
+            )
+        elif (cwd_profile_dir / "profile.json").is_file():
             import json as _json
 
             artifact_problems: list[str] = []
@@ -14634,7 +14704,11 @@ def doctor(repo: str | None = None) -> dict:
             # "parseable" while the profile is actually unloadable. Catch the two
             # shapes the loader rejects that a bare json.loads does not:
             #   (1) a core artifact that is not a JSON OBJECT (a bare array/scalar);
-            #   (2) a generation MISMATCH across the artifacts that carry one.
+            #   (2) a generation MISMATCH across the artifacts the LOADER gates on.
+            # The unloadable claim mirrors load_profile_dir's own consistency
+            # gate exactly: that gate covers profile/archetypes/rules/canonicals
+            # only. conventions.json drifting a generation behind never blocks a
+            # load, so it is reported as staleness, not unloadability.
             _core_bundle = (
                 "archetypes.json",
                 "canonicals.json",
@@ -14642,7 +14716,9 @@ def doctor(repo: str | None = None) -> dict:
                 "conventions.json",
                 "profile.json",
             )
+            _loader_gated = {"archetypes.json", "canonicals.json", "rules.json", "profile.json"}
             _generations: set = set()
+            _conventions_gen: set = set()
             for art in _core_bundle:
                 apath = cwd_profile_dir / art
                 if not apath.is_file():
@@ -14655,11 +14731,19 @@ def doctor(repo: str | None = None) -> dict:
                     artifact_problems.append(f"{art} is not a JSON object (wrong schema)")
                     continue
                 if "generation" in _obj:
-                    _generations.add(_obj.get("generation"))
+                    (_generations if art in _loader_gated else _conventions_gen).add(
+                        _obj.get("generation")
+                    )
             if len(_generations) > 1:
                 artifact_problems.append(
                     f"profile generation mismatch across artifacts ({sorted(map(str, _generations))}); "
                     "the bundle is unloadable"
+                )
+            elif _conventions_gen and _generations and _conventions_gen != _generations:
+                artifact_problems.append(
+                    "conventions.json generation lags the loaded bundle "
+                    f"({sorted(map(str, _conventions_gen))} vs {sorted(map(str, _generations))}); "
+                    "loads fine, but taught-convention data may predate the last refresh"
                 )
             if artifact_problems:
                 checks.append(

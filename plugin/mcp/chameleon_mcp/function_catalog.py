@@ -631,6 +631,13 @@ def load_function_catalog(repo_root: Path | str | None) -> FunctionCatalog | Non
     from chameleon_mcp.worktree import resolve_profile_root
 
     root = resolve_profile_root(root)
+    # Honor the atomic-commit sentinel like every other profile loader: a torn
+    # .chameleon must read as no-catalog, never feed "reuse function X"
+    # recommendations while the sibling tools report profile_corrupted.
+    from chameleon_mcp.bootstrap.transaction import is_committed
+
+    if not is_committed(root / ".chameleon"):
+        return None
     artifact = root / ".chameleon" / FUNCTION_CATALOG_FILENAME
     try:
         st = os.stat(artifact)

@@ -259,6 +259,23 @@ def _compute_repo_id(repo_root: Path) -> str:
     return repo_id
 
 
+def invalidate_repo_id_cache(repo_root: Path) -> None:
+    """Drop the cached id for ``repo_root`` so the next compute re-resolves.
+
+    Call after an identity-changing event in the SAME process — bootstrap
+    minting a repo_uuid into a previously uuid-less .chameleon/config.json is
+    the canonical one: without this, every same-process compute for up to
+    ``_REPO_ID_CACHE_TTL`` seconds keeps serving the pre-uuid path-hash id.
+    """
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    try:
+        key = str(resolve_profile_root(repo_root).resolve())
+    except OSError:
+        return
+    _REPO_ID_CACHE.pop(key, None)
+
+
 def _legacy_path_repo_id(repo_root: Path) -> str:
     """The pre-v6 path-derived repo_id (case-preserving).
 

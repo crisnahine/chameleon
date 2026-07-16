@@ -22,6 +22,15 @@
 # never silent corruption.
 .chameleon/idioms.md        merge=chameleon
 
+# The structured idiom store: one JSON record per idiom plus the .view_digest
+# sidecar (the rendered-view digest teach/unteach maintain). Two branches that
+# each taught a DIFFERENT idiom conflict on .view_digest; unrouted, that merge
+# writes raw conflict markers into live store state the runtime reads. Route
+# the whole directory to the driver — a conflicted record or the sidecar is
+# declined whole (your side kept, path flagged; accept either side and the
+# next teach or /chameleon-refresh recomputes the view).
+.chameleon/idioms/**        merge=chameleon
+
 # The transaction sentinel and the regenerated markdown companions have no
 # structural merge, but they MUST still route to the driver: without it a
 # conflicting merge writes raw conflict markers INTO these files, and a

@@ -39,8 +39,10 @@ def _touch(root: Path, rel: str, body: str) -> Path:
 def _write_reverse_index(root: Path, targets: dict) -> None:
     cham = root / ".chameleon"
     cham.mkdir(parents=True, exist_ok=True)
+    (cham / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     (cham / REVERSE_INDEX_FILENAME).write_text(
-        json.dumps({"schema_version": SCHEMA_VERSION, "targets": targets}), encoding="utf-8"
+        json.dumps({"schema_version": SCHEMA_VERSION, "targets": targets}),
+        encoding="utf-8",
     )
 
 
@@ -155,7 +157,11 @@ def test_renamed_importer_whose_path_contains_the_name_is_not_flagged(tmp_path):
     # import path string. The presence check must blank string literals, or a
     # clean rename refactor produces a phantom "you broke this call site".
     src = _touch(tmp_path, "src/api-client.ts", "export const apiClient = {};\n")
-    _touch(tmp_path, "src/cart.ts", "import { apiClient } from './api-client';\napiClient.get();\n")
+    _touch(
+        tmp_path,
+        "src/cart.ts",
+        "import { apiClient } from './api-client';\napiClient.get();\n",
+    )
     _write_reverse_index(
         tmp_path, {"src/api-client.ts": {"api": [{"path": "src/cart.ts", "line": 1}]}}
     )

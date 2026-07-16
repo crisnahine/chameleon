@@ -21,6 +21,7 @@ def _write(p: Path, text: str = "x") -> None:
 def _index(repo: Path, files: dict) -> None:
     cham = repo / ".chameleon"
     cham.mkdir(parents=True, exist_ok=True)
+    (cham / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     (cham / EXPORTS_INDEX_FILENAME).write_text(
         json.dumps({"schema_version": SCHEMA_VERSION, "files": files}), encoding="utf-8"
     )
@@ -130,7 +131,11 @@ class TestPhantomSymbol:
     def test_multiple_specifiers_mixed(self, tmp_path):
         _write(tmp_path / "api.ts")
         _index(tmp_path, {"api.ts": {"names": ["getUser", "save"], "open": False}})
-        v = _lint(tmp_path, "app.ts", "import { getUser, ghost1, save, ghost2 } from './api';\n")
+        v = _lint(
+            tmp_path,
+            "app.ts",
+            "import { getUser, ghost1, save, ghost2 } from './api';\n",
+        )
         assert sorted(f.actual for f in v) == ["ghost1", "ghost2"]
 
     def test_second_import_from_same_module_is_symbol_checked(self, tmp_path):
@@ -249,8 +254,14 @@ class TestPythonAbsolutePhantomSymbol:
     def test_absolute_missing_symbol_flagged(self, tmp_path):
         _write(tmp_path / "flaskbb" / "__init__.py", "")
         _write(tmp_path / "flaskbb" / "utils" / "__init__.py", "")
-        _write(tmp_path / "flaskbb" / "utils" / "helpers.py", "def real_helper():\n    pass\n")
-        _index(tmp_path, {"flaskbb/utils/helpers.py": {"names": ["real_helper"], "open": False}})
+        _write(
+            tmp_path / "flaskbb" / "utils" / "helpers.py",
+            "def real_helper():\n    pass\n",
+        )
+        _index(
+            tmp_path,
+            {"flaskbb/utils/helpers.py": {"names": ["real_helper"], "open": False}},
+        )
         v = self._plint(
             tmp_path,
             "flaskbb/forum/views.py",
@@ -261,10 +272,18 @@ class TestPythonAbsolutePhantomSymbol:
     def test_absolute_present_symbol_clean(self, tmp_path):
         _write(tmp_path / "flaskbb" / "__init__.py", "")
         _write(tmp_path / "flaskbb" / "utils" / "__init__.py", "")
-        _write(tmp_path / "flaskbb" / "utils" / "helpers.py", "def real_helper():\n    pass\n")
-        _index(tmp_path, {"flaskbb/utils/helpers.py": {"names": ["real_helper"], "open": False}})
+        _write(
+            tmp_path / "flaskbb" / "utils" / "helpers.py",
+            "def real_helper():\n    pass\n",
+        )
+        _index(
+            tmp_path,
+            {"flaskbb/utils/helpers.py": {"names": ["real_helper"], "open": False}},
+        )
         v = self._plint(
-            tmp_path, "flaskbb/forum/views.py", "from flaskbb.utils.helpers import real_helper\n"
+            tmp_path,
+            "flaskbb/forum/views.py",
+            "from flaskbb.utils.helpers import real_helper\n",
         )
         assert v == []
 
@@ -289,7 +308,10 @@ class TestPythonAbsolutePhantomSymbol:
         # clean, not phantom.
         _write(tmp_path / "flaskbb" / "__init__.py", "")
         _write(tmp_path / "flaskbb" / "utils" / "__init__.py", "")
-        _write(tmp_path / "flaskbb" / "utils" / "helpers.py", "def real_helper():\n    pass\n")
+        _write(
+            tmp_path / "flaskbb" / "utils" / "helpers.py",
+            "def real_helper():\n    pass\n",
+        )
         _index(
             tmp_path,
             {"flaskbb/utils/__init__.py": {"names": ["helpers"], "open": False}},

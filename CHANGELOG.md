@@ -4,6 +4,58 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.1] - 2026-07-17
+
+Fixes from the qa66 whole-plugin, from-scratch, real-invocation campaign
+(512 cells across 8 language/framework rows plus support-process and
+hostile-input rows; 10 findings, every one adversarially re-verified in a
+fresh isolated workspace before being fixed, and every fix re-verified with
+the finding's own real repro afterward).
+
+### Fixed
+- A from-scratch bootstrap of a no-remote repo (fresh `git init`, no origin)
+  no longer leaves permanently-orphaned plugin-data directories: after the
+  orchestrator mints the repo_uuid, `bootstrap_repo` invalidates the
+  same-process repo-id cache, recomputes the final identity, scopes the drift
+  baseline to it, and sweeps the pre-uuid lock directory (skipped whole when
+  a concurrent claimant holds the lock, so contention never splits the
+  bootstrap mutual exclusion). `detect_repo`'s
+  legacy-id re-trust hint now uses a non-creating probe
+  (`trust_state_probe`) instead of minting an empty directory per probed
+  identity.
+- The five committed-index loaders (symbol signatures, calls index, exports
+  index, reverse index, function catalog) honor the COMMITTED transaction
+  sentinel like every other profile loader: a torn `.chameleon` (crash
+  mid-commit, unresolved merge) now reads as index-unavailable across
+  `search_codebase`/`get_callers`/`get_callees`/`query_symbol_importers`/
+  `get_blast_radius`/`get_duplication_candidates` instead of being served as
+  ground truth while sibling tools report `profile_corrupted` for the same
+  tree. Doctor reports that torn state directly ("profile is uncommitted ...
+  run /chameleon-refresh") instead of misreading each refused loader as a
+  stale-schema artifact.
+- The documented "5 seconds once escalated" posttool-verify cooldown is
+  reachable: the self-correction window no longer zeroes the dedup TTL. The
+  byte-identical-content digest gate already guarantees a real fix is never
+  swallowed, and because every violating verify re-stamped
+  `last_violation_at`, the zeroing had made the dedup structurally
+  unreachable for any file that ever violated.
+- A partial refresh stamps the carried `conventions.json` with the refresh's
+  generation, so the bundle stays generation-consistent; doctor's
+  cross-artifact check now mirrors the loader's actual gate (four artifacts)
+  and reports a lagging conventions.json as staleness instead of falsely
+  claiming "the bundle is unloadable" after every partial refresh.
+- FastAPI package-form roles: `app/schemas/` and `app/dependencies/` (and
+  `deps/`, `crud/`) now role-bucket like their filename forms, so a
+  dependencies file no longer inherits the Pydantic schemas archetype's
+  "extends BaseModel" guidance via path fallback, and a schemas package
+  names cleanly (`schema`) instead of an opaque cluster hash.
+- `.gitattributes-template` routes the structured idiom store
+  (`.chameleon/idioms/**`) to the merge driver: two branches that each
+  taught a different idiom always collide on the `.view_digest` sidecar,
+  and the unrouted merge wrote raw conflict markers into live store state.
+  With the route, per-idiom JSON records merge and the sidecar is declined
+  whole (accept either side; the next teach or refresh recomputes it).
+
 ## [4.1.0] - 2026-07-16
 
 A dead-code and unfinished-wiring campaign: a vulture sweep plus a repo-wide

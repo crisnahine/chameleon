@@ -35,8 +35,10 @@ def _result_line(text: str) -> str:
 def _write_calls_index(repo: Path, callees: dict) -> None:
     d = repo / ".chameleon"
     d.mkdir(parents=True, exist_ok=True)
+    (d / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     (d / "calls_index.json").write_text(
-        json.dumps({"schema_version": _CALLS_SCHEMA, "callees": callees}), encoding="utf-8"
+        json.dumps({"schema_version": _CALLS_SCHEMA, "callees": callees}),
+        encoding="utf-8",
     )
     # The caller-facts/transitive blocks now re-verify each cited caller against
     # the working tree (a deleted/no-longer-calling caller is dropped), so the
@@ -168,6 +170,7 @@ def test_absent_index_returns_empty(tmp_path, monkeypatch):
 def test_corrupt_index_returns_empty(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     (repo / ".chameleon").mkdir(parents=True)
+    ((repo / ".chameleon") / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     (repo / ".chameleon" / "calls_index.json").write_text("{not json", encoding="utf-8")
     monkeypatch.setattr(judge, "_parse_changed_file", lambda root, path: [_fn("f", 1, 2)])
     assert judge.caller_facts_for_diffs(repo, [_diff("a.ts", "", whole=True)]) == ""
@@ -492,6 +495,7 @@ def test_char_cap_too_small_for_any_fact_returns_empty(tmp_path, monkeypatch):
 def test_build_prompt_includes_caller_facts_block(tmp_path):
     profile = tmp_path / ".chameleon"
     profile.mkdir()
+    (profile / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     diffs = [_diff("a.ts", "+x\n")]
     prompt = judge.build_prompt(
         tmp_path, profile, diffs, caller_facts="CALLER_FACTS_SENTINEL_BLOCK"
@@ -504,6 +508,7 @@ def test_build_prompt_includes_caller_facts_block(tmp_path):
 def test_build_prompt_omits_facts_when_none(tmp_path):
     profile = tmp_path / ".chameleon"
     profile.mkdir()
+    (profile / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     prompt = judge.build_prompt(tmp_path, profile, [_diff("a.ts", "+x\n")], caller_facts=None)
     assert "Committed callers" not in prompt
 
@@ -663,8 +668,10 @@ def _raw_calls_index(repo: Path, callees: dict) -> None:
     # test creates the file itself -- the exact case the live re-verify handles.
     d = repo / ".chameleon"
     d.mkdir(parents=True, exist_ok=True)
+    (d / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     (d / "calls_index.json").write_text(
-        json.dumps({"schema_version": _CALLS_SCHEMA, "callees": callees}), encoding="utf-8"
+        json.dumps({"schema_version": _CALLS_SCHEMA, "callees": callees}),
+        encoding="utf-8",
     )
 
 
@@ -675,8 +682,18 @@ def test_caller_facts_drops_deleted_caller_and_recomputes_count(tmp_path, monkey
             "util.ts": {
                 "helper": {
                     "callers": [
-                        {"path": "live.ts", "caller": "a", "line": 1, "grade": "import"},
-                        {"path": "gone.ts", "caller": "b", "line": 1, "grade": "import"},
+                        {
+                            "path": "live.ts",
+                            "caller": "a",
+                            "line": 1,
+                            "grade": "import",
+                        },
+                        {
+                            "path": "gone.ts",
+                            "caller": "b",
+                            "line": 1,
+                            "grade": "import",
+                        },
                     ],
                     "total": 2,
                     "truncated": False,
@@ -734,7 +751,8 @@ def test_caller_facts_drops_caller_that_no_longer_references(tmp_path, monkeypat
 def test_caller_facts_truncated_all_stale_no_phantom_more(tmp_path, monkeypatch):
     callers = [{"path": f"g{i}.ts", "caller": "c", "line": 1, "grade": "import"} for i in range(50)]
     _raw_calls_index(
-        tmp_path, {"util.ts": {"helper": {"callers": callers, "total": 50, "truncated": True}}}
+        tmp_path,
+        {"util.ts": {"helper": {"callers": callers, "total": 50, "truncated": True}}},
     )
     # No caller files -> every sampled site is stale; truncated keeps the snapshot
     # total as a lower bound but must NOT print an example-less "[+N more]".

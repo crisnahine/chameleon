@@ -668,6 +668,14 @@ def load_calls_index(repo_root: Path | str | None) -> CallsIndex | None:
     from chameleon_mcp.worktree import resolve_profile_root
 
     root = resolve_profile_root(root)
+    # Honor the atomic-commit sentinel like every other profile loader: an
+    # uncommitted/torn .chameleon must read as no-calls-index, never served
+    # as caller-fact ground truth while the sibling tools report
+    # profile_corrupted for the same tree.
+    from chameleon_mcp.bootstrap.transaction import is_committed
+
+    if not is_committed(root / ".chameleon"):
+        return None
     artifact = root / ".chameleon" / CALLS_INDEX_FILENAME
     try:
         st = os.stat(artifact)

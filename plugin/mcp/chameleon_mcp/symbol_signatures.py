@@ -247,6 +247,14 @@ def load_symbol_signatures(repo_root: Path | str | None) -> SymbolSignatures | N
     from chameleon_mcp.worktree import resolve_profile_root
 
     root = resolve_profile_root(root)
+    # Honor the atomic-commit sentinel like every other profile loader: an
+    # uncommitted/torn .chameleon (mid-transaction crash, unresolved merge)
+    # must read as index-unavailable, never served as ground truth while the
+    # sibling tools report profile_corrupted for the same tree.
+    from chameleon_mcp.bootstrap.transaction import is_committed
+
+    if not is_committed(root / ".chameleon"):
+        return None
     artifact = root / ".chameleon" / SYMBOL_SIGNATURES_FILENAME
     try:
         st = os.stat(artifact)

@@ -55,8 +55,10 @@ def _write_calls_index(repo: Path, callees: dict) -> None:
     # live-re-verifies every cited caller).
     d = repo / ".chameleon"
     d.mkdir(parents=True, exist_ok=True)
+    (d / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     (d / "calls_index.json").write_text(
-        json.dumps({"schema_version": _CALLS_SCHEMA, "callees": callees}), encoding="utf-8"
+        json.dumps({"schema_version": _CALLS_SCHEMA, "callees": callees}),
+        encoding="utf-8",
     )
     by_file: dict[str, dict[int, str]] = {}
     for _callee_rel, fns in callees.items():
@@ -193,24 +195,36 @@ def test_from_judge_finding_maps_core_fields():
 
 def test_from_judge_finding_severity_high_at_or_above_threshold():
     f = Finding.from_judge_finding(
-        _jf(confidence=0.7), kind="correctness", source_lens="correctness", created_at="t"
+        _jf(confidence=0.7),
+        kind="correctness",
+        source_lens="correctness",
+        created_at="t",
     )
     assert f.severity == "high"
 
 
 def test_from_judge_finding_severity_medium_below_threshold():
     f = Finding.from_judge_finding(
-        _jf(confidence=0.69), kind="correctness", source_lens="correctness", created_at="t"
+        _jf(confidence=0.69),
+        kind="correctness",
+        source_lens="correctness",
+        created_at="t",
     )
     assert f.severity == "medium"
 
 
 def test_from_judge_finding_confidence_clamped_both_directions():
     over = Finding.from_judge_finding(
-        _jf(confidence=1.5), kind="correctness", source_lens="correctness", created_at="t"
+        _jf(confidence=1.5),
+        kind="correctness",
+        source_lens="correctness",
+        created_at="t",
     )
     under = Finding.from_judge_finding(
-        _jf(confidence=-0.3), kind="correctness", source_lens="correctness", created_at="t"
+        _jf(confidence=-0.3),
+        kind="correctness",
+        source_lens="correctness",
+        created_at="t",
     )
     assert over.confidence == 1.0
     assert under.confidence == 0.0
@@ -227,7 +241,10 @@ def test_from_judge_finding_no_file_or_line_defaults_empty_span():
 
 def test_from_judge_finding_evidence_empty_when_no_evidence_cmds():
     f = Finding.from_judge_finding(
-        _jf(evidence_cmds=None), kind="correctness", source_lens="correctness", created_at="t"
+        _jf(evidence_cmds=None),
+        kind="correctness",
+        source_lens="correctness",
+        created_at="t",
     )
     assert f.evidence == ""
 
@@ -259,7 +276,10 @@ def test_from_judge_finding_excerpt_sha_carries_over_but_excerpt_text_is_unfetch
 
 def test_from_judge_finding_no_excerpt_sha_defaults_empty_string():
     f = Finding.from_judge_finding(
-        _jf(excerpt_sha=None), kind="correctness", source_lens="correctness", created_at="t"
+        _jf(excerpt_sha=None),
+        kind="correctness",
+        source_lens="correctness",
+        created_at="t",
     )
     assert f.excerpt_sha == ""
 
@@ -278,7 +298,10 @@ def test_from_judge_finding_match_key_ignores_confidence_and_line():
     # Same claim/file/kind, different confidence/line -- identity must not
     # fork on data that isn't part of the exact-match key.
     a = Finding.from_judge_finding(
-        _jf(confidence=0.2, line=1), kind="correctness", source_lens="correctness", created_at="t"
+        _jf(confidence=0.2, line=1),
+        kind="correctness",
+        source_lens="correctness",
+        created_at="t",
     )
     b = Finding.from_judge_finding(
         _jf(confidence=0.9, line=99),
@@ -322,6 +345,7 @@ def test_correctness_lens_run_no_diffs_returns_empty(tmp_path):
     repo.mkdir()
     profile = repo / ".chameleon"
     profile.mkdir()
+    (profile / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     # Nonexistent path -> reconstruct_diff returns None -> no diffs -> [].
     result = correctness_lens.run(repo, profile, [str(repo / "ghost.ts")], lambda _p: None)
     assert result.findings == []
@@ -338,6 +362,7 @@ def test_correctness_lens_conftest_guard_blocks_real_spawn(tmp_path):
     repo.mkdir()
     profile = repo / ".chameleon"
     profile.mkdir()
+    (profile / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     _write_source(repo)
     result = correctness_lens.run(repo, profile, [str(repo / "src/widget.ts")], lambda _p: None)
     assert result.findings == []
@@ -349,11 +374,22 @@ def test_correctness_lens_run_produces_canonical_findings(tmp_path):
     repo.mkdir()
     profile = repo / ".chameleon"
     profile.mkdir()
+    (profile / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     p = _write_source(repo)
 
     arr = [
-        {"file": "src/widget.ts", "line": 3, "message": "dropped await", "confidence": 0.9},
-        {"file": "src/widget.ts", "line": 7, "message": "off by one", "confidence": 0.4},
+        {
+            "file": "src/widget.ts",
+            "line": 3,
+            "message": "dropped await",
+            "confidence": 0.9,
+        },
+        {
+            "file": "src/widget.ts",
+            "line": 7,
+            "message": "off by one",
+            "confidence": 0.4,
+        },
     ]
     stream = _result_line(json.dumps(arr))
     events = []
@@ -400,6 +436,7 @@ def test_correctness_lens_run_intent_contract_routes_type_intent_claim(tmp_path)
     repo.mkdir()
     profile = repo / ".chameleon"
     profile.mkdir()
+    (profile / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     p = _write_source(repo)
 
     arr = [
@@ -410,7 +447,12 @@ def test_correctness_lens_run_intent_contract_routes_type_intent_claim(tmp_path)
             "confidence": 0.8,
             "type": "intent",
         },
-        {"file": "src/widget.ts", "line": 7, "message": "off by one", "confidence": 0.4},
+        {
+            "file": "src/widget.ts",
+            "line": 7,
+            "message": "off by one",
+            "confidence": 0.4,
+        },
     ]
     stream = _result_line(json.dumps(arr))
     contract = {"excerpts": ["don't touch auth"], "scope_lines": ["don't touch auth"]}
@@ -441,11 +483,22 @@ def test_correctness_lens_run_no_intent_contract_defaults_to_correctness_kind(tm
     repo.mkdir()
     profile = repo / ".chameleon"
     profile.mkdir()
+    (profile / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     p = _write_source(repo)
 
     arr = [
-        {"file": "src/widget.ts", "line": 3, "message": "dropped await", "confidence": 0.9},
-        {"file": "src/widget.ts", "line": 7, "message": "off by one", "confidence": 0.4},
+        {
+            "file": "src/widget.ts",
+            "line": 3,
+            "message": "dropped await",
+            "confidence": 0.9,
+        },
+        {
+            "file": "src/widget.ts",
+            "line": 7,
+            "message": "off by one",
+            "confidence": 0.4,
+        },
     ]
     stream = _result_line(json.dumps(arr))
     with (
@@ -464,6 +517,7 @@ def test_correctness_lens_run_spawn_failure_events_and_empty_findings(tmp_path):
     repo.mkdir()
     profile = repo / ".chameleon"
     profile.mkdir()
+    (profile / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     p = _write_source(repo)
     with patch.object(judge, "_spawn_reviewer_status", return_value=(None, "spawn_timeout")):
         result = correctness_lens.run(repo, profile, [str(p)], lambda _p: None)
@@ -476,6 +530,7 @@ def test_correctness_lens_run_unparseable_output_event(tmp_path):
     repo.mkdir()
     profile = repo / ".chameleon"
     profile.mkdir()
+    (profile / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     p = _write_source(repo)
     stream = _result_line("looks fine to me, no array here")
     with (
@@ -492,6 +547,7 @@ def test_correctness_lens_run_budget_becomes_spawn_timeout(tmp_path):
     repo.mkdir()
     profile = repo / ".chameleon"
     profile.mkdir()
+    (profile / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     p = _write_source(repo)
     captured = {}
 
@@ -512,11 +568,14 @@ def test_correctness_lens_run_budget_becomes_spawn_timeout(tmp_path):
     assert result.findings == []
 
 
-def test_correctness_lens_run_budget_non_positive_or_non_numeric_falls_back_to_default(tmp_path):
+def test_correctness_lens_run_budget_non_positive_or_non_numeric_falls_back_to_default(
+    tmp_path,
+):
     repo = tmp_path / "plain"
     repo.mkdir()
     profile = repo / ".chameleon"
     profile.mkdir()
+    (profile / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     p = _write_source(repo)
     for bad_budget in (0, -5, "30", None):
         captured = {}
@@ -538,6 +597,7 @@ def _wired_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
     repo.mkdir()
     profile = repo / ".chameleon"
     profile.mkdir()
+    (profile / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     src = repo / "util.ts"
     src.write_text("export function fmt() { return 1 }\n", encoding="utf-8")
     return repo, profile, src
@@ -547,7 +607,15 @@ def test_correctness_lens_run_facts_included_reaches_build_prompt(tmp_path, monk
     repo, profile, src = _wired_repo(tmp_path)
     _write_calls_index(
         repo,
-        {"util.ts": {"fmt": {"callers": [_caller("b.ts", "use")], "total": 1, "truncated": False}}},
+        {
+            "util.ts": {
+                "fmt": {
+                    "callers": [_caller("b.ts", "use")],
+                    "total": 1,
+                    "truncated": False,
+                }
+            }
+        },
     )
     monkeypatch.setattr(judge, "_parse_changed_file", lambda root, path: [_fn("fmt", 1, 1)])
     captured = {}
@@ -592,7 +660,15 @@ def test_correctness_lens_run_facts_disabled_via_config(tmp_path, monkeypatch):
     )
     _write_calls_index(
         repo,
-        {"util.ts": {"fmt": {"callers": [_caller("b.ts", "use")], "total": 1, "truncated": False}}},
+        {
+            "util.ts": {
+                "fmt": {
+                    "callers": [_caller("b.ts", "use")],
+                    "total": 1,
+                    "truncated": False,
+                }
+            }
+        },
     )
     monkeypatch.setattr(judge, "_parse_changed_file", lambda root, path: [_fn("fmt", 1, 1)])
     captured = {}
@@ -641,7 +717,9 @@ def test_correctness_lens_run_no_calls_index_skips_facts_but_still_reviews(tmp_p
     events = []
     with (
         patch.object(
-            judge, "_spawn_reviewer_status", return_value=(_result_line(json.dumps(arr)), None)
+            judge,
+            "_spawn_reviewer_status",
+            return_value=(_result_line(json.dumps(arr)), None),
         ),
         patch.object(judge, "_witness_for", return_value=""),
     ):
@@ -675,6 +753,7 @@ def test_correctness_lens_run_facts_builder_failure_on_one_file_never_blocks_rev
     repo.mkdir()
     profile = repo / ".chameleon"
     profile.mkdir()
+    (profile / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     a = repo / "a.ts"
     a.write_text("export function boomer() { return 1 }\n", encoding="utf-8")
     b = repo / "b.ts"
@@ -683,7 +762,11 @@ def test_correctness_lens_run_facts_builder_failure_on_one_file_never_blocks_rev
         repo,
         {
             "a.ts": {
-                "boomer": {"callers": [_caller("c.ts", "use_a")], "total": 1, "truncated": False}
+                "boomer": {
+                    "callers": [_caller("c.ts", "use_a")],
+                    "total": 1,
+                    "truncated": False,
+                }
             },
             "b.ts": {
                 "fmt": {
@@ -706,7 +789,9 @@ def test_correctness_lens_run_facts_builder_failure_on_one_file_never_blocks_rev
     events = []
     with (
         patch.object(
-            judge, "_spawn_reviewer_status", return_value=(_result_line(json.dumps(arr)), None)
+            judge,
+            "_spawn_reviewer_status",
+            return_value=(_result_line(json.dumps(arr)), None),
         ),
         patch.object(judge, "_witness_for", return_value=""),
     ):
@@ -726,7 +811,8 @@ def test_correctness_lens_run_facts_builder_failure_on_one_file_never_blocks_rev
 def test_correctness_lens_run_imported_defs_disabled_via_config(tmp_path):
     repo, profile, src = _wired_repo(tmp_path)
     (profile / "config.json").write_text(
-        json.dumps({"enforcement": {"judge_imported_definitions": False}}), encoding="utf-8"
+        json.dumps({"enforcement": {"judge_imported_definitions": False}}),
+        encoding="utf-8",
     )
     events = []
     with (
@@ -747,7 +833,8 @@ def test_correctness_lens_run_imported_defs_disabled_via_config(tmp_path):
 def test_correctness_lens_run_transitive_disabled_via_config(tmp_path):
     repo, profile, src = _wired_repo(tmp_path)
     (profile / "config.json").write_text(
-        json.dumps({"enforcement": {"judge_transitive_impact": False}}), encoding="utf-8"
+        json.dumps({"enforcement": {"judge_transitive_impact": False}}),
+        encoding="utf-8",
     )
     events = []
     with (
@@ -770,6 +857,7 @@ def test_correctness_lens_run_pipeline_error_is_caught(tmp_path, monkeypatch):
     repo.mkdir()
     profile = repo / ".chameleon"
     profile.mkdir()
+    (profile / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     p = _write_source(repo)
 
     def _boom(*_a, **_k):

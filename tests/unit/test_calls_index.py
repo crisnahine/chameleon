@@ -59,6 +59,7 @@ def _touch(repo: Path, rel: str) -> Path:
 def _write_index(repo: Path, payload) -> None:
     cham = repo / ".chameleon"
     cham.mkdir(parents=True, exist_ok=True)
+    (cham / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     body = payload if isinstance(payload, str) else json.dumps(payload)
     (cham / CALLS_INDEX_FILENAME).write_text(body, encoding="utf-8")
 
@@ -432,7 +433,12 @@ class TestTypedPropertyGrade:
         idx = build_calls_index([target, ctrl], tmp_path, "typescript")
         entry = idx["callees"]["src/svc.ts"]["run"]
         assert entry["callers"] == [
-            {"path": "src/ctrl.ts", "caller": "go", "line": 4, "grade": "typed_property"}
+            {
+                "path": "src/ctrl.ts",
+                "caller": "go",
+                "line": 4,
+                "grade": "typed_property",
+            }
         ]
 
     def test_unknown_property_type_yields_no_edge(self, tmp_path):
@@ -497,7 +503,12 @@ class TestTypedPropertyGrade:
         )
         idx = build_calls_index([target, ctrl], tmp_path, "typescript")
         assert idx["callees"]["src/svc.ts"]["run"]["callers"] == [
-            {"path": "src/ctrl.ts", "caller": "goA", "line": 4, "grade": "typed_property"}
+            {
+                "path": "src/ctrl.ts",
+                "caller": "goA",
+                "line": 4,
+                "grade": "typed_property",
+            }
         ]
 
     def test_two_classes_distinct_types_each_resolve_per_class(self, tmp_path):
@@ -1075,6 +1086,7 @@ class TestLoad:
     def test_oversize_artifact_returns_none(self, tmp_path):
         cham = tmp_path / ".chameleon"
         cham.mkdir(parents=True)
+        (cham / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
         (cham / CALLS_INDEX_FILENAME).write_bytes(b" " * (16_000_001))
         assert load_calls_index(tmp_path) is None
 
@@ -1149,6 +1161,7 @@ class TestLoad:
         # ruby language: same_file + constant_receiver grades only (no import grade)
         cham = tmp_path / ".chameleon"
         cham.mkdir(parents=True, exist_ok=True)
+        (cham / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
         (cham / CALLS_INDEX_FILENAME).write_text(json.dumps(payload), encoding="utf-8")
         idx = load_calls_index(tmp_path)
         assert idx is not None
@@ -1170,7 +1183,12 @@ class TestLoad:
                 "src/svc.ts": {
                     "helper": {
                         "callers": [
-                            {"path": "src/svc.ts", "caller": "run", "line": 1, "grade": "same_file"}
+                            {
+                                "path": "src/svc.ts",
+                                "caller": "run",
+                                "line": 1,
+                                "grade": "same_file",
+                            }
                         ],
                         "total": 1,
                         "truncated": False,
@@ -1273,7 +1291,12 @@ class TestRealDumperMemberChains:
         # Exactly one edge: the depth-1 call on line 3. The chained call on
         # line 4 must not be collapsed into a second (fabricated) edge.
         assert idx["callees"]["m.ts"]["helper"]["callers"] == [
-            {"path": "chaintrap.ts", "caller": "chainTrap", "line": 3, "grade": "import"}
+            {
+                "path": "chaintrap.ts",
+                "caller": "chainTrap",
+                "line": 3,
+                "grade": "import",
+            }
         ]
 
 
@@ -1311,7 +1334,12 @@ class TestRealDumperRubyNamespaces:
         pr = RubyExtractor().parse_repo(repo_root=tmp_path, glob="**/*.rb")
         idx = build_calls_index(pr.files, tmp_path, "ruby")
         assert idx["callees"]["namespace_a.rb"]["get"]["callers"] == [
-            {"path": "caller.rb", "caller": "run", "line": 3, "grade": "constant_receiver"}
+            {
+                "path": "caller.rb",
+                "caller": "run",
+                "line": 3,
+                "grade": "constant_receiver",
+            }
         ]
 
     @pytest.mark.skipif(not _have_prism(), reason="ruby + prism gem unavailable")
@@ -1329,7 +1357,12 @@ class TestRealDumperRubyNamespaces:
         pr = RubyExtractor().parse_repo(repo_root=tmp_path, glob="**/*.rb")
         idx = build_calls_index(pr.files, tmp_path, "ruby")
         assert idx["callees"]["billing.rb"]["charge"]["callers"] == [
-            {"path": "caller.rb", "caller": "run", "line": 3, "grade": "constant_receiver"}
+            {
+                "path": "caller.rb",
+                "caller": "run",
+                "line": 3,
+                "grade": "constant_receiver",
+            }
         ]
 
     @pytest.mark.skipif(not _have_prism(), reason="ruby + prism gem unavailable")
@@ -1368,7 +1401,12 @@ class TestRealDumperRubyNamespaces:
         pr = RubyExtractor().parse_repo(repo_root=tmp_path, glob="**/*.rb")
         idx = build_calls_index(pr.files, tmp_path, "ruby")
         assert idx["callees"]["utils_helper.rb"]["assist"]["callers"] == [
-            {"path": "caller.rb", "caller": "run", "line": 3, "grade": "constant_receiver"}
+            {
+                "path": "caller.rb",
+                "caller": "run",
+                "line": 3,
+                "grade": "constant_receiver",
+            }
         ]
 
     @pytest.mark.skipif(not _have_prism(), reason="ruby + prism gem unavailable")
@@ -1429,13 +1467,23 @@ class TestRealDumperRubySingletonScope:
         pr = RubyExtractor().parse_repo(repo_root=tmp_path, glob="**/*.rb")
         idx = build_calls_index(pr.files, tmp_path, "ruby")
         assert idx["callees"]["mailer.rb"]["deliver"]["callers"] == [
-            {"path": "caller.rb", "caller": "run", "line": 3, "grade": "constant_receiver"}
+            {
+                "path": "caller.rb",
+                "caller": "run",
+                "line": 3,
+                "grade": "constant_receiver",
+            }
         ]
         # Notifier#deliver is instance-only: Notifier.deliver cannot dispatch
         # to it, so no edge may be recorded.
         assert "notifier.rb" not in idx["callees"]
         assert idx["callees"]["alpha_service.rb"]["initialize"]["callers"] == [
-            {"path": "caller.rb", "caller": "run", "line": 5, "grade": "constant_receiver"}
+            {
+                "path": "caller.rb",
+                "caller": "run",
+                "line": 5,
+                "grade": "constant_receiver",
+            }
         ]
 
 
@@ -1627,7 +1675,12 @@ class TestModuleAttribute:
         idx = build_calls_index([parent_views, pkg_views, urls], tmp_path, "python")
         # The edge points at pkg/views.py, and the parent views.py gets NONE.
         assert idx["callees"]["pkg/views.py"]["render"]["callers"] == [
-            {"path": "pkg/urls.py", "caller": "route", "line": 3, "grade": "module_attribute"}
+            {
+                "path": "pkg/urls.py",
+                "caller": "route",
+                "line": 3,
+                "grade": "module_attribute",
+            }
         ]
         assert "render" not in idx["callees"].get("views.py", {})
 
@@ -1750,7 +1803,12 @@ class TestLoadReadCap:
             callees[f"src/mod{i}.ts"] = {
                 "fn": {
                     "callers": [
-                        {"path": f"src/c{i}.ts", "caller": "go", "line": 1, "grade": "import"}
+                        {
+                            "path": f"src/c{i}.ts",
+                            "caller": "go",
+                            "line": 1,
+                            "grade": "import",
+                        }
                     ],
                     "total": 1,
                     "truncated": False,
@@ -1772,3 +1830,26 @@ class TestLoadReadCap:
         # build output without this firing).
         monkeypatch.setenv("CHAMELEON_CALLS_INDEX_MAX_TOTAL_EDGES", str(max(1, size // 700 - 1)))
         assert load_calls_index(tmp_path) is None
+
+
+def test_load_refuses_uncommitted_profile(tmp_path):
+    # qa66 F1: a torn .chameleon (no COMMITTED sentinel) must read as
+    # no-calls-index, never served as caller-fact ground truth.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cham = repo / ".chameleon"
+    cham.mkdir()
+    (cham / CALLS_INDEX_FILENAME).write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "callees": {"a.ts": {"fn": {"callers": [], "total": 0}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    from chameleon_mcp.calls_index import load_calls_index
+
+    assert load_calls_index(repo) is None
+    (cham / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
+    assert load_calls_index(repo) is not None

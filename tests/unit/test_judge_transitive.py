@@ -44,6 +44,7 @@ def _diff(rel: str, *, whole: bool = True) -> FileDiff:
 def _write_calls_index(repo: Path, callees: dict) -> None:
     d = repo / ".chameleon"
     d.mkdir(parents=True, exist_ok=True)
+    (d / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     (d / "calls_index.json").write_text(
         json.dumps({"schema_version": _CALLS_SCHEMA, "callees": callees}),
         encoding="utf-8",

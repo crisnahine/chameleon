@@ -162,6 +162,15 @@ _PY_ROLE_DIRS: frozenset[str] = frozenset(
         "routers",
         "endpoints",
         "blueprints",
+        # FastAPI/Pydantic package forms: app/schemas/*.py holds BaseModel
+        # schemas and app/dependencies/ (or deps/) holds Depends() providers.
+        # Both were already role names for the FILENAME form above; without the
+        # package form a 2-file dependencies/ dir fell through to path-prefix
+        # fallback and matched the schemas archetype's Pydantic guidance.
+        "schemas",
+        "dependencies",
+        "deps",
+        "crud",
     }
 )
 

@@ -35,11 +35,18 @@ def _write(root: Path, rel: str, body: str) -> Path:
 
 
 def _build(
-    tmp_path: Path, *, mode: str, pricing_head: str, pricing_now: str, cart: str, block: bool = True
+    tmp_path: Path,
+    *,
+    mode: str,
+    pricing_head: str,
+    pricing_now: str,
+    cart: str,
+    block: bool = True,
 ):
     repo = tmp_path / "repo"
     cham = repo / ".chameleon"
     cham.mkdir(parents=True, exist_ok=True)
+    (cham / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     (cham / "config.json").write_text(
         json.dumps(
             {
@@ -116,7 +123,12 @@ def test_opt_in_default_off_does_not_block(tmp_path):
     # The deny is opt-in: enforce mode alone does NOT block until the repo sets
     # enforcement.crossfile_existence_block = true.
     repo, data = _build(
-        tmp_path, mode="enforce", pricing_head=_HEAD, pricing_now=_NOW, cart=_CART, block=False
+        tmp_path,
+        mode="enforce",
+        pricing_head=_HEAD,
+        pricing_now=_NOW,
+        cart=_CART,
+        block=False,
     )
     out = _drive(tmp_path, repo, data)
     assert out.get("decision") != "block"
@@ -148,6 +160,7 @@ def _build_py(tmp_path: Path, *, mode: str, block: bool = True):
     repo = tmp_path / "repo"
     cham = repo / ".chameleon"
     cham.mkdir(parents=True, exist_ok=True)
+    (cham / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     (cham / "config.json").write_text(
         json.dumps(
             {
@@ -164,7 +177,11 @@ def _build_py(tmp_path: Path, *, mode: str, block: bool = True):
     _git(repo, "init", "-q")
     _git(repo, "config", "user.email", "t@t.t")
     _git(repo, "config", "user.name", "t")
-    _write(repo, "pricing.py", "def old_name():\n    pass\n\n\ndef edit_price():\n    pass\n")
+    _write(
+        repo,
+        "pricing.py",
+        "def old_name():\n    pass\n\n\ndef edit_price():\n    pass\n",
+    )
     _write(repo, "cart.py", "from pricing import old_name\n\nold_name()\n")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "c")

@@ -369,3 +369,15 @@ class TestGrantTrustLockDeadline:
         # Released holder: the same grant now succeeds.
         grant_trust(repo_id, profile_dir)
         assert trust_state_for(repo_id) is not None
+
+
+def test_trust_state_probe_does_not_create_data_dir(tmp_path, monkeypatch):
+    # qa66 rails-1: detect_repo's legacy-id probe used trust_state_for, whose
+    # repo_data_dir mkdirs unconditionally — minting a permanently orphaned
+    # empty directory per probed identity. The probe form must not create.
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    from chameleon_mcp.profile.trust import trust_state_probe
+
+    probed_id = "f" * 64
+    assert trust_state_probe(probed_id) is None
+    assert not (tmp_path / "data" / probed_id).exists()

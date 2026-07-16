@@ -22,6 +22,7 @@ class FakeParsed:
 def _write_index(repo: Path, payload: dict) -> None:
     cham = repo / ".chameleon"
     cham.mkdir(parents=True, exist_ok=True)
+    (cham / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     (cham / EXPORTS_INDEX_FILENAME).write_text(json.dumps(payload), encoding="utf-8")
 
 
@@ -79,7 +80,10 @@ class TestLoad:
     def test_open_entry(self, tmp_path):
         _write_index(
             tmp_path,
-            {"schema_version": SCHEMA_VERSION, "files": {"b.ts": {"names": [], "open": True}}},
+            {
+                "schema_version": SCHEMA_VERSION,
+                "files": {"b.ts": {"names": [], "open": True}},
+            },
         )
         idx = load_exports_index(tmp_path)
         assert idx.lookup("b.ts").open is True
@@ -91,6 +95,7 @@ class TestLoad:
     def test_corrupt_json_returns_none(self, tmp_path):
         cham = tmp_path / ".chameleon"
         cham.mkdir(parents=True)
+        (cham / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
         (cham / EXPORTS_INDEX_FILENAME).write_text("{not json", encoding="utf-8")
         assert load_exports_index(tmp_path) is None
 

@@ -21,12 +21,14 @@ def _write_profile(
 ) -> None:
     cham = repo / ".chameleon"
     cham.mkdir(parents=True, exist_ok=True)
+    (cham / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     (cham / "symbol_signatures.json").write_text(
         json.dumps({"schema_version": 1, "files": signatures}), encoding="utf-8"
     )
     if calls is not None:
         (cham / "calls_index.json").write_text(
-            json.dumps({"schema_version": _CALLS_SCHEMA, "callees": calls}), encoding="utf-8"
+            json.dumps({"schema_version": _CALLS_SCHEMA, "callees": calls}),
+            encoding="utf-8",
         )
     # Write each sibling with a real def per symbol at its stored line: the
     # signature index is DERIVED from the file, and the per-edit re-verify drops a

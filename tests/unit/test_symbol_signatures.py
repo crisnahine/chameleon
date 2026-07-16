@@ -52,7 +52,14 @@ def test_build_stores_callable_with_params_and_span(tmp_path):
         [
             _sig(
                 "formatCurrency",
-                [{"name": "amount", "optional": False, "kind": "positional", "type": "number"}],
+                [
+                    {
+                        "name": "amount",
+                        "optional": False,
+                        "kind": "positional",
+                        "type": "number",
+                    }
+                ],
                 start=10,
                 end=14,
                 return_type="string",
@@ -77,7 +84,12 @@ def test_build_dedups_ambiguous_name_keeping_first(tmp_path):
     f = _file(
         str(tmp_path / "a.ts"),
         [
-            _sig("dup", [{"name": "a", "optional": False, "kind": "positional"}], start=1, end=3),
+            _sig(
+                "dup",
+                [{"name": "a", "optional": False, "kind": "positional"}],
+                start=1,
+                end=3,
+            ),
             _sig(
                 "dup",
                 [{"name": "x", "optional": False, "kind": "positional"}],
@@ -110,9 +122,15 @@ def test_build_copies_is_async_flag(tmp_path):
 def test_load_round_trips(tmp_path):
     chameleon = tmp_path / ".chameleon"
     chameleon.mkdir()
+    (chameleon / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     f = _file(
         str(tmp_path / "money.ts"),
-        [_sig("formatCurrency", [{"name": "n", "optional": False, "kind": "positional"}])],
+        [
+            _sig(
+                "formatCurrency",
+                [{"name": "n", "optional": False, "kind": "positional"}],
+            )
+        ],
     )
     payload = build_symbol_signatures([f], tmp_path)
     (chameleon / SYMBOL_SIGNATURES_FILENAME).write_text(json.dumps(payload))
@@ -130,6 +148,7 @@ def test_load_missing_or_corrupt_is_none(tmp_path):
     assert load_symbol_signatures(tmp_path) is None  # no .chameleon
     chameleon = tmp_path / ".chameleon"
     chameleon.mkdir()
+    (chameleon / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     assert load_symbol_signatures(tmp_path) is None  # no artifact
     (chameleon / SYMBOL_SIGNATURES_FILENAME).write_text("{ not json")
     assert load_symbol_signatures(tmp_path) is None  # corrupt
@@ -184,7 +203,8 @@ def test_bootstrap_writes_symbol_signatures(tmp_path, monkeypatch):
     )
     for name in ("alpha", "beta", "gamma", "delta", "epsilon"):
         (services / f"{name}.ts").write_text(
-            f"export function {name}(x: string): string {{ return x }}\n", encoding="utf-8"
+            f"export function {name}(x: string): string {{ return x }}\n",
+            encoding="utf-8",
         )
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "baseline")
@@ -218,7 +238,12 @@ from chameleon_mcp.symbol_signatures import (  # noqa: E402
 def test_render_imported_definition_signature():
     entry = {
         "params": [
-            {"name": "amount", "optional": False, "kind": "positional", "type": "number"},
+            {
+                "name": "amount",
+                "optional": False,
+                "kind": "positional",
+                "type": "number",
+            },
             {"name": "code", "optional": True, "kind": "positional", "type": "string"},
         ],
         "return_type": "string",
@@ -255,6 +280,7 @@ def test_hydrate_imported_definitions_end_to_end(tmp_path, monkeypatch):
     payload = build_symbol_signatures(list(res.files), repo)
     chameleon = repo / ".chameleon"
     chameleon.mkdir()
+    (chameleon / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     (chameleon / SYMBOL_SIGNATURES_FILENAME).write_text(json.dumps(payload))
 
     lines = hydrate_imported_definitions(repo, [sub / "checkout.ts"], max_items=10)
@@ -311,10 +337,16 @@ def test_imported_definition_facts_end_to_end(tmp_path, monkeypatch):
     payload = build_symbol_signatures(list(res.files), repo)
     chameleon = repo / ".chameleon"
     chameleon.mkdir()
+    (chameleon / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     (chameleon / SYMBOL_SIGNATURES_FILENAME).write_text(json.dumps(payload))
 
     diffs = [
-        FileDiff(rel_path="sub/checkout.ts", diff_text="+ x", is_whole_file=False, archetype=None)
+        FileDiff(
+            rel_path="sub/checkout.ts",
+            diff_text="+ x",
+            is_whole_file=False,
+            archetype=None,
+        )
     ]
     block = imported_definition_facts(repo, diffs)
     assert "formatCurrency(" in block and "money.ts" in block
@@ -404,7 +436,12 @@ def test_render_python_keyword_only_gets_star_separator():
     # keyword; rendering it as bare-positional invites a TypeError.
     entry = {
         "params": [
-            {"name": "session", "optional": False, "kind": "positional", "type": "SessionDep"},
+            {
+                "name": "session",
+                "optional": False,
+                "kind": "positional",
+                "type": "SessionDep",
+            },
             {"name": "limit", "optional": True, "kind": "keyword", "type": "int"},
             {"name": "kwargs", "optional": True, "kind": "keyword_rest"},
         ],
@@ -420,7 +457,12 @@ def test_build_truncates_oversized_type_text(tmp_path):
     huge = "{ " + ", ".join(f"f{i}: string" for i in range(200)) + " }"
     f = _file(
         str(tmp_path / "big.ts"),
-        [_sig("h", [{"name": "x", "optional": False, "kind": "positional", "type": huge}])],
+        [
+            _sig(
+                "h",
+                [{"name": "x", "optional": False, "kind": "positional", "type": huge}],
+            )
+        ],
     )
     payload = build_symbol_signatures([f], tmp_path)
     stored_type = payload["files"]["big.ts"]["h"]["params"][0]["type"]
@@ -449,6 +491,7 @@ def test_imported_definition_facts_block_is_char_capped(tmp_path, monkeypatch):
     payload = build_symbol_signatures(list(res.files), repo)
     chameleon = repo / ".chameleon"
     chameleon.mkdir()
+    (chameleon / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     (chameleon / SYMBOL_SIGNATURES_FILENAME).write_text(json.dumps(payload))
 
     diffs = [FileDiff(rel_path="edit.ts", diff_text="+ x", is_whole_file=False, archetype=None)]
@@ -456,3 +499,26 @@ def test_imported_definition_facts_block_is_char_capped(tmp_path, monkeypatch):
     # Bounded well under the 8 full lines; truncation is signalled.
     assert len(block) <= 400
     assert "more" in block.lower() or "truncat" in block.lower()
+
+
+def test_load_refuses_uncommitted_profile(tmp_path):
+    # qa66 F1: a torn .chameleon (no COMMITTED sentinel) must read as
+    # index-unavailable, never served as ground truth while the sibling
+    # tools report profile_corrupted for the same tree.
+    chameleon = tmp_path / ".chameleon"
+    chameleon.mkdir()
+    f = _file(
+        str(tmp_path / "money.ts"),
+        [
+            _sig(
+                "formatCurrency",
+                [{"name": "n", "optional": False, "kind": "positional"}],
+            )
+        ],
+    )
+    (chameleon / SYMBOL_SIGNATURES_FILENAME).write_text(
+        json.dumps(build_symbol_signatures([f], tmp_path))
+    )
+    assert load_symbol_signatures(tmp_path) is None
+    (chameleon / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
+    assert load_symbol_signatures(tmp_path) is not None

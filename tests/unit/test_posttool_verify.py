@@ -84,7 +84,10 @@ def test_missing_tool_name_skipped():
 
 
 def test_notebook_path_fallback():
-    with patch("chameleon_mcp.hook_helper.posttool_verify.__module__", "chameleon_mcp.hook_helper"):
+    with patch(
+        "chameleon_mcp.hook_helper.posttool_verify.__module__",
+        "chameleon_mcp.hook_helper",
+    ):
         result = _run_verify(
             {
                 "tool_name": "NotebookEdit",
@@ -129,7 +132,10 @@ def test_suppressed_session_skipped():
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
         patch("chameleon_mcp.profile.trust.trust_state_for", return_value=MagicMock()),
         patch("chameleon_mcp.tools._compute_repo_id", return_value="abc123"),
-        patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value="session_disabled"),
+        patch(
+            "chameleon_mcp.optouts.is_chameleon_suppressed",
+            return_value="session_disabled",
+        ),
     ):
         result = _run_verify(
             {
@@ -453,8 +459,14 @@ def test_no_archetype_emits_empty(tmp_path: Path):
         patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
-        patch("chameleon_mcp.daemon_client.call", return_value={"data": {"archetype": None}}),
-        patch("chameleon_mcp.tools.get_archetype", return_value={"data": {"archetype": None}}),
+        patch(
+            "chameleon_mcp.daemon_client.call",
+            return_value={"data": {"archetype": None}},
+        ),
+        patch(
+            "chameleon_mcp.tools.get_archetype",
+            return_value={"data": {"archetype": None}},
+        ),
     ):
         result = _run_verify(
             {
@@ -508,9 +520,18 @@ def test_no_archetype_with_violation_emits_single_advisory(tmp_path: Path):
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
         patch("chameleon_mcp.hook_helper._emit", side_effect=_tracking_emit),
         patch("chameleon_mcp.hook_helper._load_rules_for_style", return_value=None),
-        patch("chameleon_mcp.hook_helper._scan_archetype_independent", return_value=synthetic),
-        patch("chameleon_mcp.daemon_client.call", return_value={"data": {"archetype": None}}),
-        patch("chameleon_mcp.tools.get_archetype", return_value={"data": {"archetype": None}}),
+        patch(
+            "chameleon_mcp.hook_helper._scan_archetype_independent",
+            return_value=synthetic,
+        ),
+        patch(
+            "chameleon_mcp.daemon_client.call",
+            return_value={"data": {"archetype": None}},
+        ),
+        patch(
+            "chameleon_mcp.tools.get_archetype",
+            return_value={"data": {"archetype": None}},
+        ),
     ):
         result = _run_verify(
             {
@@ -553,13 +574,22 @@ def test_no_archetype_advisory_emit_failure_falls_back_to_empty(tmp_path: Path):
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
         patch("chameleon_mcp.hook_helper._load_rules_for_style", return_value=None),
-        patch("chameleon_mcp.hook_helper._scan_archetype_independent", return_value=synthetic),
+        patch(
+            "chameleon_mcp.hook_helper._scan_archetype_independent",
+            return_value=synthetic,
+        ),
         patch(
             "chameleon_mcp.hook_helper._posttool_no_archetype_advisory",
             return_value=False,
         ),
-        patch("chameleon_mcp.daemon_client.call", return_value={"data": {"archetype": None}}),
-        patch("chameleon_mcp.tools.get_archetype", return_value={"data": {"archetype": None}}),
+        patch(
+            "chameleon_mcp.daemon_client.call",
+            return_value={"data": {"archetype": None}},
+        ),
+        patch(
+            "chameleon_mcp.tools.get_archetype",
+            return_value={"data": {"archetype": None}},
+        ),
     ):
         result = _run_verify(
             {
@@ -1059,3 +1089,60 @@ def test_list_file_path_fails_open(tmp_path, monkeypatch):
     )
     assert out == {}
     assert not err_log.exists() or "TypeError" not in err_log.read_text(encoding="utf-8")
+
+
+def test_escalated_cooldown_dedups_identical_content(tmp_path: Path):
+    # Regression (qa66 verify-cooldown-dead-zone): the documented "5 seconds
+    # once escalated" dedup was structurally unreachable because the
+    # self-correction window zeroed the TTL and every violating verify
+    # re-stamped last_violation_at. With a fresh marker + matching digest,
+    # a file whose FileState is escalated (has a recent violation) must still
+    # short-circuit to the dedup message — the digest gate alone guarantees a
+    # real fix (changed bytes) is never swallowed.
+    import hashlib
+
+    from chameleon_mcp.enforcement import LEVEL_L0, EnforcementState, FileState
+    from chameleon_mcp.optouts import _safe_session_marker
+
+    repo_id = "test_repo_id"
+    marker_dir = tmp_path / repo_id
+    marker_dir.mkdir()
+
+    ts_file = tmp_path / "x.ts"
+    ts_file.write_text("x", encoding="utf-8")
+    file_path = str(ts_file)
+
+    file_hash = hashlib.sha256(file_path.encode("utf-8")).hexdigest()[:16]
+    marker = marker_dir / f".verify_seen.{_safe_session_marker('s1')}.{file_hash}"
+    marker.write_text(hashlib.sha256(b"x").hexdigest()[:16], encoding="utf-8")
+
+    state = EnforcementState()
+    # An escalated file mid-self-correction-window: violation recorded 2s ago.
+    state.files[file_path] = FileState(
+        level=LEVEL_L0, last_violation_at=time.time() - 2.0, violation_count=1
+    )
+
+    with (
+        patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=MagicMock()),
+        patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
+        patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
+        patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
+        patch("chameleon_mcp.enforcement.load_state", return_value=state),
+        patch(
+            "chameleon_mcp.daemon_client.call",
+            side_effect=[
+                {"data": {"archetype": "component"}},
+            ],
+        ),
+    ):
+        result = _run_verify(
+            {
+                "tool_name": "Edit",
+                "tool_input": {"file_path": file_path},
+                "session_id": "s1",
+            }
+        )
+
+    ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
+    assert "already verified" in ctx

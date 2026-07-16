@@ -6058,7 +6058,6 @@ def posttool_verify() -> int:
                 MAX_CORRECTIONS_PER_FILE,
                 FileState,
                 cooldown_for_level,
-                is_self_correction,
                 load_state,
                 maybe_reset_correction_count,
                 record_clean,
@@ -6147,10 +6146,17 @@ def posttool_verify() -> int:
         cooldown_ttl = _VERIFY_SEEN_TTL_SECONDS
         if enforcement_state is not None and file_state is not None:
             try:
-                if is_self_correction(file_state, _started):
-                    cooldown_ttl = 0
-                else:
-                    cooldown_ttl = cooldown_for_level(file_state.level)
+                # The escalated TTL is NOT zeroed during the self-correction
+                # window: the digest gate below already guarantees a real fix
+                # (changed bytes) is never swallowed, so zeroing only ever
+                # affected byte-identical re-writes — and because every
+                # violating verify re-stamps last_violation_at, the zeroing
+                # made the documented "5 seconds once escalated" dedup
+                # structurally unreachable (any call inside 10s was forced to
+                # a full re-render; any call after 10s found the marker
+                # already older than 5s). is_self_correction still governs
+                # escalation in record_violation, where it belongs.
+                cooldown_ttl = cooldown_for_level(file_state.level)
             except Exception:
                 pass
 

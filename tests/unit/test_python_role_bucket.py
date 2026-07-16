@@ -127,3 +127,16 @@ def test_non_role_python_falls_through_to_directory_bucket():
 def test_non_python_unaffected():
     bucket, _ = path_pattern_bucket_for("app/models/user.rb", include_extension=True)
     assert bucket == "app/models:rb"  # Rails dir-chain bucketing, unchanged
+
+
+def test_fastapi_schemas_and_dependencies_package_forms_are_roles():
+    # qa66 fastapi-1/-2: schemas/ and dependencies/ (and deps/) were role
+    # names for the FILENAME form only; the package form fell through to
+    # path-prefix fallback and mis-matched dependency edits to the Pydantic
+    # schemas archetype.
+    from chameleon_mcp.signatures import python_role_for_path
+
+    assert python_role_for_path("app/schemas/item.py") == "schema"
+    assert python_role_for_path("app/dependencies/auth.py") == "dependency"
+    assert python_role_for_path("app/deps/db.py") == "dependency"
+    assert python_role_for_path("app/crud/user.py") == "crud"

@@ -19,12 +19,14 @@ def _write_profile(
 ) -> None:
     cham = repo / ".chameleon"
     cham.mkdir(parents=True, exist_ok=True)
+    (cham / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     (cham / "symbol_signatures.json").write_text(
         json.dumps({"schema_version": 1, "files": signatures}), encoding="utf-8"
     )
     if calls is not None:
         (cham / "calls_index.json").write_text(
-            json.dumps({"schema_version": _CALLS_SCHEMA, "callees": calls}), encoding="utf-8"
+            json.dumps({"schema_version": _CALLS_SCHEMA, "callees": calls}),
+            encoding="utf-8",
         )
 
 
@@ -35,7 +37,11 @@ def _sig(rel: str) -> dict:
 def _callers(*sites, total=None):
     # "import" is a real grade the calls-index loader keeps (VALID_GRADES).
     rows = [{"path": p, "caller": "c", "line": ln, "grade": "import"} for p, ln in sites]
-    return {"callers": rows, "total": total if total is not None else len(rows), "truncated": False}
+    return {
+        "callers": rows,
+        "total": total if total is not None else len(rows),
+        "truncated": False,
+    }
 
 
 def test_default_on_renders_inbound_callers(tmp_path, monkeypatch):

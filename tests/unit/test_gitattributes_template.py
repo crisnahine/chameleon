@@ -37,11 +37,15 @@ MERGEABLE = {
 # Routed to the driver so it can DECLINE: keeps conflict markers out of
 # runtime-read protocol files (qa25: a real two-branch merge landed markers in
 # COMMITTED and profile.summary.md, and is_committed half-trusted the result).
+# idioms/** covers the structured idiom store: per-idiom JSON records plus the
+# .view_digest sidecar two concurrent teaches always collide on (qa66: that
+# collision landed raw markers in live store state the runtime reads).
 DECLINE_TO_MERGE = {
     "COMMITTED",
     "principles.md",
     "profile.summary.md",
     "conventions.md",
+    "idioms/**",
 }
 
 

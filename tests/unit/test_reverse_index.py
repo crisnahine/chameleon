@@ -24,6 +24,7 @@ class FakeParsed:
 def _write_index(repo: Path, payload: dict) -> None:
     cham = repo / ".chameleon"
     cham.mkdir(parents=True, exist_ok=True)
+    (cham / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     (cham / REVERSE_INDEX_FILENAME).write_text(json.dumps(payload), encoding="utf-8")
 
 
@@ -112,7 +113,12 @@ class TestBuild:
             tmp_path / "src" / "cart.ts",
             {
                 "import_symbols": [
-                    {"name": "editPrice", "local": "renamed", "module": "./pricing", "line": 3}
+                    {
+                        "name": "editPrice",
+                        "local": "renamed",
+                        "module": "./pricing",
+                        "line": 3,
+                    }
                 ]
             },
         )
@@ -259,6 +265,7 @@ class TestLoad:
     def test_corrupt_json_returns_none(self, tmp_path):
         cham = tmp_path / ".chameleon"
         cham.mkdir(parents=True)
+        (cham / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
         (cham / REVERSE_INDEX_FILENAME).write_text("{bad", encoding="utf-8")
         assert load_reverse_index(tmp_path) is None
 

@@ -19,7 +19,8 @@ def test_extractor_for_py():
 def test_parse_callables_python(tmp_path):
     f = tmp_path / "svc.py"
     f.write_text(
-        "def handle(a, b, c=1):\n    return a\n\n\ndef other(x):\n    return x\n", encoding="utf-8"
+        "def handle(a, b, c=1):\n    return a\n\n\ndef other(x):\n    return x\n",
+        encoding="utf-8",
     )
     callables = parse_callables(tmp_path, str(f))
     assert "handle" in callables and "other" in callables
@@ -179,6 +180,9 @@ def test_phantom_symbol_python(tmp_path):
     # Build + commit the exports index where load_exports_index reads it.
     files = PythonExtractor().parse_repo(tmp_path).files
     (tmp_path / ".chameleon").mkdir()
+    ((tmp_path / ".chameleon") / "COMMITTED").write_text(
+        "committed-at=1\npid=1\n", encoding="utf-8"
+    )
     (tmp_path / ".chameleon" / "exports_index.json").write_text(
         json.dumps(build_exports_index(files, tmp_path)), encoding="utf-8"
     )
@@ -216,8 +220,12 @@ def _py_repo_with_reverse_index(tmp_path):
     )
     files = PythonExtractor().parse_repo(tmp_path).files
     (tmp_path / ".chameleon").mkdir()
+    ((tmp_path / ".chameleon") / "COMMITTED").write_text(
+        "committed-at=1\npid=1\n", encoding="utf-8"
+    )
     (tmp_path / ".chameleon" / "reverse_index.json").write_text(
-        json.dumps(build_reverse_index(files, tmp_path, language="python")), encoding="utf-8"
+        json.dumps(build_reverse_index(files, tmp_path, language="python")),
+        encoding="utf-8",
     )
     return pkg / "models.py"
 
@@ -239,7 +247,10 @@ def test_removed_export_breaks_importers_python(tmp_path):
     models = _py_repo_with_reverse_index(tmp_path)
     # Edited content no longer defines User, but views.py still imports it.
     v = lint_cross_file_imports(
-        "class Account:\n    pass\n", file_path=str(models), repo_root=tmp_path, language="python"
+        "class Account:\n    pass\n",
+        file_path=str(models),
+        repo_root=tmp_path,
+        language="python",
     )
     assert any(x.rule == "removed-export-breaks-importers" and x.expected == "User" for x in v)
 
@@ -280,7 +291,8 @@ def test_calls_index_member_grade_python(tmp_path):
     # `import pkg.util as u; u.helper()` -> member call against the namespace
     # import's closed export set.
     (pkg / "views.py").write_text(
-        "import pkg.util as u\n\n\ndef handler():\n    return u.helper()\n", encoding="utf-8"
+        "import pkg.util as u\n\n\ndef handler():\n    return u.helper()\n",
+        encoding="utf-8",
     )
     files = PythonExtractor().parse_repo(tmp_path).files
     index = build_calls_index(files, tmp_path, language="python")
@@ -298,7 +310,8 @@ def test_calls_index_external_member_not_graded_python(tmp_path):
     pkg.mkdir()
     (pkg / "__init__.py").write_text("", encoding="utf-8")
     (pkg / "views.py").write_text(
-        "import requests\n\n\ndef handler():\n    return requests.get('x')\n", encoding="utf-8"
+        "import requests\n\n\ndef handler():\n    return requests.get('x')\n",
+        encoding="utf-8",
     )
     files = PythonExtractor().parse_repo(tmp_path).files
     index = build_calls_index(files, tmp_path, language="python")
@@ -325,6 +338,9 @@ def test_hydrate_imported_definitions_python(tmp_path):
     editing.write_text("from .svc import fetch\n", encoding="utf-8")
     files = PythonExtractor().parse_repo(tmp_path).files
     (tmp_path / ".chameleon").mkdir()
+    ((tmp_path / ".chameleon") / "COMMITTED").write_text(
+        "committed-at=1\npid=1\n", encoding="utf-8"
+    )
     (tmp_path / ".chameleon" / "symbol_signatures.json").write_text(
         json.dumps(build_symbol_signatures(files, tmp_path)), encoding="utf-8"
     )
