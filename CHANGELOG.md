@@ -28,6 +28,12 @@ and [3.6.0] entries for the per-phase detail.
   55s), the live `CHAMELEON_JUDGE_WAIT` Stop-budget headroom, and the idiom
   lens's own prompt and finding flood caps.
 
+### Fixed
+- The intent contract's scope-line extraction now persists a bounded clause
+  around each scoping phrase rather than the whole sentence, so a run-on
+  prompt no longer carries unrelated leading prose or a trailing reason clause
+  into the review job's evidence. The scope object itself is never split.
+
 ## [3.6.0] - 2026-07-16
 
 ### Added
