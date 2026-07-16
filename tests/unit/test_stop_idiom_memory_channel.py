@@ -18,11 +18,9 @@ from pathlib import Path
 
 import chameleon_mcp.hook_helper as hh
 from chameleon_mcp.hook_helper import (
-    _MIRROR_IDIOMS_SNAPSHOT,
-    _snapshot_mirror_idioms,
+    _record_mirror_idiom_slugs,
     _wired_mirror_text,
 )
-from chameleon_mcp.optouts import _safe_session_marker
 
 _MIRROR_MD = (
     "PROJECT CONVENTIONS — authoritative.\n\n"
@@ -147,8 +145,8 @@ class TestWiredMirrorText:
         assert _wired_mirror_text(repo) == first
 
 
-class TestSnapshotMirrorIdioms:
-    """SessionStart-side snapshot writes."""
+class TestRecordMirrorIdiomSlugs:
+    """SessionStart-side recording onto SessionDoc.idioms_shown_slugs."""
 
     def _wired_repo(self, tmp_path, monkeypatch) -> tuple[Path, Path]:
         from chameleon_mcp.core.idiom_store import IdiomRecord, upsert_idiom
@@ -159,7 +157,7 @@ class TestSnapshotMirrorIdioms:
         profile.mkdir(parents=True)
         (repo / "CLAUDE.local.md").write_text("@.chameleon/conventions.md\n", encoding="utf-8")
         (profile / "conventions.md").write_text(_MIRROR_MD, encoding="utf-8")
-        # The snapshot resolves each delivered gist NAME to its store slug, so
+        # The recording resolves each delivered gist NAME to its store slug, so
         # a title with no matching record is dropped; seed the one the mirror
         # actually carries (_MIRROR_MD's only real gist line, "wrap-fetches").
         upsert_idiom(
@@ -176,43 +174,36 @@ class TestSnapshotMirrorIdioms:
         _clear_cache()
         return repo, tmp_path / "data"
 
-    def _snap_path(self, data_dir: Path, repo: Path, sid: str) -> Path:
+    def _shown(self, repo: Path, sid: str) -> set[str]:
+        from chameleon_mcp.core.session_state import read_session_doc
         from chameleon_mcp.tools import _compute_repo_id
 
-        return (
-            data_dir
-            / _compute_repo_id(repo)
-            / _MIRROR_IDIOMS_SNAPSHOT.format(session=_safe_session_marker(sid))
-        )
+        return read_session_doc(_compute_repo_id(repo), sid).idioms_shown_slugs
 
-    def test_wired_repo_writes_delivered_names(self, tmp_path, monkeypatch):
-        import json as _json
+    def test_wired_repo_records_delivered_slugs(self, tmp_path, monkeypatch):
+        repo, _data_dir = self._wired_repo(tmp_path, monkeypatch)
+        _record_mirror_idiom_slugs(repo, "sess-1")
+        assert self._shown(repo, "sess-1") == {"wrap-fetches"}
 
-        repo, data_dir = self._wired_repo(tmp_path, monkeypatch)
-        _snapshot_mirror_idioms(repo, "sess-1")
-        snap = self._snap_path(data_dir, repo, "sess-1")
-        assert _json.loads(snap.read_text()) == ["wrap-fetches"]
-
-    def test_unwired_repo_writes_nothing(self, tmp_path, monkeypatch):
+    def test_unwired_repo_records_nothing(self, tmp_path, monkeypatch):
         repo, data_dir = self._wired_repo(tmp_path, monkeypatch)
         (repo / "CLAUDE.local.md").unlink()
         _clear_cache()
-        _snapshot_mirror_idioms(repo, "sess-2")
-        assert not self._snap_path(data_dir, repo, "sess-2").exists()
+        _record_mirror_idiom_slugs(repo, "sess-2")
+        assert self._shown(repo, "sess-2") == set()
+        assert not list(data_dir.rglob(".session_doc.*")) if data_dir.exists() else True
 
-    def test_null_session_writes_nothing(self, tmp_path, monkeypatch):
+    def test_null_session_records_nothing(self, tmp_path, monkeypatch):
         repo, data_dir = self._wired_repo(tmp_path, monkeypatch)
-        _snapshot_mirror_idioms(repo, None)
-        assert not list(data_dir.rglob(".mirror_idioms.*")) if data_dir.exists() else True
+        _record_mirror_idiom_slugs(repo, None)
+        assert not list(data_dir.rglob(".session_doc.*")) if data_dir.exists() else True
 
-    def test_mid_session_teach_does_not_reach_stop_gate(self, tmp_path, monkeypatch):
-        # The live mirror gains an idiom after session start; the snapshot the
-        # Stop gate would read stays pinned to what was delivered at session
-        # start, so the new idiom is absent from it.
-        import json as _json
-
-        repo, data_dir = self._wired_repo(tmp_path, monkeypatch)
-        _snapshot_mirror_idioms(repo, "sess-3")
+    def test_mid_session_teach_is_not_recorded(self, tmp_path, monkeypatch):
+        # The live mirror gains an idiom after session start; the recorded
+        # shown set stays pinned to what was delivered at session start (the
+        # @import resolved once), so the new idiom is absent from it.
+        repo, _data_dir = self._wired_repo(tmp_path, monkeypatch)
+        _record_mirror_idiom_slugs(repo, "sess-3")
         (repo / ".chameleon" / "conventions.md").write_text(
             _MIRROR_MD.replace(
                 "- wrap-fetches: Always wrap fetches in the apiClient helper.",
@@ -221,8 +212,7 @@ class TestSnapshotMirrorIdioms:
             ),
             encoding="utf-8",
         )
-        snap = self._snap_path(data_dir, repo, "sess-3")
-        assert _json.loads(snap.read_text()) == ["wrap-fetches"]
+        assert self._shown(repo, "sess-3") == {"wrap-fetches"}
 
 
 def _is_wired(tmp_path, claude_md: str) -> bool:

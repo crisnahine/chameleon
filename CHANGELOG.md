@@ -4,6 +4,81 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.0] - 2026-07-16
+
+A dead-code and unfinished-wiring campaign: a vulture sweep plus a repo-wide
+import-graph audit adjudicated ~70 candidates. Five turned out to be
+documented-but-unwired features (now wired), ~30 were genuinely dead
+(deleted, with their tests ported to the live surfaces), and the rest were
+false positives or deliberate API surface (kept).
+
+### Fixed
+- The detached review job now calls `judge.mark_detached_run()` at its entry,
+  so `duplication_review.judge_body_matches` (the one reviewer spawn that
+  resolves its timeout internally) takes the generous detached budget inside
+  the job instead of the short synchronous one — closing the follow-up the
+  async-first cutover left open.
+- The memory-channel half of the idiom lens's already-shown dedup is live:
+  SessionStart now folds the mirror-delivered idiom slugs into
+  `SessionDoc.idioms_shown_slugs` (spec 10.1), so an idiom the model already
+  holds via the `@.chameleon/conventions.md` import is no longer re-reviewed
+  and re-surfaced. Replaces the write-only `.mirror_idioms.<session>` snapshot
+  file (the reaper still ages out files older installs left behind).
+- The duplication lens now feeds both order-dependent caps a most-recently-
+  modified-first view of the turn's files: `build_candidate_index`'s
+  `DUPLICATION_INDEX_MAX_FILES` re-parse (the search space checked AGAINST)
+  and `gather_findings`' tighter `DUPLICATION_REVIEW_MAX_FILES` slice (the
+  files the gate CHECKS) — honoring the documented "freshest working set
+  survives" contract that insertion order silently violated on turns editing
+  more files than the caps, and emitting an `index_files_capped` event when
+  the index cap trims anything.
+- Session docs (`.session_doc.*.json`) are reaped at SessionStart after 48h
+  via the lock-aware `reap_stale_docs` — previously nothing reaped them, so
+  they accumulated per (session, repo) forever.
+- `stop/scheduler.py` builds a turn's lens list via `stop.lenses.active_lenses`
+  instead of a duplicate inline tuple, so the lens registry is the single
+  source of truth for lens gating.
+
+### Removed
+- `stop_verify.py` (the pre-3.4.0 VERIFY engine, superseded by
+  `stop/verify.py` in the async-first cutover) is deleted. Its two still-live
+  helpers moved to `safe_open.py` as `contained_rel` / `excerpt_window` — one
+  canonical implementation now serves the VERIFY stage (which carried its own
+  duplicate copies), the pending-findings delivery block, and the co-change
+  advisory.
+- ~25 production-dead functions and fields across the package, each verified
+  repo-wide (including dynamic dispatch, hook scripts, and skill markdown)
+  before deletion: `detect_commented_out_code` (the batch `_by_group` variant
+  is the live one), `_expand_workspace_globs`, `body_shape_outliers` (+ its
+  `BODY_SHAPE_OUTLIER_MULT` threshold; the body-shape NORM derivation and
+  SHAPE session block stay), `TurnBudget.expired/would_fit/charge_tokens`
+  (packing lives in `stop/assemble.py`; the token side is a carried ceiling),
+  `daemon._socket_tmp_base`, `finding_already_surfaced`/`mark_finding_surfaced`
+  (the `.dup_surfaced.` marker scheme the ledger replaced),
+  `format_duplication_advisory` (the lens's `_claim_for` is the canonical
+  template now), `format_contract_advisory`, `callables_at_ref`,
+  `hash_import_set` (vestigial since the import-set hash was pinned to ""),
+  `hook_helper._duplication_index_files`/`_extract_defined_names`/
+  `_scheduler_clear_job_slot`, `intent_capture.identifier_tokens`
+  (`latest_request_identifiers` is the live scope-drift source),
+  `judge.stale_suffix`/`_parse_findings`/`grounding_family` (dead duplicates
+  of the live render/parse/family paths), `profile.loader.clear_repo_root_cache`
+  (`clear_profile_cache` clears both caches), `secret_scanner._line_number_at`,
+  the unused `PRIORITY_DELIVERED_VERIFIED`/`PRIORITY_IDIOM` emission rungs
+  (survivors renumbered contiguously; the packer is rung-agnostic), and the
+  write-only `CanonicalSelection.cluster_key_hash`/`recency_weight` fields.
+- Five orphaned files: `chameleon_mcp/general_idioms.md` (nothing loaded it),
+  `scripts/make-readme-screenshot.py`, `scripts/refresh_eval_fixtures.sh`
+  (its fixtures and eval suite are long gone), `tests/pool_dup_runs.py`, and
+  `tests/run_posthoc_panel.py`.
+- Deliberately KEPT despite zero production callers, as designed API surface:
+  `extractors.registry.register` (documented extension seam),
+  `review_ledger.mark_addressed` (lifecycle API), the delivery-cursor pair
+  (spec 3.5 record + accessor), `judge.attach_evidence_cmd` (write API of the
+  pinned-evidence layer whose read side is live), `LensResult.check_events`
+  (the documented lens contract and test observation surface), and the
+  `PRIORITY_BLOCK`/`droppable` dormant block-emission contract.
+
 ## [4.0.1] - 2026-07-16
 
 Fixes from a full-plugin, real-invocation QA campaign (every hook, MCP tool,

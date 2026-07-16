@@ -1583,8 +1583,9 @@ def compute_resurface(repo_id: str, ws_root) -> ResurfaceResult:
             return ResurfaceResult(lines=[], match_keys=())
 
         from chameleon_mcp.judge import _excerpt_sha_stale
+        from chameleon_mcp.safe_open import contained_rel as _contained_rel
+        from chameleon_mcp.safe_open import excerpt_window as _excerpt_window
         from chameleon_mcp.sanitization import sanitize_for_chameleon_context
-        from chameleon_mcp.stop.verify import _contained_rel, _excerpt_window
 
         root_path = Path(root)
         candidate_rows: list[dict] = []

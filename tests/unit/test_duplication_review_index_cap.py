@@ -8,12 +8,13 @@ ranked first (most-recently-edited) are parsed, and <=cap files are unchanged.
 
 from __future__ import annotations
 
-import chameleon_mcp.exec_log as exec_log
+import os
+import time
+
 import chameleon_mcp.tools as tools
 from chameleon_mcp import duplication_review as dr
-from chameleon_mcp import hook_helper
 from chameleon_mcp._thresholds import threshold_int
-from chameleon_mcp.enforcement import EnforcementState, FileState
+from chameleon_mcp.stop.lenses import duplication as dup_lens
 
 
 def _make_repo(tmp_path, n: int) -> list[str]:
@@ -66,60 +67,82 @@ def test_index_at_or_below_cap_parses_all(tmp_path, monkeypatch):
     assert parsed == files
 
 
-def _state_with_recency(paths_oldest_first: list[str]) -> EnforcementState:
-    state = EnforcementState()
-    # Insertion order is oldest-first; last_verified_at increases with index, so
-    # the most-recently-edited file is last in insertion order but should sort
-    # FIRST out of the helper.
+def _stagger_mtimes(paths_oldest_first: list[str]) -> None:
+    # Insertion order is oldest-first; mtime increases with index, so the
+    # most-recently-modified file is last in insertion order but must sort
+    # FIRST into the index input.
+    base = time.time() - len(paths_oldest_first) - 10
     for i, p in enumerate(paths_oldest_first):
-        state.files[p] = FileState(last_verified_at=float(i))
-    return state
+        os.utime(p, (base + i, base + i))
 
 
-def test_index_files_orders_most_recent_first(tmp_path):
+def _run_lens(tmp_path, files, monkeypatch, parsed: list[str], events: list[tuple[str, str]]):
+    def _spy(repo_root, file_path):
+        parsed.append(file_path)
+        return []
+
+    monkeypatch.setattr(tools, "parse_edited_functions", _spy)
+    monkeypatch.setattr(dr, "gather_findings", lambda *a, **kw: [])
+    return dup_lens.run(
+        tmp_path,
+        tmp_path,
+        files,
+        None,
+        event_sink=lambda kind, detail=None: events.append((kind, detail or "")),
+    )
+
+
+def test_lens_index_orders_most_recent_first(tmp_path, monkeypatch):
     cap = threshold_int("DUPLICATION_INDEX_MAX_FILES")
     files = _make_repo(tmp_path, cap + 5)
-    state = _state_with_recency(files)
+    _stagger_mtimes(files)
 
-    ordered = hook_helper._duplication_index_files(files, state, repo_id="r", session_id="s")
+    parsed: list[str] = []
+    _run_lens(tmp_path, files, monkeypatch, parsed, [])
 
-    # Reverse-chronological: the highest last_verified_at comes first.
-    assert ordered == list(reversed(files))
+    # Reverse-chronological head survives the cap: the freshest working set.
+    assert parsed == list(reversed(files))[:cap]
 
 
-def test_index_files_logs_dropped_over_cap(tmp_path, monkeypatch):
+def test_lens_logs_dropped_over_cap(tmp_path, monkeypatch):
     cap = threshold_int("DUPLICATION_INDEX_MAX_FILES")
     over = 5
     files = _make_repo(tmp_path, cap + over)
-    state = _state_with_recency(files)
+    _stagger_mtimes(files)
 
-    events: list[dict] = []
-    monkeypatch.setattr(
-        exec_log,
-        "append_check_event",
-        lambda repo_id, **kw: events.append({"repo_id": repo_id, **kw}),
-    )
+    events: list[tuple[str, str]] = []
+    _run_lens(tmp_path, files, monkeypatch, [], events)
 
-    hook_helper._duplication_index_files(files, state, repo_id="r", session_id="s")
-
-    trunc = [e for e in events if e.get("status") == "truncated"]
-    assert len(trunc) == 1
-    assert trunc[0]["reason"] == "index_files_capped"
-    assert trunc[0]["detail"] == {"dropped": over, "cap": cap, "total": cap + over}
+    capped = [e for e in events if e[0] == "index_files_capped"]
+    assert capped == [("index_files_capped", f"dropped:{over};cap:{cap}")]
 
 
-def test_index_files_no_log_at_or_below_cap(tmp_path, monkeypatch):
+def test_lens_no_event_at_or_below_cap(tmp_path, monkeypatch):
     cap = threshold_int("DUPLICATION_INDEX_MAX_FILES")
     files = _make_repo(tmp_path, cap)
-    state = _state_with_recency(files)
+    _stagger_mtimes(files)
 
-    events: list[dict] = []
-    monkeypatch.setattr(
-        exec_log,
-        "append_check_event",
-        lambda repo_id, **kw: events.append({"repo_id": repo_id, **kw}),
-    )
+    events: list[tuple[str, str]] = []
+    _run_lens(tmp_path, files, monkeypatch, [], events)
 
-    hook_helper._duplication_index_files(files, state, repo_id="r", session_id="s")
+    assert [e for e in events if e[0] == "index_files_capped"] == []
 
-    assert [e for e in events if e.get("status") == "truncated"] == []
+
+def test_lens_gather_receives_freshest_first(tmp_path, monkeypatch):
+    # gather_findings' own DUPLICATION_REVIEW_MAX_FILES slice is order-
+    # dependent too: it must see the same most-recent-first view the index
+    # gets, so an over-cap turn checks the freshest edits, not the oldest.
+    files = _make_repo(tmp_path, 6)
+    _stagger_mtimes(files)
+
+    seen: list[list[str]] = []
+
+    def _spy_gather(root, edited, **kw):
+        seen.append(list(edited))
+        return []
+
+    monkeypatch.setattr(tools, "parse_edited_functions", lambda r, p: [])
+    monkeypatch.setattr(dr, "gather_findings", _spy_gather)
+    dup_lens.run(tmp_path, tmp_path, files, None)
+
+    assert seen == [list(reversed(files))]

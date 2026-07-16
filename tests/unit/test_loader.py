@@ -13,7 +13,6 @@ from chameleon_mcp.profile.loader import (
     ProfileLoadError,
     _is_unsafe_repo_root,
     clear_profile_cache,
-    clear_repo_root_cache,
     find_repo_root,
     load_profile_dir,
 )
@@ -198,7 +197,7 @@ class TestProseInjectionDrop:
 
 class TestFindRepoRoot:
     def setup_method(self):
-        clear_repo_root_cache()
+        clear_profile_cache()
 
     def test_finds_chameleon_dir(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
@@ -243,14 +242,14 @@ class TestFindRepoRoot:
         r2 = find_repo_root(repo / "f.ts")
         assert r1 is r2
 
-    def test_clear_repo_root_cache_invalidates(self, tmp_path: Path, monkeypatch):
+    def test_clear_profile_cache_invalidates_root_cache(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
         repo = tmp_path / "cleartest"
         (repo / ".git").mkdir(parents=True)
         (repo / "f.ts").write_text("")
 
         r1 = find_repo_root(repo / "f.ts")
-        clear_repo_root_cache()
+        clear_profile_cache()
         r2 = find_repo_root(repo / "f.ts")
         assert r1 == r2
         assert r1 is not r2
@@ -269,7 +268,7 @@ class TestUnsafeRepoRootGuard:
     """
 
     def setup_method(self):
-        clear_repo_root_cache()
+        clear_profile_cache()
 
     def _make_tmp_repo(self) -> Path:
         """A .chameleon repo physically under the system temp dir."""
@@ -288,7 +287,7 @@ class TestUnsafeRepoRootGuard:
         monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
         repo = self._make_tmp_repo()
         assert _is_unsafe_repo_root(repo) is None
-        clear_repo_root_cache()
+        clear_profile_cache()
         result = find_repo_root(repo / "app.ts")
         assert result is not None
         assert result.resolve() == repo.resolve()
@@ -317,7 +316,7 @@ class TestFindRepoRootMonorepoBoundary:
     """
 
     def setup_method(self):
-        clear_repo_root_cache()
+        clear_profile_cache()
 
     def test_git_child_does_not_resolve_to_parent_chameleon(self, tmp_path: Path, monkeypatch):
         # parent has .chameleon; repoB has its own .git but no .chameleon.
@@ -454,7 +453,7 @@ class TestFindRepoRootMonorepoBoundary:
 class TestCacheClearing:
     def setup_method(self):
         clear_profile_cache()
-        clear_repo_root_cache()
+        clear_profile_cache()
 
     def test_clear_profile_cache_also_clears_repo_root(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")

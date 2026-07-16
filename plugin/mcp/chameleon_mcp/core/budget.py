@@ -5,6 +5,10 @@ module import time: a long-lived host would inherit a stale anchor and every
 downstream stage would see an exhausted budget (the silent-skip failure mode
 this type exists to kill). No consumer may hold its own seconds constant;
 totals come from _thresholds.py at the construction site.
+
+The token side is a carried ceiling, not a spend meter: emission packing
+lives in ``stop/assemble.py`` (an ``approx_tokens`` greedy pack against a
+numeric ceiling), so this type only threads the ceiling between stages.
 """
 
 from __future__ import annotations
@@ -23,7 +27,6 @@ class TurnBudget:
     def __init__(self, *, deadline: float, token_ceiling: int) -> None:
         self._deadline = deadline
         self._token_ceiling = max(0, int(token_ceiling))
-        self._tokens_spent = 0
 
     @classmethod
     def for_hook(cls, *, total_seconds: float, token_ceiling: int) -> TurnBudget:
@@ -32,20 +35,5 @@ class TurnBudget:
     def remaining_seconds(self) -> float:
         return max(0.0, self._deadline - time.monotonic())
 
-    def expired(self) -> bool:
-        return self.remaining_seconds() <= 0.0
-
     def tokens_remaining(self) -> int:
-        return max(0, self._token_ceiling - self._tokens_spent)
-
-    def would_fit(self, text: str) -> bool:
-        return approx_tokens(text) <= self.tokens_remaining()
-
-    def charge_tokens(self, text: str) -> bool:
-        """Spend the text's tokens; refuse (and spend nothing) when it exceeds
-        the remainder — the caller defers the item whole rather than truncating."""
-        cost = approx_tokens(text)
-        if cost > self.tokens_remaining():
-            return False
-        self._tokens_spent += cost
-        return True
+        return self._token_ceiling

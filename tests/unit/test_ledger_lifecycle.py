@@ -261,7 +261,7 @@ def test_compute_resurface_does_not_write_resurfaced(tmp_path):
     (repo / "src" / "a.ts").write_text("export const x = 1;\n", encoding="utf-8")
 
     from chameleon_mcp.judge import _excerpt_digest
-    from chameleon_mcp.stop.verify import _excerpt_window
+    from chameleon_mcp.safe_open import excerpt_window as _excerpt_window
 
     excerpt = _excerpt_window(repo, "src/a.ts", 1)
     f = _finding(
@@ -294,7 +294,7 @@ def test_high_severity_unchanged_resurfaces_once_then_not_again(tmp_path):
     (repo / "src" / "a.ts").write_text("export const x = 1;\n", encoding="utf-8")
 
     from chameleon_mcp.judge import _excerpt_digest
-    from chameleon_mcp.stop.verify import _excerpt_window
+    from chameleon_mcp.safe_open import excerpt_window as _excerpt_window
 
     excerpt = _excerpt_window(repo, "src/a.ts", 1)
     f = _finding(
@@ -339,7 +339,7 @@ def test_file_changed_since_review_is_addressed_not_resurfaced(tmp_path):
     (repo / "src" / "a.ts").write_text("export const x = 1;\n", encoding="utf-8")
 
     from chameleon_mcp.judge import _excerpt_digest
-    from chameleon_mcp.stop.verify import _excerpt_window
+    from chameleon_mcp.safe_open import excerpt_window as _excerpt_window
 
     excerpt = _excerpt_window(repo, "src/a.ts", 1)
     f = _finding(

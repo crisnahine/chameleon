@@ -114,38 +114,3 @@ def test_gather_diff_scoping_surfaces_changed_function(monkeypatch, tmp_path):
         == 1
     )
     assert len(gather_body_match_findings(tmp_path, [xrb], idx, lang="ruby")) == 1
-
-
-def test_finding_surfaced_dedup_is_session_scoped(tmp_path):
-    # A duplication pair is surfaced at most once per session; a different session
-    # sees it fresh. Line-independent so a later edit that shifts the function does
-    # not look like a new finding.
-    from chameleon_mcp.duplication_review import (
-        Finding,
-        finding_already_surfaced,
-        mark_finding_surfaced,
-    )
-
-    f = Finding(
-        new_name="dup",
-        new_file="services/x.rb",
-        line=5,
-        excerpt="",
-        existing_name="original",
-        existing_file="services/orig.rb",
-    )
-    assert finding_already_surfaced(tmp_path, "s1", f) is False
-    mark_finding_surfaced(tmp_path, "s1", f)
-    assert finding_already_surfaced(tmp_path, "s1", f) is True
-    # a line shift on the same pair is still "already surfaced"
-    f2 = Finding(
-        new_name="dup",
-        new_file="services/x.rb",
-        line=42,
-        excerpt="",
-        existing_name="original",
-        existing_file="services/orig.rb",
-    )
-    assert finding_already_surfaced(tmp_path, "s1", f2) is True
-    # a different session does not inherit the marker
-    assert finding_already_surfaced(tmp_path, "s2", f) is False

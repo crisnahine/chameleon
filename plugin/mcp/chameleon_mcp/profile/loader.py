@@ -48,15 +48,6 @@ ALLOW_TMP_REPO_ENV = "CHAMELEON_ALLOW_TMP_REPO"
 _REPO_ROOT_CACHE: dict[str, tuple[int | None, bool, tuple[Path | None, str | None]]] = {}
 
 
-def clear_repo_root_cache() -> None:
-    """Drop all cached directory -> repo_root mappings.
-
-    Call on bootstrap_repo entry so a newly created .chameleon/ directory
-    is picked up by subsequent find_repo_root calls.
-    """
-    _REPO_ROOT_CACHE.clear()
-
-
 _PROFILE_CACHE: dict[str, tuple[str, LoadedProfile]] = {}
 
 

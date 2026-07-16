@@ -111,46 +111,6 @@ def _span_is_code(parsed_file, language: str) -> bool:
     return bool(getattr(parsed_file, "import_specifiers", ()))
 
 
-def detect_commented_out_code(
-    contents: list[str],
-    *,
-    language: str,
-    extractor: Extractor,
-    max_spans: int = 200,
-) -> int:
-    """Count comment spans across ``contents`` that parse as real code.
-
-    Each file's comment spans are captured, stripped of their markers, and
-    written to a temp file the real parser re-reads. A span counts only when it
-    parses with zero diagnostics AND yields at least one statement/import node.
-    ``max_spans`` bounds the parse work so a comment-heavy corpus cannot blow up
-    bootstrap.
-
-    Fails open: any extraction or parse error yields the count gathered so far
-    (never raises). Returns 0 for an unsupported language.
-    """
-    ext = _ext_for(language)
-    if ext is None:
-        return 0
-
-    spans: list[str] = []
-    for content in contents:
-        try:
-            for span in extract_comment_spans(content, language=language):
-                if len(span.strip()) >= _MIN_SPAN_CHARS:
-                    spans.append(span)
-                    if len(spans) >= max_spans:
-                        break
-        except Exception:
-            continue
-        if len(spans) >= max_spans:
-            break
-    if not spans:
-        return 0
-
-    return _parse_and_count(spans, language=language, ext=ext, extractor=extractor)
-
-
 def detect_commented_out_code_by_group(
     contents_by_group: dict[str, list[str]],
     *,

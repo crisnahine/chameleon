@@ -534,31 +534,6 @@ def recent_excerpts(entries: list[dict], since_ts: float | None = None) -> list[
     return scope_lines(entries, since_ts)
 
 
-def identifier_tokens(entries: list[dict], since_ts: float | None = None) -> list[str]:
-    """Identifier-bucket token values from non-suppressed entries newer than ``since_ts``.
-
-    Order-preserving dedupe. Identifiers are the scope anchors (symbol / file /
-    module names) the request named; ``scope_drift_files`` uses them to flag a
-    changed file that shares no name with anything the request mentioned.
-    """
-    out: list[str] = []
-    seen: set[str] = set()
-    for entry in entries or []:
-        if not isinstance(entry, dict) or entry.get("secret_suppressed"):
-            continue
-        ts = entry.get("ts")
-        if since_ts is not None and not (isinstance(ts, (int, float)) and ts > since_ts):
-            continue
-        tokens = entry.get("tokens")
-        if not isinstance(tokens, dict):
-            continue
-        for value in tokens.get("identifiers") or []:
-            if isinstance(value, str) and value not in seen:
-                seen.add(value)
-                out.append(value)
-    return out
-
-
 def latest_request_identifiers(entries: list[dict]) -> list[str]:
     """Identifier tokens of the LATEST captured prompt -- the turn's governing request.
 

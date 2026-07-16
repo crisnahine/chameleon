@@ -351,22 +351,6 @@ def _materialize_ref(repo_root, rel: str, ref: str, run_git) -> Path | None:
         return None
 
 
-def callables_at_ref(repo_root, rel: str, ref: str, run_git) -> dict[str, list]:
-    """Parse one file's callables from its committed version at ``ref``, or {}.
-
-    Single-file convenience over :func:`_materialize_ref` + :func:`parse_callables`;
-    the batch path in :func:`contract_breaks` is what the consumers use.
-    """
-    tmp_path = _materialize_ref(repo_root, rel, ref, run_git)
-    if tmp_path is None:
-        return {}
-    try:
-        return parse_callables(repo_root, tmp_path)
-    finally:
-        with suppress(OSError):
-            tmp_path.unlink()
-
-
 def _callables_by_rel_at_ref(repo_root, rels, ref, run_git) -> dict[str, dict[str, list]]:
     """``{rel: {name: params}}`` for each file's version at ``ref`` (batched)."""
     tmp_by_rel: dict[str, Path] = {}
@@ -439,34 +423,3 @@ def contract_breaks(
         new_params_fn=lambda rel: new_map.get(rel, {}),
         callers_fn=callers_fn,
     )
-
-
-def format_contract_advisory(findings: list[ContractFinding], max_sites: int = 3) -> list[str]:
-    """Sanitized advisory lines for the turn-end / pr-review surface.
-
-    Names the narrowed callable, the required-arg delta, and a bounded sample of
-    affected committed call sites. Returns [] for no findings.
-    """
-    if not findings:
-        return []
-    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
-
-    lines: list[str] = []
-    for f in findings:
-        sites = []
-        for c in f.callers[:max_sites]:
-            path = c.get("path") if isinstance(c, dict) else None
-            line = c.get("line") if isinstance(c, dict) else None
-            if isinstance(path, str):
-                sites.append(f"{path}:{line}" if isinstance(line, int) else path)
-        more = f.caller_total - len(sites)
-        tail = f" (+{more} more)" if more > 0 else ""
-        sites_text = ", ".join(sites) + tail if sites else f"{f.caller_total} caller(s)"
-        lines.append(
-            sanitize_for_chameleon_context(
-                f"{f.name}() in {f.rel}: required positional args "
-                f"{f.old_required_positional} -> {f.new_required_positional}; "
-                f"{f.caller_total} committed caller(s) may now mis-call it: {sites_text}"
-            )
-        )
-    return lines

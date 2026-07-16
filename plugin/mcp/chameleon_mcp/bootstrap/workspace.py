@@ -269,19 +269,6 @@ def _read_turbo_globs(turbo: dict) -> list[str]:
     return []
 
 
-def _expand_workspace_globs(repo_root: Path, globs: list[str]) -> list[Path]:
-    """Expand workspace globs to actual sub-package directory paths.
-
-    Each glob like "apps/*" or "packages/*" expands to all immediate sub-dirs.
-    Shell-style brace expansion ("packages/{a,b,c}") is supported; Path.glob
-    does not understand braces, so they are expanded first.
-
-    Thin wrapper over expand_workspace_globs_with_diagnostics for callers that
-    only need the resolved paths.
-    """
-    return expand_workspace_globs_with_diagnostics(repo_root, globs).paths
-
-
 def expand_workspace_globs_with_diagnostics(repo_root: Path, globs: list[str]) -> GlobExpansion:
     """Expand workspace globs and collect diagnostics about failures.
 

@@ -1,6 +1,6 @@
 """Unit tests for per-archetype body-shape norms.
 
-Covers the conventions.py aggregation + outlier helper. The dump-side
+Covers the conventions.py aggregation. The dump-side
 function-scope extraction is exercised by the extractor golden tests (which run
 only when node/ruby are present); these tests stay parser-free by building
 ``function_scopes`` directly in ``ParsedFile.extras``.
@@ -12,7 +12,6 @@ from pathlib import Path
 
 from chameleon_mcp._thresholds import threshold
 from chameleon_mcp.conventions import (
-    body_shape_outliers,
     extract_all_conventions,
     extract_body_shape_conventions,
     format_conventions_for_session,
@@ -81,109 +80,6 @@ class TestExtractBodyShape:
         line = norm["dimensions"]["line_span"]
         assert line["median"] == 10
         assert line["p90"] > line["median"]
-
-
-class TestBodyShapeOutliers:
-    def _norm(self) -> dict:
-        return {
-            "dimensions": {
-                "branch_count": {"median": 3, "p90": 6},
-                "max_depth": {"median": 2, "p90": 3},
-                "line_span": {"median": 20, "p90": 40},
-                "param_count": {"median": 2, "p90": 4},
-            }
-        }
-
-    def test_long_but_flat_function_is_not_flagged(self):
-        # A 300-line literal table / JSX tree: zero branches, zero nesting.
-        flat = [
-            {
-                "start_line": 1,
-                "end_line": 300,
-                "line_span": 300,
-                "max_depth": 0,
-                "branch_count": 0,
-                "param_count": 1,
-            }
-        ]
-        assert body_shape_outliers(flat, self._norm()) == []
-
-    def test_long_line_span_alone_is_not_an_outlier(self):
-        # Over the line-span p90 but structurally within norms -> no finding,
-        # because line span is secondary and never fires on its own.
-        long_only = [
-            {
-                "start_line": 1,
-                "end_line": 70,
-                "line_span": 70,
-                "max_depth": 2,
-                "branch_count": 4,
-                "param_count": 2,
-            }
-        ]
-        assert body_shape_outliers(long_only, self._norm()) == []
-
-    def test_branchy_nested_function_is_flagged(self):
-        complex_fn = [
-            {
-                "start_line": 1,
-                "end_line": 80,
-                "line_span": 80,
-                "max_depth": 6,
-                "branch_count": 14,
-                "param_count": 3,
-            }
-        ]
-        findings = body_shape_outliers(complex_fn, self._norm())
-        assert len(findings) == 1
-        exceeded = {e["dimension"] for e in findings[0]["exceeded"]}
-        assert exceeded == {"branch_count", "max_depth"}
-        # Line span over p90 rides along as supporting context, not a trigger.
-        ctx = {c["dimension"] for c in findings[0]["context"]}
-        assert "line_span" in ctx
-
-    def test_flat_archetype_floor_avoids_infinite_outlier(self):
-        # A branch-free archetype has p90 == 0; a single decision point must not
-        # read as an outlier, but a clearly branchy function still does.
-        flat_norm = {
-            "dimensions": {
-                "branch_count": {"median": 0, "p90": 0},
-                "max_depth": {"median": 0, "p90": 0},
-                "line_span": {"median": 5, "p90": 8},
-                "param_count": {"median": 1, "p90": 2},
-            }
-        }
-        one_branch = [
-            {
-                "start_line": 1,
-                "end_line": 6,
-                "line_span": 6,
-                "max_depth": 1,
-                "branch_count": 1,
-                "param_count": 1,
-            }
-        ]
-        assert body_shape_outliers(one_branch, flat_norm) == []
-        many_branch = [
-            {
-                "start_line": 1,
-                "end_line": 40,
-                "line_span": 40,
-                "max_depth": 4,
-                "branch_count": 10,
-                "param_count": 1,
-            }
-        ]
-        assert len(body_shape_outliers(many_branch, flat_norm)) == 1
-
-    def test_empty_or_missing_norm_returns_empty(self):
-        scope = [_flat_scope()]
-        assert body_shape_outliers(scope, None) == []
-        assert body_shape_outliers(scope, {}) == []
-        assert body_shape_outliers([], self._norm()) == []
-
-    def test_malformed_scope_entries_are_skipped(self):
-        assert body_shape_outliers([None, "x", 5], self._norm()) == []
 
 
 class TestBodyShapeIntegration:

@@ -297,13 +297,13 @@ def test_decoy_mirror_reciting_a_rule_out_of_section_does_not_suppress_it(tmp_pa
     assert "<chameleon-conventions>" in ctx
 
 
-def test_session_start_snapshots_delivered_idiom_gists(tmp_path, monkeypatch):
-    # session_start writes a SessionStart-time snapshot of the mirror's
-    # delivered idiom slugs whenever the wired import delivers gists.
+def test_session_start_records_delivered_idiom_gists(tmp_path, monkeypatch):
+    # session_start folds the mirror's delivered idiom slugs into
+    # SessionDoc.idioms_shown_slugs whenever the wired import delivers gists,
+    # so the idiom lens skips idioms the model already holds via the mirror.
     from chameleon_mcp.conventions import render_conventions_md
     from chameleon_mcp.core.idiom_store import IdiomRecord, upsert_idiom
-    from chameleon_mcp.hook_helper import _MIRROR_IDIOMS_SNAPSHOT
-    from chameleon_mcp.optouts import _safe_session_marker
+    from chameleon_mcp.core.session_state import read_session_doc
 
     repo = _build_repo(tmp_path)
     _wire(repo)
@@ -311,7 +311,7 @@ def test_session_start_snapshots_delivered_idiom_gists(tmp_path, monkeypatch):
     (repo / ".chameleon" / "conventions.md").write_text(
         render_conventions_md(_CONV, _PRINCIPLES, idioms)
     )
-    # The snapshot resolves each delivered gist NAME to its store slug; seed
+    # The recording resolves each delivered gist NAME to its store slug; seed
     # the record _build_repo's raw idioms.md ("### wrap") describes.
     upsert_idiom(
         repo / ".chameleon",
@@ -325,10 +325,4 @@ def test_session_start_snapshots_delivered_idiom_gists(tmp_path, monkeypatch):
         ),
     )
     _session_start_context(repo, monkeypatch)
-    snap = (
-        tmp_path
-        / "data"
-        / _compute_repo_id(repo)
-        / _MIRROR_IDIOMS_SNAPSHOT.format(session=_safe_session_marker("s1"))
-    )
-    assert json.loads(snap.read_text()) == ["wrap"]
+    assert "wrap" in read_session_doc(_compute_repo_id(repo), "s1").idioms_shown_slugs

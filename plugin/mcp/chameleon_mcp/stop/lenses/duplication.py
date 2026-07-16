@@ -32,10 +32,10 @@ if TYPE_CHECKING:
 
 
 def _claim_for(f) -> str:
-    """The pinned "re-implements" advisory line, minus its sanitize wrapper
-    and the header this Finding no longer carries -- byte-identical to the
-    per-item line ``duplication_review.format_duplication_advisory`` renders
-    (``test_duplication_review_format.py`` pins that exact template).
+    """The pinned "re-implements" advisory line for one confirmed finding.
+
+    The canonical duplication claim template (``test_duplication_review_format.py``
+    pins it exactly); sanitization happens at the render boundary, not here.
     """
     suffix = "reuse it"
     count = f.called_from_n_sites
@@ -99,7 +99,31 @@ def run(
             return LensResult(findings=[], check_events=events)
 
         lang = dr._lang_of(edited[0])
-        index = dr.build_candidate_index(repo_root, edited)
+
+        # Both downstream caps are order-dependent and ``files`` arrives
+        # insertion-ordered: build_candidate_index caps its re-parse at
+        # DUPLICATION_INDEX_MAX_FILES (the search space checked AGAINST) and
+        # gather_findings slices DUPLICATION_REVIEW_MAX_FILES (the files the
+        # gate CHECKS). Order a separate view most-recently-modified first so
+        # the freshest working set survives both (``edited`` itself is
+        # untouched -- its first element drives language inference above),
+        # and record an index trim so that cap is never silent.
+        def _mtime(p: str) -> float:
+            try:
+                return Path(p).stat().st_mtime
+            except OSError:
+                return 0.0
+
+        index_input = sorted(edited, key=_mtime, reverse=True)
+        try:
+            from chameleon_mcp._thresholds import threshold_int
+
+            _cap = threshold_int("DUPLICATION_INDEX_MAX_FILES")
+            if len(index_input) > _cap:
+                _sink("index_files_capped", f"dropped:{len(index_input) - _cap};cap:{_cap}")
+        except Exception:
+            pass
+        index = dr.build_candidate_index(repo_root, index_input)
 
         try:
             from chameleon_mcp.function_catalog import load_function_catalog
@@ -109,7 +133,7 @@ def run(
             catalog = None
 
         raw_findings = dr.gather_findings(
-            repo_root, edited, index=index, catalog=catalog, lang=lang
+            repo_root, index_input, index=index, catalog=catalog, lang=lang
         )
         if not raw_findings:
             return LensResult(findings=[], check_events=events)

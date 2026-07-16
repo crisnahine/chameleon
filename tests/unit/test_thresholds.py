@@ -95,7 +95,6 @@ class TestDefaults:
     def test_body_shape_thresholds_are_registered(self):
         d = _thresholds.DEFAULTS
         assert d["BODY_SHAPE_MIN_FUNCTIONS"] == 18
-        assert d["BODY_SHAPE_OUTLIER_MULT"] == 1.5
 
     def test_baseline_float_defaults_are_present(self):
         floats = {k for k, v in _thresholds.DEFAULTS.items() if isinstance(v, float)}
@@ -104,7 +103,6 @@ class TestDefaults:
             "CLUSTER_SHAPE_JACCARD_THRESHOLD",
             "DRIFT_BANNER_THRESHOLD",
             "CALIBRATION_FP_EPSILON",
-            "BODY_SHAPE_OUTLIER_MULT",
         } <= floats
 
     def test_int_defaults_are_genuine_ints_not_bools(self):

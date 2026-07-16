@@ -260,13 +260,13 @@ def clear_delivery_payload(repo_data: Path, session_id) -> None:
 # stop_gates funnels its resurface / review / deterministic-advisory blocks
 # through this in Stop-emission mode.
 
-# Lower number = higher priority = packed first.
+# Lower number = higher priority = packed first. The packer is rung-agnostic;
+# these are the rungs production items actually carry (the review block rides
+# as one pre-rendered item, so per-finding verified/idiom rungs do not exist).
 PRIORITY_BLOCK = 0
 PRIORITY_RESURFACED = 1
-PRIORITY_DELIVERED_VERIFIED = 2
-PRIORITY_DELIVERED_UNVERIFIED = 3
-PRIORITY_ADVISORY = 4
-PRIORITY_IDIOM = 5
+PRIORITY_DELIVERED_UNVERIFIED = 2
+PRIORITY_ADVISORY = 3
 
 
 @dataclass(frozen=True)

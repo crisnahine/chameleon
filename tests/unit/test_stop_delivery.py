@@ -274,7 +274,7 @@ def test_multiroot_runs_migrate_pending_queue_per_root(tmp_path):
 def test_stale_finding_annotated_never_dropped(tmp_path):
     repo = _repo(tmp_path, "stale-repo")
     from chameleon_mcp.judge import _excerpt_digest
-    from chameleon_mcp.stop.verify import _excerpt_window
+    from chameleon_mcp.safe_open import excerpt_window as _excerpt_window
 
     sha = _excerpt_digest(_excerpt_window(repo, "src/a.ts", 3))
     review_ledger.record_findings(
@@ -300,7 +300,7 @@ def test_stale_finding_annotated_never_dropped(tmp_path):
 def test_unchanged_excerpt_not_flagged_stale(tmp_path):
     repo = _repo(tmp_path, "fresh-repo")
     from chameleon_mcp.judge import _excerpt_digest
-    from chameleon_mcp.stop.verify import _excerpt_window
+    from chameleon_mcp.safe_open import excerpt_window as _excerpt_window
 
     sha = _excerpt_digest(_excerpt_window(repo, "src/a.ts", 3))
     review_ledger.record_findings(

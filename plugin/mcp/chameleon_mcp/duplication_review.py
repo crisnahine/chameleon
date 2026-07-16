@@ -267,24 +267,6 @@ def _span_changed(pf, rel: str, changed) -> bool:
     return any(pf.start_line <= ln <= pf.end_line for ln in lines)
 
 
-def _finding_key(f) -> str:
-    """Session-stable identity for a duplication pair, line-independent so a later
-    edit that shifts the function does not look like a new finding."""
-    return f"{f.new_name}\x00{f.existing_file}\x00{f.existing_name}"
-
-
-def finding_already_surfaced(repo_data: Path, session_id: str, f) -> bool:
-    """True if this exact duplication pair was already surfaced this session."""
-    return already_judged(
-        repo_data, session_id, f.new_file, _finding_key(f), prefix=".dup_surfaced."
-    )
-
-
-def mark_finding_surfaced(repo_data: Path, session_id: str, f) -> None:
-    """Record a duplication pair as surfaced so a later turn does not re-flag it."""
-    mark_judged(repo_data, session_id, f.new_file, _finding_key(f), prefix=".dup_surfaced.")
-
-
 def gather_body_match_findings(
     repo_root: Path, edited_files: list[str], index, lang, changed_ranges=None
 ) -> list:
@@ -569,7 +551,7 @@ def _coerce_confirmed(arr, findings: list) -> list:
 def _stream_texts(stdout: str):
     """Yield candidate text payloads from claude -p stream-json output.
 
-    Mirrors judge._parse_findings' extraction logic: collects both
+    Mirrors judge._parse_findings_status' extraction logic: collects both
     ``type=result`` result strings and ``type=assistant`` text blocks,
     then returns them newest-first so the caller can stop at the first
     parseable JSON array.
@@ -636,33 +618,6 @@ def judge_body_matches(repo_root: Path, findings: list, semantic: bool = False) 
         return _coerce_confirmed(arr, findings)
     except Exception:
         return []
-
-
-# ---------------------------------------------------------------------------
-# Task 8: format_duplication_advisory
-# ---------------------------------------------------------------------------
-
-
-def format_duplication_advisory(confirmed: list) -> list:
-    if not confirmed:
-        return []
-    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
-
-    n = len(confirmed)
-    lines = [f"[\U0001f98e chameleon: {n} possible duplicate{'s' if n != 1 else ''}]"]
-    for f in confirmed:
-        suffix = "reuse it"
-        count = f.called_from_n_sites
-        if isinstance(count, int) and count > 0:
-            sites = "1 site" if count == 1 else f"{count} sites"
-            suffix = f"reuse it; already called from {sites}"
-        lines.append(
-            sanitize_for_chameleon_context(
-                f"{f.new_name} ({f.new_file}:{f.line}) re-implements "
-                f"{f.existing_name} ({f.existing_file}) — {suffix}."
-            )
-        )
-    return lines
 
 
 # ---------------------------------------------------------------------------

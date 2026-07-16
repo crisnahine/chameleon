@@ -295,47 +295,6 @@ def _emit_check_event(
         pass
 
 
-def _duplication_index_files(
-    edited: list[str],
-    state,
-    *,
-    repo_id: str | None,
-    session_id: str | None,
-) -> list[str]:
-    """Order the duplication-index input most-recently-edited first.
-
-    build_candidate_index caps its re-parse at DUPLICATION_INDEX_MAX_FILES; that
-    cap only knows about the file order it receives, and ``state.files`` is
-    insertion-ordered, not recency-ordered. Sort a separate view by
-    last_verified_at descending so the freshest working set survives the cap, and
-    record the dropped count as a check event so the trim is never silent. The
-    caller keeps ``edited`` itself untouched (its first element drives language
-    inference).
-    """
-    ordered = sorted(
-        edited,
-        key=lambda p: (state.files[p].last_verified_at or 0) if p in state.files else 0,
-        reverse=True,
-    )
-    try:
-        from chameleon_mcp._thresholds import threshold_int
-
-        cap = threshold_int("DUPLICATION_INDEX_MAX_FILES")
-        dropped = len(ordered) - cap
-        if dropped > 0:
-            _emit_check_event(
-                repo_id,
-                session_id,
-                "duplication_review",
-                "truncated",
-                "index_files_capped",
-                detail={"dropped": dropped, "cap": cap, "total": len(ordered)},
-            )
-    except Exception:
-        pass
-    return ordered
-
-
 # A `// chameleon-ignore...` / `# chameleon-ignore...` directive comment (any
 # variant: bare, `-file`, rule-named). Stripped from content ONLY to re-detect a
 # bypassed banned import for override auditing -- never used to change a decision.
@@ -959,9 +918,9 @@ def _judge_spawn_health_banner(repo_root: Path, session_id: str | None = None) -
                 raw = entry.get("reason")
                 # A grounding event (judge_defs_*/judge_transitive_*/judge_facts_*)
                 # is NOT a spawn failure; skip it so a healthy reviewer never
-                # raises the failed-to-spawn banner. Both the sync gate and the
-                # detached child now file these under their own check via
-                # judge.grounding_family, but this defensive skip stays: a
+                # raises the failed-to-spawn banner. Grounding events are filed
+                # under their own check via _judge_grounding_family below, but
+                # this defensive skip stays: a
                 # degraded_spawn row carrying a grounding reason (older
                 # attestation, or any future mis-file) must never raise the
                 # banner.
@@ -1761,6 +1720,15 @@ def session_start() -> int:
                     )
                 except Exception:
                     pass
+                # Session docs are lock-guarded JSON (not bare touch markers),
+                # so they get their own lock-aware reaper instead of riding
+                # the prefix sweep above.
+                try:
+                    from chameleon_mcp.core.session_state import reap_stale_docs
+
+                    reap_stale_docs(repo_id)
+                except Exception:
+                    pass
     except Exception:
         pass
 
@@ -1970,10 +1938,11 @@ def session_start() -> int:
     except Exception:
         pass
 
-    # Record what the memory channel delivered NOW (import resolution time),
-    # so this session's Stop gates gist only idioms the model actually has.
+    # Record what the memory channel delivered NOW (import resolution time)
+    # on SessionDoc.idioms_shown_slugs, so the idiom lens skips idioms the
+    # model already holds via the mirror import.
     if repo_root is not None:
-        _snapshot_mirror_idioms(repo_root, session_id)
+        _record_mirror_idiom_slugs(repo_root, session_id)
 
     production_banner = _production_tip_banner(repo_root or _safe_cwd(), session_id=session_id)
     judge_health_banner = _judge_spawn_health_banner(
@@ -2864,38 +2833,7 @@ _DEDUP_STOPWORDS = frozenset(
     }
 )
 
-_PY_DEF_RE = re.compile(r"^[ \t]*(?:async[ \t]+)?def[ \t]+([A-Za-z_]\w*)", re.M)
-_RB_DEF_RE = re.compile(r"^[ \t]*def[ \t]+(?:self\.)?([A-Za-z_]\w*)", re.M)
-_TS_FN_RE = re.compile(
-    r"(?:\bfunction[ \t]+([A-Za-z_$][\w$]*))"
-    r"|(?:\b(?:const|let|var)[ \t]+([A-Za-z_$][\w$]*)[ \t]*=[ \t]*"
-    r"(?:async[ \t]*)?(?:function\b|\([^)]*\)[ \t]*(?::[^=;{]+)?=>))",
-    re.M,
-)
 _TS_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs")
-
-
-def _extract_defined_names(content: str, file_path: str) -> set[str]:
-    """Names of functions the pending content DEFINES, by a cheap per-language
-    regex — never a full AST parse, so it stays on the per-edit hot path
-    without an extractor spawn. Over-inclusive is fine (the catalog match and
-    stopword filter downstream keep precision high); a miss just means no nudge.
-    """
-    ext = Path(file_path).suffix.lower()
-    if ext in (".py", ".pyi"):
-        return set(_PY_DEF_RE.findall(content))
-    if ext == ".rb":
-        return set(_RB_DEF_RE.findall(content))
-    if ext in _TS_EXTS:
-        out: set[str] = set()
-        for a, b in _TS_FN_RE.findall(content):
-            if a:
-                out.add(a)
-            if b:
-                out.add(b)
-        return out
-    return set()
-
 
 # Capture a function's name AND its parameter-list text, so the semantic pass
 # can estimate arity (a re-implementation keeps roughly the same call shape).
@@ -2957,9 +2895,9 @@ def _split_top_level(s: str) -> list[str]:
 
 
 def _extract_defined_functions(content: str, file_path: str) -> list[tuple[str, int]]:
-    """(name, rough_arity) for each function the pending content defines — the
-    arity-aware companion to ``_extract_defined_names``, feeding the semantic
-    (token-overlap + shape) pre-write pass. Cheap regex, no AST spawn."""
+    """(name, rough_arity) for each function the pending content defines,
+    feeding the semantic (token-overlap + shape) pre-write pass. Cheap
+    per-language regex, no AST spawn."""
     ext = Path(file_path).suffix.lower()
     out: list[tuple[str, int]] = []
     if ext in (".py", ".pyi"):
@@ -6745,12 +6683,6 @@ def _scheduler_launch_job(request):
     return scheduler.launch_job(request)
 
 
-def _scheduler_clear_job_slot(repo_id, session_id):
-    from chameleon_mcp.stop import scheduler
-
-    return scheduler.clear_job_slot(repo_id, session_id)
-
-
 def _judge_wait_and_render(**kwargs):
     from chameleon_mcp.stop import judge_wait
 
@@ -6798,7 +6730,8 @@ def _pending_findings_block(repo_root: Path, repo_data: Path, session_id) -> str
         return None
 
     from chameleon_mcp.judge import _excerpt_sha_stale
-    from chameleon_mcp.stop_verify import _contained_rel, _excerpt_window
+    from chameleon_mcp.safe_open import contained_rel as _contained_rel
+    from chameleon_mcp.safe_open import excerpt_window as _excerpt_window
 
     recorded = data.get("digests") if isinstance(data.get("digests"), dict) else {}
     live: list[dict] = []
@@ -7455,15 +7388,6 @@ def _dedupe_conventions_block(conventions_block: str, delivered: str) -> str:
     return _MEMORY_CHANNEL_POINTER_PARTIAL + "\n\n" + partial
 
 
-# SessionStart-time snapshot of the idiom slugs the wired mirror DELIVERED to
-# this session: the live mirror is rewritten by every teach, but Claude Code
-# resolved the @import once at session load, so a mid-session-taught idiom
-# must never be treated as memory-channel-delivered. Currently write-only
-# (no reader depends on it), kept so a future memory-channel-aware dedup has
-# session-scoped delivery data to read without redesigning this snapshot.
-_MIRROR_IDIOMS_SNAPSHOT = ".mirror_idioms.{session}"
-
-
 def _mirror_delivered_idiom_titles(mirror_text: str) -> set[str]:
     """Idiom TITLES carried by a delivered mirror's TEAM IDIOMS section.
 
@@ -7473,7 +7397,7 @@ def _mirror_delivered_idiom_titles(mirror_text: str) -> set[str]:
     colon list lines. A name containing a colon parses truncated and simply
     fails to resolve against the store downstream -- the safe direction (that
     idiom keeps full-text escalation at review time). Private to this
-    snapshot: the resolved output is the store SLUG, never this raw title.
+    recording: the resolved output is the store SLUG, never this raw title.
     """
     names: set[str] = set()
     in_section = False
@@ -7492,38 +7416,40 @@ def _mirror_delivered_idiom_titles(mirror_text: str) -> set[str]:
     return {n for n in names if n}
 
 
-def _snapshot_mirror_idioms(repo_root: Path, session_id: str | None) -> None:
-    """Persist the delivered mirror's idiom SLUGS for this session's records.
+def _record_mirror_idiom_slugs(repo_root: Path, session_id: str | None) -> None:
+    """Fold the delivered mirror's idiom SLUGS into the session's shown set.
 
     Runs at SessionStart — the same moment Claude Code resolves the memory
-    channel's @import — so the snapshot reflects exactly what the model
-    received, resolved to the store's stable slug identity (a title with no
-    matching record is dropped, never recorded as a fabricated slug).
-    Best-effort: no wiring, no resolvable titles, or any error writes
+    channel's @import — so the recording reflects exactly what the model
+    received: the live mirror is rewritten by every teach, but the @import
+    resolved once at session load, so a mid-session-taught idiom is never
+    treated as memory-channel-delivered. The slugs land on
+    ``SessionDoc.idioms_shown_slugs`` — the same "already shown" set the
+    Tier-2 recording site writes and the idiom lens dedups its review scope
+    against — closing the memory-channel half of that dedup: an idiom the
+    model already holds via the mirror import is not re-reviewed. A title
+    with no matching store record is dropped, never recorded as a fabricated
+    slug. Best-effort: no wiring, no resolvable titles, or any error records
     nothing.
     """
     try:
         if not session_id:
             return
         from chameleon_mcp.core.idiom_store import titles_to_slugs
-        from chameleon_mcp.optouts import _safe_session_marker
-        from chameleon_mcp.plugin_paths import plugin_data_dir
+        from chameleon_mcp.core.session_state import update_session_doc
         from chameleon_mcp.tools import _compute_repo_id
 
         titles = _mirror_delivered_idiom_titles(_wired_mirror_text(repo_root))
         if not titles:
             return
-        slugs = sorted(titles_to_slugs(_enf_profile_dir(repo_root), titles))
+        slugs = titles_to_slugs(_enf_profile_dir(repo_root), titles)
         if not slugs:
             return
-        snap_dir = plugin_data_dir() / _compute_repo_id(repo_root)
-        snap_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        snap = snap_dir / _MIRROR_IDIOMS_SNAPSHOT.format(session=_safe_session_marker(session_id))
-        snap.write_text(json.dumps(slugs), encoding="utf-8")
-        try:
-            os.chmod(snap, 0o600)
-        except OSError:
-            pass
+        update_session_doc(
+            _compute_repo_id(repo_root),
+            session_id,
+            lambda doc: doc.idioms_shown_slugs.update(slugs),
+        )
     except Exception:
         pass
 
@@ -7548,7 +7474,10 @@ SESSION_REAP_PREFIXES: tuple[str, ...] = (
     # collapses every marker to ".idiom_reviewed.unknown" and would then skip the
     # idiom review forever. Age it out like the other once-per-session markers.
     ".idiom_reviewed.",
-    # SessionStart-time snapshot of the memory channel's delivered idiom gists.
+    # Legacy SessionStart-time snapshot of the memory channel's delivered
+    # idiom gists. The writer is gone (delivery is recorded on
+    # SessionDoc.idioms_shown_slugs now); this ages out files older installs
+    # left behind.
     ".mirror_idioms.",
 )
 

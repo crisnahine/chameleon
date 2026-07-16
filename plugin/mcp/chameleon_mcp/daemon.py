@@ -205,17 +205,6 @@ def _version_tag() -> str:
 _SUN_PATH_SAFE_BYTES = 100
 
 
-def _socket_tmp_base() -> Path | None:
-    """Short per-user base dir for the daemon socket, or None where unusable.
-
-    `<tmpdir>/chameleon-<uid>` is short on every mainstream platform, so the
-    socket path stays under the sun_path cap even when the plugin data dir
-    resolves deep. Returns None when the platform has no uid (Windows — the
-    daemon is AF_UNIX-only and disabled there anyway)."""
-    bases = _socket_tmp_bases()
-    return bases[0] if bases else None
-
-
 def _socket_tmp_bases() -> list[Path]:
     """Candidate socket base dirs, preferred first.
 

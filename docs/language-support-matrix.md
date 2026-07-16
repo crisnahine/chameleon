@@ -140,7 +140,7 @@ identically regardless of language.
 | ClusterKey tuple: top_level_node_kinds | ✅ | ✅ | ✅ |  |
 | ClusterKey tuple: default_export_kind | ✅ | ✅ | ✅ | Semantics differ by lang and are approximated for Ruby/Python (no real 'default export' exists): Ruby/Python infer it from a sole top-level class/func. The node-kind vocabulary also differs (ClassDeclaration vs ClassNode vs ClassDef), whic... |
 | ClusterKey tuple: named_export_count_bucket | ✅ | ✅ | ✅ | Python's count is purely top-level class+def and ignores __all__ (the actual Python export convention), so a module that re-exports many names via __all__ buckets as 0. Ruby counts class/module/def equally. Both are coarse proxies vs TS's ... |
-| ClusterKey tuple: import_module_set_hash (hash_import_set) | ❌ | ❌ | ❌ | Vestigial for every language: the function exists and the ClusterKey field exists, but compute_signature pins it to '' (see the hash_import_set comment in signatures.py: exact import sets made every service its own cluster, the single largest over-fragmentation source)... |
+| ClusterKey tuple: import_module_set_hash | ❌ | ❌ | ❌ | Vestigial for every language: the ClusterKey field exists, but compute_signature pins it to '' (see the pin-site comment in signatures.py: exact import sets made every service its own cluster, the single largest over-fragmentation source)... |
 | ClusterKey tuple: jsx_present | ✅ | - | - | _exclusive: typescript_ |
 | Directory-based path bucketing | ✅ | ✅ | ✅ |  |
 | Python role-based path bucketing (python_role_for_path) | - | - | ✅ | _exclusive: python (Django/DRF/Flask/FastAPI)_ |

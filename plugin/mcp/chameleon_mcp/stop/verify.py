@@ -1,13 +1,14 @@
 """The VERIFY stage: refuter.run_batch over canonical core.finding.Finding.
 
-Replaces ``stop_verify._finding_to_refuter_dict``, which built its refuter
-dict from a judge-attribute-or-multi-lens-dict duck type and (a) never set a
-``kind`` key at all -- so ``refuter.build_refuter_prompt`` rendered a literal
-``kind: None`` on every turn-end spawn -- and (b) hardcoded ``evidence`` to
-``""`` regardless of what the finding actually carried. Both are read
-directly off the canonical Finding here (``f.kind``, ``f.evidence``), so the
-existing, UNCHANGED prompt template renders real values without touching
-refuter.py at all. ``intent_tokens`` rides on the dict too (spec section 5.3:
+Replaces the retired pre-3.4.0 ``stop_verify`` module's adapter, which built
+its refuter dict from a judge-attribute-or-multi-lens-dict duck type and (a)
+never set a ``kind`` key at all -- so ``refuter.build_refuter_prompt``
+rendered a literal ``kind: None`` on every turn-end spawn -- and (b)
+hardcoded ``evidence`` to ``""`` regardless of what the finding actually
+carried. Both are read directly off the canonical Finding here (``f.kind``,
+``f.evidence``), so the existing, UNCHANGED prompt template renders real
+values without touching refuter.py at all. ``intent_tokens`` rides on the
+dict too (spec section 5.3:
 "the full canonical Finding -- intent tokens, kind, and evidence included");
 it is not yet interpolated by ``build_refuter_prompt`` (out of this module's
 scope -- that template is shared production machinery), but it is no longer
@@ -62,9 +63,6 @@ if TYPE_CHECKING:
     from chameleon_mcp.core.budget import TurnBudget
     from chameleon_mcp.core.finding import Finding
 
-_EXCERPT_CONTEXT_LINES = 25
-_EXCERPT_CHAR_CAP = 4000
-_HEAD_FALLBACK_LINES = 50
 _HIGH_SEVERITIES = ("blocker", "high")
 # Kinds whose claim a single-file excerpt window can actually support or
 # contradict (see the module docstring's kind-gate section). Everything else
@@ -81,53 +79,6 @@ def _sink(event_sink, status: str, detail: str | None = None) -> None:
         pass
 
 
-def _contained_rel(repo_root: Path, rel_or_abs: str) -> str | None:
-    """``rel_or_abs`` as a repo-relative path iff it stays inside ``repo_root``.
-
-    A finding's ``file`` field can originate from model output (a reviewer's
-    parsed claim), so it is never trusted before a filesystem read: an
-    absolute path outside the repo or a ``..`` traversal must resolve to
-    None, never be read.
-    """
-    try:
-        root = Path(repo_root).resolve()
-        p = Path(rel_or_abs)
-        if p.is_absolute():
-            return p.resolve().relative_to(root).as_posix()
-        return (root / p).resolve().relative_to(root).as_posix()
-    except (ValueError, OSError):
-        return None
-
-
-def _excerpt_window(repo_root: Path, file: str, line: int | None) -> str:
-    """A +/-``_EXCERPT_CONTEXT_LINES``-line window around ``file:line``.
-
-    Containment-checked, fail-open to "". No line number falls back to the
-    file's first ``_HEAD_FALLBACK_LINES`` lines, so an anchorless-but-filed
-    finding still gets a real excerpt to review against.
-    """
-    if not file:
-        return ""
-    rel = _contained_rel(repo_root, file)
-    if rel is None:
-        return ""
-    try:
-        from chameleon_mcp.safe_open import safe_read_text
-
-        text = safe_read_text(Path(repo_root).resolve(), rel)
-    except Exception:
-        return ""
-    lines = text.splitlines()
-    if not lines:
-        return ""
-    if isinstance(line, int) and not isinstance(line, bool) and line > 0:
-        lo = max(0, line - 1 - _EXCERPT_CONTEXT_LINES)
-        hi = min(len(lines), line - 1 + _EXCERPT_CONTEXT_LINES + 1)
-    else:
-        lo, hi = 0, _HEAD_FALLBACK_LINES
-    return "\n".join(lines[lo:hi])[:_EXCERPT_CHAR_CAP]
-
-
 def _with_excerpt(repo_root: Path, f: Finding) -> Finding:
     """Attach a real reviewed-excerpt window, unless one is already pinned.
 
@@ -138,8 +89,10 @@ def _with_excerpt(repo_root: Path, f: Finding) -> Finding:
     """
     if f.excerpt:
         return f
+    from chameleon_mcp.safe_open import excerpt_window
+
     line = f.span[0] if f.span else None
-    text = _excerpt_window(repo_root, f.file, line)
+    text = excerpt_window(repo_root, f.file, line)
     if not text:
         return f
     from chameleon_mcp.judge import _excerpt_digest
@@ -150,11 +103,10 @@ def _with_excerpt(repo_root: Path, f: Finding) -> Finding:
 def _affordable_spawns(budget_seconds: float, timeout: int, max_spawns: int) -> int:
     """How many refuter spawns fit ``budget_seconds`` at ``timeout`` each.
 
-    Mirrors ``stop_verify._affordable_spawns``'s arithmetic: the refuter runs
-    up to 4 spawns per wave, so ``budget // timeout`` full timeout windows
-    buy that many waves, capped at ``max_spawns``. A budget too small for
-    even one window yields 0 -- the caller then passes findings through
-    unverified rather than risk the wall-clock cap.
+    The refuter runs up to 4 spawns per wave, so ``budget // timeout`` full
+    timeout windows buy that many waves, capped at ``max_spawns``. A budget
+    too small for even one window yields 0 -- the caller then passes findings
+    through unverified rather than risk the wall-clock cap.
     """
     concurrency = 4
     try:

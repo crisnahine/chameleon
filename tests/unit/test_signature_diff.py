@@ -189,12 +189,7 @@ import subprocess  # noqa: E402
 import pytest  # noqa: E402
 
 from chameleon_mcp.judge import _run_git  # noqa: E402
-from chameleon_mcp.signature_diff import (  # noqa: E402
-    callables_at_ref,
-    contract_breaks,
-    format_contract_advisory,
-    parse_callables,
-)
+from chameleon_mcp.signature_diff import contract_breaks, parse_callables  # noqa: E402
 
 
 def _git(repo, *args):
@@ -243,23 +238,7 @@ def test_contract_breaks_end_to_end_ts(tmp_path, monkeypatch):
     assert findings[0].name == "foo"
     assert findings[0].old_required_positional == 1
     assert findings[0].new_required_positional == 2
-    lines = format_contract_advisory(findings)
-    assert any("foo()" in ln and "b.ts:3" in ln for ln in lines)
-
-
-@pytestmark_node
-def test_callables_at_missing_ref_is_empty(tmp_path, monkeypatch):
-    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
-    repo = tmp_path / "repo2"
-    repo.mkdir()
-    _git(repo, "init", "-q", "-b", "main")
-    _git(repo, "config", "user.email", "t@t.test")
-    _git(repo, "config", "user.name", "t")
-    (repo / "x.ts").write_text("export const y = 1\n")
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "base")
-    # A file absent at HEAD yields an empty contract (new code is not a break).
-    assert callables_at_ref(repo, "nope.ts", "HEAD", _run_git) == {}
+    assert any(c.get("path") == "b.ts" and c.get("line") == 3 for c in findings[0].callers)
 
 
 # ---------------------------------------------------------------------------

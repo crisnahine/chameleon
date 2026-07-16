@@ -20,7 +20,7 @@ from chameleon_mcp.profile import loader
 def test_repo_root_refusal_cache_honors_mid_session_allow_tmp_flip(monkeypatch):
     """A cached temp-dir refusal must not survive a CHAMELEON_ALLOW_TMP_REPO=1
     flip in the same process (warm-daemon scenario)."""
-    loader.clear_repo_root_cache()
+    loader.clear_profile_cache()
     monkeypatch.delenv("CHAMELEON_ALLOW_TMP_REPO", raising=False)
 
     # A .git-marked dir directly under the system temp dir is a real candidate
@@ -45,7 +45,7 @@ def test_repo_root_refusal_cache_honors_mid_session_allow_tmp_flip(monkeypatch):
         assert reason2 is None
         assert root2 is not None and root2.name == "repo"
     finally:
-        loader.clear_repo_root_cache()
+        loader.clear_profile_cache()
         import shutil
 
         shutil.rmtree(base, ignore_errors=True)

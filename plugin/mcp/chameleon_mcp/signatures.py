@@ -32,7 +32,6 @@ so future contributors aren't misled.
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -83,20 +82,6 @@ def bucket_named_export_count(count: int) -> str:
     if count <= 9:
         return "5-9"
     return "10+"
-
-
-def hash_import_set(import_specifiers: Sequence[tuple[str, str]]) -> str:
-    """Compute a stable sha256 hex digest of a file's import set.
-
-    The set is sorted by (module_name, kind) to ensure deterministic output
-    regardless of source order in the file.
-
-    Pre-condition: each entry is (module_name, kind) where kind ∈
-    {"default", "named", "namespace"}.
-    """
-    sorted_imports = sorted(import_specifiers)
-    canonical = "\n".join(f"{module}\t{kind}" for module, kind in sorted_imports)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 # Top-level dirs that hold per-workspace package roots in a monorepo, so the

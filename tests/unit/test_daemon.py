@@ -20,7 +20,7 @@ from chameleon_mcp.daemon import (
     _ensure_private_socket_dir,
     _flock_reliable,
     _idle_timeout_from_env,
-    _socket_tmp_base,
+    _socket_tmp_bases,
     _sweep_orphan_version_files,
     _version_tag,
     daemon_info,
@@ -284,7 +284,7 @@ def test_socket_and_pid_paths_are_version_scoped(tmp_path: Path):
     # The pidfile stays in the data dir, version-scoped by name. The socket
     # name carries the same identity folded into a short hash (sun_path cap).
     assert pp.name == f".daemon-{tag}.pid"
-    assert sp == socket_path_for(fake, tag, _socket_tmp_base())
+    assert sp == socket_path_for(fake, tag, _socket_tmp_bases()[0])
 
 
 def test_socket_path_differs_across_versions(tmp_path: Path):

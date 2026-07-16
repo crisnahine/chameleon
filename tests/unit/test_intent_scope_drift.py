@@ -9,7 +9,7 @@ changed file matched (so the turn is plausibly the captured work), to avoid nois
 
 from __future__ import annotations
 
-from chameleon_mcp.intent_capture import identifier_tokens, scope_drift_files
+from chameleon_mcp.intent_capture import scope_drift_files
 
 
 def test_flags_unrelated_changed_file():
@@ -60,36 +60,6 @@ def test_generic_path_tokens_do_not_create_spurious_overlap():
     intent = ["AuthService", "login"]
     changed = ["src/index.ts"]
     assert scope_drift_files(intent, changed, min_intent_tokens=2) == []
-
-
-def test_identifier_tokens_returns_only_identifiers_bucket():
-    entries = [
-        {
-            "ts": 100,
-            "tokens": {
-                "numerals": ["200", "3"],
-                "identifiers": ["AuthService", "login"],
-                "quoted": ["some message"],
-            },
-        }
-    ]
-    assert identifier_tokens(entries) == ["AuthService", "login"]
-
-
-def test_identifier_tokens_dedupes_and_filters_by_since():
-    entries = [
-        {"ts": 50, "tokens": {"identifiers": ["Old"]}},
-        {"ts": 150, "tokens": {"identifiers": ["AuthService", "AuthService", "login"]}},
-    ]
-    assert identifier_tokens(entries, since_ts=100) == ["AuthService", "login"]
-
-
-def test_identifier_tokens_skips_suppressed_entries():
-    entries = [
-        {"ts": 100, "secret_suppressed": True, "tokens": {"identifiers": ["Secret"]}},
-        {"ts": 100, "tokens": {"identifiers": ["Public"]}},
-    ]
-    assert identifier_tokens(entries) == ["Public"]
 
 
 # --- turn-end advisory wiring ------------------------------------------------

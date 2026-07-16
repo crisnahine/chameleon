@@ -7,7 +7,6 @@ from chameleon_mcp.signatures import (
     bucket_named_export_count,
     compute_signature,
     content_signal_match_for,
-    hash_import_set,
     path_pattern_bucket_for,
 )
 
@@ -39,34 +38,6 @@ class TestBucketNamedExportCount:
 
     def test_large(self):
         assert bucket_named_export_count(100) == "10+"
-
-
-class TestHashImportSet:
-    def test_deterministic(self):
-        imports = [("react", "default"), ("lodash", "named")]
-        h1 = hash_import_set(imports)
-        h2 = hash_import_set(imports)
-        assert h1 == h2
-
-    def test_order_independent(self):
-        a = [("react", "default"), ("lodash", "named")]
-        b = [("lodash", "named"), ("react", "default")]
-        assert hash_import_set(a) == hash_import_set(b)
-
-    def test_different_sets_differ(self):
-        a = [("react", "default")]
-        b = [("vue", "default")]
-        assert hash_import_set(a) != hash_import_set(b)
-
-    def test_empty(self):
-        h = hash_import_set([])
-        assert isinstance(h, str)
-        assert len(h) == 64
-
-    def test_kind_matters(self):
-        a = [("react", "default")]
-        b = [("react", "named")]
-        assert hash_import_set(a) != hash_import_set(b)
 
 
 class TestPathPatternBucketFor:

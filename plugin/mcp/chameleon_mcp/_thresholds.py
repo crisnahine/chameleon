@@ -89,7 +89,6 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # How far past the archetype's p90 a function must reach before its branch
     # count or nesting depth reads as an outlier. Line span and parameter count
     # are secondary and never trigger a finding on their own.
-    "BODY_SHAPE_OUTLIER_MULT": 1.5,
     # Default lookback for the shadow would_block report when the caller does not
     # pass an explicit window. Two-to-three weeks of real editing is the volume a
     # lead reads before deciding whether to flip shadow -> enforce.
@@ -675,8 +674,9 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # The token side of the job's single core.budget.TurnBudget (constructed
     # once at job entry, threaded through every stage per that module's own
     # "constructed at entry, passed down explicitly" contract). Lenses and
-    # VERIFY spend only the wall-clock side; this ceiling exists for a later
-    # stage (render) that packs a delivery payload against a token budget.
+    # VERIFY spend only the wall-clock side; delivery packing happens in
+    # stop/assemble.py against its own render ceilings, so this is a carried
+    # upper bound, not a metered spend.
     "JOB_TOKEN_CEILING": 20_000,
     # How often the detached job refreshes its heartbeat file's mtime while
     # it runs. Must stay well under JOB_HEARTBEAT_STALE_SECONDS so a live job

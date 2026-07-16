@@ -93,19 +93,11 @@ _RECENCY_WINDOW_SECONDS = RECENCY_WINDOW_DAYS * 86400
 class CanonicalSelection:
     """The chosen canonical witness for a cluster, plus scanner verdicts."""
 
-    cluster_key_hash: str
     witness_path: Path
     sha_hint: str | None
     secret_scan_passed: bool
     injection_scan_passed: bool
     poisoning_scan_passed: bool
-    recency_weight: float = 1.0
-    """Selection weight applied to the chosen witness, in
-    [1.0, RECENCY_WEIGHT_MULTIPLIER]. With git commit time available it is the
-    smooth-decay weight (RECENCY_WEIGHT_MULTIPLIER for a just-committed file,
-    decaying toward 1.0 with the half-life); on the mtime fallback it is the
-    legacy step (RECENCY_WEIGHT_MULTIPLIER within the window, else 1.0, and 1.0
-    when mtime is unreadable)."""
 
     @property
     def all_scans_passed(self) -> bool:
@@ -499,7 +491,7 @@ def select_canonicals(
         )
 
         chosen: CanonicalSelection | None = None
-        for candidate, weight, _typ, _dem in scored:
+        for candidate, _weight, _typ, _dem in scored:
             try:
                 content = candidate.path.read_text(errors="replace")
             except OSError:
@@ -512,13 +504,11 @@ def select_canonicals(
             passed = (not secret_hits) and (not injection_hits) and (not poisoning_hits)
 
             sel = CanonicalSelection(
-                cluster_key_hash=cluster_id,
                 witness_path=candidate.path,
                 sha_hint=candidate.sha_hint,
                 secret_scan_passed=not secret_hits,
                 injection_scan_passed=not injection_hits,
                 poisoning_scan_passed=not poisoning_hits,
-                recency_weight=weight,
             )
 
             if passed:

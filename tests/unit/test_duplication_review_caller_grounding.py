@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import chameleon_mcp.duplication_review as dr
 from chameleon_mcp.calls_index import CallsIndex
-from chameleon_mcp.duplication_review import Finding, format_duplication_advisory
+from chameleon_mcp.duplication_review import Finding
 from chameleon_mcp.function_catalog import (
     CatalogedFunction,
     FunctionCatalog,
     ParsedFn,
     name_tokens,
 )
+from chameleon_mcp.stop.lenses.duplication import _claim_for
 
 
 def _calls(rel: str, name: str, *, total: int, truncated: bool = False, rows=None) -> CallsIndex:
@@ -98,28 +99,28 @@ def test_caller_count_keeps_total_when_truncated_self_only():
     assert dr._caller_count(calls, "app/b.rb", "fib") == 40
 
 
-# --- format_duplication_advisory: rendering the clause -------------------------
+# --- _claim_for: rendering the caller-count clause ------------------------------
 
 
-def test_format_renders_exact_caller_count():
+def test_claim_renders_exact_caller_count():
     f = Finding("renamed", "app/a.rb", 7, "x", "original", "app/b.rb", called_from_n_sites=7)
-    lines = format_duplication_advisory([f])
-    assert any("already called from 7 sites" in ln for ln in lines)
-    assert not any("7+ sites" in ln for ln in lines)
+    claim = _claim_for(f)
+    assert "already called from 7 sites" in claim
+    assert "7+ sites" not in claim
 
 
-def test_format_caller_count_singular():
+def test_claim_caller_count_singular():
     f = Finding("renamed", "app/a.rb", 7, "x", "original", "app/b.rb", called_from_n_sites=1)
-    lines = format_duplication_advisory([f])
-    assert any("already called from 1 site" in ln for ln in lines)
-    assert not any("1 sites" in ln for ln in lines)
+    claim = _claim_for(f)
+    assert "already called from 1 site" in claim
+    assert "1 sites" not in claim
 
 
-def test_format_omits_clause_when_no_callers():
+def test_claim_omits_clause_when_no_callers():
     f = Finding("renamed", "app/a.rb", 7, "x", "original", "app/b.rb")
-    lines = format_duplication_advisory([f])
-    assert all("called from" not in ln for ln in lines)
-    assert any(ln.rstrip().endswith("reuse it.") for ln in lines)
+    claim = _claim_for(f)
+    assert "called from" not in claim
+    assert claim.rstrip().endswith("reuse it.")
 
 
 # --- gather wiring: counts attach to real findings -----------------------------

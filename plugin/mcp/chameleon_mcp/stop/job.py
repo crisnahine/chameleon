@@ -358,6 +358,18 @@ def _run(request: JobRequest) -> None:
     from chameleon_mcp._thresholds import threshold_int
     from chameleon_mcp.core.budget import TurnBudget
 
+    try:
+        # This process IS the detached review child: reviewer spawns that
+        # resolve their timeout internally (duplication_review.judge_body_matches
+        # via judge._reviewer_timeout_seconds) may take the generous detached
+        # budget instead of the short synchronous one -- the job owns its own
+        # wall clock, no 55s hook wrapper caps it.
+        from chameleon_mcp.judge import mark_detached_run
+
+        mark_detached_run()
+    except Exception:
+        pass
+
     budget = TurnBudget.for_hook(
         total_seconds=float(threshold_int("JOB_TOTAL_BUDGET_SECONDS")),
         token_ceiling=threshold_int("JOB_TOKEN_CEILING"),

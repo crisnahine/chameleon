@@ -169,6 +169,27 @@ def test_main_runs_lenses_verify_persists_and_clears_slot(tmp_path, monkeypatch)
     assert persisted[0].verified == "confirmed"
 
 
+def test_run_marks_process_as_detached_judge_child(tmp_path, monkeypatch):
+    # The job process must flip judge._RUNNING_DETACHED at entry so the one
+    # reviewer spawn that resolves its timeout internally
+    # (duplication_review.judge_body_matches) takes the generous detached
+    # budget inside the job -- the wiring the async-first cutover left open.
+    from chameleon_mcp import judge
+
+    heartbeat = scheduler.try_acquire_job_slot(REPO_ID, SID)
+    assert heartbeat is not None
+    request_path, _repo = _write_request(tmp_path, heartbeat)
+    monkeypatch.setattr(
+        lenses, "resolve_runner", lambda name: lambda *a, **k: LensResult(findings=[])
+    )
+    monkeypatch.setattr(judge, "_RUNNING_DETACHED", False)
+
+    rc = job.main([str(request_path)])
+
+    assert rc == 0
+    assert judge._RUNNING_DETACHED is True
+
+
 def test_main_persists_empty_findings_when_lenses_find_nothing(tmp_path, monkeypatch):
     heartbeat = scheduler.try_acquire_job_slot(REPO_ID, SID)
     request_path, repo = _write_request(tmp_path, heartbeat)

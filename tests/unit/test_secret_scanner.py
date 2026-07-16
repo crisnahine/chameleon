@@ -1,10 +1,13 @@
 """Unit tests for chameleon_mcp.profile.secret_scanner."""
 
+# chameleon-ignore-file secret-detected-in-content
+# Every credential-shaped string in this file is a deliberately fake fixture
+# that exercises the scanner itself; nothing here is a real secret.
+
 from __future__ import annotations
 
 from chameleon_mcp.profile.secret_scanner import (
     _fallback_scan,
-    _line_number_at,
     _try_detect_secrets,
     scan_for_secrets,
 )
@@ -75,13 +78,6 @@ def test_bare_git_sha_in_comment_not_flagged_as_hex():
 def test_api_token_hex_assignment_is_flagged():
     src = 'api_token = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"'
     assert any(h["type"] == "high_entropy_hex" for h in scan_for_secrets(src))
-
-
-def test_line_number_at_counts_newlines():
-    content = "a\nb\ncredential\n"
-    pos = content.index("credential")
-    assert _line_number_at(content, pos) == 3
-    assert _line_number_at(content, 0) == 1
 
 
 def test_fallback_hard_kinds_carry_line_number():
@@ -209,7 +205,7 @@ def test_fallback_scan_line_numbers_match_old_resolution():
     hits = _fallback_scan(content)
     assert hits, "shaped token on a credential line must flag"
     for h in hits:
-        assert h["line_number"] == _line_number_at(content, h["position"])
+        assert h["line_number"] == content.count("\n", 0, h["position"]) + 1
 
 
 def test_fallback_scan_context_gate_still_blocks_bare_identifiers():

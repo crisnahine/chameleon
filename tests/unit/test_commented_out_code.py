@@ -9,11 +9,18 @@ import pytest
 
 from chameleon_mcp.bootstrap.comment_scan import (
     _span_is_code,
-    detect_commented_out_code,
     detect_commented_out_code_by_group,
 )
 from chameleon_mcp.extractors._base import ParsedFile
 from chameleon_mcp.lint_engine import extract_comment_spans
+
+
+def _detect(contents, *, language, extractor) -> int:
+    """Single-group view over the batch API, for per-corpus count asserts."""
+    counts = detect_commented_out_code_by_group(
+        {"g": contents}, language=language, extractor=extractor
+    )
+    return counts.get("g", 0)
 
 
 def _fake_pf(kinds: tuple[str, ...], *, diagnostics: int = 0, imports=()) -> ParsedFile:
@@ -89,14 +96,11 @@ class TestDetectTypeScript:
         return TypeScriptExtractor()
 
     def test_unsupported_language(self):
-        assert detect_commented_out_code(["// x"], language="go", extractor=None) == 0
+        assert _detect(["// x"], language="go", extractor=None) == 0
 
     def test_flags_commented_out_import(self):
         content = "// import { Foo } from './foo';\nfunction live() {}\n"
-        assert (
-            detect_commented_out_code([content], language="typescript", extractor=self._extractor())
-            == 1
-        )
+        assert _detect([content], language="typescript", extractor=self._extractor()) == 1
 
     def test_does_not_flag_prose(self):
         content = (
@@ -104,10 +108,7 @@ class TestDetectTypeScript:
             "// keep stable, other modules depend on it\n"
             "export function name() {}\n"
         )
-        assert (
-            detect_commented_out_code([content], language="typescript", extractor=self._extractor())
-            == 0
-        )
+        assert _detect([content], language="typescript", extractor=self._extractor()) == 0
 
     def test_by_group_attribution(self):
         groups = {
@@ -130,12 +131,8 @@ class TestDetectRuby:
 
     def test_flags_commented_out_def(self):
         content = "class Foo\n  # def old\n  #   work\n  # end\n  def cur; end\nend\n"
-        assert (
-            detect_commented_out_code([content], language="ruby", extractor=self._extractor()) == 1
-        )
+        assert _detect([content], language="ruby", extractor=self._extractor()) == 1
 
     def test_does_not_flag_prose(self):
         content = "class Foo\n  # handles the nil case by returning early\n  def handle; end\nend\n"
-        assert (
-            detect_commented_out_code([content], language="ruby", extractor=self._extractor()) == 0
-        )
+        assert _detect([content], language="ruby", extractor=self._extractor()) == 0

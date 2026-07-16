@@ -56,7 +56,7 @@ def _annotate_staleness(ws_root, findings: list[Finding]) -> list[Finding]:
     with no pinned excerpt_sha is left as-is -- staleness is never
     fabricated from data absence."""
     from chameleon_mcp.judge import _excerpt_sha_stale
-    from chameleon_mcp.stop.verify import _excerpt_window
+    from chameleon_mcp.safe_open import excerpt_window as _excerpt_window
 
     root = Path(ws_root)
     out: list[Finding] = []

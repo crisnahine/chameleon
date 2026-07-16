@@ -235,12 +235,12 @@ def _cochange_history_advisory_lines(
         # the existence re-check into an out-of-repo existence oracle. A legit miner
         # only ever writes top-relative paths, so containment drops only tampered
         # ones -- the same guard the sibling _pending_findings_block applies.
-        from chameleon_mcp.stop_verify import _contained_rel
+        from chameleon_mcp.safe_open import contained_rel
 
         items = []
         for it in missing_partners(index, changed_rels):
             partner = it.get("partner")
-            safe = _contained_rel(git_top, partner) if isinstance(partner, str) else None
+            safe = contained_rel(git_top, partner) if isinstance(partner, str) else None
             if safe is not None and (git_top / safe).is_file():
                 items.append(it)
 

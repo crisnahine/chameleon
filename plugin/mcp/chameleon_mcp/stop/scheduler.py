@@ -234,15 +234,9 @@ def route(ctx: RouteContext, state, cfg) -> RouteDecision:
         if cfg.mode == "off":
             return RouteDecision(spawn=False, reason="mode_off")
 
-        lens_names = tuple(
-            name
-            for name, enabled in (
-                ("correctness", getattr(cfg, "correctness_judge", True)),
-                ("duplication", getattr(cfg, "duplication_review", True)),
-                ("idiom", getattr(cfg, "idiom_review", True)),
-            )
-            if enabled
-        )
+        from chameleon_mcp.stop.lenses import active_lenses
+
+        lens_names = tuple(active_lenses(cfg))
         if not lens_names:
             return RouteDecision(spawn=False, reason="feature_disabled")
 

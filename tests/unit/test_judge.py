@@ -348,7 +348,7 @@ def test_build_prompt_intent_contract_frames_as_stated_not_ground_truth(tmp_path
     assert "verbatim excerpts" in prompt
 
 
-# --- _parse_findings / _extract_json_array / _coerce_findings ---------------
+# --- _parse_findings_status / _extract_json_array / _coerce_findings ---------------
 
 
 def _result_line(text: str) -> str:
@@ -361,7 +361,7 @@ def test_parse_findings_from_result_block():
         {"file": "b.ts", "line": None, "message": "inverted guard", "confidence": 0.5},
     ]
     stream = _result_line(json.dumps(arr))
-    findings = judge._parse_findings(stream)
+    findings = judge._parse_findings_status(stream)[0]
     assert len(findings) == 2
     # Sorted highest-confidence first.
     assert findings[0].confidence == 0.9
@@ -373,20 +373,20 @@ def test_parse_findings_handles_fenced_and_prose():
     text = (
         'Here is the review:\n```json\n[{"message": "off by one", "confidence": 0.8}]\n```\nDone.'
     )
-    findings = judge._parse_findings(_result_line(text))
+    findings = judge._parse_findings_status(_result_line(text))[0]
     assert len(findings) == 1
     assert findings[0].message == "off by one"
     assert findings[0].file is None
 
 
 def test_parse_findings_empty_array():
-    findings = judge._parse_findings(_result_line("[]"))
+    findings = judge._parse_findings_status(_result_line("[]"))[0]
     assert findings == []
 
 
 def test_parse_findings_malformed_returns_empty():
-    assert judge._parse_findings("not json at all") == []
-    assert judge._parse_findings(_result_line("the diff looks fine, no bugs")) == []
+    assert judge._parse_findings_status("not json at all")[0] == []
+    assert judge._parse_findings_status(_result_line("the diff looks fine, no bugs"))[0] == []
 
 
 def test_coerce_findings_skips_invalid_and_clamps_confidence():

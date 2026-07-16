@@ -140,11 +140,11 @@ class Finding:
         and the ledger now share.
 
         ``severity`` has no source field on a judge finding -- it carries only
-        a 0..1 confidence -- so it is derived the way the single-lens VERIFY
-        path does (``stop_verify.py::_severity_for``): confidence at or above
-        0.7 reads "high", else "medium" (a lone correctness finding never
-        reads "low"). Matching that threshold keeps ledger/resurface behavior
-        identical for the lens this adapter first serves.
+        a 0..1 confidence -- so it is derived the way the retired pre-3.4.0
+        VERIFY path did: confidence at or above 0.7 reads "high", else
+        "medium" (a lone correctness finding never reads "low"). Matching
+        that threshold keeps ledger/resurface behavior identical for the
+        lens this adapter first serves.
 
         ``evidence`` renders the finding's pinned ``evidence_cmds`` (each a
         ``{"cmd", "output_sha256"}`` pair) into one line per command, or ""

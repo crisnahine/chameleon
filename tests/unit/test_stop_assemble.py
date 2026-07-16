@@ -14,8 +14,6 @@ from chameleon_mcp.stop.assemble import (
     PRIORITY_ADVISORY,
     PRIORITY_BLOCK,
     PRIORITY_DELIVERED_UNVERIFIED,
-    PRIORITY_DELIVERED_VERIFIED,
-    PRIORITY_IDIOM,
     PRIORITY_RESURFACED,
     AssembledStop,
     EmissionItem,
@@ -26,6 +24,10 @@ from chameleon_mcp.stop.assemble import (
     render_findings,
     write_delivery_payload,
 )
+
+# A rung below every production one: the packer is rung-agnostic, so ordering
+# tests exercise an extra trailing priority without a production constant.
+PRIORITY_TRAILING = PRIORITY_ADVISORY + 1
 
 
 @pytest.fixture(autouse=True)
@@ -285,7 +287,9 @@ def test_payload_read_is_read_only(tmp_path):
 def test_assemble_block_present_emits_only_block_text():
     block = EmissionItem(priority=PRIORITY_BLOCK, text="chameleon: unresolved violations")
     advisory = EmissionItem(priority=PRIORITY_ADVISORY, text="some deterministic advisory")
-    idiom = EmissionItem(priority=PRIORITY_IDIOM, text="an idiom nudge", match_keys=("mk-idiom",))
+    idiom = EmissionItem(
+        priority=PRIORITY_TRAILING, text="an idiom nudge", match_keys=("mk-idiom",)
+    )
 
     result = assemble_stop_context(
         [advisory, idiom, block], header="chameleon: stop", ceiling_tokens=1000
@@ -314,7 +318,7 @@ def test_assemble_empty_items_returns_empty_result():
 def test_assemble_one_header_and_one_disclaimer():
     items = [
         EmissionItem(priority=PRIORITY_ADVISORY, text="advisory one"),
-        EmissionItem(priority=PRIORITY_IDIOM, text="idiom nudge one"),
+        EmissionItem(priority=PRIORITY_TRAILING, text="idiom nudge one"),
     ]
     result = assemble_stop_context(items, header="chameleon: 2 items", ceiling_tokens=1000)
     assert result.text.count("\U0001f98e") == 1
@@ -351,7 +355,7 @@ def test_assemble_ranked_ordering_priority_beats_input_order():
     assert base_cost + resurfaced_cost <= ceiling  # resurfaced alone fits
     assert base_cost + idiom_cost + resurfaced_cost > ceiling  # both do not
 
-    idiom_item = EmissionItem(priority=PRIORITY_IDIOM, text=idiom_text, match_keys=("mk-idiom",))
+    idiom_item = EmissionItem(priority=PRIORITY_TRAILING, text=idiom_text, match_keys=("mk-idiom",))
     resurfaced_item = EmissionItem(
         priority=PRIORITY_RESURFACED, text=resurfaced_text, match_keys=("mk-resurface",)
     )
@@ -373,26 +377,26 @@ def test_assemble_packed_match_keys_is_exactly_the_findings_that_fit():
     header_line = f"[\U0001f98e {header}]"
     base_cost = approx_tokens("\n".join([header_line, _DISCLAIMER]))
 
-    verified_text = "delivered verified finding"
-    unverified_text = "x " * 500  # far too large to also fit
+    review_text = "delivered review finding"
+    trailing_text = "x " * 500  # far too large to also fit
 
-    ceiling = base_cost + approx_tokens(verified_text)
+    ceiling = base_cost + approx_tokens(review_text)
 
-    verified_item = EmissionItem(
-        priority=PRIORITY_DELIVERED_VERIFIED, text=verified_text, match_keys=("mk-verified",)
+    review_item = EmissionItem(
+        priority=PRIORITY_DELIVERED_UNVERIFIED, text=review_text, match_keys=("mk-review",)
     )
-    unverified_item = EmissionItem(
-        priority=PRIORITY_DELIVERED_UNVERIFIED,
-        text=unverified_text,
-        match_keys=("mk-unverified",),
+    trailing_item = EmissionItem(
+        priority=PRIORITY_TRAILING,
+        text=trailing_text,
+        match_keys=("mk-trailing",),
     )
     advisory_item = EmissionItem(priority=PRIORITY_ADVISORY, text="deterministic advisory")
 
     result = assemble_stop_context(
-        [advisory_item, unverified_item, verified_item], header=header, ceiling_tokens=ceiling
+        [advisory_item, trailing_item, review_item], header=header, ceiling_tokens=ceiling
     )
 
-    assert result.packed_match_keys == ("mk-verified",)
+    assert result.packed_match_keys == ("mk-review",)
 
 
 def test_assemble_overflow_item_text_absent_not_truncated():
@@ -408,7 +412,7 @@ def test_assemble_overflow_item_text_absent_not_truncated():
 
     big_item = EmissionItem(priority=PRIORITY_ADVISORY, text=big_text, match_keys=("mk-big",))
     small_item = EmissionItem(
-        priority=PRIORITY_DELIVERED_VERIFIED, text=small_text, match_keys=("mk-small",)
+        priority=PRIORITY_DELIVERED_UNVERIFIED, text=small_text, match_keys=("mk-small",)
     )
     ceiling = base_cost + approx_tokens(small_text)  # room only for the small item
 

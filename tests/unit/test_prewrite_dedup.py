@@ -36,17 +36,19 @@ def _catalog(entries):
 
 def test_extract_python_names():
     c = "import os\n\ndef clean_url(u):\n    return u\n\nasync def fetch_data():\n    pass\n"
-    assert hook_helper._extract_defined_names(c, "app/x.py") == {"clean_url", "fetch_data"}
+    got = {n for n, _ in hook_helper._extract_defined_functions(c, "app/x.py")}
+    assert got == {"clean_url", "fetch_data"}
 
 
 def test_extract_ruby_names():
     c = "class Foo\n  def clean_url(u)\n  end\n  def self.build_thing\n  end\nend\n"
-    assert hook_helper._extract_defined_names(c, "app/x.rb") == {"clean_url", "build_thing"}
+    got = {n for n, _ in hook_helper._extract_defined_functions(c, "app/x.rb")}
+    assert got == {"clean_url", "build_thing"}
 
 
 def test_extract_ts_names():
     c = "export function cleanUrl(u: string) {}\nconst parseUser = (r: string) => r;\n"
-    got = hook_helper._extract_defined_names(c, "src/x.ts")
+    got = {n for n, _ in hook_helper._extract_defined_functions(c, "src/x.ts")}
     assert "cleanUrl" in got and "parseUser" in got
 
 

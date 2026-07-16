@@ -79,18 +79,6 @@ _CREDENTIAL_CONTEXT = re.compile(
 )
 
 
-def _line_number_at(content: str, position: int) -> int:
-    """1-based line number for the char offset `position`.
-
-    The deterministic fallback patterns match on the whole-buffer offset, but
-    every downstream consumer (the lint violation formatter, the PR-review hunk
-    gate) reasons in lines. Counting the newlines up to the offset gives the same
-    line a line-keyed diff map uses, so a hard-kind secret can be placed inside a
-    changed hunk rather than reported as a bare character position.
-    """
-    return content.count("\n", 0, position) + 1
-
-
 def _try_detect_secrets(content: str) -> list[dict[str, Any]] | None:
     try:
         from detect_secrets.core.scan import scan_line

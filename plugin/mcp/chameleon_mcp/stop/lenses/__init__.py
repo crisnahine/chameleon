@@ -49,8 +49,8 @@ class LensResult:
 
 
 # name -> (EnforcementConfig field gating this lens, "module:callable" the job
-# runner imports lazily to get the runner). Order matches the pre-phase-3
-# route's lens_names construction (stop/scheduler.py's inline tuple) so a
+# runner imports lazily to get the runner). Insertion order is the lens run
+# order: stop/scheduler.py builds a turn's lens_names via active_lenses, so a
 # caller that needs a stable iteration order gets one for free.
 LENSES: dict[str, tuple[str, str]] = {
     "correctness": ("correctness_judge", "chameleon_mcp.stop.lenses.correctness:run"),

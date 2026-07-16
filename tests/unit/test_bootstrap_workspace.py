@@ -25,11 +25,16 @@ import chameleon_mcp.bootstrap.orchestrator as orch
 import chameleon_mcp.bootstrap.workspace as ws_module
 from chameleon_mcp.bootstrap.workspace import (
     WorkspaceInfo,
-    _expand_workspace_globs,
     _read_pnpm_globs,
     _read_turbo_globs,
     detect_workspace,
+    expand_workspace_globs_with_diagnostics,
 )
+
+
+def _expand_workspace_globs(repo: Path, globs: list[str]) -> list[Path]:
+    return expand_workspace_globs_with_diagnostics(repo, globs).paths
+
 
 _TS_NODE_MODULES = (
     Path(__file__).resolve().parents[2] / "plugin" / "mcp" / "node_modules" / "typescript"

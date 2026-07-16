@@ -14,7 +14,7 @@ def _result_line(payload: str) -> str:
     """Produce a single stream-json line whose type=result carries payload.
 
     Mirrors the real judge._spawn_reviewer stdout shape as confirmed by
-    reading judge._parse_findings (judge.py:227-264) and the test_judge.py helper.
+    reading judge._parse_findings_status and the test_judge.py helper.
     """
     return json.dumps({"type": "result", "result": payload})
 

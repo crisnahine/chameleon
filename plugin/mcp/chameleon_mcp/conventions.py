@@ -2043,9 +2043,7 @@ def extract_method_call_conventions(files: list[ParsedFile]) -> dict:
 # and nesting depth are the primary complexity signal; raw line span is
 # secondary because long-but-flat code (literal tables, JSX trees, switch
 # dispatch) inflates it without being hard to read.
-_BODY_SHAPE_PRIMARY = ("branch_count", "max_depth")
-_BODY_SHAPE_SECONDARY = ("line_span", "param_count")
-_BODY_SHAPE_DIMENSIONS = _BODY_SHAPE_PRIMARY + _BODY_SHAPE_SECONDARY
+_BODY_SHAPE_DIMENSIONS = ("branch_count", "max_depth", "line_span", "param_count")
 
 
 def _percentile(sorted_values: list[float], pct: float) -> float:
@@ -2114,57 +2112,6 @@ def extract_body_shape_conventions(files: list[ParsedFile]) -> dict:
         "function_count": len(scopes),
         "dimensions": dims,
     }
-
-
-def body_shape_outliers(scopes: list[dict], norm: dict | None) -> list[dict]:
-    """Compare measured function scopes against an archetype's body_shape norm.
-
-    Returns one advisory finding per function that exceeds the norm's p90 by the
-    outlier multiple on a PRIMARY dimension (branch count or nesting depth).
-    Line span and parameter count are reported only as supporting context on a
-    function already flagged for branching/nesting, never on their own, so
-    long-but-flat code does not read as a complexity outlier.
-
-    Always advisory; callers must not turn this into a block-eligible rule.
-    """
-    if not norm or not scopes:
-        return []
-    dims = norm.get("dimensions") or {}
-    mult = threshold("BODY_SHAPE_OUTLIER_MULT")
-
-    findings: list[dict] = []
-    for fn in scopes:
-        if not isinstance(fn, dict):
-            continue
-        exceeded: list[dict] = []
-        for dim in _BODY_SHAPE_PRIMARY:
-            value = fn.get(dim)
-            p90 = (dims.get(dim) or {}).get("p90")
-            if not isinstance(value, (int, float)) or not isinstance(p90, (int, float)):
-                continue
-            # A p90 of 0 (a flat archetype) would make every branch an
-            # "infinite" outlier; require an absolute floor of 1 over p90 so a
-            # single decision point in a branch-free archetype isn't flagged.
-            limit = max(p90 * mult, p90 + 1)
-            if value > limit:
-                exceeded.append({"dimension": dim, "value": value, "p90": p90})
-        if not exceeded:
-            continue
-        context: list[dict] = []
-        for dim in _BODY_SHAPE_SECONDARY:
-            value = fn.get(dim)
-            p90 = (dims.get(dim) or {}).get("p90")
-            if isinstance(value, (int, float)) and isinstance(p90, (int, float)) and value > p90:
-                context.append({"dimension": dim, "value": value, "p90": p90})
-        findings.append(
-            {
-                "start_line": fn.get("start_line"),
-                "end_line": fn.get("end_line"),
-                "exceeded": exceeded,
-                "context": context,
-            }
-        )
-    return findings
 
 
 def _collect_callable_signatures(files: list[ParsedFile]) -> list[tuple[Path, dict]]:

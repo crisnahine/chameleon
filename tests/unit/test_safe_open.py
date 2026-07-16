@@ -212,3 +212,41 @@ def test_windows_ads_security_rejected(tmp_path: Path):
 def test_nonexistent_path_raises(tmp_path: Path):
     with pytest.raises(UnsafeFileError, match="does not exist"):
         safe_open(tmp_path, "no_such_file.txt")
+
+
+# --- contained_rel / excerpt_window: model-output paths never escape the repo
+
+
+def test_contained_rel_accepts_inside_and_rejects_escapes(tmp_path: Path):
+    from chameleon_mcp.safe_open import contained_rel
+
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret\n", encoding="utf-8")
+
+    assert contained_rel(repo, "src/a.py") == "src/a.py"
+    assert contained_rel(repo, str(repo / "src" / "a.py")) == "src/a.py"
+    assert contained_rel(repo, str(outside)) is None
+    assert contained_rel(repo, "../outside.txt") is None
+
+
+def test_excerpt_window_never_reads_outside_the_repo(tmp_path: Path):
+    # A finding's file field is unvalidated model output inlined into a model
+    # prompt; an escaping path must yield "" (the caller then skips the spawn),
+    # never the outside file's content.
+    from chameleon_mcp.safe_open import excerpt_window
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "a.py").write_text("line1\nline2\nline3\n", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("exfiltrated\n", encoding="utf-8")
+
+    assert "line2" in excerpt_window(repo, "a.py", 2)
+    assert excerpt_window(repo, str(outside), 1) == ""
+    assert excerpt_window(repo, "../outside.txt", 1) == ""
+    # No line number falls back to the head window, still containment-checked.
+    assert "line1" in excerpt_window(repo, "a.py", None)
+    assert excerpt_window(repo, "missing.py", 1) == ""

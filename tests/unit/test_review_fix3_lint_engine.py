@@ -7,9 +7,16 @@ commented-out Python code is now detected end-to-end where it was a silent no-op
 
 from __future__ import annotations
 
-from chameleon_mcp.bootstrap.comment_scan import detect_commented_out_code
+from chameleon_mcp.bootstrap.comment_scan import detect_commented_out_code_by_group
 from chameleon_mcp.extractors.python import PythonExtractor
 from chameleon_mcp.lint_engine import extract_comment_spans
+
+
+def _detect(contents, *, language, extractor) -> int:
+    counts = detect_commented_out_code_by_group(
+        {"g": contents}, language=language, extractor=extractor
+    )
+    return counts.get("g", 0)
 
 
 def test_extract_comment_spans_python_stitches_hash_lines():
@@ -27,11 +34,11 @@ def test_extract_comment_spans_python_no_block_comment_crash():
 def test_detect_commented_out_code_python_flags_real_code():
     # A commented-out function definition parses as real Python code.
     commented = "# def process(data):\n#     return transform(data)\n\nactive = 1\n"
-    n = detect_commented_out_code([commented], language="python", extractor=PythonExtractor())
+    n = _detect([commented], language="python", extractor=PythonExtractor())
     assert n >= 1
 
 
 def test_detect_commented_out_code_python_ignores_prose():
     prose = "# this function processes the data and returns it\n# see the docs for details\n"
-    n = detect_commented_out_code([prose], language="python", extractor=PythonExtractor())
+    n = _detect([prose], language="python", extractor=PythonExtractor())
     assert n == 0

@@ -293,3 +293,65 @@ def safe_open_fd(
         raise UnsafeFileError(f"fstat failed: {e}") from e
 
     return fd, st, candidate
+
+
+# ---------------------------------------------------------------------------
+# Containment-checked excerpt helpers. A finding's ``file`` field can
+# originate from model output (a reviewer's parsed claim) and the excerpt is
+# inlined into a model prompt, so an absolute path outside the repo or a
+# ``..`` traversal must never be read -- an escape would exfiltrate arbitrary
+# local files. Shared by the VERIFY stage (stop/verify.py), the pending-
+# findings delivery block, and the co-change advisory.
+
+EXCERPT_CONTEXT_LINES = 25
+_EXCERPT_CHAR_CAP = 4000
+_HEAD_FALLBACK_LINES = 50
+
+
+def contained_rel(repo_root, rel_or_abs) -> str | None:
+    """``rel_or_abs`` as a repo-relative path iff it stays inside ``repo_root``.
+
+    Returns None when the path escapes the repo or cannot be normalized --
+    the caller must then skip the read entirely, never fall back to the raw
+    value.
+    """
+    try:
+        root = Path(repo_root).resolve()
+        p = Path(rel_or_abs)
+        if p.is_absolute():
+            return p.resolve().relative_to(root).as_posix()
+        # Relative: let resolve() collapse any ../ then require containment.
+        return (root / p).resolve().relative_to(root).as_posix()
+    except (ValueError, OSError):
+        return None
+
+
+def excerpt_window(repo_root, rel_or_abs, line, *, context: int = EXCERPT_CONTEXT_LINES) -> str:
+    """A +/-``context``-line window around ``file:line``. Fail-open "".
+
+    Reads through ``safe_read_text`` (symlink/size/segment checks) after
+    confirming the path stays inside ``repo_root``. A finding with a readable
+    file but no line number falls back to the file's first
+    ``_HEAD_FALLBACK_LINES`` lines, so an anchorless-but-filed finding still
+    gets real evidence. A missing/escaping/unreadable path yields "" -- the
+    caller then skips its spawn/render entirely rather than proceeding on
+    zero evidence.
+    """
+    if not rel_or_abs:
+        return ""
+    rel = contained_rel(repo_root, rel_or_abs)
+    if rel is None:
+        return ""
+    try:
+        text = safe_read_text(Path(repo_root).resolve(), rel)
+    except Exception:  # UnsafeFileError, OSError, decode -- all fail-open to ""
+        return ""
+    lines = text.splitlines()
+    if not lines:
+        return ""
+    if isinstance(line, int) and not isinstance(line, bool) and line > 0:
+        lo = max(0, line - 1 - context)
+        hi = min(len(lines), line - 1 + context + 1)
+    else:
+        lo, hi = 0, _HEAD_FALLBACK_LINES
+    return "\n".join(lines[lo:hi])[:_EXCERPT_CHAR_CAP]

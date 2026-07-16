@@ -24,10 +24,9 @@ from chameleon_mcp.judge import (
     attach_evidence_cmd,
     excerpt_is_stale,
     pin_excerpt,
-    stale_suffix,
 )
 from chameleon_mcp.optouts import _safe_session_marker
-from chameleon_mcp.stop_verify import _excerpt_window
+from chameleon_mcp.safe_open import excerpt_window as _excerpt_window
 
 
 def _f(**kw) -> Finding:
@@ -51,12 +50,9 @@ def test_pin_and_stale_detection():
     f = _f(file="a.rb", line=5)
     pin_excerpt(f, "def call\n  retry 2\nend\n")
     assert f.excerpt_sha  # a short hex digest
-    # Same text -> not stale.
+    # Same text -> not stale; changed text -> stale.
     assert excerpt_is_stale(f, "def call\n  retry 2\nend\n") is False
-    assert stale_suffix(f, "def call\n  retry 2\nend\n") == ""
-    # Changed text -> stale, and the suffix annotates (never empties the message).
     assert excerpt_is_stale(f, "def call\n  retry 3\nend\n") is True
-    assert "stale" in stale_suffix(f, "def call\n  retry 3\nend\n").lower()
 
 
 def test_unpinned_finding_is_never_stale():
@@ -64,7 +60,6 @@ def test_unpinned_finding_is_never_stale():
     f = _f()
     assert f.excerpt_sha is None
     assert excerpt_is_stale(f, "anything at all") is False
-    assert stale_suffix(f, "anything at all") == ""
     # None current excerpt (unreadable) also never fabricates staleness.
     assert excerpt_is_stale(f, None) is False
 

@@ -172,21 +172,15 @@ def excerpt_is_stale(finding: Finding, current_excerpt: str | None) -> bool:
     return _excerpt_sha_stale(finding.excerpt_sha, current_excerpt)
 
 
-def stale_suffix(finding: Finding, current_excerpt: str | None) -> str:
-    """The render-time staleness annotation ("  [stale: ...]") or "" when fresh.
-    It only ever ADDS to the message; it never empties or drops the finding.
-    """
-    if excerpt_is_stale(finding, current_excerpt):
-        return "  [stale: code changed since review]"
-    return ""
-
-
 def attach_evidence_cmd(finding: Finding, cmd: str, output: str) -> None:
     """Pin a green-lit executable check's output onto the finding by hash.
 
     The raw output is not stored -- only its 16-hex digest -- so a converted
     "unrun executable check" graduates to "run, output pinned" without carrying
-    the command's stdout into the ledger or the model surface.
+    the command's stdout into the ledger or the model surface. The write API of
+    the pinned-evidence layer whose read side lives in
+    ``core.finding.Finding.from_judge_finding`` and the pending-findings
+    delivery block.
     """
     if finding.evidence_cmds is None:
         finding.evidence_cmds = []
@@ -1112,11 +1106,6 @@ def _parse_findings_status(stdout: str) -> tuple[list[Finding], bool]:
     return [], False
 
 
-def _parse_findings(stdout: str) -> list[Finding]:
-    """Findings-only view of ``_parse_findings_status`` (fail open to [])."""
-    return _parse_findings_status(stdout)[0]
-
-
 def _extract_json_array(text: str) -> list | None:
     """Return the findings JSON array embedded in ``text``, or None.
 
@@ -1334,21 +1323,6 @@ def is_grounding_event(reason: object) -> bool:
     return isinstance(reason, str) and reason.startswith(JUDGE_GROUNDING_FAMILIES)
 
 
-def grounding_family(kind: object) -> str | None:
-    """Return the ``JUDGE_GROUNDING_FAMILIES`` prefix ``kind`` starts with, else
-    None. The canonical home for the families lives here, so both the sync gate
-    and the detached-child sink translate a grounding event to its own check
-    (``judge_facts`` / ``judge_defs`` / ``judge_transitive``) the same way,
-    instead of one path misfiling defs/transitive events as a spawn degradation.
-    """
-    if not isinstance(kind, str):
-        return None
-    for fam in JUDGE_GROUNDING_FAMILIES:
-        if kind.startswith(fam):
-            return fam
-    return None
-
-
 def _bare_auth_known_failed() -> bool:
     """True when a prior spawn proved --bare loses credentials on this install.
 
@@ -1409,13 +1383,9 @@ def _spawn_lost_auth(proc) -> bool:
 # for the one reviewer spawn that does not thread its own timeout
 # (duplication_review.judge_body_matches, called from
 # stop/lenses/duplication.py, which deliberately leaves model/timeout
-# resolution internal). mark_detached_run() has zero callers post-cutover
-# (the old async judge child that called it at process entry was deleted in
-# the cutover), so _RUNNING_DETACHED is permanently False in production today
-# and that fallback always reads the short sync budget rather than the
-# detached job's generous one -- a separate, low-impact gap. Wiring
-# mark_detached_run() into stop/job.py's own entry point would close it; left
-# as an open follow-up rather than folded into this fix.
+# resolution internal). stop/job.py calls mark_detached_run() at its own
+# entry (_run), so that fallback reads the generous detached budget inside
+# the review job and the short sync budget everywhere else.
 _RUNNING_DETACHED = False
 
 
