@@ -4,6 +4,30 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.0] - 2026-07-16
+
+Completes the Stop/idiom overhaul. Across v3.2.0-v4.0.0 the turn-end review
+system was rebuilt: the Stop hook is deterministic and fast, launching one
+detached background job that runs the correctness/duplication/idiom lenses, an
+independent VERIFY refuter, and a canonical Finding-lifecycle ledger, then
+delivers findings on a later turn instead of blocking turn end. The whole Stop
+and SessionStart emission is ranked and token-budgeted, idiom truth lives in a
+structured per-file store, and three new capabilities are live: severity-aware
+triage, task-aware review, and self-learning idioms. See the [3.4.0], [3.5.0],
+and [3.6.0] entries for the per-phase detail.
+
+### Changed
+- Rewrote `docs/architecture.md` to describe the shipped async-first design,
+  correcting stale claims (idioms.md is a generated view of the JSON idiom
+  store, not the source of truth; the correctness reviewer runs in a detached
+  job, not inline under the Stop timeout).
+
+### Added
+- Churn-class pinning tests hardening the invariants a regression could
+  silently break: the hook wrapper-timeout caps (fast hooks 3s, Stop backstop
+  55s), the live `CHAMELEON_JUDGE_WAIT` Stop-budget headroom, and the idiom
+  lens's own prompt and finding flood caps.
+
 ## [3.6.0] - 2026-07-16
 
 ### Added
