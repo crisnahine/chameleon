@@ -247,7 +247,7 @@ PHASE 31 - git merge driver:
     # Read current profile
     data = json.loads(profile_abs.read_text())
 
-    # Create branch-a: add an archetype entry
+    # Create branch-a: add a marker, keep the base generation
     subprocess.run(['git', '-C', str(repo), 'checkout', '-b', 'merge-branch-a'], check=True)
     a_data = dict(data)
     a_data['_branch_a_marker'] = 'branch-a-change'
@@ -256,10 +256,13 @@ PHASE 31 - git merge driver:
     subprocess.run(['git', '-C', str(repo), 'commit', '-m', 'branch-a change'], check=True)
     sha_a = subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD']).decode().strip()
 
-    # Create branch-b from the same base
+    # Create branch-b from the same base with a HIGHER generation: profile.json
+    # is metadata-only (no archetypes/canonicals/rules payload), so the
+    # documented merge semantics are newer-generation-wholesale, not key union.
     subprocess.run(['git', '-C', str(repo), 'checkout', '-b', 'merge-branch-b', 'main'], check=True)
     b_data = dict(data)
     b_data['_branch_b_marker'] = 'branch-b-change'
+    b_data['generation'] = int(data.get('generation', 0)) + 1
     profile_abs.write_text(json.dumps(b_data, indent=2))
     subprocess.run(['git', '-C', str(repo), 'add', profile_rel], check=True)
     subprocess.run(['git', '-C', str(repo), 'commit', '-m', 'branch-b change'], check=True)
@@ -300,9 +303,12 @@ PHASE 31 - git merge driver:
     Call chameleon-mcp::chameleon_lifecycle with action="merge_profiles" and
     the two branch versions in params ({"repo": ..., "base": <base file>,
     "ours": <branch-a file>, "theirs": <branch-b file>}).
-    Verify the merge result is a clean union containing both markers
-    (_branch_a_marker and _branch_b_marker) with no conflict markers (<<<<,
-    ====, >>>>).
+    Verify per the documented profile.json semantics (metadata-only file, so
+    the NEWER-generation side wins wholesale — union merging applies only to
+    archetypes/canonicals/rules payload files): the merge result must parse
+    as JSON, contain _branch_b_marker (branch-b carries the higher
+    generation), and contain no conflict markers (<<<<, ====, >>>>).
+    _branch_a_marker being absent is CORRECT here, not a failure.
 
   STEP 3 - restore working/ts_basic to main:
     Use Bash to check out main and clean up the branches:
@@ -372,7 +378,9 @@ def run(ctx: JourneyContext) -> ActResult:
         cwd=cwd,
         env={**ctx.env, "CHAMELEON_JOURNEY_CHECKPOINT": str(ctx.current_checkpoint_file)},
         transcript_path=transcript,
-        max_turns=70,
+        # Six phases of real tool work; 70 ran out mid-act (phase 31 never
+        # attempted in two consecutive runs, error_max_turns at the cap).
+        max_turns=95,
         allowed_tools=[
             "Bash",
             "Read",
