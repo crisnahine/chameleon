@@ -5,7 +5,7 @@
 This document describes how chameleon works as built. It is the reference for
 the bootstrap pipeline, the hook stack, the MCP tool surface, the enforcement
 and review gate, the profile schema, the state stores, and the security model.
-It tracks engine version **3.0.2** and profile **schema version 8**. When the
+It tracks engine version **3.6.0** and profile **schema version 8**. When the
 code and this document disagree, the code is right; please file an issue.
 
 ## Contents
@@ -236,9 +236,11 @@ All JSON artifacts carry `schema_version`, `engine_min_version`, and a
 | `canonicals.json` | Per-archetype canonical: the witness (path + sha hint), normative shape (AST query + callable signatures), normative idioms (comments), and the secret/injection/poisoning scan verdicts. |
 | `conventions.json` | Per-archetype derived conventions (imports, naming, error handling, body shape, doc coverage, test pairing, inheritance and method calls for Ruby, class contract, key exports) plus repo-level layering. |
 | `principles.md` | Data-backed prose principles generated from conventions. |
-| `conventions.md` | The CLAUDE.md-channel mirror: the rendered conventions block PLUS the principles sections and a TEAM IDIOMS gist section (one `- name: first-sentence directive` line per taught idiom), for wiring into Claude's memory channel via a one-line `.claude/rules/chameleon-conventions.md`, `CLAUDE.local.md`, or a `CLAUDE.md` import (init offers all three, consent-gated; none edits an existing file by default). Rewritten by bootstrap/refresh, re-synced by teach/unteach after every conventions.json or idioms.md mutation, self-healed from disk on a noop refresh when missing or older-format; absent when nothing renders. Kill switch `CHAMELEON_CONVENTIONS_MD=0`. Motive: memory-channel delivery measured 100% rule adherence vs 40% for the same content as a hook advisory (results-published/migration-ab-2026-07-11.md). Because the mirror is the complete session-conventions content, a wired import lets SessionStart skip its duplicate hook injection (`CHAMELEON_MEMORY_CHANNEL_DEDUP`). (Pre-3.4.0 this also let the Stop idiom-review interrupt render mirror-carried idioms as gists via `CHAMELEON_STOP_IDIOM_GIST`; that interrupt is gone — idiom review is now the async job's idiom lens, see [Turn-end advisories](#turn-end-advisories-on-by-default-never-block).) |
+| `conventions.md` | The CLAUDE.md-channel mirror: the rendered conventions block PLUS the principles sections and a TEAM IDIOMS gist section (one `- name: first-sentence directive` line per active idiom, rendered from the `idioms/` store), for wiring into Claude's memory channel via a one-line `.claude/rules/chameleon-conventions.md`, `CLAUDE.local.md`, or a `CLAUDE.md` import (init offers all three, consent-gated; none edits an existing file by default). Rewritten by bootstrap/refresh, re-synced by teach/unteach after every conventions.json or idioms.md mutation, self-healed from disk on a noop refresh when missing or older-format; absent when nothing renders. Kill switch `CHAMELEON_CONVENTIONS_MD=0`. Motive: memory-channel delivery measured 100% rule adherence vs 40% for the same content as a hook advisory (results-published/migration-ab-2026-07-11.md). Because the mirror is the complete session-conventions content, a wired import lets SessionStart skip its duplicate hook injection (`CHAMELEON_MEMORY_CHANNEL_DEDUP`). (Pre-3.4.0 this also let the Stop idiom-review interrupt render mirror-carried idioms as gists via `CHAMELEON_STOP_IDIOM_GIST`; that interrupt is gone — idiom review is now the async job's idiom lens, see [Turn-end advisories](#turn-end-advisories-on-by-default-never-block).) |
 | `rules.json` | Tool-derived rules keyed by source: prettier, tsconfig compiler options, eslint, editorconfig, rubocop. |
-| `idioms.md` | Human-authored team idioms. Carried forward byte-identical across refresh; never regenerated. |
+| `idioms/` | The idiom store: one schema-validated JSON file per idiom (`core/idiom_store.py`, schema `chameleon-idiom-1`), the single source of idiom truth. Each record carries a slug, title, body, scope, status (`active`/`deprecated`), and source (`taught`/`auto`/`learned`). Per-file storage keeps git merges trivial and scopes the injection scan to one idiom. `core/idiom_store.py` is the only reader/writer. |
+| `idioms.md` | A generated *view* of the `idioms/` store (rendered by `regenerate_views`), not a source of truth. A first run writes an empty template; a legacy hand-authored `idioms.md` migrates into the store on the next teach (`migrate_idioms_md`, `records_from_markdown`). Kept for human review and PR diffs. |
+| `idiom-candidates/` | The self-learning miner's never-auto-adopted proposals: one `<slug>.json` per candidate with an evidence trail. Deliberately **not** part of the trust-hashed surface (`_HASHED_ARTIFACTS`) — hashing unreviewed output would arm the trust gate on the miner itself. A candidate becomes a real idiom only through the same `/chameleon-teach` path a hand-taught idiom uses. See [Self-learning idiom miner](#self-learning-idiom-miner). |
 | `profile.summary.md` | Human-readable summary for PR review and the trust prompt. |
 | `enforcement.json` | Per-rule block-calibration verdict (`{rule: {active, fp_rate, sampled, flagged}}`; the two calibration-exempt security rules also carry `exempt_reason: "security-rule"` and are active regardless of this artifact). |
 | `exports_index.json`, `reverse_index.json` | Symbol export map and its inverse importer graph. TS/JS + Python (`REVERSE_INDEXED_LANGUAGES`). |
@@ -264,6 +266,7 @@ Overridable with `CHAMELEON_PLUGIN_DATA`. Never committed, never exfiltrated.
 | `<repo_id>/prodtree/` | Materialized production-branch worktrees (swept after use). |
 | `<repo_id>/.intent.<session>.ndjson` | Captured intent tokens and digests (never raw prose). |
 | `<repo_id>/review_ledger.ndjson`, `session_attestations.ndjson` | HMAC-signed review and attestation records. |
+| `<repo_id>/findings_ledger.json` | The canonical turn-end Finding-lifecycle ledger (`review_ledger.py`): one row per finding `match_key`, walking `pending`/`delivered`/`addressed`/`resurfaced`/`shelved`/`expired`. Local, not committed. See [Turn-end advisories](#turn-end-advisories-on-by-default-never-block). |
 | `<coordinator repo_id>/cross_reverse_index.json` | Monorepo cross-workspace import edges (deliberately off the trust-hashed profile surface). |
 
 The Bash exec log lives separately under `${TMPDIR:-/tmp}/.chameleon_exec_log/<repo_id>/`
@@ -320,8 +323,11 @@ The pipeline stages, in order:
    per-archetype conventions; merge taught competing imports from the prior
    profile.
 10. **Rules assembly.** Convert tool configs to `rules.json`.
-11. **idioms.md carry-forward.** Read, validate, and warn; never regenerate.
-    A first run writes an empty template.
+11. **Idiom store carry-forward.** The `.chameleon/idioms/` store is idiom
+    truth and is carried forward untouched; its `idioms.md` and conventions.md
+    views are re-rendered from it. A first run writes an empty template; a
+    legacy hand-authored `idioms.md` is migrated into the store on the next
+    teach.
 12. **Atomic commit.** Write every artifact and index, fsync, write the
     `COMMITTED` sentinel last, and flock-serialize the directory rename. See
     [Atomicity](#atomicity-locking-and-crash-safety).
@@ -667,13 +673,19 @@ banner and the other hooks fail open silently and log a `no-interpreter` line.
 
 **What each hook does:**
 
-- **session-start** loads the `using-chameleon` skill, detects the repo and
-  language, injects the convention primer wrapped in `<chameleon-context>`
-  (the `<chameleon-conventions>` block leads, BEFORE the skill text, and
-  carries explicit anti-majority framing — a rule buried after ~14k chars of
+- **session-start** injects a compact ~3.6k-char operational digest of the
+  `using-chameleon` skill (`_using_chameleon_digest`) instead of the full
+  ~13.6k-char skill body, detects the repo and language, and injects the
+  convention primer wrapped in `<chameleon-context>` (the
+  `<chameleon-conventions>` block leads, BEFORE the digest, and carries
+  explicit anti-majority framing — a rule buried after thousands of chars of
   mechanics measurably loses authority, and a model otherwise dismisses a
   taught rule that contradicts the sibling-file majority as "inverted";
-  results-published/migration-ab-2026-07-11.md). When the repo already imports
+  results-published/migration-ab-2026-07-11.md). The whole SessionStart
+  emission (conventions, digest, banners, dead-session finding delivery) is
+  packed under one `SESSION_START_DELIVERY_TOKEN_CEILING` budget with the
+  digest as the only compressible part, so the higher-authority conventions
+  block always stays inside the window a model actually follows. When the repo already imports
   `.chameleon/conventions.md` into the memory channel — detected
   delivery-faithfully: code fences/inline code spans are ignored and the
   import path must resolve (relative to its containing file) to an existing
@@ -685,7 +697,10 @@ banner and the other hooks fail open silently and log a `no-interpreter` line.
   any surviving bullet under it), collapsing to a one-line pointer only when
   every line is already covered, instead of injecting everything twice; kill
   switch `CHAMELEON_MEMORY_CHANNEL_DEDUP=0`. It appends a drift banner when
-  warranted, runs the default-on auto-refresh, and
+  warranted, delivers any turn-end findings a prior dead session left
+  undelivered (the next-turn delivery point when no next Stop arrives), adds a
+  one-line note when the self-learning miner has proposed idiom candidates
+  (`_idiom_candidates_note`), runs the default-on auto-refresh, and
   fires the advisor daemon asynchronously. It also wires the status line: when
   neither the project's `settings.json` nor the global `~/.claude/settings.json`
   declares a `statusLine`, `_wire_statusline_settings` writes the chameleon
@@ -743,9 +758,13 @@ banner and the other hooks fail open silently and log a `no-interpreter` line.
   the turn-end judge and surfaces disable/pause/teach options on detected
   frustration.
 - **stop-backstop** runs the turn-end gates (see [Enforcement](#enforcement)).
-  It carries the longest timeout (55s) because the correctness judge spawns a
-  reviewer model inside it under a 45s budget, and the cap must clear that with
-  headroom under Claude Code's own 60s hook ceiling.
+  As of v3.4.0 it is deterministic and fast: it runs the inline deterministic
+  advisories, decides whether the turn warrants a model review, and if so
+  launches ONE detached background job and returns — it does not wait on the
+  reviewer, so a model review never delays turn end. The 55s shell timeout
+  (headroom under Claude Code's 60s hook ceiling) now bounds only a hung
+  interpreter and the opt-in `CHAMELEON_JUDGE_WAIT=1` in-turn poll path, not an
+  inline reviewer spawn.
 
 **Fail-open and fail-closed split.** Every hook failure path fails open: a
 degraded banner or nothing at all, and the edit proceeds. There is no
@@ -1074,7 +1093,15 @@ next turn to deliver into (see the `environment-variables.md` entry).
     intent tokens (each grounding block has its own default-on config flag,
     and each fails open independently — an absent calls index or a per-file
     parse exception inside one grounding stage skips just that stage's
-    contribution and still lets the review spawn and return findings). Model:
+    contribution and still lets the review spawn and return findings). As of
+    v3.6.0 it also carries a **task intent contract**: the verbatim,
+    secret-scanned scope-constraint sentences the session's own prompts stated
+    (`intent_capture.extract_scope_lines`, kill switch
+    `CHAMELEON_INTENT_CONTRACT=0`), against which the lens runs two
+    `kind:intent` checks — unmet-ask (a requested change with no implementation
+    in the diff) and unrequested-scope (a change the prompt did not ask for) —
+    routed to the standard finding lifecycle by the reviewer's own `claim_type`
+    (`stop/lenses/correctness.py::_kind_for`). Model:
     `CHAMELEON_JUDGE_MODEL` (default `sonnet`). The **reviewer model ladder**
     (`judge_model_for_route`, `CHAMELEON_JUDGE_MODEL_HIGH`, default `opus`)
     escalates a `risk_high`/`intent_forced` route to a stronger model;
@@ -1120,10 +1147,17 @@ next turn to deliver into (see the `environment-variables.md` entry).
   that share no word with any requested identifier).
 - **Finding lifecycle ledger** (`review_ledger.py`, one JSON row per
   `match_key` under the repo's plugin-data dir). `stop/job.py` persists every
-  VERIFY survivor via `record_findings`; a finding below the built-in severity
-  surface bar (medium+ surfaces even unverified, low only when
-  `verified=="confirmed"`) is stored `status="shelved"` instead, with a check
-  event. Delivery reads `undelivered_findings` (`pending` rows only) and
+  VERIFY survivor via `record_findings`; a finding below the per-repo
+  **surface bar** (`review.surface_bar`, default `medium`: `medium` surfaces
+  blocker/high/medium even unverified and low only when
+  `verified=="confirmed"`; `high` raises the floor; `low` surfaces everything)
+  is stored `status="shelved"` instead, with a check event. A shelved finding
+  whose `match_key` recurs across sessions is auto-promoted to `pending` on
+  its second sighting (`SHELVED_PROMOTE_MIN_RECURRENCE`, kill switch
+  `CHAMELEON_SHELVED_PROMOTION=0`) — a below-bar finding a team keeps
+  re-triggering is worth a human look. Shelved rows are browsable via
+  `get_shelved_findings` (`/chameleon-status`, `/chameleon-explain`).
+  Delivery reads `undelivered_findings` (`pending` rows only) and
   marks rows `delivered`/`addressed` as they are shown or re-addressed (the
   cited file changed since review). Separately, at the START of the next
   Stop (`CHAMELEON_FINDING_LEDGER=0` to disable), before that turn's own
@@ -1152,6 +1186,56 @@ next turn to deliver into (see the `environment-variables.md` entry).
   from before the cutover is not migrated (a documented, low-impact gap —
   unlike the `.judge_pending.<session>.json` queue, which IS migrated via
   `migrate_pending_queue`).
+
+### Stop assembly and token budgets
+
+As of v3.5.0 every turn-end emission is packed by one ranked, token-budgeted
+packer, `stop/assemble.py::assemble_stop_context`, instead of concatenating
+independently-capped blocks. Candidates arrive as `EmissionItem`s carrying a
+priority and the finding `match_keys` they represent. The ranked order (the
+`PRIORITY_*` constants, lower packs first) is: block reason > resurfaced HIGH >
+delivered-verified > delivered-unverified > deterministic advisories >
+idiom/nudge lines. Packing is greedy and **whole-item** under
+`STOP_RENDER_TOKEN_CEILING`: an item that does not fit whole is omitted, never
+truncated mid-item, so it stays reachable at the next delivery point. A present
+block item short-circuits everything — its text is emitted as-is and nothing
+else packs alongside it ("a hard block emits only the block reason").
+
+The packer returns `AssembledStop.packed_match_keys`: the union of the packed
+items' keys, exactly the findings that reached the emitted text. This is the
+**ranked-commit invariant** — the caller commits a `delivered`/`resurfaced`
+terminal transition only for `packed_match_keys`, never for a finding the
+ceiling dropped or a block discarded (a block-present emission returns an empty
+tuple, since a block delivers nothing). It is why `compute_resurface` is split
+from `mark_resurfaced`: a HIGH finding's one-shot resurface commits only after
+the whole multi-root loop confirms no root blocked AND the packer kept the
+line, so a resurface is never spent on output a later workspace's block or the
+ceiling discards.
+
+SessionStart uses the same budgeting idea: its ~3.6k-char operational digest is
+the only compressible part of an emission bounded by
+`SESSION_START_DELIVERY_TOKEN_CEILING`, so the higher-authority conventions
+block stays inside the model's attention window.
+
+### Self-learning idiom miner
+
+As of v3.6.0 a miner (`stop/miner.py::run_miner`, kill switch
+`CHAMELEON_IDIOM_MINER=0`) runs at the **tail of the detached review job**, so
+it adds zero Stop-time cost. It reads three usage signals the rest of Stop
+already writes — recurring correctness/duplication findings, over-overridden
+rules, and reinforced idioms — and writes never-auto-adopted proposals to
+`.chameleon/idiom-candidates/<slug>.json` (`core/idiom_candidates.py`, atomic
+per file, merging repeated sightings into one richer proposal rather than
+forking duplicates; new slugs bounded by `IDIOM_CANDIDATE_MAX`).
+
+Nothing here is adopted automatically. The candidates directory is deliberately
+**not** part of the trust-hashed profile surface (`_HASHED_ARTIFACTS`) —
+hashing the miner's own unreviewed output would arm the trust gate on a
+proposal no human has seen. A candidate becomes a real idiom only through the
+same `/chameleon-teach` (or `/chameleon-auto-idiom`) path and the same
+`check_idiom_candidates` novelty gate a hand-taught idiom passes. Candidates
+surface non-intrusively: a one-line SessionStart note and a "Learned from
+usage" section in `/chameleon-auto-idiom` (`list_idiom_candidates`).
 
 ---
 
@@ -1288,7 +1372,11 @@ each framed by null bytes: `.archetype_renames.json`,
 `constant_index.json`, `conventions.json`, `counterexamples.json`,
 `enforcement.json`, `exports_index.json`, `function_catalog.json`, `principles.md`,
 `idioms.md`, `profile.json`, `reverse_index.json`, `rules.json`, and
-`symbol_signatures.json`. Because all
+`symbol_signatures.json`. Once the per-file idiom store `.chameleon/idioms/`
+exists, it supersedes `idioms.md` in the hash: `idioms.md` is dropped (it is a
+generated view) and each `idioms/*.json` record is hashed in its place, sorted
+by filename. The `idiom-candidates/` directory is deliberately excluded — it is
+the miner's unreviewed output, not idiom truth. Because all
 the convention, index, and calibration artifacts are in the set, a refresh that
 changes any of them flips the profile to stale until re-approval — but only
 under `CHAMELEON_TRUST_REVALIDATE=1`; by default trust is one-time and the
@@ -1566,12 +1654,17 @@ default; it self-suppresses under CI, never runs on a hook hot path, and fails
 open (see [Production-ref derivation](#production-ref-derivation)).
 
 **Intent capture privacy.** The UserPromptSubmit capture persists only extracted
-checkable tokens (numerals, code-shaped identifiers, quoted strings) and a
-prompt digest, never raw prompt prose. A hard-secret scanner runs over the whole
-prompt and fails closed (a hit persists zero tokens), each surviving token is
-re-scanned and dropped if credential-shaped, and a prompt-borne
-`chameleon-ignore` cannot defeat redaction. Files are 0600 in the 0700 data dir
-and swept after a retention window. Kill switch: `CHAMELEON_INTENT_CAPTURE=0`.
+checkable tokens (numerals, code-shaped identifiers, quoted strings), a prompt
+digest, and — as of v3.6.0 — a bounded set of verbatim scope-constraint
+sentences (the intent contract's `scope_lines`, "don't touch X" / "only change
+Y"), never raw prompt prose. A hard-secret scanner runs over the whole
+prompt and fails closed (a hit persists zero tokens **and zero scope lines**),
+each surviving token is re-scanned and dropped if credential-shaped, the scope
+lines are themselves bounded and secret-scanned by `extract_scope_lines`, and a
+prompt-borne `chameleon-ignore` cannot defeat redaction. Files are 0600 in the
+0700 data dir and swept after a retention window. Kill switches:
+`CHAMELEON_INTENT_CAPTURE=0` (disables capture entirely) and
+`CHAMELEON_INTENT_CONTRACT=0` (drops the scope-line channel only).
 
 Report vulnerabilities privately through a GitHub security advisory; see
 [SECURITY.md](../SECURITY.md).
@@ -1635,6 +1728,7 @@ under `enforcement` are tolerated for forward compatibility; unknown keys under
 | `enforcement.crossfile_existence_block` | `false` | Opt-in deny: BLOCK a Stop where the turn removed a TS/Python export an indexed importer still uses (live-re-verified, HEAD-scoped, FP-free). Stop-only; `enforce` blocks, `shadow` logs `would_block`. Overridable with `chameleon-ignore removed-export-breaks-importers`. |
 | `enforcement.calibration.auto_demote` | `true` | Whether refresh-time override-feedback demotion (`apply_override_feedback_demotion`) runs at all. `false` leaves every calibrated-active block rule's verdict untouched regardless of override rate. |
 | `enforcement.calibration.override_rate_threshold` / `min_events` / `min_distinct_sessions` | `0.5` / `5` / `2` | Per-repo overrides for the demotion bar (fraction of fires overridden, minimum combined override+would-block events, minimum distinct sessions backing the evidence). Defaults equal the global `RULE_FP_DEMOTE_THRESHOLD` / `OVERRIDE_AUDIT_MIN_EVENTS` / `OVERRIDE_DEMOTION_MIN_SESSIONS` `_thresholds.py` values, so an absent section is byte-identical to pre-config behavior. |
+| `review.surface_bar` | `"medium"` | The finding surface bar applied at `record_findings` time. `high` / `medium` / `low`; `medium` is the pre-config built-in behavior. A finding below the bar is `shelved` rather than delivered (see [Turn-end advisories](#turn-end-advisories-on-by-default-never-block)). |
 
 The full list of environment variables (kill switches, opt-in gates, model
 selectors, tuning knobs, and test-only overrides) lives in
@@ -1650,7 +1744,7 @@ subset and points there. Numeric tuning thresholds live in
 
 Engine versions stay in lockstep across six manifests, kept in sync by
 `scripts/bump-version.sh` (the plugin cache is version-keyed). The current
-engine is 3.0.2 and the current profile schema is 8.
+engine is 3.6.0 and the current profile schema is 8.
 
 **Compatibility contract for committed `.chameleon/`:** chameleon will not break
 a committed profile schema without a major version bump. An engine reads any
@@ -1730,7 +1824,7 @@ anyone considering dropping mandatory review.
 | **drift** | Divergence between current code and the profile, tracked per-edit in `drift.db`. |
 | **engine** | The chameleon plugin code: hooks, MCP server, skills, extractors. Distinct from a profile. |
 | **fail-closed / fail-open** | On error, deny (safety) versus allow with a warning (advisory). |
-| **idiom** | A team-specific convention recorded in `idioms.md`, what an AST cannot infer. |
+| **idiom** | A team-specific convention an AST cannot infer, stored as one JSON record per idiom in the `.chameleon/idioms/` store (`idioms.md` is a generated view). |
 | **profile** | The per-repo committed data in `.chameleon/`. |
 | **production_ref** | The locked branch a profile derives from. |
 | **recency weight** | Canonical-selection weight that decays off a file's last git commit time (full 2x for a just-committed file, halving every `CANONICAL_RECENCY_HALF_LIFE_DAYS`, default 45), to defeat archive-majority repos; falls back to a 2x/90-day mtime step when git is unavailable. |
