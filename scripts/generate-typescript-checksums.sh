@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Generates mcp/typescript-checksums.json: SHA-256 manifest of vendored TS files.
-# Run quarterly after bumping mcp/node_modules/typescript or whenever TS is updated.
+# Generates plugin/mcp/typescript-checksums.json: SHA-256 manifest of vendored TS files.
+# Run quarterly after bumping plugin/mcp/node_modules/typescript or whenever TS is updated.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TS_DIR="${REPO_ROOT}/mcp/node_modules/typescript"
-OUT="${REPO_ROOT}/mcp/typescript-checksums.json"
+TS_DIR="${REPO_ROOT}/plugin/mcp/node_modules/typescript"
+OUT="${REPO_ROOT}/plugin/mcp/typescript-checksums.json"
 
 if [ ! -d "${TS_DIR}" ]; then
-  echo "ERROR: ${TS_DIR} not found; run 'cd mcp && npm install typescript' first" >&2
+  echo "ERROR: ${TS_DIR} not found; run 'cd plugin/mcp && npm ci' first" >&2
   exit 1
 fi
 
