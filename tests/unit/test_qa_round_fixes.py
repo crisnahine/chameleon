@@ -99,6 +99,25 @@ def test_stop_backstop_wrapper_timeout_exceeds_judge_budget():
     assert int(m.group(1)) > DEFAULTS["CORRECTNESS_JUDGE_TIMEOUT_SECONDS"]
 
 
+def test_stop_backstop_wrapper_timeout_exceeds_live_judge_wait_budget():
+    # CORRECTNESS_JUDGE_TIMEOUT_SECONDS (the assertion above) is the
+    # pre-async-first synchronous judge budget. The constant actually
+    # exercised on the live CHAMELEON_JUDGE_WAIT Stop poll path today is
+    # JUDGE_WAIT_STOP_BUDGET_SECONDS, sized to leave headroom under this same
+    # wrapper cap (see the CHAMELEON_JUDGE_WAIT entry in
+    # .claude/rules/environment-variables.md). Pin the wrapper against that
+    # live constant too, not only the stale pre-cutover one.
+    from chameleon_mcp._thresholds import DEFAULTS
+
+    text = _read("plugin/hooks/stop-backstop")
+    import re
+
+    m = re.search(r'\$\{TIMEOUT_BIN:\+"\$\{TIMEOUT_BIN\}" (\d+)\}', text)
+    assert m, "stop-backstop must keep its timeout(1) cap"
+    wrapper_timeout = int(m.group(1))
+    assert wrapper_timeout > DEFAULTS["JUDGE_WAIT_STOP_BUDGET_SECONDS"]
+
+
 def test_stale_judge_dirs_swept_on_next_spawn(monkeypatch, tmp_path):
     import os as _os
     import time as _time

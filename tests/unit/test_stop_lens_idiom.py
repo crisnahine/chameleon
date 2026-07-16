@@ -479,3 +479,65 @@ def test_run_archetype_resolver_raising_fails_open(tmp_path):
         result = idiom.run(repo, profile, [str(src)], _boom)
     spawn.assert_called_once()
     assert result.findings == []
+
+
+# --- flood caps (IDIOM_LENS_MAX_IDIOMS / _MAX_PROMPT_BYTES / _MAX_FINDINGS) -
+
+
+def test_build_prompt_caps_idiom_count_at_threshold():
+    # A turn whose diff scopes MORE idioms than IDIOM_LENS_MAX_IDIOMS must
+    # not dump the whole store into the reviewer prompt -- only the leading
+    # slice up to the real threshold survives.
+    from chameleon_mcp._thresholds import threshold_int
+
+    max_idioms = threshold_int("IDIOM_LENS_MAX_IDIOMS")
+    scoped = [
+        _rec(slug=f"idiom-{i:02d}", title=f"idiom-{i:02d}", rationale=f"Rule number {i}.")
+        for i in range(max_idioms + 5)
+    ]
+    prompt = idiom._build_prompt(scoped, [])
+    included = [rec.slug for rec in scoped if f"### {rec.slug}:" in prompt]
+    assert len(included) == max_idioms
+    assert included == [rec.slug for rec in scoped[:max_idioms]]
+
+
+def test_build_prompt_caps_prompt_bytes_at_threshold():
+    # Even under IDIOM_LENS_MAX_IDIOMS, a handful of idioms with large
+    # rationale/example text can blow past IDIOM_LENS_MAX_PROMPT_BYTES; the
+    # byte budget must bound the built prompt independently of the count cap.
+    from chameleon_mcp._thresholds import threshold_int
+
+    budget = threshold_int("IDIOM_LENS_MAX_PROMPT_BYTES")
+    huge_rationale = "x" * 20_000
+    scoped = [_rec(slug=f"huge-{i}", title=f"huge-{i}", rationale=huge_rationale) for i in range(6)]
+    # 6 * 20,000 char rationales comfortably exceed the 60,000-byte budget, so
+    # the loop must break before appending every idiom.
+    prompt = idiom._build_prompt(scoped, [])
+    assert len(prompt) <= budget
+    included = [rec.slug for rec in scoped if f"### {rec.slug}:" in prompt]
+    assert 0 < len(included) < len(scoped)
+
+
+def test_run_findings_truncated_to_max_findings(tmp_path):
+    # A reviewer spawn that returns more valid, correctly-cited claims than
+    # IDIOM_LENS_MAX_FINDINGS must still surface only the capped count -- one
+    # over-eager reviewer response cannot flood a turn's findings.
+    from chameleon_mcp._thresholds import threshold_int
+
+    repo, profile = _repo(tmp_path)
+    upsert_idiom(profile, _rec())  # slug "wrap-fetches"
+    src = _write_ts(repo)
+    max_findings = threshold_int("IDIOM_LENS_MAX_FINDINGS")
+    arr = [
+        {
+            "slug": "wrap-fetches",
+            "file": "src/widget.ts",
+            "lines": [i],
+            "message": f"violation {i}",
+        }
+        for i in range(1, max_findings + 5)
+    ]
+    with patch.object(judge, "_spawn_reviewer_status", return_value=(_result_line(arr), None)):
+        result = idiom.run(repo, profile, [str(src)], lambda _p: None)
+    assert len(result.findings) == max_findings
+    assert [f.span for f in result.findings] == [(i, i) for i in range(1, max_findings + 1)]
