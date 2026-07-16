@@ -1005,6 +1005,22 @@ class TestDamagedIdiomsCarryForward:
         assert (pd / "idioms.md").read_text(encoding="utf-8") == garbage
         assert any("no parseable idiom blocks" in w for w in report.idiom_warnings)
 
+    def test_bare_store_view_is_known_empty_no_warning(self, tmp_path: Path, monkeypatch):
+        # Trust/teach migration regenerates idioms.md via the idiom store's
+        # renderer, whose empty form is bare section headers with no
+        # placeholder prose. That is a known-empty view every fresh trusted
+        # profile carries, not damage.
+        from chameleon_mcp.core.idiom_store import render_idioms_md
+
+        repo = self._ts_repo(tmp_path)
+        pd = repo / ".chameleon"
+        pd.mkdir()
+        (pd / "idioms.md").write_text(render_idioms_md([]), encoding="utf-8")
+
+        report = self._bootstrap_with_fake_parse(repo, monkeypatch)
+        assert report.status == "success"
+        assert report.idiom_warnings == []
+
     def test_healthy_idioms_md_carried_with_count_and_no_warning(self, tmp_path: Path, monkeypatch):
         repo = self._ts_repo(tmp_path)
         pd = repo / ".chameleon"

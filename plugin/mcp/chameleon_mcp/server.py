@@ -250,13 +250,18 @@ def get_callees(repo: str, file_path: str, function_name: str) -> dict:
 def get_contract_breaks(repo: str, base_ref: str = "main") -> dict:
     """ADVISORY: deterministic caller-contract breaks for a branch diff vs base_ref.
 
-    For each changed TS/Ruby file, compares its callables' POSITIONAL parameter
-    contract at base_ref vs HEAD and flags a NARROWING (new required positional,
-    or optional->required) that has committed callers -- the deterministic
-    signature-contract signal, surfaced as a citable tool result. Returns
-    {status, findings:[{file, name, old/new_required_positional, caller_total,
-    callers}]}. git show + AST re-parse, no network/repo-exec; default-on; fails
-    open to a no-signal result; never blocks. pr-review cites these as FIX.
+    For each changed TS/Ruby/Python file, compares its callables' POSITIONAL
+    parameter contract at base_ref vs HEAD and flags a NARROWING (new required
+    positional, or optional->required) that has committed callers -- the
+    deterministic signature-contract signal, surfaced as a citable tool result.
+    Returns {status, findings:[{file, name, old/new_required_positional,
+    caller_total, callers}]}. A second finding shape,
+    kind="removed_export_still_imported" (both positional fields null), flags
+    an export the diff removed outright that indexed importers still reference
+    -- the same existence-break class get_crossfile_context reports repo-wide,
+    so cite it once across the two tools. git show + AST re-parse, no
+    network/repo-exec; default-on; fails open to a no-signal result; never
+    blocks. pr-review cites these as FIX.
     """
     return tools.get_contract_breaks(repo, base_ref)
 
@@ -471,7 +476,10 @@ def chameleon_lifecycle(action: str, params: dict | None = None) -> dict:
       by default; pass force=true for legitimate first-time-disable from a
       brand-new session (the response still surfaces a warning).
     - pause_session(repo, minutes=15): Pause chameleon advisory injections
-      for `minutes` minutes (default 15). Auto-expires.
+      for `minutes` minutes (default 15). Auto-expires. The marker is
+      HMAC-signed like the disable marker: with the per-user key available,
+      a `.pause_until` planted directly on disk (no/wrong signature) is
+      ignored (the no-key edge case fails open, same as the disable marker).
 
     An unknown action returns a failed envelope listing the valid actions.
     """

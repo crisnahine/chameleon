@@ -8256,7 +8256,9 @@ def _build_session_attestation(
     try:
         pause_path = repo_data / ".pause_until"
         if pause_path.is_file():
-            suppression["pause_until"] = pause_path.read_text(encoding="utf-8").strip()
+            # Line 1 is the expiry; a sig= line may follow (see optouts.write_pause).
+            _pause_lines = pause_path.read_text(encoding="utf-8").splitlines()
+            suppression["pause_until"] = _pause_lines[0].strip() if _pause_lines else ""
     except Exception:
         pass
     payload["suppression"] = suppression

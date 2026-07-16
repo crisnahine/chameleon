@@ -250,9 +250,13 @@ def test_write_session_disable_creates_marker(tmp_path: Path):
 def test_write_pause_creates_file(tmp_path: Path):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
+    key_file = _setup_hmac_key(tmp_path)
     repo_id = "test-repo"
 
-    with patch.dict(os.environ, {"CHAMELEON_PLUGIN_DATA": str(data_dir)}):
+    with patch.dict(
+        os.environ,
+        {"CHAMELEON_PLUGIN_DATA": str(data_dir), "CHAMELEON_HMAC_KEY_PATH": str(key_file)},
+    ):
         from chameleon_mcp.optouts import write_pause
         from chameleon_mcp.profile.trust import repo_data_dir
 
@@ -260,13 +264,123 @@ def test_write_pause_creates_file(tmp_path: Path):
         pause_path = repo_data_dir(repo_id) / ".pause_until"
 
     assert pause_path.is_file()
-    content = pause_path.read_text(encoding="utf-8")
-    assert content == expiry_iso
+    lines = pause_path.read_text(encoding="utf-8").splitlines()
+    # Line 1 is the bare expiry (display readers parse only that line); a
+    # sig= line follows so a marker planted directly on disk is rejected.
+    assert lines[0] == expiry_iso
+    assert len(lines) == 2 and lines[1].startswith("sig=")
 
     parsed = datetime.fromisoformat(expiry_iso.replace("Z", "+00:00"))
     assert parsed.timestamp() > time.time()
 
     assert not pause_path.with_suffix(".tmp").exists()
+
+
+def test_pause_marker_planted_on_disk_is_rejected(tmp_path: Path):
+    """A bare-timestamp (or wrong-sig) .pause_until written directly to the
+    data dir — bypassing pause_session — must not suppress anything; only
+    write_pause's own HMAC-signed marker is honored."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    key_file = _setup_hmac_key(tmp_path)
+    repo_id = "test-repo"
+
+    with patch.dict(
+        os.environ,
+        {"CHAMELEON_PLUGIN_DATA": str(data_dir), "CHAMELEON_HMAC_KEY_PATH": str(key_file)},
+    ):
+        from chameleon_mcp.optouts import is_chameleon_suppressed, write_pause
+        from chameleon_mcp.profile.trust import repo_data_dir
+
+        # A legit pause first, so the HMAC key exists and verification is armed.
+        write_pause(repo_id, minutes=10)
+        pause_path = repo_data_dir(repo_id) / ".pause_until"
+        assert is_chameleon_suppressed(None, repo_id) == "pause"
+
+        pause_path.write_text("2099-01-01T00:00:00Z", encoding="utf-8")
+        assert is_chameleon_suppressed(None, repo_id) is None
+
+        pause_path.write_text("2099-01-01T00:00:00Z\nsig=" + "0" * 64, encoding="utf-8")
+        assert is_chameleon_suppressed(None, repo_id) is None
+
+        # An expired legit marker is cleaned up, not honored.
+        write_pause(repo_id, minutes=10)
+        lines = pause_path.read_text(encoding="utf-8").splitlines()
+        assert is_chameleon_suppressed(None, repo_id) == "pause"
+        pause_path.write_text("2001-01-01T00:00:00Z\n" + lines[1], encoding="utf-8")
+        assert is_chameleon_suppressed(None, repo_id) is None
+        assert not pause_path.exists()
+
+
+def test_non_ascii_sig_rejected_not_crashed(tmp_path: Path):
+    """compare_digest raises TypeError on a non-ASCII str — a sig= line the
+    marker planter controls. Both verify helpers must reject such a marker,
+    never let the TypeError escape the reject path."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    key_file = _setup_hmac_key(tmp_path)
+
+    with patch.dict(
+        os.environ,
+        {"CHAMELEON_PLUGIN_DATA": str(data_dir), "CHAMELEON_HMAC_KEY_PATH": str(key_file)},
+    ):
+        from chameleon_mcp.optouts import (
+            _safe_session_marker,
+            is_chameleon_suppressed,
+            write_pause,
+            write_session_disable,
+        )
+        from chameleon_mcp.profile.trust import repo_data_dir
+
+        repo_id = "test-repo"
+        session_id = "sess-1"
+
+        write_pause(repo_id, minutes=10)
+        pause_path = repo_data_dir(repo_id) / ".pause_until"
+        pause_path.write_text("2099-01-01T00:00:00Z\nsig=é", encoding="utf-8")
+        assert is_chameleon_suppressed(None, repo_id, session_id) is None
+
+        pause_path.unlink()
+        write_session_disable(repo_id, session_id)
+        marker = repo_data_dir(repo_id) / f".session_disabled.{_safe_session_marker(session_id)}"
+        marker.write_text("disabled-at=1.0\nsession_id=sess-1\nsig=é\n", encoding="utf-8")
+        assert is_chameleon_suppressed(None, repo_id, session_id) is None
+
+
+def test_marker_with_invalid_utf8_bytes_rejected_not_crashed(tmp_path: Path):
+    """A planted marker of raw invalid-UTF-8 bytes must be rejected by the
+    read guard, not crash is_chameleon_suppressed with an escaping
+    UnicodeDecodeError. Covers BOTH markers' file reads (the sibling vector to
+    the non-ASCII sig= line, which read_text decodes fine)."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    key_file = _setup_hmac_key(tmp_path)
+
+    with patch.dict(
+        os.environ,
+        {"CHAMELEON_PLUGIN_DATA": str(data_dir), "CHAMELEON_HMAC_KEY_PATH": str(key_file)},
+    ):
+        from chameleon_mcp.optouts import (
+            _safe_session_marker,
+            is_chameleon_suppressed,
+            write_pause,
+            write_session_disable,
+        )
+        from chameleon_mcp.profile.trust import repo_data_dir
+
+        repo_id = "test-repo"
+        session_id = "sess-1"
+
+        write_pause(repo_id, minutes=10)
+        pause_path = repo_data_dir(repo_id) / ".pause_until"
+        pause_path.write_bytes(b"2099-01-01T00:00:00Z\nsig=\xff\xfe\x80\n")
+        assert is_chameleon_suppressed(None, repo_id, session_id) is None
+
+        pause_path.unlink()
+        write_session_disable(repo_id, session_id)
+        marker = repo_data_dir(repo_id) / f".session_disabled.{_safe_session_marker(session_id)}"
+        marker.write_bytes(b"disabled-at=1.0\nsession_id=sess-1\nsig=\xff\xfe\x80\n")
+        assert is_chameleon_suppressed(None, repo_id, session_id) is None
 
 
 def test_write_pause_never_expires_before_requested_duration(tmp_path: Path):
@@ -279,10 +393,14 @@ def test_write_pause_never_expires_before_requested_duration(tmp_path: Path):
     """
     data_dir = tmp_path / "data"
     data_dir.mkdir()
+    key_file = _setup_hmac_key(tmp_path)
     repo_id = "test-repo"
     minutes = 15
 
-    with patch.dict(os.environ, {"CHAMELEON_PLUGIN_DATA": str(data_dir)}):
+    with patch.dict(
+        os.environ,
+        {"CHAMELEON_PLUGIN_DATA": str(data_dir), "CHAMELEON_HMAC_KEY_PATH": str(key_file)},
+    ):
         from chameleon_mcp.optouts import write_pause
 
         before = time.time()

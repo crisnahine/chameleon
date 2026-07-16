@@ -12,7 +12,26 @@ no-spawn; the few tests that assert on the real spawn opt out with
 
 from __future__ import annotations
 
+import os
+
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolated_plugin_data(tmp_path_factory, monkeypatch):
+    """Default every test to an isolated CHAMELEON_PLUGIN_DATA dir.
+
+    A test that bootstraps a repo without setting the override writes trust
+    records, drift/index DB rows, and degraded telemetry into the developer's
+    real ~/.local/share/chameleon — the suite polluted the real registry with
+    hundreds of pytest tmp-repo rows this way. Tests that need a specific data
+    dir set their own value (their setenv overrides this one); the default-path
+    resolution test delenvs inside its body, which also wins over this fixture.
+    """
+    if "CHAMELEON_PLUGIN_DATA" not in os.environ:
+        monkeypatch.setenv(
+            "CHAMELEON_PLUGIN_DATA", str(tmp_path_factory.mktemp("isolated-plugin-data"))
+        )
 
 
 def pytest_configure(config):

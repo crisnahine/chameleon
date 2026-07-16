@@ -39,8 +39,8 @@ def _isolate(tmp_path, monkeypatch):
     from chameleon_mcp import index_db
     from chameleon_mcp.profile import loader as _loader
 
-    # index_db caches a module-level connection that ignores the env once
-    # opened; drop it so each test gets a db under its own tmp data dir.
+    # The index_db connection cache is path-keyed and re-homes on a
+    # CHAMELEON_PLUGIN_DATA change; this reset is belt-and-braces only.
     monkeypatch.setattr(index_db, "_INDEX_CONN", None)
     _loader._PROFILE_CACHE.clear()
     _loader._REPO_ROOT_CACHE.clear()

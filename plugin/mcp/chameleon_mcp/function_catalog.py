@@ -786,13 +786,23 @@ def select_candidates(
     signal's job, not the near-duplicate prefilter's). Candidates are ranked by
     overlap, then required-arity closeness, then name, and capped.
 
+    When the file under review is production code, candidates that live in
+    test files are dropped unless their body is an exact/param-normalized
+    clone: a production function cannot legitimately reuse a test helper, and
+    with the per-function candidate cap a token-overlap test match crowds a
+    real production lead out of the list. A test file under review keeps its
+    test-file candidates (re-implemented test helpers are a real dup class).
+
     Returns one entry per new function that has any candidate:
     ``{"function": {...}, "candidates": [{name, file, kind, arity, required,
     shared_tokens}, ...]}``. The caller reads each candidate's real body from
     disk and judges semantic equivalence; this list only narrows the search.
     """
+    from chameleon_mcp.comprehension import _is_test_path
+
     min_tokens = threshold_int("DUPLICATION_MIN_SHARED_TOKENS")
     max_candidates = threshold_int("DUPLICATION_MAX_CANDIDATES_PER_FN")
+    reviewing_production = exclude_file is not None and not _is_test_path(exclude_file)
 
     results: list[dict] = []
     for nf in new_functions:
@@ -825,6 +835,12 @@ def select_candidates(
                 if overlap < min_tokens:
                     continue
                 if not _arity_close(new_shape, (cand.arity, cand.required)):
+                    continue
+                # Production code cannot reuse a test helper, and the candidate
+                # cap means a token-overlap test match evicts a real production
+                # lead. A byte/param-identical clone (body_match) still passes:
+                # copy-paste from a test into production is worth surfacing.
+                if reviewing_production and _is_test_path(cand.file):
                     continue
             req_distance = abs(nf.required - cand.required)
             similarity = _jaccard(new_tokens, cand.tokens)

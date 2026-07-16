@@ -729,3 +729,63 @@ def test_refresh_explicit_force_is_not_tagged_implicit(tmp_path, monkeypatch):
         env = json.loads(env)
     data = env.get("data", env)
     assert "implicit_bootstrap" not in data
+
+
+def test_partial_refresh_falls_back_on_binary_idioms_md(tmp_path, monkeypatch):
+    """A binary-corrupted idioms.md must abort the partial path (return None,
+    caller falls back to full bootstrap) rather than crash with an escaping
+    UnicodeDecodeError — and must NOT be replaced with an empty string, which
+    the transaction below would write back over the user-authored file."""
+    from chameleon_mcp import index_db
+    from chameleon_mcp import tools as t
+
+    repo_root = (tmp_path / "repo").resolve()
+    profile_dir = repo_root / ".chameleon"
+    profile_dir.mkdir(parents=True)
+    src = repo_root / "src"
+    src.mkdir()
+    cluster_id = "cluster-util"
+
+    candidates = []
+    prev_state = {}
+    for i in range(20):
+        rel = f"src/comp{i}.ts"
+        (repo_root / rel).write_text(f"export const c{i} = {i}\n", encoding="utf-8")
+        candidates.append(repo_root / rel)
+        prev_state[rel] = {"cluster_id": cluster_id, "sha_hint": f"hint-{i}"}
+    changed_rel = "src/comp0.ts"
+
+    (profile_dir / "archetypes.json").write_text(
+        json.dumps({"schema_version": 8, "archetypes": {"util": {"cluster_id": cluster_id}}}),
+        encoding="utf-8",
+    )
+    (profile_dir / "canonicals.json").write_text(
+        json.dumps({"schema_version": 8, "canonicals": {"util": []}}), encoding="utf-8"
+    )
+    (profile_dir / "profile.json").write_text(
+        json.dumps({"schema_version": 8, "archetype_count": 1}), encoding="utf-8"
+    )
+    (profile_dir / "rules.json").write_text(json.dumps({"schema_version": 8}), encoding="utf-8")
+    damaged = b"\xff\xfe\x00taught idioms trapped in a bad encoding\x80\x81"
+    (profile_dir / "idioms.md").write_bytes(damaged)
+
+    def _sha(p):
+        rel = str(p.relative_to(repo_root))
+        idx = int(rel.removeprefix("src/comp").removesuffix(".ts"))
+        return "changed" if rel == changed_rel else f"hint-{idx}"
+
+    monkeypatch.setattr(t, "_content_sha_hint", _sha)
+    monkeypatch.setattr(
+        t, "_reparse_changed_files", lambda _root, _paths: {changed_rel: (cluster_id, "changed")}
+    )
+    monkeypatch.setattr(index_db, "upsert_file_clusters", lambda *a, **k: None)
+    monkeypatch.setattr(index_db, "delete_file_clusters_for_paths", lambda *a, **k: None)
+    monkeypatch.setattr(index_db, "upsert_repo", lambda *a, **k: None)
+    monkeypatch.setattr(t, "_calibrate_block_rules_for_repo", lambda root: None)
+
+    envelope = t._attempt_partial_refresh(
+        repo_root, "repo-id", profile_dir, candidates, prev_state, started_at=0.0
+    )
+
+    assert envelope is None
+    assert (profile_dir / "idioms.md").read_bytes() == damaged

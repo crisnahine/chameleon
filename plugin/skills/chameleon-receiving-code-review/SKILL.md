@@ -375,8 +375,9 @@ parts:
   to the next item on it.
 - **Contract re-check** (signature-changing fixes only): a fix that renamed a
   symbol or changed an arity re-runs `get_callers` (and `get_contract_breaks`
-  for a narrowed positional contract) on the changed symbol — the reviewer
-  asked for the change, not for its callers to break.
+  for a narrowed positional contract or a removed-but-still-imported export —
+  its `kind: "removed_export_still_imported"` rows) on the changed symbol —
+  the reviewer asked for the change, not for its callers to break.
 
 After the last approved item lands, verify no regressions across the whole set,
 distinct from the per-item verify — a defined pass, not a vibe: (a) build the

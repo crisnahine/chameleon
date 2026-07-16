@@ -73,7 +73,11 @@ def _marker_has_valid_signature(marker: Path, repo_id: str, session_id: str) -> 
 
     try:
         text = marker.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # Undecodable bytes are a planted marker the reject path must reject,
+        # not crash on: is_chameleon_suppressed's disable branch has no local
+        # guard, so an escaping UnicodeDecodeError would ride to the hook's
+        # fail-open and skip that root's gates with no valid signature.
         return False
     sig_line = ""
     disabled_at_line = ""
@@ -92,7 +96,52 @@ def _marker_has_valid_signature(marker: Path, repo_id: str, session_id: str) -> 
         return True
     if not sig_line:
         return False
-    return _hmac.compare_digest(sig_line, expected)
+    # Compare as bytes: compare_digest raises TypeError on a non-ASCII str,
+    # which a planted marker's sig= line controls — the reject path must not
+    # be crashable by the very input it exists to reject.
+    return _hmac.compare_digest(sig_line.encode("utf-8"), expected.encode("utf-8"))
+
+
+def _sign_pause(repo_id: str, expiry_iso: str) -> str:
+    """Compute the HMAC signature for a `.pause_until` marker.
+
+    Same key and posture as `_sign_marker`: empty string when the local
+    HMAC key cannot be loaded (the marker is then written unsigned and
+    verification short-circuits to "valid").
+    """
+    import hmac as _hmac
+
+    try:
+        from chameleon_mcp.exec_log import _ensure_hmac_key
+
+        key = _ensure_hmac_key()
+    except Exception:
+        return ""
+    msg = f"pause|{repo_id}|{expiry_iso}".encode()
+    return _hmac.new(key, msg, hashlib.sha256).hexdigest()
+
+
+def _pause_has_valid_signature(repo_id: str, expiry_iso: str, sig_line: str) -> bool:
+    """Verify the HMAC signature on a `.pause_until` marker.
+
+    Same threat model and policy as `_marker_has_valid_signature`: a
+    third-party process with write access to the data dir must not be able
+    to plant a pause that silently suppresses every advisory. With the HMAC
+    key available a marker MUST carry a valid `sig=` line (a bare timestamp
+    is rejected); without the key nothing can be verified, so the marker is
+    honored — a pause is a bounded, low-privilege state and the no-key case
+    already implies a bigger compromise.
+    """
+    import hmac as _hmac
+
+    expected = _sign_pause(repo_id, expiry_iso)
+    if not expected:
+        return True
+    if not sig_line:
+        return False
+    # Bytes compare — see _marker_has_valid_signature: a non-ASCII str makes
+    # compare_digest raise instead of reject.
+    return _hmac.compare_digest(sig_line.encode("utf-8"), expected.encode("utf-8"))
 
 
 def _safe_session_marker(session_id: str | None) -> str:
@@ -136,15 +185,24 @@ def is_chameleon_suppressed(
         pause_path = repo_data_dir(repo_id) / ".pause_until"
         if pause_path.is_file():
             try:
-                expiry_iso = pause_path.read_text(encoding="utf-8").strip()
+                lines = pause_path.read_text(encoding="utf-8").splitlines()
+                expiry_iso = lines[0].strip() if lines else ""
+                sig_line = ""
+                for line in lines[1:]:
+                    if line.startswith("sig="):
+                        sig_line = line[len("sig=") :].strip()
                 expiry = datetime.fromisoformat(expiry_iso.replace("Z", "+00:00"))
                 if expiry.timestamp() > time.time():
-                    return "pause"
-                try:
-                    pause_path.unlink()
-                except OSError:
-                    pass
-            except (ValueError, OSError):
+                    # Same planted-marker defense as the session-disable
+                    # marker: an unverifiable pause is ignored, not honored.
+                    if _pause_has_valid_signature(repo_id, expiry_iso, sig_line):
+                        return "pause"
+                else:
+                    try:
+                        pause_path.unlink()
+                    except OSError:
+                        pass
+            except (ValueError, OSError, UnicodeDecodeError):
                 pass
 
     return None
@@ -162,9 +220,11 @@ def write_session_disable(repo_id: str, session_id: str) -> Path:
     On a system where the HMAC key cannot be created (very unusual —
     only happens when /dev/urandom is unavailable AND no override path
     is writable) the marker is still written but without a signature.
-    `_marker_has_valid_signature` treats unsigned markers as valid for
-    back-compat with older records — the security gate only
-    rejects markers whose signature is PRESENT BUT WRONG.
+    `_marker_has_valid_signature` then honors it only because the key is
+    equally unavailable at verify time (nothing can be verified, so
+    refusing would break the disable flow entirely). When the key IS
+    available, an unsigned marker is REJECTED — see that function's
+    docstring for the downgrade-attack rationale.
     """
     marker = repo_data_dir(repo_id) / f".session_disabled.{_safe_session_marker(session_id)}"
     disabled_at = time.time()
@@ -189,14 +249,23 @@ def write_pause(repo_id: str, minutes: int = 15) -> str:
     ISO format is second-precision, and flooring the fractional part would
     make the honored pause window always a hair shorter than requested.
     Ceiling ensures the caller-requested duration is never under-delivered.
+
+    Line 1 is the bare ISO timestamp (the statusline's renderer and other
+    display readers parse only that line); a `sig=` line follows so
+    `is_chameleon_suppressed` can reject a marker planted directly on disk,
+    mirroring the session-disable marker's HMAC defense.
     """
     expiry = datetime.now(UTC).timestamp() + minutes * 60
     expiry_iso = datetime.fromtimestamp(math.ceil(expiry), tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    content = expiry_iso
+    sig = _sign_pause(repo_id, expiry_iso)
+    if sig:
+        content += f"\nsig={sig}"
     pause_path = repo_data_dir(repo_id) / ".pause_until"
     tmp = pause_path.with_suffix(".tmp")
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.write(fd, expiry_iso.encode("utf-8"))
+        os.write(fd, content.encode("utf-8"))
         os.fsync(fd)
     finally:
         os.close(fd)

@@ -30,6 +30,7 @@ from chameleon_mcp.drift.sqlite_config import open_hardened
 from chameleon_mcp.profile.trust import plugin_data_dir
 
 _INDEX_CONN: sqlite3.Connection | None = None
+_INDEX_CONN_PATH: str | None = None
 
 
 def _get_index_conn(db_path: Path | None = None) -> sqlite3.Connection:
@@ -42,23 +43,34 @@ def _get_index_conn(db_path: Path | None = None) -> sqlite3.Connection:
     Test overrides with explicit ``db_path`` bypass the cache to avoid
     cross-test contamination.
 
+    The cache is keyed by the resolved db path: CHAMELEON_PLUGIN_DATA can
+    change between calls within one process (test isolation, A/B harnesses),
+    and a handle bound to the previous data dir must never serve writes
+    intended for the new one — that is how foreign rows end up in a user's
+    real registry.
+
     Raises sqlite3.Error or OSError on failure.
     """
-    global _INDEX_CONN
+    global _INDEX_CONN, _INDEX_CONN_PATH
     if db_path is not None:
         return init_index_db(db_path)
+    current = str(_index_db_path())
     if _INDEX_CONN is not None:
-        try:
-            _INDEX_CONN.execute("SELECT 1")
-            return _INDEX_CONN
-        except sqlite3.Error:
+        if _INDEX_CONN_PATH == current:
             try:
-                _INDEX_CONN.close()
-            except Exception:
+                _INDEX_CONN.execute("SELECT 1")
+                return _INDEX_CONN
+            except sqlite3.Error:
                 pass
-            _INDEX_CONN = None
+        try:
+            _INDEX_CONN.close()
+        except Exception:
+            pass
+        _INDEX_CONN = None
+        _INDEX_CONN_PATH = None
     conn = init_index_db()
     _INDEX_CONN = conn
+    _INDEX_CONN_PATH = current
     return conn
 
 
@@ -78,11 +90,17 @@ def _get_index_conn_readonly(db_path: Path | None = None) -> tuple[sqlite3.Conne
     """
     global _INDEX_CONN
     if db_path is None and _INDEX_CONN is not None:
-        try:
-            _INDEX_CONN.execute("SELECT 1")
-            return _INDEX_CONN, False
-        except sqlite3.Error:
-            pass
+        if _INDEX_CONN_PATH == str(_index_db_path()):
+            try:
+                _INDEX_CONN.execute("SELECT 1")
+                return _INDEX_CONN, False
+            except sqlite3.Error:
+                pass
+        else:
+            # Path changed (env-driven data-dir switch): the cached write
+            # handle is bound to the old dir and unreachable from here —
+            # close it now or it leaks one connection per switch.
+            close_index_connections()
     path = db_path if db_path is not None else _index_db_path()
     if not path.is_file():
         raise sqlite3.OperationalError("index.db does not exist")
@@ -93,13 +111,14 @@ def _get_index_conn_readonly(db_path: Path | None = None) -> tuple[sqlite3.Conne
 
 def close_index_connections() -> None:
     """Close the cached index.db connection. Safe to call at shutdown."""
-    global _INDEX_CONN
+    global _INDEX_CONN, _INDEX_CONN_PATH
     if _INDEX_CONN is not None:
         try:
             _INDEX_CONN.close()
         except Exception:
             pass
         _INDEX_CONN = None
+        _INDEX_CONN_PATH = None
 
 
 INDEX_DB_SCHEMA_VERSION = "1"

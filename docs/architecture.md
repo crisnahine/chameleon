@@ -261,7 +261,7 @@ Overridable with `CHAMELEON_PLUGIN_DATA`. Never committed, never exfiltrated.
 | `index.db` | SQLite registry of every repo this user has bootstrapped. |
 | `<repo_id>/drift.db` | Per-edit confidence history, override audit, decision log, finding ledger. |
 | `<repo_id>/.trust` | Per-user trust grant for this repo. |
-| `<repo_id>/.pause_until` | `/chameleon-pause-15m` expiry. |
+| `<repo_id>/.pause_until` | `/chameleon-pause-15m` expiry (line 1) + HMAC `sig=` line; with the per-user key available an unsigned/forged marker is ignored, so a live pre-4.0.1 marker stops suppressing after upgrade. |
 | `<repo_id>/.session_disabled.<hash>` | HMAC-signed per-session disable marker. |
 | `<repo_id>/prodtree/` | Materialized production-branch worktrees (swept after use). |
 | `<repo_id>/.intent.<session>.ndjson` | Captured intent tokens and digests (never raw prose). |
@@ -822,7 +822,7 @@ values unchanged.
 | `get_blast_radius` | Bounded transitive callers of a function (multi-hop change reach); the judge's own walk, surfaced as a tool. |
 | `query_symbol_importers` | Importers of a module's exports plus which break on rename. TS/JS + Python; Ruby via the constant graph. |
 | `get_crossfile_context` | Cross-file existence breaks (removed/renamed exports still imported). TS/JS + Python; Ruby via the constant graph. |
-| `get_contract_breaks` | Deterministic caller-contract (positional narrowing) breaks for a diff. |
+| `get_contract_breaks` | Deterministic caller-contract breaks for a diff: positional narrowings + removed-but-still-imported exports (`kind: "removed_export_still_imported"`). |
 | `get_duplication_candidates` | Existing functions a file's new functions may re-implement. |
 | `explain_edit` | Replay what chameleon knew and did at a file's last edit. |
 
@@ -844,7 +844,7 @@ Profile lifecycle, teaching, trust, and opt-out — 13 actions.
 | `propose_archetype_renames` | Suggest better names for the largest archetypes. |
 | `apply_archetype_renames` | Atomically apply a rename mapping. |
 | `disable_session` | Suppress injections for a session (HMAC-signed marker). |
-| `pause_session` | Pause injections for N minutes (default 15). |
+| `pause_session` | Pause injections for N minutes (default 15; HMAC-signed marker). |
 
 ### `chameleon_review` dispatcher
 
@@ -1634,9 +1634,14 @@ input**. A committed profile, idioms file, or source file can be hostile.
   normalizes context output.)
 - **Trust gate.** Untrusted profiles inject no canonical content; `idioms.md`
   and `principles.md` are injection-scanned at trust-grant time.
-- **HMAC integrity.** The exec log, session-disable markers, review ledger, and
-  attestation are HMAC-signed with the per-user key. This is tamper-evident
-  against other local users, not forgery-proof against the key holder.
+- **HMAC integrity.** The exec log, session-disable markers, pause markers,
+  review ledger, and attestation are HMAC-signed with the per-user key. This is
+  tamper-evident against other local users, not forgery-proof against the key
+  holder. The `.trust` record itself is deliberately NOT signed (a planted
+  record would flip a repo to trusted, but the 0700 data-dir root already
+  blocks other local users, and a same-user process can read the key and
+  forge any signature anyway); signing it would orphan every pre-existing
+  grant on upgrade, so that trade-off is documented here rather than closed.
 
 **Repo-code execution and network are opt-in only.** The defaults never run repo
 code or touch the network behind your back. The exceptions, each an explicit

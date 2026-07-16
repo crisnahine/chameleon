@@ -30,10 +30,10 @@ The underlying `pause_session` action accepts any integer in `[1, 240]` minutes;
 ## The flow
 
 1. Call `chameleon-mcp::chameleon_lifecycle(action="pause_session", params={"repo": <repo_root>, "minutes": 15})`.
-2. The tool writes `${PLUGIN_DATA}/<repo_id>/.pause_until` with the ISO 8601 expiry.
+2. The tool writes `${PLUGIN_DATA}/<repo_id>/.pause_until` with the ISO 8601 expiry on line 1 and an HMAC `sig=` line under it.
 3. PreToolUse hook checks `.pause_until`:
    - If file missing or expired → inject normally (auto-cleans expired markers)
-   - If timestamp in future → skip injection
+   - If timestamp in future AND the signature verifies → skip injection (a hand-planted or forged marker is ignored, same defense as the session-disable marker)
 4. Confirm to user: "chameleon paused for 15 minutes (until <expires_at returned by the tool>). Will auto-resume."
 
 ## Opt-out hierarchy

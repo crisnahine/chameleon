@@ -4,6 +4,69 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.1] - 2026-07-16
+
+Fixes from a full-plugin, real-invocation QA campaign (every hook, MCP tool,
+skill flow, and support surface driven from scratch across TypeScript, Ruby,
+and Python repos; ~350 test cells).
+
+### Fixed
+- The cached `index.db` connection is now keyed by its resolved path, so a
+  `CHAMELEON_PLUGIN_DATA` change mid-process (test isolation, A/B harnesses)
+  can no longer write rows into — or read rows from — a data dir the handle
+  was bound to earlier. The read-only path also closes the stale handle on a
+  path switch instead of leaking one connection per switch. Historical
+  pollution this caused (262 pytest tmp-repo rows in the real registry) has a
+  suite-level guard now: unit tests default to an isolated data dir.
+- `.pause_until` is HMAC-signed like the session-disable marker: line 1 stays
+  the bare ISO expiry for display readers, a `sig=` line follows, and the
+  suppression gate rejects a marker planted directly on disk (bare timestamp
+  or wrong signature). Previously any process that could write to the data dir
+  could silently suppress every advisory with one plaintext file. A pause
+  started under a pre-4.0.1 version stops suppressing after upgrade (its
+  marker is unsigned); re-run `/chameleon-pause-15m` if needed.
+- `refresh_repo` no longer crashes on a binary-corrupted `principles.md` or
+  `profile.summary.md` (undecodable bytes now count as "incomplete, re-derive"
+  instead of escaping as a `UnicodeDecodeError`), and a noop refresh now
+  self-heals a binary-corrupted `conventions.md` mirror instead of silently
+  skipping the rewrite forever — the exact repair paths a corrupted-profile
+  user is told to run. The partial-refresh path gets the same treatment: a
+  binary-corrupted `idioms.md` now falls back to the full bootstrap (which
+  carries the damaged file forward byte-identical, with a warning) instead of
+  crashing — and never substitutes an empty string that the transaction would
+  write back over the user-authored file.
+- Both marker signature checks compare digests as bytes: a planted marker
+  whose `sig=` line contains a non-ASCII character used to make
+  `hmac.compare_digest` raise `TypeError` out of the reject path instead of
+  rejecting. The session-disable marker's file read now also tolerates raw
+  invalid-UTF-8 bytes (rejecting the marker rather than letting a
+  `UnicodeDecodeError` escape `is_chameleon_suppressed` and skip a root's
+  turn-end gates via the hook's fail-open).
+- The statusline verifies the pause marker's HMAC signature before rendering
+  "paused", so a planted or forged `.pause_until` the enforcement gate rejects
+  no longer shows as paused in the status line.
+- A fresh trusted profile's first refresh no longer emits the false
+  "idioms.md exists but contains no parseable idiom blocks... may be damaged"
+  warning: the idiom store's bare empty view (written by trust/teach
+  migration) is now recognized as a known-empty form alongside the legacy
+  placeholder template.
+- Duplication candidates no longer offer test-file functions as reuse targets
+  for production code (they crowded real leads out of the per-function
+  candidate cap); a byte/param-identical clone still surfaces, and a test
+  file under review keeps its test-helper candidates.
+
+### Changed
+- `get_contract_breaks` documents its second finding shape
+  (`kind: "removed_export_still_imported"`, both positional fields null) in
+  the tool docstring and MCP schema, and the pr-review skill routes it — and
+  `lint_file`'s `cross-file-importers` / `removed-export-breaks-importers`
+  rules — with explicit one-citation dedupe against the cross-file existence
+  pass, so the same removed-export break is never reported three times.
+- `merge_profiles` documents that its `repo` argument is accepted for MCP
+  schema uniformity but unused (the merge driver invokes it per-file with no
+  repo context, no trust gate; the write is Write-equivalent on
+  caller-controlled paths).
+
 ## [4.0.0] - 2026-07-16
 
 Completes the Stop/idiom overhaul. Across v3.2.0-v4.0.0 the turn-end review

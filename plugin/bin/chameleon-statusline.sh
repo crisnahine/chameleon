@@ -56,13 +56,21 @@ sys.path.insert(0, os.environ['CHAMELEON_STATUSLINE_MCP_DIR'])
 try:
     from pathlib import Path
     from chameleon_mcp.repo_id import _compute_repo_id
+    from chameleon_mcp.optouts import _pause_has_valid_signature
     repo_id = _compute_repo_id(Path(os.environ['CHAMELEON_STATUSLINE_ROOT']))
     data_dir = os.environ.get('CHAMELEON_PLUGIN_DATA') or os.path.join(os.path.expanduser('~'), '.local', 'share', 'chameleon')
     with open(os.path.join(data_dir, repo_id, '.pause_until'), encoding='utf-8') as f:
-        expiry_iso = f.read().strip()
+        lines = f.read().splitlines()
+    expiry_iso = lines[0].strip() if lines else ''
+    sig_line = ''
+    for line in lines[1:]:
+        if line.startswith('sig='):
+            sig_line = line[len('sig='):].strip()
     expiry = datetime.fromisoformat(expiry_iso.replace('Z', '+00:00'))
     remaining = expiry.timestamp() - time.time()
-    if remaining > 0:
+    # Verify the signature so the display matches enforcement: a planted or
+    # forged marker is_chameleon_suppressed rejects must not read as paused.
+    if remaining > 0 and _pause_has_valid_signature(repo_id, expiry_iso, sig_line):
         mins = int(remaining // 60) + (1 if remaining % 60 else 0)
         print(f' │ ⏸ paused — {mins}m left')
 except Exception:

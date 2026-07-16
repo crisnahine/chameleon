@@ -742,9 +742,11 @@ def classify_change(
 
     contract_breaks = _int("caller_contract_breaks")
     if contract_breaks > 0:
+        # The count folds both get_contract_breaks shapes: positional
+        # narrowings and removed-but-still-imported exports.
         reasons.append(
             f"{contract_breaks} caller contract break(s) "
-            "(narrowed signature with committed callers)"
+            "(narrowed signature or removed export, with committed callers)"
         )
 
     if bool(facts.get("security_surface")):

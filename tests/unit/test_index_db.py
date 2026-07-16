@@ -180,3 +180,48 @@ def test_init_index_db_returns_with_no_open_transaction(tmp_path):
         assert conn.in_transaction is False
     finally:
         conn.close()
+
+
+def test_conn_cache_follows_data_dir_switch(tmp_path, monkeypatch):
+    """A CHAMELEON_PLUGIN_DATA change mid-process (test isolation, A/B
+    harnesses) must re-home the cached connection: writes go to the new dir,
+    never through the handle bound to the old one, and the readonly path
+    closes the stale handle instead of leaking it."""
+    import sqlite3
+
+    from chameleon_mcp import index_db
+
+    dir_a = tmp_path / "a"
+    dir_b = tmp_path / "b"
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(dir_a))
+    index_db.upsert_repo("r" * 64, "/root/a")
+    first_conn = index_db._INDEX_CONN
+    assert first_conn is not None
+
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(dir_b))
+    index_db.upsert_repo("s" * 64, "/root/b")
+
+    def rows(d: Path) -> set[str]:
+        conn = sqlite3.connect(d / "index.db")
+        try:
+            return {r[0] for r in conn.execute("SELECT repo_root FROM repos")}
+        finally:
+            conn.close()
+
+    assert rows(dir_a) == {"/root/a"}
+    assert rows(dir_b) == {"/root/b"}
+    with pytest.raises(sqlite3.ProgrammingError):
+        first_conn.execute("SELECT 1")
+
+    # Readonly path: a switch closes the stale write handle too.
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(dir_a))
+    stale = index_db._INDEX_CONN
+    assert stale is not None
+    conn, owned = index_db._get_index_conn_readonly()
+    try:
+        with pytest.raises(sqlite3.ProgrammingError):
+            stale.execute("SELECT 1")
+        assert index_db._INDEX_CONN is None
+    finally:
+        if owned:
+            conn.close()

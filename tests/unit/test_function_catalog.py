@@ -218,6 +218,48 @@ class TestSelectCandidates:
         new = [fc.NewFunction(name="toDisplayDate", kind="function", arity=1, required=1)]
         assert fc.select_candidates(catalog, new, exclude_file="src/fmt.ts") == []
 
+    def test_test_file_candidate_dropped_for_production_review(self):
+        # A production function cannot reuse a test helper, and the candidate
+        # cap means a token-overlap test match evicts a real production lead.
+        catalog = _cat([("formatDate", 1, 1, "tests/utils/date_helpers.py")])
+        new = [fc.NewFunction(name="toDisplayDate", kind="function", arity=1, required=1)]
+        assert fc.select_candidates(catalog, new, exclude_file="src/fmt.ts") == []
+
+    def test_test_file_candidate_kept_for_test_review(self):
+        # A test file under review may genuinely re-implement a test helper.
+        catalog = _cat([("formatDate", 1, 1, "tests/utils/date_helpers.py")])
+        new = [fc.NewFunction(name="toDisplayDate", kind="function", arity=1, required=1)]
+        out = fc.select_candidates(catalog, new, exclude_file="tests/test_render.py")
+        assert out and out[0]["candidates"][0]["file"] == "tests/utils/date_helpers.py"
+
+    def test_body_match_test_candidate_survives_production_review(self):
+        # A byte-identical clone copy-pasted from a test is still worth surfacing.
+        catalog = fc.FunctionCatalog(
+            functions=[
+                fc.CatalogedFunction(
+                    name="obscureHelper",
+                    file="tests/utils/clone_source.py",
+                    kind="function",
+                    arity=1,
+                    required=1,
+                    tokens=fc.name_tokens("obscureHelper"),
+                    body_hash="abc123",
+                    body_hash_pnorm=None,
+                )
+            ]
+        )
+        new = [
+            fc.NewFunction(
+                name="renamedThing",
+                kind="function",
+                arity=1,
+                required=1,
+                body_hash="abc123",
+            )
+        ]
+        out = fc.select_candidates(catalog, new, exclude_file="src/fmt.ts")
+        assert out and out[0]["candidates"][0]["body_match"] is True
+
     def test_arity_far_apart_skipped(self):
         # Same domain token but a 0-arg getter vs a 3-arg builder is not the same
         # intent.

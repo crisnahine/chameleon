@@ -7179,6 +7179,13 @@ def _attempt_partial_refresh(
     if idioms_path.is_file():
         try:
             idioms_text = idioms_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            # Undecodable idioms.md: do NOT substitute "" — this text is
+            # written back into the transaction below, and an empty write
+            # would silently destroy the user-authored idioms a full
+            # bootstrap deliberately carries forward byte-identical (with a
+            # warning). Fall back to the full path, which handles it.
+            return None
         except OSError:
             idioms_text = ""
 
@@ -7187,7 +7194,9 @@ def _attempt_partial_refresh(
     if summary_path.is_file():
         try:
             summary_text = summary_path.read_text(encoding="utf-8")
-        except OSError:
+        except (OSError, UnicodeDecodeError):
+            # Unlike idioms.md this is generated content — an empty summary
+            # is repaired by the next full derivation, never user data loss.
             summary_text = ""
 
     renames_text: str | None = None
@@ -7230,7 +7239,9 @@ def _attempt_partial_refresh(
     if principles_path.is_file():
         try:
             principles_text = principles_path.read_text(encoding="utf-8")
-        except OSError:
+        except (OSError, UnicodeDecodeError):
+            # Generated content, like the summary: an empty write here is
+            # repaired by the next full derivation, never user data loss.
             principles_text = ""
 
     # calls_index.json is a protocol file because a FAILED full rebuild must
@@ -8116,7 +8127,9 @@ def _principles_incomplete(profile_dir) -> bool:
     p = profile_dir / "principles.md"
     try:
         return "anti-hallucination protocol" not in p.read_text(encoding="utf-8").lower()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # Undecodable bytes are as incomplete as an unreadable file: force the
+        # re-derive instead of crashing the refresh that would repair it.
         return True
 
 
@@ -8322,7 +8335,7 @@ def _profile_needs_rederive(profile_dir) -> bool:
     # (matches the render_summary_md header every real writer emits).
     try:
         summary_text = (profile_dir / "profile.summary.md").read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return True
     if not summary_text.strip():
         return True
@@ -8955,7 +8968,17 @@ def get_contract_breaks(repo: str, base_ref: str = "main") -> dict:
     judge derives from the diff, surfaced as a tool result a reviewer can cite.
 
     Each finding names the callable, its required-arg delta, and the committed
-    call sites that may now mis-call it. Tool-time only (git show + AST re-parse);
+    call sites that may now mis-call it. Findings come in two shapes:
+
+    - narrowing (the default): ``old_required_positional`` /
+      ``new_required_positional`` carry the integer delta, no ``kind`` field.
+    - ``kind: "removed_export_still_imported"``: an export this diff REMOVED
+      outright (confirmed present at the merge-base) that indexed importers
+      still reference; both positional fields are ``None`` -- there is no new
+      signature to diff. Same existence-break class ``get_crossfile_context``
+      reports repo-wide; a consumer reading both should cite the break once.
+
+    Tool-time only (git show + AST re-parse);
     no network, no repo-code execution. Default-on; fails open to a no-signal
     result; never blocks. The pr-review skill cites these as FIX findings.
     """
@@ -10247,6 +10270,12 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
     otherwise only for conflict-detection logging. Canonical-correct three-way
     JSON merging requires re-bootstrap from the merged repo state, which the
     user can trigger with /chameleon-refresh after accepting the merge.
+
+    The ``repo`` argument is accepted for MCP-schema uniformity but unused:
+    the merge driver invokes this per-file with no repo context, and the merge
+    reads/writes only the three explicit paths (its own atomic tmp+replace,
+    outside the profile-transaction protocol). No trust gate applies — the
+    write is Write-equivalent on paths the caller already controls.
     """
 
     # never-raise / fail-open contract: base/ours/theirs are file-path strings a
@@ -11127,7 +11156,11 @@ def pause_session(repo: str, minutes: int = 15) -> dict:
 
     Writes a `.pause_until` file with an ISO 8601 expiry timestamp
     under the per-repo plugin data dir. preflight-and-advise auto-
-    expires the marker; no manual cleanup needed.
+    expires the marker; no manual cleanup needed. The marker is
+    HMAC-signed (same key and threat model as `disable_session`'s
+    marker): with the per-user key available, `is_chameleon_suppressed`
+    rejects a bare or wrong-sig marker planted directly on disk — the
+    key-unavailable edge case fails open, same as the disable marker.
 
     Used by the /chameleon-pause-15m slash command (and any future
     /chameleon-pause-<N> variants).
@@ -12601,11 +12634,13 @@ def _sync_conventions_md(profile_dir: Path, conv: dict) -> None:
             return
         # Skip the rewrite when the mirror is already byte-identical: the noop
         # refresh self-heal calls this every session, and a gratuitous replace
-        # would advance the mirror's mtime for no content change.
+        # would advance the mirror's mtime for no content change. Undecodable
+        # bytes fall through to the write like an unreadable file does — the
+        # documented self-heal must repair a binary-corrupted mirror, not abort.
         try:
             if md_path.is_file() and md_path.read_text(encoding="utf-8") == text:
                 return
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             pass
         _tmp = md_path.with_suffix(".md.tmp")
         _tmp.write_text(text, encoding="utf-8")

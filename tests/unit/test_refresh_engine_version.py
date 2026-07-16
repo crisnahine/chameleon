@@ -53,8 +53,8 @@ def _seed_repo(tmp_path: Path, monkeypatch, engine_version: str, schema_version:
     from chameleon_mcp import index_db
 
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "_data"))
-    # index_db caches a module-level connection that ignores the env once opened;
-    # drop it so upsert/get_repo bind to this test's isolated data dir.
+    # The index_db connection cache is path-keyed and re-homes on a
+    # CHAMELEON_PLUGIN_DATA change; this reset is belt-and-braces only.
     monkeypatch.setattr(index_db, "_INDEX_CONN", None)
     repo = tmp_path / "repo"
     (repo / "app" / "models").mkdir(parents=True)
@@ -285,6 +285,15 @@ def test_principles_incomplete_detects_missing_protocol(tmp_path):
 def test_principles_incomplete_when_absent(tmp_path):
     pd = tmp_path / ".chameleon"
     pd.mkdir()
+    assert t._principles_incomplete(pd) is True
+
+
+def test_principles_incomplete_on_binary_corruption(tmp_path):
+    """Undecodable bytes must read as incomplete (force a re-derive), not
+    crash refresh with an escaping UnicodeDecodeError."""
+    pd = tmp_path / ".chameleon"
+    pd.mkdir()
+    pd.joinpath("principles.md").write_bytes(b"\xff\xfe\x00 not decodable \x80\x81")
     assert t._principles_incomplete(pd) is True
 
 

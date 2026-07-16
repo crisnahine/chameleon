@@ -2899,11 +2899,17 @@ def _bootstrap_single(
             and idioms_content.strip()
             and idioms_content.strip() != _EMPTY_IDIOMS_TEMPLATE.strip()
         ):
-            idiom_warnings.append(
-                "idioms.md exists but contains no parseable idiom blocks; if "
-                "idioms were previously taught here the file may be damaged - "
-                "check git history."
-            )
+            # The idiom-store view renderer writes a second known-empty form
+            # (bare section headers, no placeholder prose) the moment trust or
+            # teach migrates the file — a zero-idiom profile is NOT damage.
+            from chameleon_mcp.core.idiom_store import render_idioms_md
+
+            if idioms_content.strip() != render_idioms_md([]).strip():
+                idiom_warnings.append(
+                    "idioms.md exists but contains no parseable idiom blocks; if "
+                    "idioms were previously taught here the file may be damaged - "
+                    "check git history."
+                )
 
     with atomic_profile_commit(profile_dir) as txn_dir:
         (txn_dir / "profile.json").write_text(
