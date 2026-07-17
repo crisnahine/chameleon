@@ -171,10 +171,9 @@ routes it to plain judgment). Then:
   barrel-re-exported function with no direct caller reads as callerless even
   when it is live — `query_symbol_importers` is the tool that still sees it.
   `get_crossfile_context(repo=<repo.id>)` does NOT ground this claim: it only
-  reports a symbol ALREADY gone from a module's current export set that an
-  importer still references, so it structurally cannot fire on a symbol that
-  still exists — reach for it when verifying whether the PR's OWN removal
-  broke a caller, not when adjudicating a reviewer's dead-code claim. An EMPTY
+  reports symbols ALREADY gone from a module's export set, so it cannot fire
+  on a symbol that still exists — it verifies the PR's OWN removals, never a
+  reviewer's dead-code claim. An EMPTY
   `get_callers` AND an empty `query_symbol_importers` importer list is still
   NOT proof of dead code (dynamic/unsupported call paths are invisible to
   both) — never assert dead code from either being empty.
@@ -225,7 +224,9 @@ routes it to plain judgment). Then:
 
 The security/secret lint runs PRE-trust, so it grounds a claim even on an
 untrusted profile; the caller/cross-file/duplication tools and convention-based
-adjudication (Step 4) require `trust_state == "trusted"`.
+adjudication (Step 4) need a trust grant covering the root — untrusted/absent
+withholds them, while a `stale` grant (rare, revalidation opt-in) still serves
+content and only warrants a staleness caveat.
 
 Before agreeing to an external reviewer's suggestion, confirm five things (the
 reviewer can be wrong or lack your context): (1) is it technically correct for
@@ -243,9 +244,11 @@ Reuse the `repo.id`, `repo.trust_state`, and the per-file archetype/canonical
 already resolved by Step 3's `get_pattern_context` call(s) — the repo fields are
 the same for every file, and each cited file's canonical was fetched there, so do
 not re-resolve a file you already resolved. Gate convention-based
-pushback on `trust_state == "trusted"`; if untrusted/stale/absent, fall back to
-plain technical judgment labeled "profile untrusted/absent" and suggest
-`/chameleon-trust`. Carry the `match_quality = none/fallback` caveat. The same
+pushback on a live trust grant: if untrusted/absent, fall back to plain
+technical judgment labeled "profile untrusted/absent" and suggest
+`/chameleon-trust`; on a `stale` grant the canonical still flows — adjudicate
+normally, carry a "trust stale" caveat, and suggest `/chameleon-trust`. Carry
+the `match_quality = none/fallback` caveat. The same
 `repo.id` feeds the repo-scoped tools (`lint_file`, `get_crossfile_context`,
 `get_callers`, `query_symbol_importers`, `get_duplication_candidates`). Outcomes:
 reviewer ALIGNS with the convention (strong apply), reviewer CONTRADICTS the
@@ -292,7 +295,8 @@ For surviving MODEL-JUDGMENT verdicts that would change code (a PUSH BACK, an
 AGREE you'd implement), call `refute_finding` with the full finding shape and
 the PR base — in batches of at most 8 findings per call (the refuter's
 per-invocation spawn cap; an over-cap send returns "unverified" for the tail),
-highest-stakes first, hard stop after 4 calls (findings past it are held
+highest-stakes first (within equal stakes, the calibration order below), hard
+stop after 4 calls (findings past it are held
 unverified per the ladder below). Pass each item's Step 3 claim trace VERBATIM
 as the finding's `claim`/`evidence` — the trace is then adjudicated by the
 refuter instead of merely graded "complete", so a lazy or fabricated trace gets
@@ -323,6 +327,17 @@ verdict `id` → for a code-changing verdict (a PUSH BACK, or an AGREE you'd
 implement), HOLD it or downgrade to NEEDS CLARIFICATION, never present it as a
 confident pushback and never implement it on an unverified AGREE. Do this BEFORE
 drafting any reply, so the user never sees a draft the loop would kill.
+
+One calibration read before the first `refute_finding` batch (advisory,
+fail-open — on any error or an empty ledger, skip silently): call
+`chameleon_telemetry(action="get_finding_fate_stats", params={"repo": <repo.id>})`
+once and read `surfaces["receiving"].lenses` — this repo's own history of
+reviewer comments by category (`accepted` = applied, `declined` = pushed back,
+`precision` = accepted / (accepted + declined)). Use it for refuter ORDER and
+posture only: a PUSH BACK on a category this repo historically applies
+(`precision` high, `total` >= 5) is the riskiest verdict, so it goes in the
+first batch. History never decides an item's verdict, never substitutes for
+Step 3 verification, and is never cited to the reviewer as evidence.
 
 When the refuter or your own re-check shows YOUR pushback was wrong, correct it
 factually and briefly ("Checked X, you're right, it does Y. Fixing."): no long

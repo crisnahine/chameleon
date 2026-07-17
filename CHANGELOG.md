@@ -4,6 +4,52 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.2.0] - 2026-07-17
+
+### Added
+- The review surfaces close the finding-fate feedback loop. pr-review Step 5b
+  now records a refuted-dropped BLOCK/FIX as `declined` in the fate ledger
+  (previously only surfaced/`accepted` and converted findings were recorded,
+  leaving the pr-review per-lens precision denominator permanently empty), and
+  all three review skills read `get_finding_fate_stats` back before their
+  first `refute_finding` batch as an advisory, fail-open calibration:
+  pr-review orders refuter sends within a severity by the repo's own per-lens
+  refuter-survival history, receiving prioritizes a PUSH BACK on a comment
+  category the repo historically applies, and deep-work prioritizes a decline
+  that contradicts its lens's acceptance history — so the verdicts most likely
+  to be wrong reach the independent refuter before the 4-call budget runs out.
+  History never decides a fate, never gates a finding, and never appears as
+  evidence.
+- The three packaged agents (code-scout, web-researcher, pattern-reviewer)
+  carry an explicit token-economy and parallel-dispatch contract: independent
+  probes fire as one batch, the final message is the answer alone
+  (pattern-reviewer: the JSON alone), and quoting is capped to claim-bearing
+  lines.
+
+### Fixed
+- pr-review Step 2.8 documented the Redux-slice co-change trigger as a
+  lowercase substring match ("basename CONTAINS `slice`", citing
+  `sliceHelpers.ts` as triggering). The engine matches the `<alnum>Slice.ts(x)`
+  capital-S suffix only, so the skill's own example was false; the text now
+  states the suffix rule with engine-true examples.
+- Stale-vs-untrusted trust handling: a `stale` grant (revalidation opt-in)
+  still serves profile content engine-side, but deep-work told the model to
+  fall back to manual reading whenever `trust_state` was not `trusted`, and
+  receiving lumped `stale` in with untrusted for plain-judgment fallback. Both
+  now degrade only on untrusted/absent and carry a staleness caveat otherwise;
+  deep-work also no longer claims the untrusted envelope returns the archetype
+  name (it is withheld along with the content).
+- pr-review Step 2b and the pattern-reviewer agent no longer suggest reading a
+  "suggested fallback" archetype off the null-match `get_pattern_context`
+  envelope — that envelope carries no such field (the receiving skill already
+  stated this correctly).
+
+### Changed
+- pr-review SKILL.md trimmed ~7% (61.1KB -> 57.0KB) by deduplicating the
+  Integrity/Important/Honesty restatements against the authoritative
+  references; deep-work's frontmatter description trimmed ~40%. No contract or
+  pinned invariant changed (full unit suite green).
+
 ## [4.1.2] - 2026-07-17
 
 ### Fixed

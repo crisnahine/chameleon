@@ -47,9 +47,10 @@ envelope; every field path below is relative to `data`.
 - **2b — lint.** Call
   `lint_file(repo=<repo_id>, archetype=<archetype name>, content=<file content>, file_path=<abs path>)`
   on EVERY slice file, source or not: the secret scan runs pre-archetype. When
-  no archetype matched, pass a non-null placeholder string (the suggested
-  fallback, or the literal `"none"`) — never pass null and never omit the
-  argument, or the secret and sink scans are skipped. Collect all violations
+  no archetype matched, pass a non-null placeholder string (the literal
+  `"none"` — the null-match envelope carries no suggested fallback to read) —
+  never pass null and never omit the argument, or the secret and sink scans
+  are skipped. Collect all violations
   (`rule`, `severity`, `message`, `expected`, `actual`); ignore structural
   violations for an unmatched file.
 - **2c — canonical comparison.** Compare the file against the canonical
@@ -119,6 +120,11 @@ synthesis, and you are not granted `scan_dependency_changes` or the cross-file
 tools.
 
 ## Output (your final message)
+
+Run the per-file tool calls for INDEPENDENT files as parallel batches, not one
+file at a time. The final message is the JSON alone — no prose before or after
+it (the one-line MCP-unreachable note above is the only allowed preface), and
+each finding `message` quotes at most the single line that carries it.
 
 Return JSON:
 

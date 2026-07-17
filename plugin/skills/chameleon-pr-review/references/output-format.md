@@ -4,7 +4,7 @@
 
 Every per-line finding must anchor to a specific line in a changed file. This is every section, not just the logic passes: the logic findings (Steps 3b-3f), the security findings (taint/SSRF/traversal Step 2.6c and secret Step 2.6a), the deterministic lint-sink findings (Step 2.6d), and the line-anchored lint/naming/inheritance violations (Steps 2b/2d). Look the anchor line up in the per-file hunk map from Step 1a. If it is NOT inside an added or changed range for that file, drop the finding. No exceptions and no judgment call: a per-line finding on a line this change did not touch is pre-existing by construction, and the integrity rule forbids flagging pre-existing issues.
 
-This gate is the mechanical replacement for "decide by hand whether this is PR-introduced." It does not apply to convention findings whose anchor is the file as a whole (duplication NITs, missing-test NITs), the whole-diff cross-file passes (co-change FIX in Step 2.8, and the layering / duplication / existence-break / contract-break findings in Step 2.9), nor to missing-requirement BLOCKs in Step 3b (those flag the ABSENCE of code, so they have no anchor line). The cross-file passes are exempt because they are gated on their tool/artifact backing instead, NOT because they are line-free: a co-change or layering finding anchors to a file or an artifact entry, but an existence-break (Step 2.9c) and a contract-break (Step 2.9e) each anchor to a real importer/caller `file:line` that by construction lives in a NON-diff file — applying the hunk gate to that caller line would wrongly drop every valid cross-file finding, so these are gated on `high_confidence` / a returned caller list, never on the hunk map. (The 2.9c existence break additionally carries its own diff-scope gate on the MODULE side — the exporting file must be in this diff's changed set, else the break is pre-existing and goes to the hygiene note; see Step 2.9c.) The gate applies to every per-line claim: removed guards, inverted conditions, dropped awaits, null-guard gaps, placeholder names, the stale-comment NIT (Step 3f-ii) and the stale-test removed-export anchor (Step 3f-i), the taint/SSRF/traversal findings from Step 2.6c, the deterministic lint-sink findings from Step 2.6d, AND the secret findings from Step 2.6a. The secret scanner reads the full file content, not the diff, so a hit is not in the change by construction: an out-of-hunk hard-kind secret goes to the "Pre-existing repo hygiene" note (Step 2.6a) instead of the verdict.
+This gate is the mechanical replacement for "decide by hand whether this is PR-introduced." Exempt from it: convention findings whose anchor is the file as a whole (duplication NITs, missing-test NITs); the whole-diff cross-file passes (co-change FIX in Step 2.8, and the layering / duplication / existence-break / contract-break findings in Step 2.9) — exempt because they are gated on their tool/artifact backing instead, and an existence-break (2.9c) or contract-break (2.9e) anchors to an importer/caller `file:line` that lives in a NON-diff file by construction (hunk-gating that caller line would wrongly drop every valid cross-file finding; the 2.9c break additionally requires its MODULE in this diff's changed set, else it is pre-existing hygiene — see Step 2.9c); and missing-requirement BLOCKs in Step 3b (those flag the ABSENCE of code, so they have no anchor line). The gate applies to every per-line claim: removed guards, inverted conditions, dropped awaits, null-guard gaps, placeholder names, the stale-comment NIT (Step 3f-ii) and the stale-test removed-export anchor (Step 3f-i), the taint/SSRF/traversal findings from Step 2.6c, the deterministic lint-sink findings from Step 2.6d, AND the secret findings from Step 2.6a. The secret scanner reads the full file content, not the diff, so a hit is not in the change by construction: an out-of-hunk hard-kind secret goes to the "Pre-existing repo hygiene" note (Step 2.6a) instead of the verdict.
 
 It ALSO applies to any line-anchored convention/style finding from `lint_file` (Step 2b/2d). `lint_file` reads the whole file, not the diff, so a `style-rule-violation` (e.g. "line 19 is 103 cols"), a `naming-convention-violation`, or an `inheritance-convention-violation` can sit on a line this change never touched. Parse the line number out of the violation `message` (the `line N` / `:N` it carries) and run it through the hunk map the same way as a logic finding: if the line is outside an added or changed range, drop it from the verdict. A line-anchored style/convention nit that pre-dates the change is pre-existing by construction and the integrity rule forbids reporting it; if it is worth mentioning at all, it goes to the "Pre-existing repo hygiene" note, never the Convention-findings section. Only convention findings with NO parseable line (duplication, missing-test, key-export overlap, which anchor to the file) stay exempt.
 
@@ -17,7 +17,8 @@ taxonomy grows): a finding is model-judgment when it is NOT in the tool-grounded
 exempt set below. Typical members: change-delta logic (removed guard, dropped
 await, inverted condition), canonical divergence, taint/SSRF/path-traversal,
 callable-signature drift, spec-compliance / missing-requirement. Send them in
-severity order (BLOCKs first) in batches of at most 8 findings per call — the
+severity order (BLOCKs first; within a severity, the calibration order below
+when available) in batches of at most 8 findings per call — the
 refuter's per-invocation spawn cap is 8, so a single over-cap call silently
 returns "unverified / refuter cap reached" for finding 9 onward, leaving exactly
 the long-tail findings of a big review unadjudicated. Call `refute_finding` once
@@ -53,6 +54,19 @@ Three exclusions from the send set:
 Each finding MUST carry a unique `id` (verdicts map back by `id`) and `file`/`line`
 (the refuter prefetches that excerpt; omit them and it silently degrades to the
 whole-branch diff).
+
+**Calibration read (advisory, fail-open).** Before the first `refute_finding`
+batch, call
+`chameleon_telemetry(action="get_finding_fate_stats", params={"repo": <repo_id>})`
+once and read `surfaces["pr-review"].lenses` — each lens bucket is
+`{accepted, declined, converted, total, precision}`, and because Step 5b records
+a refuted-dropped finding as `declined`, `precision` is this repo's own per-lens
+refuter-survival history. Use it ONLY to order sends within a severity: a lens
+with low `precision` and `total` >= 5 goes earlier, so the findings most likely
+to be wrong reach the refuter before the 4-call budget runs out. On any error,
+an empty ledger, or a thin lens (`total` < 5 or `precision` null), skip
+silently. The read never adds, drops, upgrades, or downgrades a finding, and
+never appears in the output as evidence.
 
 Read the envelope `refuter` field FIRST, not only the per-finding verdicts — the
 two disagree by design:
@@ -351,8 +365,8 @@ This is a best-effort final step. If the tool call fails (no ledger, no signing 
 
 ### Step 5b: Record per-finding fates in the fate ledger
 
-After the verdict, record the verdict-time disposition of each finding so per-lens precision becomes computable over time (`chameleon_telemetry(action="get_finding_fate_stats", ...)`). For every surfaced BLOCK/FIX finding, and every finding converted to an "Unrun executable checks" line (Step 4b), call `record_finding_fate` once:
+After the verdict, record the verdict-time disposition of each finding so per-lens precision becomes computable over time (`chameleon_telemetry(action="get_finding_fate_stats", ...)` — the same read Step 4b's calibration consumes). For every surfaced BLOCK/FIX finding (`accepted`), every BLOCK/FIX the Step 4b refuter refuted-dropped (`declined`), and every finding converted to an "Unrun executable checks" line (`converted`), call `record_finding_fate` once:
 ```
-chameleon_review(action="record_finding_fate", params={"repo": <repo_id>, "fate": <accepted | converted>, "message": <the finding's one-line message>, "file": <file>, "line": <line>, "lens": <the finding's lens / defect-class, e.g. correctness, consequences, duplication, security>, "confidence_at_emit": <the finding's confidence 0..1 if known>, "surface": "pr-review"})
+chameleon_review(action="record_finding_fate", params={"repo": <repo_id>, "fate": <accepted | declined | converted>, "message": <the finding's one-line message>, "file": <file>, "line": <line>, "lens": <the finding's lens / defect-class, e.g. correctness, consequences, duplication, security>, "confidence_at_emit": <the finding's confidence 0..1 if known>, "surface": "pr-review"})
 ```
-A finding that survived RECALL + the refuter and is surfaced in the verdict is `accepted` (the review stands by it); a finding routed to an unrun check is `converted`. Only a 16-hex digest of the message+file+line is stored, never the prose. This is best-effort and never blocks the review: on any failure, skip it and move on. It is a distinct ledger from `record_review_verdict` (per-finding disposition vs the aggregate verdict), and like it: tamper-evident, not forgery-proof, not CI-verifiable.
+A finding that survived RECALL + the refuter and is surfaced in the verdict is `accepted` (the review stands by it); a refuted-dropped BLOCK/FIX is `declined` (the independent adjudication rejected its cited evidence — recording it is what gives the 4b calibration read a real denominator); a finding routed to an unrun check is `converted`. Only a 16-hex digest of the message+file+line is stored, never the prose. This is best-effort and never blocks the review: on any failure, skip it and move on. It is a distinct ledger from `record_review_verdict` (per-finding disposition vs the aggregate verdict), and like it: tamper-evident, not forgery-proof, not CI-verifiable.

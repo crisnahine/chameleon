@@ -1,7 +1,7 @@
 ---
 name: chameleon-deep-work
 argument-hint: <task or ticket-URL>
-description: "Use when the user explicitly invokes /chameleon-deep-work <task> to execute a substantive coding task with the deep-work discipline: understand the whole task first, ask no clarifying questions (resolve unknowns by digging and by defaulting open decisions), map the code with chameleon's comprehension tools and hired parallel expert subagents (code scouts, web researchers, reviewers) until understanding is complete, present a 100%-understanding brief, then implement in an isolated git worktree under chameleon's per-edit guardrails."
+description: "Use when the user explicitly invokes /chameleon-deep-work <task> to execute a substantive coding task end to end: dig the code and external unknowns first (no clarifying questions — parallel expert subagents work independent unknowns), present a 100%-understanding brief, then implement and verify in an isolated git worktree under chameleon's per-edit guardrails."
 ---
 
 # Deep Work with Chameleon Context
@@ -157,12 +157,16 @@ open at the cap enters the brief as a named default or risk, never silently.
 
 Honesty gates on this pass:
 
-- The comprehension tools are trust-gated: the graph and search tools return
-  nothing on an untrusted profile, and `get_pattern_context` withholds the
-  value-bearing content (the canonical witness, idioms, rules), returning only
-  the archetype name and confidence. If `trust_state` is not `trusted`, say so
-  in the brief, suggest `/chameleon-trust`, and fall back to manual reading
-  (grep + Read). Degraded digging is stated, never hidden.
+- The comprehension tools are trust-gated: on an untrusted profile the graph
+  and search tools return nothing, and `get_pattern_context` withholds the
+  value-bearing content (canonical witness, idioms, rules) AND the archetype
+  itself — the envelope comes back with a null archetype, not a name-only
+  summary. If `trust_state` is `untrusted` (or no profile/grant exists), say
+  so in the brief, suggest `/chameleon-trust`, and fall back to manual
+  reading (grep + Read). A `stale` grant (rare — revalidation is opt-in) is
+  different: content still flows, so use it, note the staleness in the brief,
+  and suggest `/chameleon-trust`; never degrade to manual digging over
+  staleness alone. Degraded digging is stated, never hidden.
 - An EMPTY `get_callers` / importer result is absence of evidence, not
   evidence of dead code - dynamic and unindexed call paths are invisible.
   Never plan a removal on an empty result alone; grep before you conclude.
@@ -356,6 +360,18 @@ dependency (contract rule 2c), stated in one line.
   `chameleon_review(action="record_finding_fate", params={"repo": <repo_id>, "fate": <accepted | declined | converted>, "message": <the finding's one-line gist>, "file": <file>, "line": <line>, "lens": <the finding's defect class>, "surface": "deep-work"})`
   once per finding. Only a digest of the text is stored, never the prose;
   best-effort, never blocks - on any failure, skip it.
+- **Read the ledger back (calibration, advisory).** Before the convergence
+  loop's first `refute_finding` send, call
+  `chameleon_telemetry(action="get_finding_fate_stats", params={"repo": <repo_id>})`
+  once — fail-open: on any error or an empty ledger, skip silently — and read
+  `surfaces["deep-work"].lenses`. Each lens bucket carries
+  `{accepted, declined, converted, total, precision}` from this repo's own
+  adjudication history. Use it to ORDER the refuter queue only: a decline
+  that contradicts history (the finding's lens has high `precision` with
+  `total` >= 5 — its findings are usually applied here) is the riskiest
+  decline, so send it first. History never decides a finding's fate, never
+  substitutes for first-hand verification, and a lens with a thin ledger
+  (`total` < 5 or `precision` null) contributes nothing.
 
 ## Step 7: Deliver and integrate
 

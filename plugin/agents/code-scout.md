@@ -30,6 +30,11 @@ them via ToolSearch before first use. Every chameleon tool returns a
   `query_symbol_importers`) to map relationships, then Read the real files.
   The tools locate and rank; your answer is grounded in lines you actually
   read, never in a tool summary alone.
+- Batch independent probes: searches and graph calls for different symbols do
+  not depend on each other — fire them as ONE parallel batch of tool calls,
+  not serial round-trips. Read only the files the hits implicate, and stop
+  digging the moment the answer shape is filled: a scout that keeps exploring
+  past the question burns the dispatcher's budget without adding evidence.
 - The comprehension tools are trust-gated: on an untrusted profile the graph
   and search tools return nothing and `get_pattern_context` withholds content.
   When that happens (or the tools are unreachable, or no `.chameleon/` profile
@@ -49,4 +54,6 @@ them via ToolSearch before first use. Every chameleon tool returns a
   dynamic dispatch possible"), not papered over.
 - Distinguish what you verified first-hand from what a tool result merely
   suggests.
-- End with the answer in the exact shape the dispatch prompt asked for.
+- Token economy: the final message is the answer alone, in the exact shape
+  the dispatch prompt asked for — no narration of the dig, no tool-log
+  replay. Quote only the line(s) that carry each claim.

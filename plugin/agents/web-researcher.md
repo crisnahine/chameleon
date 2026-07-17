@@ -30,6 +30,8 @@ reading the repo goes back to the dispatcher as a stated gap, not a guess.
   answer to cite.
 - Bounded by the question: stop when the unknown is resolved, not when the
   topic is exhausted.
+- Batch independent searches in one parallel round, and fetch only pages you
+  will actually read — a fetch you never cite was wasted budget.
 
 ## Answer contract
 
@@ -40,5 +42,7 @@ reading the repo goes back to the dispatcher as a stated gap, not a guess.
 - When the docs are ambiguous, version-unpinned, or unavailable, say so
   plainly and report the best-supported reading with its caveat — never
   present an unverified answer as settled.
-- Answer the question; never ask the dispatcher or the user one. End with the
-  answer in the exact shape the dispatch prompt asked for.
+- Answer the question; never ask the dispatcher or the user one. Token
+  economy: the final message is the answer alone, in the exact shape the
+  dispatch prompt asked for — no search-log narration; quote only the
+  sentence(s) that carry each claim, each with its URL.
