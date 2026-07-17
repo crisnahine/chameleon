@@ -4,6 +4,29 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.4] - 2026-07-18
+
+### Fixed
+- The secret detector no longer fires on obvious placeholder values. A
+  keyword-style hit (`Secret Keyword` / `password_assignment`, both advisory-only)
+  on a clearly-non-credential value -- a test fixture `password = "test"`, a
+  docstring example `SECRET_KEY = "your-secret-key"` -- is now dropped, removing
+  the top secret-scan false positive on the exact pattern test suites use
+  everywhere. The filter is value-based and security-preserving:
+  - Only the keyword-style kinds are filtered; the deterministic prefixed kinds
+    (`aws_access_key`, `github_token`, `stripe_key`, `private_key`, ...) and the
+    pre-write deny path are never touched.
+  - A hit is dropped only when EVERY assigned string value on the line is a clear
+    placeholder, so a real secret sharing a line with a placeholder keeps its hit.
+  - A concat-folded / de-escaped hit (a reassembled value the original line can't
+    show) is never suppressed, keeping the string-concat obfuscation defense
+    intact.
+  - Placeholder-shaped values (`your-...`, `<...>`, `${...}`) are dropped only
+    when their Shannon entropy is low, so a real high-entropy key that merely
+    starts with `your-` still fires. Weak-but-plausibly-real credentials
+    (`admin`, `password123`, `s3cr3t`, `changeme`, a bare `secret`/`password`) are
+    NOT treated as placeholders -- committing one is a genuine leak worth a nudge.
+
 ## [4.4.3] - 2026-07-18
 
 ### Fixed

@@ -46,6 +46,7 @@ fast and deterministic.
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1513,6 +1514,111 @@ def _is_self_assignment_line(line: str) -> bool:
     return bool(m and m.group("key") == m.group("value"))
 
 
+# The keyword-STYLE detect-secrets kinds: they flag a keyword-shaped assignment
+# (`password = "..."`) off the KEY name regardless of the value, so they fire on
+# obvious NON-secrets -- test fixtures (`password = "test"`) and docstring examples
+# (`SECRET_KEY = "your-secret-key"`) -- at block-capable error severity. Only these
+# kinds are placeholder-filtered; the deterministic prefixed/structured kinds
+# (aws_access_key, github_token, private_key, ...) are NEVER touched, and even a
+# keyword-style hit on a genuinely high-entropy value stays (only clear
+# placeholders are dropped).
+_KEYWORD_DETECTOR_KINDS = frozenset({"Secret Keyword", "password_assignment"})
+
+# Values that are clearly NOT a credential -- test/example markers only. A weak
+# but PLAUSIBLY-REAL password (`admin`, `password123`, `123456`, `s3cr3t`,
+# `changeme`, a bare `secret`/`password`) is deliberately absent: committing one
+# is a genuine credential leak the scanner must still flag. An exact match is
+# unconditional (`test` is never a real secret); the PATTERNS below add an entropy
+# backstop so a real key that merely starts with "your-" is not dropped.
+_PLACEHOLDER_SECRET_VALUES = frozenset(
+    {
+        "test",
+        "testing",
+        "example",
+        "dummy",
+        "sample",
+        "placeholder",
+        "redacted",
+        "none",
+        "null",
+        "nil",
+        "todo",
+        "tbd",
+        "xxx",
+        "foo",
+        "bar",
+        "baz",
+        "fixme",
+        "fake",
+        "mock",
+        "your-secret-key",
+        "your_secret_key",
+        "your-api-key",
+        "your_api_key",
+        "yoursecretkey",
+        "notasecret",
+        "not-a-secret",
+    }
+)
+_PLACEHOLDER_SECRET_RE = re.compile(
+    r"^(?:your[-_]|my[-_]secret|put[-_]your|xxx+)"
+    r"|[-_]here$|<[^>]*>|\{\{.*\}\}|\$\{[^}]*\}|%\([^)]*\)|example\.(?:com|org)"
+    r"|^x+$|^0+$|^\.+$|^-+$",
+    re.IGNORECASE,
+)
+# A string value ASSIGNED to a keyword (`password = "..."` / `key: "..."`), read
+# from the value position only -- never any literal on the line -- so a real key
+# in `env("KEY", "AKIA...")` or `cond ? "real" : "x"` is never mistaken for the
+# placeholder branch. The value length is UNBOUNDED (a `{0,200}` cap silently
+# dropped a >200-char real token from the capture, letting a co-located
+# placeholder suppress the line's hit); the character-class star is linear-time,
+# and a long value can never equal a short placeholder anyway.
+_ASSIGNED_STR_VALUE_RE = re.compile(r"""[=:]\s*(?:[rbfuRBFU]{0,2})['"]([^'"]*)['"]""")
+
+
+def _shannon_entropy(s: str) -> float:
+    from collections import Counter
+
+    n = len(s)
+    if n == 0:
+        return 0.0
+    return -sum((c / n) * math.log2(c / n) for c in Counter(s).values())
+
+
+def _secret_value_is_placeholder(value: str) -> bool:
+    v = value.strip()
+    if not v or v.lower() in _PLACEHOLDER_SECRET_VALUES:
+        return True  # empty, or an exact known placeholder -- never a real key
+    # A placeholder-SHAPED value only counts when its entropy is low: a real
+    # credential that happens to start with "your-" is high-entropy and stays.
+    return bool(_PLACEHOLDER_SECRET_RE.search(v)) and _shannon_entropy(v) < 3.5
+
+
+def _keyword_hit_is_placeholder(hit: dict, lines: list[str]) -> bool:
+    """True when a keyword-style hit's line assigns ONLY placeholder values.
+
+    A hit carries only its type and line number, not the exact flagged value, so
+    the check requires EVERY assigned string literal on the line to be a clear
+    placeholder. A line carrying any real-looking value -- a multi-assignment or an
+    env default that also holds a genuine secret -- keeps its hit, so a real secret
+    sitting next to a placeholder on the same line is never dropped.
+    """
+    if str(hit.get("type")) not in _KEYWORD_DETECTOR_KINDS:
+        return False
+    # A concat-folded / descaped hit fired on a REASSEMBLED value the original
+    # line cannot show (`secret = "te" + "st"`, `"pfx" + "<real>"`, an escaped
+    # literal). Reading the original line would see only a fragment (possibly a
+    # placeholder), so the value the detector actually flagged is not recoverable
+    # here -- never suppress it, keeping the concat-obfuscation defense intact.
+    if hit.get("concat_folded"):
+        return False
+    ln = hit.get("line_number")
+    if not isinstance(ln, int) or not (1 <= ln <= len(lines)):
+        return False
+    values = _ASSIGNED_STR_VALUE_RE.findall(lines[ln - 1])
+    return bool(values) and all(_secret_value_is_placeholder(v) for v in values)
+
+
 def _scan_with_concat_fold(content: str, scan_fn) -> list[dict]:
     """Run ``scan_fn`` on the content, then on its concat-folded form.
 
@@ -1567,7 +1673,11 @@ def _scan_with_concat_fold(content: str, scan_fn) -> list[dict]:
                 return False
             return _is_self_assignment_line(lines[ln - 1])
 
-        hits = [h for h in hits if not _on_self_assignment(h)]
+        hits = [
+            h
+            for h in hits
+            if not _on_self_assignment(h) and not _keyword_hit_is_placeholder(h, lines)
+        ]
     return hits
 
 

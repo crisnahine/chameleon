@@ -231,3 +231,77 @@ class TestSplitSecretForms:
         ]
         for code in clean:
             assert not self._denies(code), f"false positive on: {code!r}"
+
+
+class TestKeywordPlaceholderFilter:
+    """Class D: keyword-style secret hits (Secret Keyword / password_assignment)
+    on obvious PLACEHOLDER values (test fixtures, docstring examples) are dropped,
+    while every real secret -- high-entropy keyword values AND the deterministic
+    prefixed kinds -- still fires. Value-based, never kind-based, so a real
+    high-entropy value under a `password` keyword is never suppressed."""
+
+    def _fires(self, content: str) -> bool:
+        return len(scan_secrets(content)) > 0
+
+    def test_placeholder_values_suppressed(self):
+        # Every line here fires a keyword-style detector on a clear placeholder
+        # value in the set, so each is load-bearing (fires without the filter).
+        for line in [
+            'password = "test"',
+            'SECRET_KEY = "your-secret-key"',
+            'api_secret = "placeholder"',
+            'FLASKBB_SECRET_KEY = "your-secret-key"',
+            'password = "redacted"',
+            'API_KEY = "your-api-key"',
+        ]:
+            assert not self._fires(line), f"placeholder not suppressed: {line!r}"
+
+    def test_weak_but_real_passwords_still_flag(self):
+        # A weak-but-plausibly-real credential is NOT a clear placeholder and must
+        # still surface -- committing it is a genuine credential leak. `changeme`
+        # is included: a committed default someone forgot to change is worth a nudge.
+        for line in [
+            'DB_PASSWORD = "admin"',
+            'DB_PASSWORD = "password123"',
+            'REDIS_PASSWORD = "s3cr3t"',
+            'API_SECRET = "changeme"',
+        ]:
+            assert self._fires(line), f"weak real credential wrongly suppressed: {line!r}"
+
+    def test_concat_folded_secret_not_suppressed(self):
+        # SECURITY: a concat-obfuscated secret (`"pfx" + "<real>"`) fires only on
+        # the reassembled/folded value; a leading placeholder fragment on the
+        # original line must never suppress it.
+        assert self._fires('secret = "test" + "RealHighEntropySecretValue1234567890abcXYZ"')
+
+    def test_real_high_entropy_keyword_value_still_fires(self):
+        # A genuinely high-entropy value under a keyword must NOT be suppressed.
+        assert self._fires('SECRET = "hunter2x9q3z7realtokenvalue0000abcd"')
+
+    def test_your_prefixed_high_entropy_not_suppressed(self):
+        # The entropy backstop: a real key that merely starts with "your-" is
+        # high-entropy and must still fire (only low-entropy placeholders drop).
+        assert self._fires('SECRET = "your-9x8Q3z7Kv2Mn4Pw6Rt1Yb5Ec0Ad3realkey"')
+
+    def test_deterministic_kinds_never_placeholder_filtered(self):
+        # AWS / GitHub keys are deterministic hard-block kinds -- never touched by
+        # the keyword placeholder filter, on both the advisory and the deny path.
+        aws = 'api_key = "AKIAIOSFODNN7EXAMPLE"'
+        gh = 'GITHUB_TOKEN = "ghp_16C7e42F292c6912E7710c838347Ae178B4a"'
+        assert self._fires(aws)
+        assert self._fires(gh)
+        assert len(scan_hard_secrets(aws)) > 0  # deny path preserved
+
+    def test_real_secret_next_to_placeholder_not_dropped(self):
+        # SECURITY: a line assigning BOTH a placeholder and a real secret must keep
+        # its hit -- suppression requires EVERY assigned value to be a placeholder.
+        assert self._fires('x = "test"; secret = "REALKEY9x8Q3z7Kv2Mn4Pw6Rt1"')
+        assert self._fires('d = {"secret": "REALKEY9x8Q3z7Kv2Mn4Pw", "hint": "test"}')
+
+    def test_long_real_secret_next_to_placeholder_not_dropped(self):
+        # SECURITY: a real secret longer than any placeholder, co-located with a
+        # captured placeholder, must keep its hit -- the value capture is unbounded
+        # so the long token is seen and judged non-placeholder.
+        tok = "hX9zQ2mVp8Lk3RnT7wYbC4dFgJ6sA1eZ" * 8  # 256 chars
+        assert self._fires(f'password = "test"; session_secret = "{tok}"')
+        assert self._fires(f'cfg = {{"password": "test", "token": "{tok}"}}')
