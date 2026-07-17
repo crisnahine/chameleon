@@ -110,6 +110,14 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # casing call drawn from three filenames is too thin to ground a rule that
     # can block a new file's name.
     "FILE_NAMING_MIN_SAMPLE": 8,
+    # Minimum same-language source siblings in a file's OWN directory before that
+    # directory's dominant suffix is trusted as a sub-convention that overrides
+    # the archetype-wide suffix. A semantic archetype can span directories with
+    # different suffix conventions (Rails app/workers/*_worker.rb alongside
+    # app/workers/scheduler/*_scheduler.rb); the directory is the right scope for
+    # the suffix check. Lower than FILE_NAMING_MIN_SAMPLE because a directory is a
+    # tighter, more homogeneous scope than a whole archetype.
+    "FILE_NAMING_DIR_MIN_SAMPLE": 3,
     # Lookback for the inline-override audit. Same horizon as the shadow report
     # so a lead reads both surfaces over the same recent-edit window.
     "OVERRIDE_AUDIT_WINDOW_DAYS": 21,
@@ -464,6 +472,14 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # section (G-025) lists on one edit — bounded so a broad content edit that
     # happens to redefine several existing names cannot flood the block.
     "PREWRITE_DEDUP_MAX_HITS": 5,
+    # A method name defined in MORE than this many files is a per-file convention
+    # or framework-override contract (a Rails migration's `change`, a worker's
+    # `perform`, a service's `call`), NOT a unique reuse target — pointing the
+    # model at one of dozens of definitions is noise, so the exact-name pass skips
+    # it. Set generously so a genuine small-count duplication (2-6 copies of a
+    # real helper) still surfaces; the stopword list backstops the specific
+    # low-count framework names (`change`) this frequency bar alone would miss.
+    "PREWRITE_DEDUP_MAX_DEFINERS": 6,
     # Domain tokens a DIFFERENT-name candidate must share with the pending
     # function for the pre-write SEMANTIC pass (G-026) to surface it. Higher
     # than the turn-end pass's 1 because pre-write has no LLM judge behind it —

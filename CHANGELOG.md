@@ -4,6 +4,32 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.1] - 2026-07-17
+
+### Fixed
+- Per-edit file-naming lint no longer false-flags a file that follows its OWN
+  directory's suffix sub-convention. A semantic archetype can span directories
+  with different suffix conventions (Rails `app/workers/*_worker.rb` alongside
+  `app/workers/scheduler/*_scheduler.rb`, all one `worker` archetype; NestJS
+  `*.service.ts` alongside a `queues/*.processor.ts` cohort). The lint now checks
+  a file's compound suffix against its OWN same-language directory siblings and
+  uses that directory convention ONLY to suppress the archetype-wide false
+  positive — never to invent or redirect a suggestion, so a directory of misnamed
+  files can neither legitimize a typo nor point a new file at a wrong local
+  majority. Falls back to the archetype-wide suffix when the directory has too few
+  same-language siblings (`FILE_NAMING_DIR_MIN_SAMPLE`, default 3). Inert for
+  Python, which has no compound-suffix convention. See `_directory_dominant_suffix`
+  in `lint_engine.py`.
+- Pre-write reuse-before-create nudge no longer points the model at a per-file
+  framework-override contract as a "reuse target". A Rails migration's `change`
+  (added to the dedup stopword list) and any name defined across more than
+  `PREWRITE_DEDUP_MAX_DEFINERS` (default 6) DISTINCT files — a worker's `perform`,
+  a service's `call`, a NestJS pipe's `transform`, a Django command's `handle` —
+  are recognized as conventions, not unique symbols worth reusing. Genuine
+  small-count duplication (2–6 copies of a real helper) still surfaces. Language-
+  and framework-agnostic: the guard keys on definer-file frequency. See
+  `_prewrite_dedup_section` in `hook_helper.py`.
+
 ## [4.4.0] - 2026-07-17
 
 ### Added

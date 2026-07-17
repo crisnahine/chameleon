@@ -352,3 +352,136 @@ class TestFileNamingSessionFormat:
         assert "kebab-case" in out
         assert ".service.ts" in out
         assert "enforced" in out  # 97% clears the 95% enforce floor
+
+
+class TestDirectoryScopedSuffix:
+    """A semantic archetype can span directories with different suffix
+    sub-conventions (Rails app/workers/*_worker.rb alongside
+    app/workers/scheduler/*_scheduler.rb, all one ``worker`` archetype whose
+    archetype-wide suffix is _worker.rb). A file matching its OWN directory's
+    convention must not be flagged against the archetype-wide suffix.
+    """
+
+    _WORKER_CONV = {
+        "naming": {
+            "file_naming": {
+                "casing": "snake_case",
+                "casing_consistency": 0.99,
+                "sample_size": 130,
+                "suffix": "_worker.rb",
+                "suffix_consistency": 0.84,
+            }
+        }
+    }
+
+    def _make_dir(self, tmp_path, names):
+        d = tmp_path / "app" / "workers" / "scheduler"
+        d.mkdir(parents=True)
+        for n in names:
+            (d / n).write_text("class X\nend\n")
+        return d
+
+    def test_scheduler_file_not_flagged_against_worker_suffix(self, tmp_path):
+        d = self._make_dir(
+            tmp_path,
+            [
+                "user_cleanup_scheduler.rb",
+                "ip_cleanup_scheduler.rb",
+                "vacuum_scheduler.rb",
+                "indexing_scheduler.rb",
+                "instance_refresh_scheduler.rb",
+            ],
+        )
+        target = d / "expired_status_pins_scheduler.rb"
+        target.write_text("class Y\nend\n")
+        out = lint_conventions(
+            "class Y\nend\n", self._WORKER_CONV, language="ruby", file_path=str(target)
+        )
+        assert [v for v in out if v.rule == "file-naming-convention-violation"] == []
+
+    def test_misnamed_file_in_subdir_flagged_against_archetype_suffix(self, tmp_path):
+        # Suppress-only: a file matching NEITHER its directory nor the archetype is
+        # still flagged, but the suggestion is always the archetype suffix (a real
+        # repo-wide convention), never the local majority -- so a directory of
+        # misnamed files can never redirect a new file at a typo.
+        d = self._make_dir(
+            tmp_path,
+            ["user_cleanup_scheduler.rb", "ip_cleanup_scheduler.rb", "vacuum_scheduler.rb"],
+        )
+        target = d / "expired_pins.rb"  # _pins.rb: matches neither _worker.rb nor _scheduler.rb
+        target.write_text("class Z\nend\n")
+        out = lint_conventions(
+            "class Z\nend\n", self._WORKER_CONV, language="ruby", file_path=str(target)
+        )
+        v = [x for x in out if x.rule == "file-naming-convention-violation"]
+        assert v and v[0].expected == "_worker.rb"
+
+    def test_cross_language_majority_does_not_hide_own_language_convention(self, tmp_path):
+        # A polyglot directory: the .rb files share _scheduler.rb, but .py files
+        # are the numeric majority. Pooling languages would let the .py suffix win
+        # (or drown the .rb convention) and wrongly flag the correctly-named .rb
+        # scheduler file. Same-language scoping keeps it suppressed by its .rb
+        # siblings alone.
+        d = tmp_path / "app" / "polyglot"
+        d.mkdir(parents=True)
+        for n in ("a_handler.py", "b_handler.py", "c_handler.py", "d_handler.py", "e_handler.py"):
+            (d / n).write_text("def x():\n    pass\n")
+        for n in ("one_scheduler.rb", "two_scheduler.rb", "three_scheduler.rb"):
+            (d / n).write_text("class A\nend\n")
+        target = d / "four_scheduler.rb"
+        target.write_text("class B\nend\n")
+        out = lint_conventions(
+            "class B\nend\n", self._WORKER_CONV, language="ruby", file_path=str(target)
+        )
+        assert [x for x in out if x.rule == "file-naming-convention-violation"] == []
+
+    def test_typescript_directory_sub_convention_suppressed(self, tmp_path):
+        # Language-agnostic: NestJS src/queues/*.processor.ts inside an archetype
+        # whose archetype-wide suffix is .service.ts. The processor file matches
+        # its own directory and must not be flagged for missing .service.ts.
+        ts_conv = {
+            "naming": {
+                "file_naming": {
+                    "casing": "kebab-case",
+                    "casing_consistency": 0.98,
+                    "sample_size": 60,
+                    "suffix": ".service.ts",
+                    "suffix_consistency": 0.80,
+                }
+            }
+        }
+        d = tmp_path / "src" / "queues"
+        d.mkdir(parents=True)
+        for n in ("email", "billing", "report", "cleanup"):
+            (d / f"{n}.processor.ts").write_text("export class X {}\n")
+        target = d / "notification.processor.ts"
+        target.write_text("export class Y {}\n")
+        out = lint_conventions(
+            "export class Y {}\n", ts_conv, language="typescript", file_path=str(target)
+        )
+        assert [v for v in out if v.rule == "file-naming-convention-violation"] == []
+
+    def test_relative_path_falls_back_to_archetype_suffix(self):
+        # No directory on disk -> the archetype-wide check applies (prior
+        # behavior), so existing profiles and hypothetical lints are unaffected.
+        out = lint_conventions(
+            "class Bar\nend\n",
+            self._WORKER_CONV,
+            language="ruby",
+            file_path="does/not/exist/some_job.rb",
+        )
+        v = [x for x in out if x.rule == "file-naming-convention-violation"]
+        assert v and v[0].expected == "_worker.rb"
+
+    def test_thin_directory_falls_back_to_archetype_suffix(self, tmp_path):
+        # A directory with too few siblings (< FILE_NAMING_DIR_MIN_SAMPLE) cannot
+        # establish its own convention -> the archetype-wide suffix still applies.
+        d = tmp_path / "app" / "workers" / "newkind"
+        d.mkdir(parents=True)
+        target = d / "lonely_scheduler.rb"
+        target.write_text("class Y\nend\n")
+        out = lint_conventions(
+            "class Y\nend\n", self._WORKER_CONV, language="ruby", file_path=str(target)
+        )
+        v = [x for x in out if x.rule == "file-naming-convention-violation"]
+        assert v and v[0].expected == "_worker.rb"

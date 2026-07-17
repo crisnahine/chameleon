@@ -168,3 +168,65 @@ def test_rough_arity_nested_defaults():
     assert hook_helper._rough_arity("a, b=[1, 2], c", drop_self=False) == 3
     assert hook_helper._rough_arity("self, x, y", drop_self=True) == 2
     assert hook_helper._rough_arity("", drop_self=False) == 0
+
+
+def test_migration_change_override_not_flagged(tmp_path, monkeypatch):
+    # `change` is a per-file Rails migration override every migration redefines,
+    # not a unique reuse target -> the stopword list filters it before both passes.
+    repo = tmp_path
+    cat = _catalog([("change", "db/migrate/001_a.rb"), ("change", "db/migrate/002_b.rb")])
+    monkeypatch.setattr("chameleon_mcp.function_catalog.load_function_catalog", lambda r: cat)
+    content = (
+        "class AddCol < ActiveRecord::Migration[8.1]\n"
+        "  def change\n    add_column :t, :c, :string\n  end\nend\n"
+    )
+    out = hook_helper._prewrite_dedup_section(content, str(repo / "db/migrate/003_c.rb"), repo)
+    assert out == ""
+
+
+def test_ubiquitous_name_skipped_by_definer_frequency(tmp_path, monkeypatch):
+    # `configure` defined across many files (> PREWRITE_DEDUP_MAX_DEFINERS) is a
+    # per-file convention, not a reuse target -> the frequency guard skips it.
+    # Single-token name stays below the 2-token semantic bar, isolating the guard.
+    repo = tmp_path
+    cat = _catalog([("configure", f"config/init/i{i}.rb") for i in range(8)])
+    monkeypatch.setattr("chameleon_mcp.function_catalog.load_function_catalog", lambda r: cat)
+    content = "class Setup\n  def configure(app)\n    app\n  end\nend\n"
+    out = hook_helper._prewrite_dedup_section(content, str(repo / "config/init/new.rb"), repo)
+    assert "reuse-before-create" not in out
+
+
+def test_low_frequency_duplicate_still_flagged(tmp_path, monkeypatch):
+    # A genuine helper duplicated in only a couple of files stays below the
+    # frequency bar and is still surfaced -- the guard must not over-suppress.
+    repo = tmp_path
+    cat = _catalog([("calculate_discount", "app/a.rb"), ("calculate_discount", "app/b.rb")])
+    monkeypatch.setattr("chameleon_mcp.function_catalog.load_function_catalog", lambda r: cat)
+    content = "class C\n  def calculate_discount(x)\n    x\n  end\nend\n"
+    out = hook_helper._prewrite_dedup_section(content, str(repo / "app/c.rb"), repo)
+    assert "reuse-before-create" in out
+    assert "calculate_discount" in out
+
+
+def test_frequency_guard_language_agnostic(tmp_path, monkeypatch):
+    # The frequency guard keys on definer-file count, not language: a NestJS pipe
+    # `transform` (TS) and a Django management command `handle` (Python) spread
+    # across many files are both per-file contracts, not reuse targets.
+    repo = tmp_path
+    ts_cat = _catalog([("transform", f"src/pipes/p{i}.ts") for i in range(8)])
+    monkeypatch.setattr("chameleon_mcp.function_catalog.load_function_catalog", lambda r: ts_cat)
+    ts_out = hook_helper._prewrite_dedup_section(
+        "export class MyPipe {\n  transform(v: string) { return v; }\n}\n",
+        str(repo / "src/pipes/new.ts"),
+        repo,
+    )
+    assert "reuse-before-create" not in ts_out
+
+    py_cat = _catalog([("handle", f"app/management/commands/c{i}.py") for i in range(8)])
+    monkeypatch.setattr("chameleon_mcp.function_catalog.load_function_catalog", lambda r: py_cat)
+    py_out = hook_helper._prewrite_dedup_section(
+        "class Command:\n    def handle(self, *args):\n        pass\n",
+        str(repo / "app/management/commands/new.py"),
+        repo,
+    )
+    assert "reuse-before-create" not in py_out

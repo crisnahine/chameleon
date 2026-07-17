@@ -3498,6 +3498,68 @@ def _basename(file_path: str) -> str:
     return file_path.replace("\\", "/").rsplit("/", 1)[-1]
 
 
+def _directory_dominant_suffix(file_path: str) -> tuple[str, float] | None:
+    """The dominant compound-suffix token (and its consistency) among the edited
+    file's SAME-LANGUAGE source siblings in its OWN directory, or None when the
+    directory is unreadable, too small, or has no suffix clearing the floor.
+
+    A semantic archetype can span directories with different suffix
+    sub-conventions -- e.g. Rails ``app/workers/*_worker.rb`` alongside
+    ``app/workers/scheduler/*_scheduler.rb``, all one ``worker`` archetype whose
+    archetype-wide suffix is ``_worker.rb``. Judging a scheduler file against the
+    archetype-wide suffix is a false positive; the file's own directory is the
+    correct scope for the suffix convention. Only siblings in the edited file's
+    own language group vote -- a ``.rb`` file can never satisfy a ``.py``-dominant
+    directory's suffix, so pooling languages would manufacture a guaranteed false
+    positive. Filesystem-backed and best-effort: any error (a relative/hypothetical
+    path, a missing directory) returns None, so the caller falls back to the
+    archetype-wide suffix -- the prior behavior.
+    """
+    import os
+    from collections import Counter
+
+    from chameleon_mcp._thresholds import threshold_int
+
+    try:
+        basename = _basename(file_path)
+        own_group: tuple[str, ...] | None = None
+        for group in (tuple(_TS_EXTENSIONS), tuple(_RUBY_EXTENSIONS), tuple(_PY_EXTENSIONS)):
+            if basename.endswith(group):
+                own_group = group
+                break
+        if own_group is None:
+            return None
+        directory = os.path.dirname(file_path)
+        if not directory or not os.path.isdir(directory):
+            return None
+        suffix_counts: Counter[str] = Counter()
+        total = 0
+        with os.scandir(directory) as it:
+            for entry in it:
+                try:
+                    if not entry.is_file():
+                        continue
+                except OSError:
+                    continue
+                if not entry.name.endswith(own_group):
+                    continue
+                stem, suffix = _split_compound_suffix(entry.name)
+                if not stem:
+                    continue
+                total += 1
+                if suffix:
+                    suffix_counts[suffix] += 1
+        if total < threshold_int("FILE_NAMING_DIR_MIN_SAMPLE") or not suffix_counts:
+            return None
+        dominant, hits = suffix_counts.most_common(1)[0]
+        consistency = hits / total
+        if consistency >= 0.60:
+            return dominant, consistency
+        return None
+    except Exception:
+        return None
+
+
 def _file_naming_violations(file_path: str, file_naming: dict) -> list[Violation]:
     """Emit a violation when the edited file's basename breaks the archetype's
     dominant casing or compound-suffix token.
@@ -3553,19 +3615,29 @@ def _file_naming_violations(file_path: str, file_naming: dict) -> list[Violation
         # must not be flagged for "missing" the suffix either.
         and stem
     ):
-        out.append(
-            Violation(
-                rule="file-naming-convention-violation",
-                expected=expected_suffix,
-                actual=suffix or "(none)",
-                severity="warning",
-                message=(
-                    f"NAMING: file {basename} is missing the {expected_suffix} suffix "
-                    f"sibling files use "
-                    f"({file_naming.get('suffix_consistency', 0):.0%} convention)"
-                ),
+        # The file's own directory can hold a suffix sub-convention distinct from
+        # the archetype-wide one (app/workers/*_worker.rb vs
+        # app/workers/scheduler/*_scheduler.rb). Use it ONLY to SUPPRESS the false
+        # positive when the file already matches its directory -- never to invent
+        # or redirect the suggested suffix. Suppress-only guarantees the suggestion
+        # is always the archetype-wide suffix (a convention that cleared the 60%
+        # floor across the archetype), so a directory of misnamed files can neither
+        # legitimize a typo nor point a new file at a wrong local majority.
+        dir_convention = _directory_dominant_suffix(file_path)
+        if dir_convention is None or suffix != dir_convention[0]:
+            out.append(
+                Violation(
+                    rule="file-naming-convention-violation",
+                    expected=expected_suffix,
+                    actual=suffix or "(none)",
+                    severity="warning",
+                    message=(
+                        f"NAMING: file {basename} is missing the {expected_suffix} suffix "
+                        f"sibling files use "
+                        f"({file_naming.get('suffix_consistency', 0):.0%} convention)"
+                    ),
+                )
             )
-        )
 
     return out
 

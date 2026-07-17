@@ -2812,6 +2812,7 @@ _DEDUP_STOPWORDS = frozenset(
         "start",
         "stop",
         "build",
+        "change",
         "create",
         "update",
         "destroy",
@@ -2965,11 +2966,26 @@ def _prewrite_dedup_section(
         cap = threshold_int("PREWRITE_DEDUP_MAX_HITS")
         names = {n for n, _ in defined}
 
-        # Pass 1 — exact-name cross-file collisions.
+        # Pass 1 — exact-name cross-file collisions. A name defined across many
+        # files is a per-file convention/framework-override contract (a Rails
+        # migration's `change`, a worker's `perform`), not a unique symbol worth
+        # reusing -- pointing the model at one of N definitions is noise, so skip
+        # names whose distinct-FILE definer count clears the convention bar (count
+        # files, not catalog rows: one file may contribute several arity variants).
+        max_definers = threshold_int("PREWRITE_DEDUP_MAX_DEFINERS")
+        definer_files: dict[str, set[str]] = {}
+        for fn in catalog.functions:
+            if fn.name in names:
+                definer_files.setdefault(fn.name, set()).add(fn.file)
         exact: list[tuple[str, str]] = []
         seen_names: set[str] = set()
         for fn in catalog.functions:
-            if fn.name in names and fn.file != edited_rel and fn.name not in seen_names:
+            if (
+                fn.name in names
+                and fn.file != edited_rel
+                and fn.name not in seen_names
+                and len(definer_files.get(fn.name, ())) <= max_definers
+            ):
                 seen_names.add(fn.name)
                 exact.append((fn.name, fn.file))
 
