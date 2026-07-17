@@ -427,6 +427,19 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # body excerpt) would otherwise blow the MCP response token cap and become
     # undeliverable; over the cap the result is truncated and flagged.
     "DUPLICATION_MAX_MATCHES": 15,
+    # Cap on the archetype rows one describe_codebase overview returns (largest
+    # first; the response carries archetypes_omitted when the repo has more).
+    # Auto-clustered monoliths reach 100+ archetypes, which would dominate the
+    # "what is this codebase" answer with tail clusters of a few files each.
+    "DESCRIBE_MAX_ARCHETYPES": 40,
+    # Global body-excerpt budget (chars) across one get_duplication_candidates
+    # response. The per-match and per-candidate caps still multiply to ~75
+    # excerpts on a function-dense file (measured 31KB of bodies on a real TS
+    # repo), which dwarfs every other field combined. Excerpts are spent in
+    # candidate rank order until the budget runs out; past it, candidates are
+    # still named (name/file/signature) with excerpt_omitted=true so the caller
+    # can open the file instead of paying for an inline body.
+    "DUPLICATION_RESPONSE_EXCERPT_BUDGET_CHARS": 12_000,
     # Caps for the turn-end body-hash duplication review gate. The file and
     # findings caps bound the parse fan-out and advisory length per turn. The
     # prompt-bytes cap keeps the judge prompt within the session budget. The

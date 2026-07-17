@@ -4,6 +4,57 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.3.0] - 2026-07-17
+
+### Changed
+- MCP wire overhaul: every registered tool now sends its result as ONE compact
+  JSON text block — `structured_output=False` (no outputSchema, no
+  structuredContent duplication), no pretty-print indentation (the SDK default
+  was `indent=2` on every response), and null-valued fields dropped (absent ==
+  null for every documented field). Measured on a real TS repo: 17-36% of
+  every response was formatting overhead. In-process callers are unaffected —
+  the `_wire_tool` decorator serializes only at the FastMCP boundary and the
+  module-level functions still return dicts.
+- The three dispatcher descriptions were 2.5-3.0KB — over the 2KB ceiling
+  Claude Code truncates tool descriptions at, so their action documentation
+  tails were silently invisible in real sessions. Each is now one line per
+  action, under 2KB, with a new `action="help"` that returns every action's
+  full signature + summary generated from the live `tools.py` signatures via
+  `inspect` (a reference that can never drift from the code). Total tools/list
+  schema: ~5,980 -> ~5,230 tokens.
+- `get_callers` groups caller rows one per (path, caller, grade, via) with
+  every call line in `lines` ascending; `total` still counts individual call
+  sites. A hot function measured 15.0KB -> 1.9KB on the wire (-87%).
+- `get_blast_radius` chains start at the function's first caller; the queried
+  function is carried once in `module`/`function`, never repeated per chain.
+- `get_duplication_candidates` spends body excerpts from one global char
+  budget (`DUPLICATION_RESPONSE_EXCERPT_BUDGET_CHARS`, default 12,000) in
+  candidate rank order; past it a candidate is still named but carries
+  `excerpt_omitted: true` plus a steering note (the per-match x per-candidate
+  caps multiplied to 31KB of bodies on a function-dense real file). Worst
+  measured response: 52.9KB -> 24.1KB (-54%).
+- `describe_codebase` caps archetype rows at `DESCRIBE_MAX_ARCHETYPES`
+  (default 40, largest first, `archetypes_omitted` reported) and strips the
+  paths-pattern prefix the generated summary duplicated per row.
+
+### Added
+- Server `instructions` (the only server text guaranteed in model context at
+  session start under Claude Code's deferred tool loading): a skill-style
+  "when to search for chameleon tools" trigger plus the shared response
+  conventions, under 2KB.
+- MCP tool annotations: all 16 read tools and `chameleon_telemetry` declare
+  `readOnlyHint`/`idempotentHint` (clients can skip write-permission friction);
+  the two mutating dispatchers deliberately carry none.
+- Self-correcting negatives: a `get_callers` miss on a module that HAS
+  recorded callees returns `recorded_names_nearby` (up to 3 close matches,
+  difflib-gated) so a typo/rename near-miss self-corrects without a
+  search_codebase detour. Strictly additive and fail-open.
+- `get_crossfile_context` performance: the whole-file string/comment blanking
+  and TS export-set reads are now memoized by content digest (stale entries
+  impossible by construction; bounded by entry count, per-entry size, and
+  total chars). Measured on excalidraw: 3.8s -> 1.6s cold, 0.45s warm (-88%),
+  byte-identical findings.
+
 ## [4.2.0] - 2026-07-17
 
 ### Added

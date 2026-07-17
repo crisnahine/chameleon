@@ -3893,7 +3893,10 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
     """Who calls a function, from the committed calls snapshot (deterministic grades only).
 
     Reads the prebuilt ``calls_index.json`` artifact and returns the recorded
-    caller rows for ``function_name`` defined in the file at ``file_path``.
+    caller rows for ``function_name`` defined in the file at ``file_path``,
+    GROUPED one row per (path, caller, grade, via) with every call line in
+    ``lines`` (ascending; barrel-chained edges keep separate rows) --
+    ``total`` still counts individual call sites.
 
     Grades are deterministic: ``same_file`` (bare call to a file-local name or
     ``this.``/``self.`` to a class member defined in the same file),
@@ -3993,38 +3996,73 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
         # real answer (no deterministic callers at derivation time), not an error.
         # Sanitize the echoed module/function for shape parity with the success
         # branch (both derive from the calls index / caller-supplied path).
-        return _envelope(
-            {
-                "found": True,
-                "module": _sanitize(_rr(rel)),
-                "function": _sanitize(function_name),
-                "callers": [],
-                "total": 0,
-                "truncated": False,
-                "note": EMPTY_CALLERS_NOTE,
-            }
-        )
-
-    clean_callers = []
-    for row in entry["callers"]:
-        clean_row = {
-            "path": _sanitize(_rr(row["path"]))
-            if isinstance(row.get("path"), str)
-            else row.get("path"),
-            "caller": _sanitize(row["caller"])
-            if isinstance(row.get("caller"), str)
-            else row.get("caller"),
-            "line": row.get("line"),
-            "grade": row.get("grade"),
+        result = {
+            "found": True,
+            "module": _sanitize(_rr(rel)),
+            "function": _sanitize(function_name),
+            "callers": [],
+            "total": 0,
+            "truncated": False,
+            "note": EMPTY_CALLERS_NOTE,
         }
+        # Self-correcting negative: when the module HAS recorded callees under
+        # other names, a near-miss (typo, camel/snake drift, renamed symbol)
+        # is far likelier than a genuinely uncalled function -- name the
+        # closest recorded names so the caller can retry without a detour
+        # through search_codebase. Strictly additive: any failure here must
+        # never break the known-absent answer itself.
+        try:
+            import difflib
+
+            near = difflib.get_close_matches(function_name, index.names_for(rel), n=3, cutoff=0.6)
+            if near:
+                result["recorded_names_nearby"] = [_sanitize(n) for n in near]
+                result["note"] = EMPTY_CALLERS_NOTE + (
+                    " No entry exists for this exact name in this module; the closest"
+                    " names the index DOES record are in recorded_names_nearby -- if"
+                    " one of those is the symbol you meant, re-call with it."
+                )
+        except Exception:
+            pass
+        return _envelope(result)
+
+    # One row per (path, caller, grade, via) with every call line in `lines`:
+    # a caller that hits the function N times is one row, not N near-identical
+    # rows repeating the same path/caller/grade. `total` still counts call
+    # sites, so nothing is lost -- the payload just stops paying for the
+    # repetition.
+    grouped: dict = {}
+    row_order: list = []
+    for row in entry["callers"]:
+        path = _sanitize(_rr(row["path"])) if isinstance(row.get("path"), str) else row.get("path")
+        caller = (
+            _sanitize(row["caller"]) if isinstance(row.get("caller"), str) else row.get("caller")
+        )
+        grade = row.get("grade")
         # A through-barrel edge carries the re-export chain it was chased across:
         # this caller reaches the function via these barrel files, not by naming
         # the module directly. Surface it (rerooted + sanitized) so the path is
         # visible rather than the edge looking like a direct import that isn't.
         raw_via = row.get("via")
-        if isinstance(raw_via, list) and raw_via:
-            clean_row["via"] = [_sanitize(_rr(v)) for v in raw_via if isinstance(v, str)]
-        clean_callers.append(clean_row)
+        via = (
+            tuple(_sanitize(_rr(v)) for v in raw_via if isinstance(v, str))
+            if isinstance(raw_via, list) and raw_via
+            else ()
+        )
+        key = (path, caller, grade, via)
+        clean_row = grouped.get(key)
+        if clean_row is None:
+            clean_row = {"path": path, "caller": caller, "grade": grade, "lines": []}
+            if via:
+                clean_row["via"] = list(via)
+            grouped[key] = clean_row
+            row_order.append(key)
+        line = row.get("line")
+        if line is not None:
+            clean_row["lines"].append(line)
+    clean_callers = [grouped[k] for k in row_order]
+    for clean_row in clean_callers:
+        clean_row["lines"].sort()
 
     result = {
         "found": True,
@@ -4047,8 +4085,10 @@ def get_blast_radius(repo: str, file_path: str, function_name: str, depth: int =
 
     Walks the prebuilt ``calls_index.json`` upward from ``function_name`` defined
     in the file at ``file_path`` and returns the bounded caller chains that reach
-    it: "if I change this, what transitively calls it". Each chain is root first
-    (``function_name`` -> its caller -> its caller's caller ...), one
+    it: "if I change this, what transitively calls it". Each chain starts at the
+    function's FIRST caller and walks upward (caller -> caller's caller ...);
+    the queried function itself is carried once in ``module``/``function``,
+    never repeated per chain. One
     ``{path, name, line}`` hop per step. ``depth`` is the number of hops; it
     defaults to the judge's transitive depth and is clamped to
     ``[1, BLAST_RADIUS_MAX_DEPTH]``. The walk shares the judge's fanout /
@@ -4152,6 +4192,11 @@ def get_blast_radius(repo: str, file_path: str, function_name: str, depth: int =
     radius = compute_blast_radius(index, rel, function_name, depth=resolved_depth)
     clean_chains = []
     for chain in radius["chains"]:
+        # Every chain starts at the SAME root hop -- the queried function
+        # itself (no line, since it is the callee, not a call site). Repeating
+        # it per chain is pure payload; the response's module/function fields
+        # already carry it once. Emit each chain from its first caller upward.
+        hops = chain[1:] if chain and chain[0].get("name") == function_name else chain
         clean_chains.append(
             [
                 {
@@ -4163,7 +4208,7 @@ def get_blast_radius(repo: str, file_path: str, function_name: str, depth: int =
                     else hop.get("name"),
                     "line": hop.get("line"),
                 }
-                for hop in chain
+                for hop in hops
             ]
         )
 
@@ -4473,6 +4518,11 @@ def describe_codebase(repo: str) -> dict:
     # read as ground truth.
     if d.get("truncated"):
         out["truncated"] = True
+    # The archetype list is capped to the largest DESCRIBE_MAX_ARCHETYPES rows;
+    # forward the omission count so the overview never reads as complete when
+    # tail clusters were dropped.
+    if d.get("archetypes_omitted"):
+        out["archetypes_omitted"] = d["archetypes_omitted"]
     return _envelope(out)
 
 
@@ -5247,9 +5297,14 @@ def get_duplication_candidates(repo: str, file_path: str) -> dict:
     Returns ``{"found": bool, "file": str|None, "matches": [...]}`` where each
     match is ``{"function": {name, kind, arity, required}, "candidates":
     [{name, file, kind, arity, required, shared_tokens, body_excerpt}, ...]}``.
-    Fails open with ``found: False`` on any ambiguity (unresolvable / untrusted
-    repo, missing catalog, unparsable file). Never fabricates a candidate -- each
-    is a function the bootstrap recorded.
+    Body excerpts draw from one global char budget
+    (``DUPLICATION_RESPONSE_EXCERPT_BUDGET_CHARS``) in candidate rank order;
+    past it a candidate is still named but carries ``excerpt_omitted: true``
+    (read its file to judge it), and the response carries a top-level
+    ``excerpts_omitted`` count + steering ``note``. Fails open with
+    ``found: False`` on any ambiguity (unresolvable / untrusted repo, missing
+    catalog, unparsable file). Never fabricates a candidate -- each is a
+    function the bootstrap recorded.
     """
     from chameleon_mcp._thresholds import threshold_int
     from chameleon_mcp.function_catalog import (
@@ -5380,17 +5435,31 @@ def get_duplication_candidates(repo: str, file_path: str) -> dict:
     if truncated:
         matches = matches[:max_matches]
 
+    # Body excerpts are the dominant cost of this response (the metadata rows
+    # are ~200B each; a real function-dense TS file measured 31KB of bodies
+    # alone), so they draw from one global char budget in candidate rank order.
+    # A candidate past the budget is still NAMED -- the caller opens its file to
+    # judge instead of paying for an inline body.
     excerpt_lines = threshold_int("DUPLICATION_BODY_EXCERPT_LINES")
+    excerpt_budget = threshold_int("DUPLICATION_RESPONSE_EXCERPT_BUDGET_CHARS")
+    excerpts_omitted = 0
     for match in matches:
         fn = match["function"]
         fn["name"] = _sanitize(fn["name"])
         for cand in match["candidates"]:
-            cand["body_excerpt"] = _sanitize(
-                _candidate_body_excerpt(repo_root, cand["file"], cand["name"], excerpt_lines)
-            )
             cand["name"] = _sanitize(cand["name"])
             cand["file"] = _sanitize(cand["file"])
             cand["shared_tokens"] = [_sanitize(t) for t in cand.get("shared_tokens", [])]
+            if excerpt_budget > 0:
+                excerpt = _sanitize(
+                    _candidate_body_excerpt(repo_root, cand["file"], cand["name"], excerpt_lines)
+                )
+                cand["body_excerpt"] = excerpt
+                excerpt_budget -= len(excerpt)
+            else:
+                cand["body_excerpt"] = ""
+                cand["excerpt_omitted"] = True
+                excerpts_omitted += 1
 
     out = {
         "found": True,
@@ -5400,6 +5469,13 @@ def get_duplication_candidates(repo: str, file_path: str) -> dict:
     if truncated:
         out["truncated"] = True
         out["truncated_matches"] = total_matches - max_matches
+    if excerpts_omitted:
+        out["excerpts_omitted"] = excerpts_omitted
+        out["note"] = (
+            "body-excerpt budget reached: the lowest-ranked "
+            f"{excerpts_omitted} candidate(s) carry excerpt_omitted=true -- "
+            "read each one's file to judge it, or query a file with fewer new functions"
+        )
     return _envelope(out)
 
 

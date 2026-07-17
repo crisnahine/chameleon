@@ -295,6 +295,20 @@ def describe_codebase(repo_root) -> dict:
                 }
             )
         archetypes.sort(key=lambda a: (-(a["size"] or 0), a["name"]))
+        # The generated summary usually leads with the exact paths pattern the
+        # `paths` field already carries; strip the duplicated prefix so each
+        # row pays for the pattern once.
+        for a in archetypes:
+            s, pat = a.get("summary"), a.get("paths")
+            if isinstance(s, str) and isinstance(pat, str) and pat and s.startswith(pat):
+                a["summary"] = s[len(pat) :].lstrip(" .") or None
+        # An archetype-dense repo (auto-clustered monoliths reach 100+) would
+        # otherwise dominate the overview; keep the largest N and say how many
+        # were dropped so the answer never reads as complete when it is not.
+        max_archetypes = threshold_int("DESCRIBE_MAX_ARCHETYPES")
+        if len(archetypes) > max_archetypes:
+            out["archetypes_omitted"] = len(archetypes) - max_archetypes
+            archetypes = archetypes[:max_archetypes]
         out["archetypes"] = archetypes
     sigs = load_symbol_signatures(profile_root)
     if sigs is not None:

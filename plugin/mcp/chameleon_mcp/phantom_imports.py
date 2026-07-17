@@ -1093,6 +1093,16 @@ def _destructured_names(body: str, outer: str) -> tuple[set[str], bool]:
     return out, False
 
 
+# Memo for _current_export_names: a PURE function of the file text whose
+# _strip_ts_noise pass costs milliseconds per file, called once per finding by
+# the crossfile passes (the same module text recurs across findings and
+# calls). The cached value is a tiny (frozenset, bool); keyed by content
+# digest, so a stale entry is impossible by construction. Bounded.
+_EXPORT_NAMES_CACHE: dict = {}
+_EXPORT_NAMES_CACHE_CAP = 2048
+_EXPORT_NAMES_CACHE_MAX_TEXT = 256 * 1024
+
+
 def _current_export_names(content: str) -> tuple[frozenset[str], bool]:
     """Names the edited TS file currently exports, plus an open-set flag.
 
@@ -1103,6 +1113,25 @@ def _current_export_names(content: str) -> tuple[frozenset[str], bool]:
     file does ``export * from`` and its set can't be enumerated -- the caller
     then skips the cross-file checks rather than reason off a partial set.
     """
+    import hashlib
+
+    cache_key = None
+    if len(content) <= _EXPORT_NAMES_CACHE_MAX_TEXT:
+        cache_key = hashlib.blake2b(
+            content.encode("utf-8", "surrogatepass"), digest_size=16
+        ).digest()
+        hit = _EXPORT_NAMES_CACHE.get(cache_key)
+        if hit is not None:
+            return hit
+    result = _current_export_names_uncached(content)
+    if cache_key is not None:
+        if len(_EXPORT_NAMES_CACHE) >= _EXPORT_NAMES_CACHE_CAP:
+            _EXPORT_NAMES_CACHE.pop(next(iter(_EXPORT_NAMES_CACHE)))
+        _EXPORT_NAMES_CACHE[cache_key] = result
+    return result
+
+
+def _current_export_names_uncached(content: str) -> tuple[frozenset[str], bool]:
     stripped, mask = _strip_ts_noise(content)
 
     def _masked(idx: int) -> bool:

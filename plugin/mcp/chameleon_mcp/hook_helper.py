@@ -7644,7 +7644,13 @@ def _imported_source_keys(content: str, name: str, importer_dir: Path, lang: str
             # after repointing foo to another module -- cannot re-introduce the old
             # target key and defeat repoint detection. Length-preserving, so match
             # offsets and the named-specifier extraction below are unaffected.
-            scan = _blank_strings_comments(content, "typescript", keep_strings=True)
+            # Memoized by content digest: the crossfile passes re-scan the same
+            # importer once per finding and once per call.
+            scan = _KEEPSTRINGS_BLANKED_MEMO.get_or_compute(
+                content,
+                "typescript",
+                lambda: _blank_strings_comments(content, "typescript", keep_strings=True),
+            )
             for m in _TS_IMPORT_SPEC_RE.finditer(scan):
                 raw = m.group(1) or m.group(2) or m.group(3)
                 if not raw:
@@ -7886,6 +7892,77 @@ def _blank_jsx_text(stripped: str) -> str:
     return _JSX_CHILDREN_RE.sub(lambda m: _blank_jsx_text_run(m.group(0)), cur)
 
 
+# Memo for the whole-file blanking below. _blank_strings_comments (+ the JSX
+# pass) is a PURE function of (text, language) but costs milliseconds per file
+# in pure Python, and the crossfile passes re-blank the same importer files
+# once per finding and once per call (the profiled dominant cost of
+# get_crossfile_context on a real TS repo). Keyed by content digest -- never
+# path/mtime -- so a stale entry is impossible by construction. Bounded: at
+# most _BLANKED_CACHE_CAP entries, oversized texts are never cached.
+class _TextMemo:
+    """Bounded content-digest memo for pure text->text derivations.
+
+    Keyed by the CONTENT's digest (never path/mtime), so a stale entry is
+    impossible by construction. Bounded three ways: per-entry text ceiling,
+    entry count, and total cached chars -- the char budget is what lets the
+    occasional generated megafile cache too (a fixed small per-entry ceiling
+    left those recomputed at ~100ms each on every crossfile pass). Eviction
+    drops the oldest insertion (a plain bounded memo, not strict LRU: the
+    crossfile passes sweep files in a stable order, where insertion order and
+    access order coincide).
+
+    Cap sizing: one crossfile pass touches a few hundred importer files, so an
+    undersized cache would fully evict between passes (thrash).
+    """
+
+    def __init__(self, max_entries=512, max_total_chars=24_000_000, max_text=1_048_576):
+        self.data: dict = {}
+        self.total_chars = 0
+        self.max_entries = max_entries
+        self.max_total_chars = max_total_chars
+        self.max_text = max_text
+
+    def get_or_compute(self, content: str, variant, compute):
+        if len(content) > self.max_text:
+            return compute()
+        digest = hashlib.blake2b(content.encode("utf-8", "surrogatepass"), digest_size=16).digest()
+        key = (digest, variant)
+        hit = self.data.get(key)
+        if hit is not None:
+            return hit
+        out = compute()
+        size = len(out) if isinstance(out, str) else 0
+        while self.data and (
+            len(self.data) >= self.max_entries or self.total_chars + size > self.max_total_chars
+        ):
+            oldest = next(iter(self.data))
+            evicted = self.data.pop(oldest)
+            self.total_chars -= len(evicted) if isinstance(evicted, str) else 0
+        self.data[key] = out
+        self.total_chars += size
+        return out
+
+
+_BLANKED_MEMO = _TextMemo()
+_KEEPSTRINGS_BLANKED_MEMO = _TextMemo()
+
+
+def _blanked_for_reference(content: str, language: str | None) -> str:
+    """Whole-file string/comment(/JSX) blanking for _reference_present, memoized."""
+
+    def compute() -> str:
+        blanked = _blank_strings_comments(content, language)
+        if language != "python":
+            # Blank literal JSX text children (safe: a complete element ends in
+            # the unforgeable `</`, which real code cannot produce), keeping
+            # `{expr}` spans, so `<Tag>Name</Tag>` text is not a live reference
+            # while `{Name}` is.
+            blanked = _blank_jsx_text(blanked)
+        return blanked
+
+    return _BLANKED_MEMO.get_or_compute(content, language, compute)
+
+
 def _reference_present(
     content: str, name: str, line: int | None, language: str | None = None
 ) -> bool:
@@ -7917,26 +7994,19 @@ def _reference_present(
     # `name.foo` (name used, then a member off it) still counts.
     needle = re.compile(r"(?<![A-Za-z0-9_$.])" + re.escape(name) + r"(?![A-Za-z0-9_$])")
 
-    def _blank(text: str) -> str:
-        # Blank strings, comments and templates so a name that survives only inside
-        # one is not counted as a live reference, via the char-scan tokenizer.
-        # NOTE: we deliberately do NOT reuse `_strip_ts_noise` here even though it
-        # also handles regex literals -- its regex detector reads the `/` in a JSX
-        # closing tag `</span>` as a regex start and pairs it with the next `</`,
-        # blanking the region between them. In a JSX file that HIDES a real
-        # reference sitting between two closing tags (`<A><B>x</B>{Foo}</A>`) -- a
-        # false negative, the worst class. `_blank_strings_comments` leaves `<`,
-        # `>`, `/` as code (only `//` and `/* */` are comments), so JSX tags
-        # survive; the only cost is that a name lingering ONLY inside a regex
-        # literal (`/Foo/`) over-fires -- a rare, safe-direction over-fire, far
-        # better than hiding a real break. Python has its own comment/string forms.
-        blanked = _blank_strings_comments(text, language)
-        if language == "python":
-            return blanked
-        # Blank literal JSX text children (safe: a complete element ends in the
-        # unforgeable `</`, which real code cannot produce), keeping `{expr}` spans,
-        # so `<Tag>Name</Tag>` text is not a live reference while `{Name}` is.
-        return _blank_jsx_text(blanked)
+    # Blanking (strings, comments, templates, JSX text) runs via the memoized
+    # _blanked_for_reference above, so a name that survives only inside one is
+    # not counted as a live reference, via the char-scan tokenizer.
+    # NOTE: we deliberately do NOT reuse `_strip_ts_noise` there even though it
+    # also handles regex literals -- its regex detector reads the `/` in a JSX
+    # closing tag `</span>` as a regex start and pairs it with the next `</`,
+    # blanking the region between them. In a JSX file that HIDES a real
+    # reference sitting between two closing tags (`<A><B>x</B>{Foo}</A>`) -- a
+    # false negative, the worst class. `_blank_strings_comments` leaves `<`,
+    # `>`, `/` as code (only `//` and `/* */` are comments), so JSX tags
+    # survive; the only cost is that a name lingering ONLY inside a regex
+    # literal (`/Foo/`) over-fires -- a rare, safe-direction over-fire, far
+    # better than hiding a real break. Python has its own comment/string forms.
 
     # Blank the WHOLE file first, THEN index the recorded line -- never blank a
     # single line in isolation. A token that opens on an earlier line (a
@@ -7946,7 +8016,7 @@ def _reference_present(
     # (and a false deny on the crossfile deny path). The line short-circuit is a
     # precision fast-path over the already-blanked text, mirroring the Ruby
     # sibling _name_present.
-    blanked = _blank(content)
+    blanked = _blanked_for_reference(content, language)
     blanked_lines = blanked.splitlines()
     if line is not None and 1 <= line <= len(blanked_lines):
         if needle.search(blanked_lines[line - 1]):

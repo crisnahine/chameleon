@@ -124,6 +124,12 @@ def test_get_blast_radius_returns_chain(trusted_repo):
     assert "setup" in flat and "boot" in flat
     # carries the judge's honesty posture verbatim
     assert "note" in data and "dead code" in data["note"].lower()
+    # The queried function is carried once in module/function, never repeated
+    # as the root hop of every chain (pure payload).
+    for chain in data["chains"]:
+        assert chain, "a rendered chain must not be empty"
+        assert chain[0]["name"] != "makeService"
+    assert [hop["name"] for hop in data["chains"][0]] == ["setup", "boot"]
 
 
 def test_get_blast_radius_accepts_relative_file_path(trusted_repo):

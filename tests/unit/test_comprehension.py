@@ -268,6 +268,43 @@ def test_describe_codebase_tool(profiled_repo):
     assert any(a["name"] == ARCH for a in data["archetypes"])
 
 
+def test_describe_codebase_caps_archetypes_and_reports_omitted(profiled_repo, monkeypatch):
+    """Over DESCRIBE_MAX_ARCHETYPES the overview keeps the largest rows and
+    surfaces archetypes_omitted THROUGH the tool wrapper (regression: the
+    wrapper rebuilt the response from a key whitelist and dropped the count,
+    so a capped gitlabhq overview read as complete)."""
+    cham = profiled_repo / ".chameleon"
+    arch = json.loads((cham / "archetypes.json").read_text())
+    arch["archetypes"]["tiny-extra"] = {
+        "summary": "one-file tail cluster",
+        "cluster_size": 1,
+        "paths_pattern": "tail/",
+    }
+    (cham / "archetypes.json").write_text(json.dumps(arch))
+    monkeypatch.setenv("CHAMELEON_DESCRIBE_MAX_ARCHETYPES", "1")
+    data = _data(tools.describe_codebase(str(profiled_repo)))
+    assert len(data["archetypes"]) == 1
+    # Largest-first: the original 2-file archetype wins over the 1-file tail.
+    assert data["archetypes"][0]["name"] == ARCH
+    assert data["archetypes_omitted"] == 1
+
+
+def test_describe_codebase_strips_paths_prefix_from_summary(profiled_repo):
+    """A generated summary that leads with the row's own paths pattern pays for
+    the pattern once: the duplicated prefix is stripped at render time."""
+    cham = profiled_repo / ".chameleon"
+    arch = json.loads((cham / "archetypes.json").read_text())
+    # paths_pattern_display is what the rendered `paths` field carries (it wins
+    # over paths_pattern), so the duplicated prefix must be stated in it.
+    arch["archetypes"][ARCH]["paths_pattern_display"] = "src:py"
+    arch["archetypes"][ARCH]["summary"] = "src:py. typical shape: services."
+    (cham / "archetypes.json").write_text(json.dumps(arch))
+    data = _data(tools.describe_codebase(str(profiled_repo)))
+    row = next(a for a in data["archetypes"] if a["name"] == ARCH)
+    assert row["summary"] == "typical shape: services."
+    assert row["paths"] == "src:py"
+
+
 def test_get_callees_tool(profiled_repo):
     data = _data(tools.get_callees(str(profiled_repo), str(profiled_repo / "consumer.py"), "setup"))
     assert data["found"] is True

@@ -111,19 +111,40 @@ class TestDispatchers:
         assert data["status"] == "failed"
         assert "unknown action" in data["error"]
         assert "bootstrap_repo" in data["error"]
-        assert set(data["valid_actions"]) == set(server._LIFECYCLE_ACTIONS)
+        assert set(data["valid_actions"]) == {*server._LIFECYCLE_ACTIONS, "help"}
 
     def test_review_unknown_action_lists_valid_actions(self):
         data = server.chameleon_review(action="bootstrap_repo")["data"]
         assert data["status"] == "failed"
         # A lifecycle action against the review dispatcher is still unknown HERE.
         assert "record_review_verdict" in data["error"]
-        assert set(data["valid_actions"]) == set(server._REVIEW_ACTIONS)
+        assert set(data["valid_actions"]) == {*server._REVIEW_ACTIONS, "help"}
 
     def test_telemetry_unknown_action_lists_valid_actions(self):
         data = server.chameleon_telemetry(action="")["data"]
         assert data["status"] == "failed"
-        assert set(data["valid_actions"]) == set(server._TELEMETRY_ACTIONS)
+        assert set(data["valid_actions"]) == {*server._TELEMETRY_ACTIONS, "help"}
+
+    def test_help_action_generates_live_signatures(self):
+        # help is generated from the LIVE tools.py signatures (zero drift):
+        # every routed action appears with its real signature + a summary.
+        for dispatcher_fn, actions in (
+            (server.chameleon_lifecycle, server._LIFECYCLE_ACTIONS),
+            (server.chameleon_review, server._REVIEW_ACTIONS),
+            (server.chameleon_telemetry, server._TELEMETRY_ACTIONS),
+        ):
+            res = dispatcher_fn(action="help")
+            _assert_envelope(res)
+            data = res["data"]
+            assert data["status"] == "ok"
+            listed = {e["action"].split("(", 1)[0] for e in data["actions"]}
+            assert listed == set(actions)
+            # Signatures come from inspect: spot-check a known default.
+            by_name = {e["action"].split("(", 1)[0]: e for e in data["actions"]}
+            if "refresh_repo" in by_name:
+                assert "force: bool=False" in by_name["refresh_repo"]["action"]
+            for entry in data["actions"]:
+                assert entry["summary"], f"help entry {entry['action']} has no summary"
 
     def test_wrong_params_returns_signature_not_crash(self):
         res = server.chameleon_review(action="record_review_verdict", params={"bogus_kwarg": 1})
@@ -242,6 +263,87 @@ class TestDispatchers:
         for verdict in ("`novel`", "`duplicate`", "`covered`", "`invalid`"):
             assert verdict in telemetry_doc
         assert "32" in telemetry_doc
+
+
+class TestWireLayer:
+    """The registered (FastMCP-facing) tools serialize compact and null-free."""
+
+    def _registered(self, name):
+        return server.mcp._tool_manager.get_tool(name)
+
+    def test_wire_is_compact_null_free_json_text(self, trusted_repo):
+        import anyio
+
+        tool = self._registered("detect_repo")
+        out = anyio.run(tool.run, {"file_path": str(trusted_repo / WITNESS)})
+        assert isinstance(out, str)
+        # Compact: no indentation, no space after separators.
+        assert "\n" not in out and '": ' not in out
+        parsed = json.loads(out)
+        assert parsed["api_version"] == "1"
+
+        def no_nulls(v):
+            if isinstance(v, dict):
+                return all(x is not None and no_nulls(x) for x in v.values())
+            if isinstance(v, list):
+                return all(no_nulls(x) for x in v)
+            return True
+
+        assert no_nulls(parsed), f"wire payload carries null fields: {out[:200]}"
+        # The wire text matches the in-process dict minus its None-valued keys.
+        assert parsed == server._strip_nones(tools.detect_repo(str(trusted_repo / WITNESS)))
+
+    def test_no_tool_advertises_an_output_schema(self):
+        # structured_output=False everywhere: one text block on the wire, no
+        # outputSchema in the definition, no structuredContent duplication.
+        for t in server.mcp._tool_manager.list_tools():
+            assert t.output_schema is None, f"{t.name} regrew an outputSchema"
+
+    def test_read_tools_carry_read_only_annotations(self):
+        writers = {"chameleon_lifecycle", "chameleon_review"}
+        for t in server.mcp._tool_manager.list_tools():
+            if t.name in writers:
+                assert t.annotations is None
+            else:
+                assert t.annotations is not None, f"{t.name} lost its annotations"
+                assert t.annotations.readOnlyHint is True
+                assert t.annotations.idempotentHint is True
+
+    def test_every_description_fits_the_client_truncation_ceiling(self):
+        # Claude Code truncates tool descriptions and server instructions at
+        # 2KB; anything past that is silently invisible to the model.
+        for t in server.mcp._tool_manager.list_tools():
+            assert len(t.description or "") <= 2048, (
+                f"{t.name} description is {len(t.description)}B; "
+                "Claude Code truncates at 2KB so the tail would be invisible"
+            )
+        assert len(server.mcp.instructions or "") <= 2048
+
+    def test_strip_nones_preserves_semantic_falsy_values(self):
+        assert server._strip_nones(
+            {"a": None, "b": [], "c": False, "d": 0, "e": {"f": None, "g": ""}}
+        ) == {"b": [], "c": False, "d": 0, "e": {"g": ""}}
+
+    def test_strip_nones_recurses_into_tuples(self):
+        # The rules payload nests config dicts inside (source_key, config)
+        # tuples; a null inside one must be dropped like anywhere else.
+        assert server._strip_nones({"rules": [("eslint", {"strict": None, "semi": True})]}) == {
+            "rules": [["eslint", {"semi": True}]]
+        }
+
+    def test_help_hides_test_only_injection_params(self):
+        # bootstrap_repo's now/analysis_root clock/root overrides are not part
+        # of the model-facing API; help must not advertise them.
+        data = server.chameleon_lifecycle(action="help")["data"]
+        by_name = {e["action"].split("(", 1)[0]: e["action"] for e in data["actions"]}
+        assert "now" not in by_name["bootstrap_repo"]
+        assert "analysis_root" not in by_name["bootstrap_repo"]
+
+    def test_module_symbols_still_return_dicts(self, trusted_repo):
+        # The decorator must leave the module-level functions dict-returning
+        # for in-process callers (hooks, daemon, QA batteries, these tests).
+        assert isinstance(server.detect_repo(str(trusted_repo / WITNESS)), dict)
+        assert isinstance(server.chameleon_telemetry(action="help"), dict)
 
 
 def test_detect_repo(trusted_repo):

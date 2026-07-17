@@ -793,17 +793,44 @@ FastMCP, stdio transport, server name `chameleon-mcp`, entry point
 `uvx --refresh-package chameleon-mcp --from ${CLAUDE_PLUGIN_ROOT}/mcp chameleon-mcp`.
 It is never exposed over a network.
 
-Every tool is a `@mcp.tool()`-decorated function in `server.py` that delegates to
-`tools.py`. Every file-reading tool goes through `safe_open` (lstat first,
-realpath, repo-boundary prefix match) and re-checks artifact mtimes per call so
-a `/chameleon-teach` or `/chameleon-refresh` is picked up without a stale cache.
-The server exposes **19 tools**: the 16 comprehension/conformance tools an
-agent needs mid-edit stay top-level, and every operator/workflow function is
-folded behind three dispatchers (`chameleon_lifecycle`, `chameleon_review`,
-`chameleon_telemetry`). A dispatcher call is
-`chameleon_lifecycle(action="bootstrap_repo", params={...})` — `action` names
-the folded function and `params` carries its original arguments, names and
-values unchanged.
+Every tool is registered in `server.py` via the `_wire_tool` decorator and
+delegates to `tools.py`. Every file-reading tool goes through `safe_open`
+(lstat first, realpath, repo-boundary prefix match) and re-checks artifact
+mtimes per call so a `/chameleon-teach` or `/chameleon-refresh` is picked up
+without a stale cache. The server exposes **19 tools**: the 16
+comprehension/conformance tools an agent needs mid-edit stay top-level, and
+every operator/workflow function is folded behind three dispatchers
+(`chameleon_lifecycle`, `chameleon_review`, `chameleon_telemetry`). A
+dispatcher call is `chameleon_lifecycle(action="bootstrap_repo",
+params={...})` — `action` names the folded function and `params` carries its
+original arguments, names and values unchanged.
+
+**Wire contract (v4.3).** Every registered tool sends its result as one
+compact JSON text block: `structured_output=False` (no outputSchema, no
+structuredContent duplication), no pretty-print indentation, and null-valued
+fields dropped — absent == null for every documented field. The module-level
+functions in `server.py` still return plain dicts (the decorator registers a
+serializing wrapper and leaves the module symbol untouched), so hooks, the
+daemon, and tests are unaffected. Token discipline follows the client's real
+limits: Claude Code truncates each tool description and the server
+instructions at 2KB, so every description fits under that (the dispatcher
+docstrings carry one line per action; `action="help"` returns each action's
+full signature + summary, generated from the live `tools.py` signatures via
+`inspect`, so the reference can never drift from the code). The server sets
+the FastMCP `instructions` field — the only server text guaranteed in model
+context at session start under deferred tool loading — as a skill-style
+"when to search for these tools" trigger plus the shared response
+conventions. All 16 read tools and `chameleon_telemetry` carry
+`readOnlyHint`/`idempotentHint` tool annotations; the two mutating
+dispatchers deliberately do not. Row-heavy responses are shaped for token
+economy at the source: `get_callers` groups one row per (path, caller,
+grade, via) with call lines in `lines`; `get_blast_radius` chains start at the
+first caller (the queried function is never repeated per chain);
+`get_duplication_candidates` spends body excerpts from one global char
+budget in rank order and names the rest with `excerpt_omitted: true`;
+`describe_codebase` caps archetype rows (`DESCRIBE_MAX_ARCHETYPES`) and
+reports `archetypes_omitted`. Truncation is always flagged, with a note
+saying how to narrow the query.
 
 ### Kept top-level (16 tools)
 

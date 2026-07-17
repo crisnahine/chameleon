@@ -106,8 +106,91 @@ def test_get_callers_returns_callers(trusted_repo):
     row = data["callers"][0]
     assert row["path"] == "consumer.ts"
     assert row["caller"] == "setup"
-    assert row["line"] == 5
+    assert row["lines"] == [5]
     assert row["grade"] == "import"
+
+
+def test_get_callers_groups_repeat_call_sites_into_one_row(trusted_repo):
+    """N call sites from the same (path, caller, grade) collapse into ONE row
+    with the lines listed ascending; total still counts call sites."""
+    cham = trusted_repo / ".chameleon"
+    _write_calls_index(
+        cham,
+        {
+            "service.ts": {
+                "makeService": {
+                    "callers": [
+                        {"path": "consumer.ts", "caller": "setup", "line": 9, "grade": "import"},
+                        {"path": "consumer.ts", "caller": "setup", "line": 5, "grade": "import"},
+                        {"path": "consumer.ts", "caller": "teardown", "line": 7, "grade": "import"},
+                    ],
+                    "total": 3,
+                    "truncated": False,
+                }
+            }
+        },
+    )
+    res = tools.get_callers(str(trusted_repo), str(trusted_repo / "service.ts"), "makeService")
+    data = res["data"]
+    assert data["total"] == 3
+    assert len(data["callers"]) == 2
+    setup_row = data["callers"][0]
+    assert setup_row["caller"] == "setup"
+    assert setup_row["lines"] == [5, 9]
+    assert data["callers"][1] == {
+        "path": "consumer.ts",
+        "caller": "teardown",
+        "grade": "import",
+        "lines": [7],
+    }
+
+
+def test_get_callers_distinct_via_chains_stay_separate_rows(trusted_repo):
+    """`via` is part of the grouping key: the same (path, caller, grade)
+    reached through different barrel chains must NOT merge into one row --
+    each chain is a distinct fact the caller may need to cite."""
+    cham = trusted_repo / ".chameleon"
+    _write_calls_index(
+        cham,
+        {
+            "service.ts": {
+                "makeService": {
+                    "callers": [
+                        {
+                            "path": "consumer.ts",
+                            "caller": "setup",
+                            "line": 3,
+                            "grade": "import",
+                            "via": ["barrels/a.ts"],
+                        },
+                        {
+                            "path": "consumer.ts",
+                            "caller": "setup",
+                            "line": 9,
+                            "grade": "import",
+                            "via": ["barrels/b.ts"],
+                        },
+                        {
+                            "path": "consumer.ts",
+                            "caller": "setup",
+                            "line": 5,
+                            "grade": "import",
+                            "via": ["barrels/a.ts"],
+                        },
+                    ],
+                    "total": 3,
+                    "truncated": False,
+                }
+            }
+        },
+    )
+    res = tools.get_callers(str(trusted_repo), str(trusted_repo / "service.ts"), "makeService")
+    data = res["data"]
+    assert len(data["callers"]) == 2
+    assert data["callers"][0]["via"] == ["barrels/a.ts"]
+    assert data["callers"][0]["lines"] == [3, 5]
+    assert data["callers"][1]["via"] == ["barrels/b.ts"]
+    assert data["callers"][1]["lines"] == [9]
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +256,54 @@ def test_get_callers_callee_absent_empty(trusted_repo):
     data = res["data"]
     assert data["found"] is True
     assert data["callers"] == []
+
+
+def test_get_callers_unknown_name_suggests_nearest_recorded(trusted_repo):
+    """A near-miss name (typo/case drift) gets the closest recorded names back
+    so the caller can self-correct without a search_codebase detour."""
+    cham = trusted_repo / ".chameleon"
+    _write_calls_index(
+        cham,
+        {
+            "service.ts": {
+                "makeService": {
+                    "callers": [
+                        {"path": "consumer.ts", "caller": "setup", "line": 5, "grade": "import"}
+                    ],
+                    "total": 1,
+                    "truncated": False,
+                }
+            }
+        },
+    )
+    res = tools.get_callers(str(trusted_repo), str(trusted_repo / "service.ts"), "makeServices")
+    data = res["data"]
+    assert data["found"] is True
+    assert data["callers"] == []
+    assert data["recorded_names_nearby"] == ["makeService"]
+    assert "recorded_names_nearby" in data["note"]
+
+
+def test_get_callers_far_name_gets_no_suggestions(trusted_repo):
+    """A name nothing like any recorded one must NOT get a speculative
+    suggestion (cutoff-gated), keeping the plain known-absent answer."""
+    cham = trusted_repo / ".chameleon"
+    _write_calls_index(
+        cham,
+        {
+            "service.ts": {
+                "makeService": {
+                    "callers": [],
+                    "total": 0,
+                    "truncated": False,
+                }
+            }
+        },
+    )
+    res = tools.get_callers(str(trusted_repo), str(trusted_repo / "service.ts"), "zzz")
+    data = res["data"]
+    assert data["found"] is True
+    assert "recorded_names_nearby" not in data
     assert data["total"] == 0
     assert data["truncated"] is False
 
