@@ -4292,7 +4292,35 @@ def get_prose_rule_candidates(repo: str) -> dict:
     )
 
 
-def search_codebase(repo: str, query: str, limit: int = 10) -> dict:
+def _resolve_response_format(value) -> tuple[str, str | None]:
+    """Normalize a response_format argument: ("concise"|"detailed", note|None).
+
+    Fail-open: an unknown value keeps the tool's full (detailed) behavior and
+    says so in a note, instead of erroring a read that would otherwise work.
+    """
+    if isinstance(value, str) and value.strip().lower() in ("concise", "detailed"):
+        return value.strip().lower(), None
+    if value in (None, ""):
+        return "detailed", None
+    # The echoed value is model-supplied input reflected into the response:
+    # bound it (a megastring must not inflate the payload it was meant to
+    # shrink) and sanitize it (repr does not neutralize tag-boundary tokens).
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _sanitize
+
+    shown = _sanitize(str(value)[:40])
+    return (
+        "detailed",
+        f"unknown response_format {shown!r} ignored; valid values: concise, detailed",
+    )
+
+
+def search_codebase(
+    repo: str,
+    query: str,
+    limit: int = 10,
+    offset: int = 0,
+    response_format: str = "detailed",
+) -> dict:
     """Find symbols by name or file, ranked, from the committed profile (comprehension).
 
     The "where is X / find Y" query chameleon's conformance profile can also
@@ -4300,8 +4328,12 @@ def search_codebase(repo: str, query: str, limit: int = 10) -> dict:
     all profiled languages) and returns the matches for ``query``, ranked exact
     name > prefix > substring > all-tokens > file-path, with a more-called symbol
     breaking ties (it is more central). Each result carries
-    ``{name, file, line, signature, callers}``. ``limit`` is clamped to
-    ``COMPREHEND_SEARCH_MAX_RESULTS``.
+    ``{name, file, line, signature, callers}``; ``response_format="concise"``
+    keeps ``{name, file, line}`` (and ``kind``) only. ``limit`` is clamped to
+    ``COMPREHEND_SEARCH_MAX_RESULTS``. ``offset`` pages the SAME deterministic
+    ranking (clamped to ``COMPREHEND_SEARCH_MAX_OFFSET``); when more matches
+    remain past the page, the response carries ``next_offset`` and a steering
+    note.
 
     Read-only over the committed index, offline, no repo-code execution. Fails
     open with ``found: False`` on an unresolvable / untrusted repo or empty query.
@@ -4335,34 +4367,44 @@ def search_codebase(repo: str, query: str, limit: int = 10) -> dict:
     else:
         n = limit
     n = max(1, min(n, cap))
+    # Pagination over the same deterministic ranking: offset skips ranked rows.
+    # Clamped so a huge offset cannot force an unbounded index walk.
+    if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+        offset = 0
+    offset = min(offset, threshold_int("COMPREHEND_SEARCH_MAX_OFFSET"))
+    fmt, fmt_note = _resolve_response_format(response_format)
 
     from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _s
 
     def _ss(v):
         return _s(v) if isinstance(v, str) else v
 
-    # Fetch one past the effective limit: a full page alone cannot distinguish
-    # "exactly limit matches" from "more were silently dropped", and the cap
-    # clamp (limit > COMPREHEND_SEARCH_MAX_RESULTS) is invisible to the caller.
-    fetched = search_symbols(repo_root, query, limit=n + 1)
-    more_matches = len(fetched) > n
+    # Fetch one past the effective page end: a full page alone cannot
+    # distinguish "exactly limit matches" from "more were silently dropped",
+    # and the cap clamp (limit > COMPREHEND_SEARCH_MAX_RESULTS) is invisible
+    # to the caller.
+    fetched = search_symbols(repo_root, query, limit=offset + n + 1)
+    more_matches = len(fetched) > offset + n
     results = []
-    for r in fetched[:n]:
-        row = {
-            "name": _ss(r.get("name")),
-            "file": _ss(r.get("file")),
-            "line": r.get("line"),
-            "signature": _ss(r.get("signature")),
-            "callers": r.get("callers"),
-        }
+    for r in fetched[offset : offset + n]:
+        row = {"name": _ss(r.get("name")), "file": _ss(r.get("file")), "line": r.get("line")}
+        if fmt == "detailed":
+            row["signature"] = _ss(r.get("signature"))
+            row["callers"] = r.get("callers")
         if isinstance(r.get("kind"), str):
             row["kind"] = _ss(r.get("kind"))
         results.append(row)
     out = {"found": True, "query": _ss(query), "results": results}
+    if offset:
+        out["offset"] = offset
+    if fmt_note:
+        out["note"] = fmt_note
     if more_matches:
         out["truncated"] = True
+        out["next_offset"] = offset + n
         out["truncated_note"] = (
-            "more symbols matched than the result cap; narrow the query to see the rest"
+            f"more symbols matched; re-call with offset={offset + n} for the next page, "
+            "or narrow the query"
         )
     from chameleon_mcp.worktree import resolve_profile_root
 
@@ -4427,20 +4469,33 @@ def search_codebase(repo: str, query: str, limit: int = 10) -> dict:
         out["degraded"] = True
         out["reason"] = "; ".join(_reasons) + "; results may be incomplete"
     elif not results:
-        # A clean (non-degraded) empty result: the query matched no callable and
-        # no class/module definition. The index covers both, but only what the
-        # last profile build captured, so point at the actionable next steps
-        # rather than let an empty result read as "this symbol does not exist".
-        out["note"] = (
-            "No symbol matched. The index covers callables (functions, methods) "
-            "and class/module definitions from the last profile build -- try a "
-            "different name or a file-path fragment, describe_codebase for the "
-            "archetype overview, or /chameleon-refresh if the index may be stale."
-        )
+        if offset:
+            # An empty PAGE past the end of a ranking that may well have
+            # matched: "no symbol matched" would be false here and could push
+            # the caller to a needless refresh or a wrong "does not exist".
+            empty_note = (
+                f"no matches at offset {offset}: the ranking ended earlier -- "
+                "page back (offset=0) or narrow the query"
+            )
+        else:
+            # A clean (non-degraded) empty result: the query matched no callable
+            # and no class/module definition. The index covers both, but only
+            # what the last profile build captured, so point at the actionable
+            # next steps rather than let an empty result read as "this symbol
+            # does not exist".
+            empty_note = (
+                "No symbol matched. The index covers callables (functions, methods) "
+                "and class/module definitions from the last profile build -- try a "
+                "different name or a file-path fragment, describe_codebase for the "
+                "archetype overview, or /chameleon-refresh if the index may be stale."
+            )
+        # Append, never clobber: an unknown-response_format warning set above
+        # must survive alongside the empty-result guidance.
+        out["note"] = f"{out['note']} | {empty_note}" if out.get("note") else empty_note
     return _envelope(out)
 
 
-def describe_codebase(repo: str) -> dict:
+def describe_codebase(repo: str, response_format: str = "detailed") -> dict:
     """A structural overview of the repo from its committed profile (comprehension).
 
     The "what is this codebase" answer, read off chameleon's own profile: the
@@ -4448,6 +4503,9 @@ def describe_codebase(repo: str) -> dict:
     the repo contains, each with its size, summary, and canonical witness), the
     file/symbol totals, and the ``god_symbols`` (the most-called production
     functions, test files excluded). All from committed artifacts, offline.
+    ``response_format="concise"`` keeps each archetype's ``{name, size,
+    witness}`` (dropping the summary/paths prose) and the top 5 god symbols --
+    the cheap orientation read; default ``"detailed"`` is the full overview.
 
     Fails open with ``found: False`` on an unresolvable / untrusted repo, and to
     an empty-shaped overview when no profile is present. A profile whose
@@ -4480,19 +4538,29 @@ def describe_codebase(repo: str) -> dict:
     def _ss(v):
         return _s(v) if isinstance(v, str) else v
 
+    fmt, fmt_note = _resolve_response_format(response_format)
     d = _describe(repo_root)
-    archetypes = [
-        {
-            "name": _ss(a.get("name")),
-            "summary": _ss(a.get("summary")),
-            "size": a.get("size"),
-            "paths": _ss(a.get("paths")),
-            "witness": _ss(a.get("witness")),
-        }
-        for a in d.get("archetypes", [])
-    ]
+    if fmt == "concise":
+        archetypes = [
+            {"name": _ss(a.get("name")), "size": a.get("size"), "witness": _ss(a.get("witness"))}
+            for a in d.get("archetypes", [])
+        ]
+    else:
+        archetypes = [
+            {
+                "name": _ss(a.get("name")),
+                "summary": _ss(a.get("summary")),
+                "size": a.get("size"),
+                "paths": _ss(a.get("paths")),
+                "witness": _ss(a.get("witness")),
+            }
+            for a in d.get("archetypes", [])
+        ]
     god = []
-    for g in d.get("god_symbols", []):
+    god_rows = d.get("god_symbols", [])
+    if fmt == "concise":
+        god_rows = god_rows[:5]
+    for g in god_rows:
         row = {"name": _ss(g.get("name")), "file": _ss(g.get("file")), "callers": g.get("callers")}
         if g.get("capped"):
             # The per-callee row cap bounded the stored caller list, so this
@@ -4508,6 +4576,8 @@ def describe_codebase(repo: str) -> dict:
         "archetypes": archetypes,
         "god_symbols": god,
     }
+    if fmt_note:
+        out["note"] = fmt_note
     # The profile bundle failed cross-artifact validation but the independent
     # symbol index was still read; flag it so a consumer knows the archetype /
     # language fields may be partial and can suggest /chameleon-refresh.
@@ -5278,7 +5348,9 @@ def parse_edited_functions(repo_root, file_path: str) -> list[ParsedFn]:
     return out
 
 
-def get_duplication_candidates(repo: str, file_path: str) -> dict:
+def get_duplication_candidates(
+    repo: str, file_path: str, response_format: str = "detailed"
+) -> dict:
     """Candidate existing functions a file's new functions may re-implement.
 
     The cross-file duplication read backing PR-review and the turn-end judge. For
@@ -5301,7 +5373,10 @@ def get_duplication_candidates(repo: str, file_path: str) -> dict:
     (``DUPLICATION_RESPONSE_EXCERPT_BUDGET_CHARS``) in candidate rank order;
     past it a candidate is still named but carries ``excerpt_omitted: true``
     (read its file to judge it), and the response carries a top-level
-    ``excerpts_omitted`` count + steering ``note``. Fails open with
+    ``excerpts_omitted`` count + steering ``note``.
+    ``response_format="concise"`` skips every body excerpt (candidates carry
+    name/file/shape only -- open each file to judge); default ``"detailed"``
+    includes the budgeted excerpts. Fails open with
     ``found: False`` on any ambiguity (unresolvable / untrusted repo, missing
     catalog, unparsable file). Never fabricates a candidate -- each is a
     function the bootstrap recorded.
@@ -5439,9 +5514,13 @@ def get_duplication_candidates(repo: str, file_path: str) -> dict:
     # are ~200B each; a real function-dense TS file measured 31KB of bodies
     # alone), so they draw from one global char budget in candidate rank order.
     # A candidate past the budget is still NAMED -- the caller opens its file to
-    # judge instead of paying for an inline body.
+    # judge instead of paying for an inline body. Concise format skips the
+    # excerpt reads entirely.
+    fmt, fmt_note = _resolve_response_format(response_format)
     excerpt_lines = threshold_int("DUPLICATION_BODY_EXCERPT_LINES")
-    excerpt_budget = threshold_int("DUPLICATION_RESPONSE_EXCERPT_BUDGET_CHARS")
+    excerpt_budget = (
+        0 if fmt == "concise" else threshold_int("DUPLICATION_RESPONSE_EXCERPT_BUDGET_CHARS")
+    )
     excerpts_omitted = 0
     for match in matches:
         fn = match["function"]
@@ -5450,6 +5529,9 @@ def get_duplication_candidates(repo: str, file_path: str) -> dict:
             cand["name"] = _sanitize(cand["name"])
             cand["file"] = _sanitize(cand["file"])
             cand["shared_tokens"] = [_sanitize(t) for t in cand.get("shared_tokens", [])]
+            if fmt == "concise":
+                cand.pop("body_excerpt", None)
+                continue
             if excerpt_budget > 0:
                 excerpt = _sanitize(
                     _candidate_body_excerpt(repo_root, cand["file"], cand["name"], excerpt_lines)
@@ -5469,13 +5551,24 @@ def get_duplication_candidates(repo: str, file_path: str) -> dict:
     if truncated:
         out["truncated"] = True
         out["truncated_matches"] = total_matches - max_matches
+    notes = []
+    if fmt_note:
+        notes.append(fmt_note)
+    if fmt == "concise" and any(m["candidates"] for m in matches):
+        out["response_format"] = "concise"
+        notes.append(
+            "concise format: body excerpts omitted -- open each candidate's file to "
+            "judge it, or re-call with response_format=detailed"
+        )
     if excerpts_omitted:
         out["excerpts_omitted"] = excerpts_omitted
-        out["note"] = (
+        notes.append(
             "body-excerpt budget reached: the lowest-ranked "
             f"{excerpts_omitted} candidate(s) carry excerpt_omitted=true -- "
             "read each one's file to judge it, or query a file with fewer new functions"
         )
+    if notes:
+        out["note"] = " | ".join(notes)
     return _envelope(out)
 
 

@@ -311,30 +311,41 @@ def get_blast_radius(repo: str, file_path: str, function_name: str, depth: int =
 
 
 @_wire_tool(annotations=_READ_ONLY)
-def search_codebase(repo: str, query: str, limit: int = 10) -> dict:
+def search_codebase(
+    repo: str,
+    query: str,
+    limit: int = 10,
+    offset: int = 0,
+    response_format: str = "detailed",
+) -> dict:
     """Find symbols by name or file from the committed profile (comprehension).
 
     The "where is X / find Y" query, answered off chameleon's own profile: walks
     the committed symbol index and returns matches for `query` ranked exact name >
     prefix > substring > all-tokens > file-path, with the more-called symbol
     breaking ties. Each result carries name, file, line, signature, and caller
-    count. Read-only, offline, no repo-code execution. Fails open with
-    found=False on an unresolvable / untrusted repo or empty query.
+    count; response_format="concise" keeps name/file/line only. `offset` pages
+    the same deterministic ranking -- when more matches remain, the response
+    carries next_offset and a steering note. Read-only, offline, no repo-code
+    execution. Fails open with found=False on an unresolvable / untrusted repo
+    or empty query.
     """
-    return tools.search_codebase(repo, query, limit)
+    return tools.search_codebase(repo, query, limit, offset, response_format)
 
 
 @_wire_tool(annotations=_READ_ONLY)
-def describe_codebase(repo: str) -> dict:
+def describe_codebase(repo: str, response_format: str = "detailed") -> dict:
     """A structural overview of the repo from its committed profile (comprehension).
 
     The "what is this codebase" answer: primary language and framework, the
     archetypes (kinds of files, each with size, summary, and canonical witness),
     file/symbol totals, and the god symbols (most-called production functions,
-    test files excluded). All from committed artifacts, offline. Fails open with
-    found=False on an unresolvable / untrusted repo.
+    test files excluded). response_format="concise" keeps each archetype's
+    name/size/witness and the top 5 god symbols -- the cheap orientation read.
+    All from committed artifacts, offline. Fails open with found=False on an
+    unresolvable / untrusted repo.
     """
-    return tools.describe_codebase(repo)
+    return tools.describe_codebase(repo, response_format)
 
 
 @_wire_tool(annotations=_READ_ONLY)
@@ -392,7 +403,9 @@ def get_crossfile_context(repo: str) -> dict:
 
 
 @_wire_tool(annotations=_READ_ONLY)
-def get_duplication_candidates(repo: str, file_path: str) -> dict:
+def get_duplication_candidates(
+    repo: str, file_path: str, response_format: str = "detailed"
+) -> dict:
     """Existing functions a file's new functions may re-implement under a new name.
 
     For each function defined in file_path, the bootstrap function catalog is
@@ -402,6 +415,8 @@ def get_duplication_candidates(repo: str, file_path: str) -> dict:
     candidate carries a short body excerpt read from disk. The response is
     budget-capped; when candidates or excerpts are dropped to fit, the result
     says so and names the file it kept working on.
+    response_format="concise" skips every body excerpt (candidates carry
+    name/file/shape only -- open each file to judge).
 
     The tool only PREFILTERS; the LLM caller judges semantic equivalence against
     the candidate bodies. Duplication is a judgment call, so any finding raised
@@ -411,7 +426,7 @@ def get_duplication_candidates(repo: str, file_path: str) -> dict:
     with found=False on any ambiguity (unresolvable/untrusted repo, missing
     catalog, unparsable file). Never fabricates a candidate.
     """
-    return tools.get_duplication_candidates(repo, file_path)
+    return tools.get_duplication_candidates(repo, file_path, response_format)
 
 
 @_wire_tool(annotations=_READ_ONLY)

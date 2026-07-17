@@ -186,6 +186,10 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # (most-called) overview list, so a query over a huge monorepo's index stays a
     # bounded, readable answer.
     "COMPREHEND_SEARCH_MAX_RESULTS": 25,
+    # Ceiling on the search_codebase pagination offset. Paging walks the same
+    # deterministic ranking, so the offset bounds how deep one query can force
+    # the index walk; past this, narrow the query instead of paging further.
+    "COMPREHEND_SEARCH_MAX_OFFSET": 500,
     "COMPREHEND_GOD_SYMBOLS": 10,
     # Cap on the unified-diff text scanned for the deterministic content
     # signals (removed-guard lexicon, in-diff ignore directives, test skip

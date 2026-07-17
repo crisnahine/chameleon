@@ -830,7 +830,15 @@ first caller (the queried function is never repeated per chain);
 budget in rank order and names the rest with `excerpt_omitted: true`;
 `describe_codebase` caps archetype rows (`DESCRIBE_MAX_ARCHETYPES`) and
 reports `archetypes_omitted`. Truncation is always flagged, with a note
-saying how to narrow the query.
+saying how to narrow the query. Three read tools take a per-call
+`response_format` (`"concise"` | `"detailed"`, default detailed; an unknown
+value falls back to detailed with a note): `search_codebase` concise keeps
+name/file/line per row, `describe_codebase` concise keeps each archetype's
+name/size/witness plus the top 5 god symbols, and
+`get_duplication_candidates` concise names candidates without reading any
+body excerpt. `search_codebase` also pages via `offset` (clamped to
+`COMPREHEND_SEARCH_MAX_OFFSET`) over the same deterministic ranking,
+returning `next_offset` while more matches remain.
 
 ### Kept top-level (16 tools)
 

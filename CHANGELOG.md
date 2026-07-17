@@ -4,6 +4,34 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.0] - 2026-07-17
+
+### Added
+- Per-call `response_format` ("concise" | "detailed", default detailed) on the
+  three fattest read tools, per the tool-writing guidance's response-format
+  pattern: `search_codebase` concise keeps name/file/line per row (-62%
+  measured), `describe_codebase` concise keeps each archetype's
+  name/size/witness + top 5 god symbols (-54%), and
+  `get_duplication_candidates` concise names candidates without reading any
+  body excerpt (-61%). An unknown value falls back to detailed with a note --
+  a typo never fails a read.
+- `search_codebase` pagination: `offset` pages the same deterministic ranking
+  (clamped to `COMPREHEND_SEARCH_MAX_OFFSET`, default 500); while more matches
+  remain the response carries `next_offset` and the truncation note names the
+  exact re-call. A past-the-end page returns empty results, found stays true,
+  and the note says the ranking ended (never the false "No symbol matched").
+- Wire-size regression guard (`tests/unit/test_wire_budgets.py`): pinned
+  ceilings (~1.5x measured) on fixture responses, the help outputs, every
+  tool description vs the 2KB truncation ceiling, and the total tools/list
+  schema -- an accidental pretty-print or payload-duplication regression now
+  fails CI instead of silently re-inflating every session.
+
+### Fixed
+- The unknown-`response_format` echo is bounded to 40 chars and sanitized
+  before reflection into the response note (a model-supplied megastring or
+  tag-boundary token no longer reaches the payload verbatim), and that note
+  survives alongside the empty-result guidance instead of being overwritten.
+
 ## [4.3.0] - 2026-07-17
 
 ### Changed

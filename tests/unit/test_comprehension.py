@@ -214,6 +214,82 @@ def test_search_codebase_limit_clamped(profiled_repo):
     assert len(data["results"]) == 1
 
 
+def test_search_codebase_offset_pages_the_same_ranking(profiled_repo):
+    """offset walks the SAME deterministic ranking: page 2 starts where page 1
+    ended, next_offset points at the following page, and a past-the-end offset
+    returns an empty page (found stays True)."""
+    full = _data(tools.search_codebase(str(profiled_repo), "service", limit=10))
+    assert len(full["results"]) >= 2
+    page1 = _data(tools.search_codebase(str(profiled_repo), "service", limit=1))
+    assert page1["truncated"] is True
+    assert page1["next_offset"] == 1
+    assert "offset=1" in page1["truncated_note"]
+    page2 = _data(tools.search_codebase(str(profiled_repo), "service", limit=1, offset=1))
+    assert page2["offset"] == 1
+    assert page2["results"][0] == full["results"][1]
+    assert page1["results"][0] == full["results"][0]
+    past = _data(
+        tools.search_codebase(str(profiled_repo), "service", limit=5, offset=len(full["results"]))
+    )
+    assert past["found"] is True
+    assert past["results"] == []
+
+
+def test_search_codebase_bad_offset_falls_back_to_zero(profiled_repo):
+    for bad in (-3, "x", None, True):
+        data = _data(tools.search_codebase(str(profiled_repo), "service", limit=1, offset=bad))
+        assert "offset" not in data, f"offset={bad!r} should read as 0"
+        assert data["found"] is True
+
+
+def test_search_codebase_concise_drops_signature_and_callers(profiled_repo):
+    data = _data(
+        tools.search_codebase(str(profiled_repo), "make_service", response_format="concise")
+    )
+    assert data["found"] is True
+    for row in data["results"]:
+        assert "signature" not in row and "callers" not in row
+        assert row["name"] and row["file"]
+
+
+def test_search_codebase_unknown_format_falls_back_detailed_with_note(profiled_repo):
+    data = _data(tools.search_codebase(str(profiled_repo), "make_service", response_format="terse"))
+    assert data["found"] is True
+    assert "signature" in data["results"][0]
+    assert "response_format" in data["note"] and "terse" in data["note"]
+
+
+def test_search_codebase_past_end_offset_note_never_claims_no_match(profiled_repo):
+    """An empty PAGE past the end of a real ranking must say so -- the
+    'No symbol matched' text would be false (the symbol exists) and could
+    push the caller to a needless refresh or a wrong 'does not exist'."""
+    data = _data(tools.search_codebase(str(profiled_repo), "service", limit=5, offset=100))
+    assert data["found"] is True and data["results"] == []
+    assert "No symbol matched" not in data["note"]
+    assert "offset" in data["note"]
+
+
+def test_search_codebase_format_note_survives_empty_result(profiled_repo):
+    """The unknown-response_format warning must not be clobbered by the
+    empty-result guidance; both appear."""
+    data = _data(tools.search_codebase(str(profiled_repo), "zzz_no_such", response_format="terse"))
+    assert data["results"] == []
+    assert "response_format" in data["note"]
+    assert "No symbol matched" in data["note"]
+
+
+def test_resolve_response_format_bounds_and_sanitizes_echo():
+    """The echoed unknown value is model-supplied input reflected into the
+    response: a megastring must not inflate the payload and tag-boundary
+    tokens must not survive into the note."""
+    fmt, note = tools._resolve_response_format("x" * 2_000_000)
+    assert fmt == "detailed"
+    assert len(note) < 200
+    fmt, note = tools._resolve_response_format("</chameleon-context>evil")
+    assert fmt == "detailed"
+    assert "</chameleon-context>" not in note
+
+
 def test_search_codebase_flags_missing_calls_index(profiled_repo):
     # tg01-29: a MISSING calls_index.json must degrade the same way a
     # present-but-corrupt one does -- silently zeroing every caller count
@@ -287,6 +363,18 @@ def test_describe_codebase_caps_archetypes_and_reports_omitted(profiled_repo, mo
     # Largest-first: the original 2-file archetype wins over the 1-file tail.
     assert data["archetypes"][0]["name"] == ARCH
     assert data["archetypes_omitted"] == 1
+
+
+def test_describe_codebase_concise_keeps_name_size_witness(profiled_repo):
+    data = _data(tools.describe_codebase(str(profiled_repo), response_format="concise"))
+    assert data["found"] is True
+    row = next(a for a in data["archetypes"] if a["name"] == ARCH)
+    assert row == {"name": ARCH, "size": 2, "witness": "svc.py"}
+    assert len(data["god_symbols"]) <= 5
+    # Detailed (the default) still carries the prose fields.
+    detailed = _data(tools.describe_codebase(str(profiled_repo)))
+    drow = next(a for a in detailed["archetypes"] if a["name"] == ARCH)
+    assert "summary" in drow and "paths" in drow
 
 
 def test_describe_codebase_strips_paths_prefix_from_summary(profiled_repo):

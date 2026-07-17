@@ -1199,6 +1199,45 @@ def test_get_duplication_candidates_surfaces_renamed_reimplementation(trusted_re
     assert "formatDate" in cand["body_excerpt"]
 
 
+def test_get_duplication_candidates_concise_skips_excerpts(trusted_repo, monkeypatch):
+    """response_format=concise names candidates without reading any body
+    excerpt from disk; the response says how to get bodies back."""
+    cham = trusted_repo / ".chameleon"
+    (trusted_repo / "fmt.ts").write_text(
+        "export function formatDate(d) {\n  return d.toISOString();\n}\n",
+        encoding="utf-8",
+    )
+    _write_function_catalog(
+        cham,
+        {"fmt.ts": [{"name": "formatDate", "kind": "function", "arity": 1, "required": 1}]},
+    )
+    new_file = trusted_repo / "display.ts"
+    new_file.write_text("export function toDisplayDate(d) {\n  return d;\n}\n", encoding="utf-8")
+    _stub_extractor(
+        monkeypatch,
+        new_file,
+        [
+            {
+                "name": "toDisplayDate",
+                "kind": "function",
+                "params": [{"name": "d", "optional": False, "kind": "positional"}],
+            }
+        ],
+    )
+
+    res = tools.get_duplication_candidates(
+        str(trusted_repo), str(new_file), response_format="concise"
+    )
+    data = res["data"]
+    assert data["found"] is True
+    cand = data["matches"][0]["candidates"][0]
+    assert cand["name"] == "formatDate"
+    assert "body_excerpt" not in cand
+    assert "excerpt_omitted" not in cand
+    assert data["response_format"] == "concise"
+    assert "response_format=detailed" in data["note"]
+
+
 def test_get_duplication_candidates_caps_match_count(trusted_repo, monkeypatch):
     # A large file would otherwise return hundreds of matches and blow the MCP
     # token cap (a real bug on forem's article.rb: 519KB, undeliverable). The
