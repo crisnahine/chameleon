@@ -4,6 +4,41 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.2] - 2026-07-17
+
+### Fixed
+- Per-edit PostToolUse no longer repeats the "N files import X" cross-file
+  importer note for an export the edit left in place. That note is
+  edit-independent static context already delivered pre-edit by the "Inbound
+  callers" section, so on a large module every additive edit re-listed one note
+  per exported symbol, all about symbols the change never touched — the dominant
+  per-edit noise source. `posttool_verify` now drops it on BOTH the daemon and
+  in-process lint paths; the removed-export existence break, the explicit
+  `lint_file` tool, the Stop backstop, and Bash-writes still see the full
+  importer surface.
+- The Ruby/Python default-export-kind mismatch no longer fires on a
+  mixed-construct module that does not actually define the expected construct.
+  Ruby and Python have no single default export, so the shape is a best-effort
+  "primary construct" guess; the check now suppresses when the expected
+  construct is absent from the file's top-level kinds. TypeScript, which has a
+  genuine unique default export, is unchanged.
+- unittest / Django `TestCase` hook methods (`setUp`, `tearDown`, `setUpClass`,
+  `setUpTestData`, `asyncSetUp`, and the rest) are exempt from the Python
+  snake_case method-naming rule. They are framework-mandated camelCase a class
+  must match exactly, so flagging them was an unfixable false positive.
+- A Python `class Foo(object):` is no longer read as a missed inheritance. It is
+  identical to `class Foo:` in Python 3, which the check already left alone, so
+  an explicit universal `object` base is not a deviation (the extension-point
+  wrapper false positive).
+- The pre-write reuse-before-create nudge no longer offers a class-bound member
+  as an importable "reuse" target. A method, classmethod, staticmethod, Ruby
+  `def self.x`, TypeScript constructor, or TypeScript get/set accessor is scoped
+  to its class — "import and reuse it" only fits a free, module-level function,
+  so a same-named class member on another class (`expired` on a queryset,
+  `perform` on a service) was wrong advice. The softer semantic pass still
+  surfaces a renamed near-duplicate, and genuine body duplication is still
+  caught at turn end.
+
 ## [4.4.1] - 2026-07-17
 
 ### Fixed

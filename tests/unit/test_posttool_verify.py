@@ -418,6 +418,70 @@ def test_all_violations_included(tmp_path: Path):
         assert f"msg {i}" in ctx
 
 
+def test_present_export_importer_note_dropped_on_daemon_path(tmp_path: Path):
+    # The still-present-export "N files import X" note (cross-file-importers) is
+    # edit-independent static context already delivered pre-edit, so posttool_verify
+    # drops it -- and it must do so on the DAEMON path (the primary warm-session
+    # path), not only the in-process fallback. The removed-export existence break
+    # (a real, edit-caused defect) and every other rule survive.
+    repo_id = "test_repo_id"
+    (tmp_path / repo_id).mkdir()
+
+    ts_file = tmp_path / "pricing.ts"
+    ts_file.write_text("export function editPrice() {}\n", encoding="utf-8")
+
+    violations = [
+        {
+            "rule": "cross-file-importers",
+            "severity": "info",
+            "message": "3 files import 'editPrice' from this module",
+            "expected": "editPrice",
+            "actual": "3",
+        },
+        {
+            "rule": "removed-export-breaks-importers",
+            "severity": "warning",
+            "message": "'oldHelper' no longer exported; still imported by cart.ts:3",
+            "expected": "oldHelper",
+            "actual": "none",
+        },
+        {
+            "rule": "quote-style",
+            "severity": "info",
+            "message": "prefer single quotes",
+            "expected": "single",
+            "actual": "double",
+        },
+    ]
+
+    with (
+        patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=MagicMock()),
+        patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
+        patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
+        patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
+        patch(
+            "chameleon_mcp.daemon_client.call",
+            side_effect=[
+                {"data": {"archetype": "component"}},
+                {"data": {"violations": violations}},
+            ],
+        ),
+    ):
+        result = _run_verify(
+            {
+                "tool_name": "Edit",
+                "tool_input": {"file_path": str(ts_file)},
+                "session_id": "s1",
+            }
+        )
+
+    ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
+    assert "files import" not in ctx  # cross-file-importers note dropped
+    assert "still imported by cart.ts:3" in ctx  # removed-export break kept
+    assert "prefer single quotes" in ctx  # unrelated rule kept
+
+
 def test_posttool_recorder_still_works():
     captured: list[str] = []
 

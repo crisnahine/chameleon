@@ -1031,7 +1031,23 @@ def lint(
 
     expected_default = ast_query.get("default_export_kind")
     actual_default = snapshot.default_export_kind
-    if expected_default is not None and expected_default != actual_default:
+    # Python/Ruby have no default export, so `default_export_kind` is a single
+    # "primary construct" pick that is unreliable on mixed-construct files (a
+    # module holding both functions and classes). Suppress the mismatch when the
+    # expected construct is actually PRESENT among the file's top-level kinds --
+    # otherwise "this file does not define one" is simply false (the file defines
+    # 20 functions; the picker just led with a class).
+    _py_rb_construct_present = (
+        language in ("ruby", "python")
+        and expected_default is not None
+        and _normalize_kind(expected_default)
+        in {_normalize_kind(k) for k in snapshot.top_level_node_kinds}
+    )
+    if (
+        expected_default is not None
+        and expected_default != actual_default
+        and not _py_rb_construct_present
+    ):
         exp_label = humanize_kind(expected_default)
         if language in ("ruby", "python"):
             # Ruby and Python have no default export; describe the construct the
@@ -3677,6 +3693,26 @@ _PY_CLASS_BASES_LINT_RE = re.compile(
 )
 
 
+# Framework-mandated camelCase methods (unittest / Django TestCase hooks) a class
+# MUST name exactly as the framework calls them -- they cannot be renamed to
+# snake_case, so the PEP 8 method-casing rule exempts them rather than flagging an
+# unfixable "violation".
+_PY_FRAMEWORK_METHOD_NAMES: frozenset[str] = frozenset(
+    {
+        "setUp",
+        "tearDown",
+        "setUpClass",
+        "tearDownClass",
+        "setUpModule",
+        "tearDownModule",
+        "setUpTestData",
+        "asyncSetUp",
+        "asyncTearDown",
+        "runTest",
+    }
+)
+
+
 def _python_naming_violations(scan_content: str, naming: dict) -> list[Violation]:
     """In-source Python (PEP 8) naming checks against the derived casing.
 
@@ -3697,6 +3733,8 @@ def _python_naming_violations(scan_content: str, naming: dict) -> list[Violation
         for m in _PY_FUNC_DEF_LINT_RE.finditer(scan_content):
             name = m.group(1)
             if name.startswith("_"):
+                continue
+            if name in _PY_FRAMEWORK_METHOD_NAMES:
                 continue
             if _classify_ruby_method_casing(name) != "snake_case":
                 out.append(
@@ -4381,8 +4419,18 @@ def _python_inheritance_violations(scan_content: str, inheritance: dict) -> list
         if bases_raw:
             for part in bases_raw.split(","):
                 part = part.strip()
-                # Drop keyword args (``metaclass=...``) and unpackings (``*bases``).
-                if not part or "=" in part or part.startswith("*"):
+                # Drop keyword args (``metaclass=...``), unpackings (``*bases``),
+                # and the universal ``object`` base: ``class Foo(object)`` is
+                # identical to ``class Foo`` in Python 3, and the no-base branch
+                # below already leaves a bare ``class Foo`` alone -- so an
+                # explicit ``object`` is not a missed inheritance either (the
+                # extension-point wrapper false positive).
+                if (
+                    not part
+                    or "=" in part
+                    or part.startswith("*")
+                    or part in ("object", "builtins.object")
+                ):
                     continue
                 bases.append(part)
         if not bases:

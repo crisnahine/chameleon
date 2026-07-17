@@ -300,6 +300,27 @@ class TestLint:
         query = {"default_export_kind": "FunctionDeclaration"}
         assert lint(snap, query) == []
 
+    def test_python_mixed_construct_default_export_suppressed(self):
+        # A mixed-construct Python module (functions + classes) picks one
+        # default_export_kind; when the expected construct IS present among the
+        # top-level kinds, the "this file does not define one" mismatch is a
+        # false signal (the file defines the construct) and is suppressed.
+        snap = DimensionSnapshot(
+            default_export_kind="ClassDeclaration",
+            top_level_node_kinds=("FunctionDeclaration", "ClassDeclaration"),
+        )
+        query = {"default_export_kind": "FunctionDeclaration"}
+        assert lint(snap, query, language="python") == []
+
+    def test_python_default_export_fires_when_construct_absent(self):
+        snap = DimensionSnapshot(
+            default_export_kind="ClassDeclaration",
+            top_level_node_kinds=("ClassDeclaration",),
+        )
+        query = {"default_export_kind": "FunctionDeclaration"}
+        rules = [v.rule for v in lint(snap, query, language="python")]
+        assert rules == ["default-export-kind-mismatch"]
+
     def test_jsx_file_has_jsx_archetype_expects_none(self):
         snap = DimensionSnapshot(jsx_present=True)
         query = {"jsx_present": False}
@@ -1150,6 +1171,29 @@ class TestRubyNamingConventionLint:
         }
         violations = lint_conventions(content, conventions, language="typescript")
         assert len(violations) == 0
+
+    def test_python_explicit_object_base_not_flagged(self):
+        # `class Foo(object):` is identical to `class Foo:` in Python 3, and a
+        # base-less class is already left alone -- so an explicit universal
+        # `object` base must not read as a missed inheritance (the extension-
+        # point / wrapper false positive).
+        conventions = {
+            "inheritance": {
+                "dominant_base": "models.Model",
+                "frequency": 0.85,
+                "sample_size": 200,
+                "known_bases": ["models.Model"],
+            },
+        }
+        clean = lint_conventions(
+            "class Legacy(object):\n    pass\n", conventions, language="python"
+        )
+        assert all(v.rule != "inheritance-convention-violation" for v in clean)
+        # A genuinely off-convention base is still flagged.
+        flagged = lint_conventions(
+            "class Legacy(RandomBase):\n    pass\n", conventions, language="python"
+        )
+        assert any(v.rule == "inheritance-convention-violation" for v in flagged)
 
     def test_namespaced_class_with_known_base_not_flagged(self):
         # Regression (real-app test, maybe): a compact-namespaced controller

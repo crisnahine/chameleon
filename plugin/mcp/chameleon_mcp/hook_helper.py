@@ -2834,6 +2834,40 @@ _DEDUP_STOPWORDS = frozenset(
     }
 )
 
+# Class-bound callables are NOT importable "reuse" targets: a method on class A
+# (`expired` on a queryset, `change` on a migration, `create` on a service, a
+# constructor) cannot be imported and reused from class B -- it is scoped to its
+# class. The exact-name pass's "import and reuse it" advice only fits a free,
+# module-level function, so a same-named class-bound member on a different class
+# is excluded from the exact pass (its dominant real cases are framework-contract
+# names -- `perform`, `change`, `expired` -- where the advice is simply wrong).
+# Only the EXACT pass is gated: the SEMANTIC pass already skips exact-name matches
+# (function_catalog.select_candidates targets DIFFERENT-name re-implementations),
+# so it still surfaces a renamed near-duplicate method (`distribute_remove_activity`
+# vs `distribute_remove_activity!`). A genuine SAME-named body duplication is not
+# this name-collision nudge's job at all -- the turn-end duplication lens catches
+# it on body similarity. NOTE for Ruby: prism_dump emits ONLY method/
+# singleton_method (there is no free-function kind -- every `def` is a method), so
+# this set disables Ruby's exact-name pass ENTIRELY. That is intended: "import and
+# reuse it" was never valid advice for a Ruby method (you include a module, you do
+# not import a method), and genuine Ruby duplication still surfaces via the
+# semantic pass and the turn-end duplication lens. Covers every supported
+# language's class-bound kinds:
+# Python method/classmethod/staticmethod (a @property is recorded as method),
+# Ruby method/singleton_method (`def self.x`), TS method/constructor and the
+# get/set accessor kinds the dumper emits as getter/setter.
+_CLASS_BOUND_METHOD_KINDS: frozenset[str] = frozenset(
+    {
+        "method",
+        "classmethod",
+        "staticmethod",
+        "singleton_method",
+        "constructor",
+        "getter",
+        "setter",
+    }
+)
+
 _TS_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs")
 
 # Capture a function's name AND its parameter-list text, so the semantic pass
@@ -2985,6 +3019,9 @@ def _prewrite_dedup_section(
                 and fn.file != edited_rel
                 and fn.name not in seen_names
                 and len(definer_files.get(fn.name, ())) <= max_definers
+                # A class-bound method is not an importable reuse target (see
+                # _CLASS_BOUND_METHOD_KINDS); only a free function qualifies.
+                and fn.kind not in _CLASS_BOUND_METHOD_KINDS
             ):
                 seen_names.add(fn.name)
                 exact.append((fn.name, fn.file))
@@ -3001,6 +3038,12 @@ def _prewrite_dedup_section(
             for entry in select_candidates(catalog, new_fns, exclude_file=edited_rel):
                 src = entry.get("function", {}).get("name", "")
                 for cand in entry.get("candidates", []):
+                    # Not gated by kind: select_candidates already skips exact-name
+                    # matches, so this pass only ever surfaces a DIFFERENT-named
+                    # near-duplicate (`distribute_remove_activity` vs the existing
+                    # `distribute_remove_activity!`) -- a rename-hidden clone, not
+                    # the wrong "import this exact method" advice the exact pass
+                    # (correctly) drops for class-bound members.
                     if len(cand.get("shared_tokens") or []) >= min_tokens:
                         semantic.append((src, cand.get("name", ""), cand.get("file", "")))
                         break  # one best candidate per new function
@@ -6240,6 +6283,21 @@ def posttool_verify() -> int:
             violations = _lint_file_in_process(
                 repo_root, archetype_name, content, file_path, content_truncated=content_truncated
             )
+
+        # Drop the still-present-export importer note on the per-edit path
+        # (both the daemon and in-process lint emit it). It is edit-independent
+        # static context -- for a name the module still exports it fires the same
+        # on every edit regardless of what changed, so an additive edit (a new
+        # field/method, renaming nothing) to a large module gets one note per
+        # exported symbol, all about symbols the change never touched. The same
+        # blast-radius surface is already delivered PRE-edit by the "Inbound
+        # callers" section, so repeating it here is pure noise. The
+        # removed-export existence break (a real, edit-caused defect) is kept, as
+        # is every other rule. Scoped to posttool_verify deliberately: the
+        # explicit lint_file tool, the Stop backstop, and Bash-writes (which get
+        # no pre-edit injection) still see the full importer surface.
+        if violations:
+            violations = [v for v in violations if v.get("rule") != "cross-file-importers"]
 
         # Archetype-SHAPE rules presume the archetype actually fits the file.
         # On a fallback/none-quality match (new directory, no structural

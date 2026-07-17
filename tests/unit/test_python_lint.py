@@ -162,3 +162,22 @@ def test_sinks_in_string_not_flagged():
         'doc = "use pickle.loads and os.system carefully"\n', language="python"
     )
     assert not any(x.rule in ("command-injection", "insecure-deserialization") for x in v)
+
+
+def test_framework_methods_exempt_from_snake_case():
+    # unittest / Django TestCase hooks (setUp/tearDown/...) are framework-mandated
+    # camelCase names a class MUST match exactly, so the snake_case method rule
+    # exempts them instead of flagging an unfixable "violation".
+    from chameleon_mcp.lint_engine import _python_naming_violations
+
+    naming = {"method_casing": {"pattern": "snake_case", "consistency": 0.99}}
+    content = (
+        "class MyTest:\n"
+        "    def setUp(self):\n        pass\n"
+        "    def tearDown(self):\n        pass\n"
+        "    def badCamelHelper(self):\n        pass\n"
+    )
+    flagged = {x.actual for x in _python_naming_violations(content, naming)}
+    assert "setUp" not in flagged
+    assert "tearDown" not in flagged
+    assert "badCamelHelper" in flagged

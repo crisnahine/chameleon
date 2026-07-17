@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from chameleon_mcp import hook_helper
 from chameleon_mcp.function_catalog import CatalogedFunction, FunctionCatalog, name_tokens
 
@@ -230,3 +232,112 @@ def test_frequency_guard_language_agnostic(tmp_path, monkeypatch):
         repo,
     )
     assert "reuse-before-create" not in py_out
+
+
+def test_class_method_not_a_reuse_target(tmp_path, monkeypatch):
+    # A class-bound method is not importable, so the same name on a DIFFERENT
+    # class is not a reuse target (fixes the `expired`/`change`/`create` FP);
+    # a free FUNCTION of the same name still is.
+    from chameleon_mcp.function_catalog import CatalogedFunction, FunctionCatalog, name_tokens
+
+    repo = tmp_path
+    content = "class BuildQuerySet\n  def expired(days)\n    days\n  end\nend\n"
+
+    method_cat = FunctionCatalog(
+        [
+            CatalogedFunction(
+                name="expired",
+                kind="method",
+                file="app/domains/querysets.rb",
+                arity=1,
+                required=1,
+                tokens=name_tokens("expired"),
+                body_hash=None,
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        "chameleon_mcp.function_catalog.load_function_catalog", lambda r: method_cat
+    )
+    out = hook_helper._prewrite_dedup_section(content, str(repo / "app/builds/querysets.rb"), repo)
+    assert "reuse-before-create" not in out
+
+    # Non-vacuity control: a non-class-bound `function` kind DOES surface the
+    # nudge, so it is the kind exclusion above that suppressed it, not an empty
+    # extraction. (The `function` kind is synthetic for this Ruby content -- prism
+    # emits only method/singleton_method -- so this isolates the exclusion branch;
+    # Ruby's exact-name pass is fully disabled by design, see _CLASS_BOUND_METHOD_KINDS.)
+    func_cat = FunctionCatalog(
+        [
+            CatalogedFunction(
+                name="expired",
+                kind="function",
+                file="app/helpers/time_helper.rb",
+                arity=1,
+                required=1,
+                tokens=name_tokens("expired"),
+                body_hash=None,
+            )
+        ]
+    )
+    monkeypatch.setattr("chameleon_mcp.function_catalog.load_function_catalog", lambda r: func_cat)
+    out2 = hook_helper._prewrite_dedup_section(content, str(repo / "app/builds/querysets.rb"), repo)
+    assert "reuse-before-create" in out2
+    assert "expired" in out2
+
+
+@pytest.mark.parametrize(
+    "kind,new_content,new_path,name",
+    [
+        # The real production collision the exact pass sees: the NEW content defines
+        # a FREE function/def (the only shape _extract_defined_functions yields --
+        # never TS class-member shorthand), whose name matches an EXISTING catalog
+        # member of a class-bound kind. That member is not importable, so no reuse
+        # nudge fires. (Names are >=5 chars and non-stopword so extraction keeps them.)
+        ("singleton_method", "def build_thing(x)\n  x\nend\n", "app/b.rb", "build_thing"),
+        ("constructor", "function makeThing(x) { return x; }\n", "src/b.ts", "makeThing"),
+        ("getter", "function totalPrice(x) { return x; }\n", "src/b.ts", "totalPrice"),
+        ("setter", "function displayName(x) { return x; }\n", "src/b.ts", "displayName"),
+    ],
+)
+def test_class_bound_kinds_not_reuse_targets(
+    tmp_path, monkeypatch, kind, new_content, new_path, name
+):
+    from chameleon_mcp.function_catalog import CatalogedFunction, FunctionCatalog, name_tokens
+
+    suffix = Path(new_path).suffix
+
+    def _cat(k):
+        return FunctionCatalog(
+            [
+                CatalogedFunction(
+                    name=name,
+                    kind=k,
+                    file="app/other" + suffix,
+                    arity=1,
+                    required=1,
+                    tokens=name_tokens(name),
+                    body_hash=None,
+                )
+            ]
+        )
+
+    # Class-bound kind -> the collision is NOT offered as a reuse target.
+    monkeypatch.setattr(
+        "chameleon_mcp.function_catalog.load_function_catalog", lambda r: _cat(kind)
+    )
+    out = hook_helper._prewrite_dedup_section(new_content, str(tmp_path / new_path), tmp_path)
+    assert "reuse-before-create" not in out
+
+    # Non-vacuity control: the SAME name/content against a non-class-bound
+    # `function` kind DOES surface the nudge, so the name is genuinely extracted
+    # and the collision path fires -- it is the kind exclusion, not an empty
+    # `defined` set, that suppressed the assertion above. (For the Ruby case the
+    # `function` kind is synthetic -- prism_dump emits only method/singleton_method
+    # -- so this control isolates the exclusion branch rather than modelling a real
+    # Ruby catalog; see _CLASS_BOUND_METHOD_KINDS on Ruby's fully-disabled exact pass.)
+    monkeypatch.setattr(
+        "chameleon_mcp.function_catalog.load_function_catalog", lambda r: _cat("function")
+    )
+    out2 = hook_helper._prewrite_dedup_section(new_content, str(tmp_path / new_path), tmp_path)
+    assert "reuse-before-create" in out2
