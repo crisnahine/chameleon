@@ -5,6 +5,7 @@ from chameleon_mcp.enforcement_calibration import (
     SECURITY_BLOCK_RULES,
     active_block_rules,
     calibrate_block_rules,
+    fp_demoted_rules,
     load_block_rules,
     write_block_rules,
 )
@@ -19,6 +20,30 @@ def test_roundtrip(tmp_path: Path):
     loaded = load_block_rules(tmp_path)
     assert loaded["phantom-import"]["active"] is True
     assert active_block_rules(tmp_path) == {"phantom-import"} | SECURITY_BLOCK_RULES
+
+
+def test_fp_demoted_rules(tmp_path: Path):
+    # active:false AND flagged>0 = measured FP on conforming committed code -> demote
+    # tone to advisory. flagged==0 (never mis-fired / inert) is NOT demoted, an
+    # active rule is NOT demoted, and a security rule is never demoted.
+    write_block_rules(
+        tmp_path,
+        {
+            "inheritance-convention-violation": {"active": False, "flagged": 11, "fp_rate": 0.036},
+            "jsx-presence-mismatch": {"active": False, "flagged": 0, "inert_reason": "no-signal"},
+            "import-preference-violation": {"active": True, "flagged": 0, "fp_rate": 0.0},
+            "eval-call": {"active": False, "flagged": 5, "exempt_reason": "security-rule"},
+        },
+    )
+    demoted = fp_demoted_rules(tmp_path)
+    assert "inheritance-convention-violation" in demoted
+    assert "jsx-presence-mismatch" not in demoted  # never mis-fired
+    assert "import-preference-violation" not in demoted  # active
+    assert not (demoted & SECURITY_BLOCK_RULES)  # security never demoted
+
+
+def test_fp_demoted_rules_missing_file(tmp_path: Path):
+    assert fp_demoted_rules(tmp_path) == frozenset()
 
 
 def test_missing_file_keeps_only_security_rules(tmp_path: Path):

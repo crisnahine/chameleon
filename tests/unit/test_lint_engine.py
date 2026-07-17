@@ -1195,6 +1195,39 @@ class TestRubyNamingConventionLint:
         )
         assert any(v.rule == "inheritance-convention-violation" for v in flagged)
 
+    def test_python_file_shared_base_exempt(self):
+        # A base >= 2 top-level classes in the file share (a DRF
+        # FlexFieldsModelSerializer 6 serializers extend) is a deliberate shared
+        # base -- exempt even though derivation's per-file counting never admitted
+        # it to known_bases. A lone off-base class still flags.
+        conventions = {
+            "inheritance": {
+                "dominant_base": "serializers.ModelSerializer",
+                "frequency": 0.8,
+                "known_bases": ["serializers.ModelSerializer"],
+            },
+        }
+        shared = (
+            "class A(FlexFieldsModelSerializer):\n    pass\n"
+            "class B(FlexFieldsModelSerializer):\n    pass\n"
+            "class W(ExternalThing):\n    pass\n"
+        )
+        out = lint_conventions(shared, conventions, language="python")
+        msgs = [v.message for v in out if v.rule == "inheritance-convention-violation"]
+        assert len(msgs) == 1
+        assert "class W" in msgs[0]  # only the lone deviation, not A/B
+
+        # A shared SECONDARY mixin must NOT exempt a class whose PRIMARY base is a
+        # real deviation (the file-shared exemption is primary-base only).
+        mixin = (
+            "class W(ExternalThing, TimestampMixin):\n    pass\n"
+            "class G(serializers.ModelSerializer, TimestampMixin):\n    pass\n"
+        )
+        out2 = lint_conventions(mixin, conventions, language="python")
+        msgs2 = [v.message for v in out2 if v.rule == "inheritance-convention-violation"]
+        assert len(msgs2) == 1
+        assert "class W" in msgs2[0]  # G conforms via ModelSerializer; W's primary deviates
+
     def test_namespaced_class_with_known_base_not_flagged(self):
         # Regression (real-app test, maybe): a compact-namespaced controller
         # `class Api::V1::FooController < Api::V1::BaseController` was misparsed

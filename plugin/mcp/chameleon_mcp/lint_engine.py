@@ -2464,6 +2464,32 @@ def _declared_quote(rules, language: str) -> str | None:
     return None
 
 
+# JSX presence: a closing tag (`</div`), a self-close (`/>`), or an opening tag
+# whose name is followed by whitespace then an attribute (`<input type=`). The
+# required whitespace between tag and attribute is what keeps a TS generic
+# (`Array<string>`, `Foo<T="x">`) from matching -- those have no space there,
+# and no `</`/`/>` either.
+_JSX_PRESENCE_RE = re.compile(r"</[A-Za-z]|/>|<[A-Za-z][\w.]*\s+[\w-]+\s*=")
+
+
+def _content_has_jsx(content: str) -> bool:
+    """Whether the source appears to contain JSX (so a `name="x"` literal may be a
+    JSX attribute rather than a compact assignment)."""
+    return bool(_JSX_PRESENCE_RE.search(content))
+
+
+def _jsx_double_quotes_ok(rules) -> bool:
+    """Whether double-quoted JSX attribute values are correct per prettier.
+
+    prettier's ``jsxSingleQuote`` governs JSX attribute quoting SEPARATELY from
+    ``singleQuote`` and defaults to False, so ``className="x"`` is correctly
+    double-quoted even under ``singleQuote: true``. Returns True (JSX attributes
+    keep double quotes) unless the config explicitly sets ``jsxSingleQuote: true``.
+    """
+    prettier = _rules_section(rules, "formatting")
+    return not (prettier and prettier.get("jsxSingleQuote") is True)
+
+
 def _declared_max_line_length(rules, language: str) -> int | None:
     """Resolve the declared max line length, or None if no config declares it.
 
@@ -2631,6 +2657,19 @@ def scan_style_rules(
 
     indent = _declared_indent(rules, language)
     quote = _declared_quote(rules, language)
+    # A JSX-attribute-shaped literal (`name="x"`, no space before the quote) can
+    # only be a JSX attribute in a file that actually contains JSX -- anywhere else
+    # that shape is a compact JS assignment (`const x="y"`, which prettier rewrites
+    # to single) that MUST still flag. Gating on JSX presence in the content (not
+    # the extension) covers a JSX-in-.js React file while keeping plain .js/.ts
+    # assignments flagging; the whitespace-before-attribute signature never
+    # false-matches a TS generic (`Array<string>` has no `</`, `/>`, or `<Tag a=`).
+    jsx_double_ok = (
+        quote == "single"
+        and language == "typescript"
+        and _content_has_jsx(content)
+        and _jsx_double_quotes_ok(rules)
+    )
     max_len = _declared_max_line_length(rules, language)
     line_len_allowed = _line_length_allowed_patterns(rules, language) if max_len is not None else []
     # A per-cop Exclude on Layout/LineLength (without an AllCops match) drops only
@@ -2741,6 +2780,19 @@ def scan_style_rules(
             opener = literal[0]
             if opener not in ("'", '"') or opener == want_char:
                 continue
+            # A double-quoted JSX attribute value (`className="x"`) is CORRECT
+            # under prettier's default jsxSingleQuote:false even when singleQuote is
+            # true, so flagging it steers the model to break prettier-conforming
+            # code. The attribute signature is a name char abutting `=` with no
+            # space before the opening quote. That signature also matches a compact
+            # JS assignment (`const x="y"`), which prettier DOES rewrite to single,
+            # so ``jsx_double_ok`` is gated to .tsx/.jsx files -- JSX attributes can
+            # only validly appear there, so a plain .ts/.js assignment still flags.
+            if jsx_double_ok and opener == '"' and m.start() >= 2:
+                before = content[m.start() - 1]
+                name_char = content[m.start() - 2]
+                if before == "=" and (name_char.isalnum() or name_char in "_$"):
+                    continue
             # A literal that must contain the preferred quote char (so switching
             # would force escapes) is a legitimate exception both prettier and
             # rubocop allow; do not flag it.
@@ -3684,6 +3736,40 @@ _RUBY_CONSTANT_ASSIGN_LINT_RE = re.compile(
 # Lint-side Python declaration captures — permissive (must SEE a PascalCase
 # def or a snake class to flag it), mirroring the Ruby lint captures.
 _PY_FUNC_DEF_LINT_RE = re.compile(r"^[ \t]*(?:async\s+)?def\s+([A-Za-z_]\w*)", re.MULTILINE)
+# A property-family decorator (a @property/@cached_property/@computed_field, or a
+# @x.setter/@x.getter/@x.deleter accessor) makes the def an ATTRIBUTE accessor, not
+# a function: its name legitimately follows attribute/constant casing (a pydantic
+# @computed_field named SQLALCHEMY_DATABASE_URI), so the function snake_case rule
+# must not flag it.
+_PY_PROPERTY_DECORATOR_RE = re.compile(
+    r"^[ \t]*@(?:[\w.]+\.)?(?:property|cached_property|computed_field)\b"
+    r"|^[ \t]*@[\w.]+\.(?:setter|getter|deleter)\b",
+    re.MULTILINE,
+)
+_PY_DECORATOR_LINE_RE = re.compile(r"^[ \t]*@")
+
+
+def _py_def_is_property_accessor(scan_content: str, def_start: int) -> bool:
+    """Whether the ``def`` at ``def_start`` carries a property-family decorator.
+
+    The def regex anchors at the start of its line, so the text before
+    ``def_start`` is exactly the whole lines above it. Walks those decorator lines
+    upward (a def may stack several, e.g. ``@computed_field`` then ``@property``)
+    and stops at the first non-decorator, non-blank line, so an unrelated
+    ``@property`` elsewhere in the file cannot exempt this def.
+    """
+    for line in reversed(scan_content[:def_start].splitlines()):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue  # blank or a comment between a decorator and its def is allowed
+        if _PY_DECORATOR_LINE_RE.match(line):
+            if _PY_PROPERTY_DECORATOR_RE.match(line):
+                return True
+            continue  # another decorator (@abstractmethod, @override) -- keep looking
+        break  # a non-decorator, non-blank, non-comment line -- decorator block ended
+    return False
+
+
 _PY_CLASS_DECL_LINT_RE = re.compile(r"^[ \t]*class\s+([A-Za-z_]\w*)", re.MULTILINE)
 # Captures the base list too (group 3, None when bare) for the inheritance check.
 # The optional `\[...\]` after the name is a PEP 695 (3.12+) type-parameter list
@@ -3735,6 +3821,8 @@ def _python_naming_violations(scan_content: str, naming: dict) -> list[Violation
             if name.startswith("_"):
                 continue
             if name in _PY_FRAMEWORK_METHOD_NAMES:
+                continue
+            if _py_def_is_property_accessor(scan_content, m.start()):
                 continue
             if _classify_ruby_method_casing(name) != "snake_case":
                 out.append(
@@ -4365,6 +4453,24 @@ def _python_guard_violations(scan_content: str, conventions: dict) -> list[Viola
     ]
 
 
+def _py_positional_bases(bases_raw: str | None) -> list[str]:
+    """Positional base names from a class's base list, dropping keyword args
+    (``metaclass=...``), unpackings (``*bases``), and the universal ``object``."""
+    out: list[str] = []
+    if bases_raw:
+        for part in bases_raw.split(","):
+            part = part.strip()
+            if (
+                not part
+                or "=" in part
+                or part.startswith("*")
+                or part in ("object", "builtins.object")
+            ):
+                continue
+            out.append(part)
+    return out
+
+
 def _python_inheritance_violations(scan_content: str, inheritance: dict) -> list[Violation]:
     """Advisory hint when a Python class inherits a base outside the archetype's.
 
@@ -4402,6 +4508,22 @@ def _python_inheritance_violations(scan_content: str, inheritance: dict) -> list
         m.group(2) for m in _PY_CLASS_BASES_LINT_RE.finditer(scan_content) if len(m.group(1)) == 0
     }
 
+    # A base >= 2 top-level classes in THIS file inherit is a deliberate shared
+    # base for the file (a DRF `FlexFieldsModelSerializer` that 6 sibling
+    # serializers extend), even when derivation -- which counts a base's support
+    # per-FILE, so 6 classes in one file score just 1 -- never admitted it to
+    # known_bases. Exempt it like a same-file peer so a cohesive module of
+    # same-based classes is not flagged en masse; a lone off-base class
+    # (`WidgetSerializer(ExternalThing)`, count 1) still fires.
+    _base_counts: dict[str, int] = {}
+    for m in _PY_CLASS_BASES_LINT_RE.finditer(scan_content):
+        if len(m.group(1)) != 0:
+            continue
+        for b in _py_positional_bases(m.group(3)):
+            _base_counts[b] = _base_counts.get(b, 0) + 1
+    file_shared_bases = {b for b, c in _base_counts.items() if c >= 2}
+    file_shared_tails = {b.rsplit(".", 1)[-1] for b in file_shared_bases}
+
     out: list[Violation] = []
     for m in _PY_CLASS_BASES_LINT_RE.finditer(scan_content):
         indent = len(m.group(1))
@@ -4415,26 +4537,14 @@ def _python_inheritance_violations(scan_content: str, inheritance: dict) -> list
             continue
         if class_name in known_bases or class_name in known_tails:
             continue
-        bases: list[str] = []
-        if bases_raw:
-            for part in bases_raw.split(","):
-                part = part.strip()
-                # Drop keyword args (``metaclass=...``), unpackings (``*bases``),
-                # and the universal ``object`` base: ``class Foo(object)`` is
-                # identical to ``class Foo`` in Python 3, and the no-base branch
-                # below already leaves a bare ``class Foo`` alone -- so an
-                # explicit ``object`` is not a missed inheritance either (the
-                # extension-point wrapper false positive).
-                if (
-                    not part
-                    or "=" in part
-                    or part.startswith("*")
-                    or part in ("object", "builtins.object")
-                ):
-                    continue
-                bases.append(part)
+        # ``class Foo(object)`` is identical to ``class Foo`` in Python 3, which
+        # the no-base branch below already leaves alone, so the shared parser drops
+        # the universal ``object`` too (the extension-point wrapper false positive).
+        bases = _py_positional_bases(bases_raw)
         if not bases:
             continue
+        # A convention base ANYWHERE in the base list (known/local/module family)
+        # means the class inherits the convention -- exempt.
         if any(
             b in known_bases
             or b.rsplit(".", 1)[-1] in known_tails
@@ -4442,6 +4552,13 @@ def _python_inheritance_violations(scan_content: str, inheritance: dict) -> list
             or (dominant_module is not None and "." in b and b.rsplit(".", 1)[0] == dominant_module)
             for b in bases
         ):
+            continue
+        # The file-shared exemption is PRIMARY-base only: a class IS one of the
+        # file's shared types when its FIRST base is the shared one. A foreign
+        # primary base with a merely-shared SECONDARY mixin (`class W(ExternalThing,
+        # TimestampMixin)`) is still a deviation on the primary and must flag.
+        primary = bases[0]
+        if primary in file_shared_bases or primary.rsplit(".", 1)[-1] in file_shared_tails:
             continue
         out.append(
             Violation(

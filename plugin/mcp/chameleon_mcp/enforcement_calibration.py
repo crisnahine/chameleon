@@ -349,6 +349,32 @@ def active_block_rules(profile_dir: Path) -> set[str]:
     return out
 
 
+def fp_demoted_rules(profile_dir: Path) -> frozenset[str]:
+    """Rules calibration demoted because they flagged CONFORMING committed code.
+
+    A rule with ``active: False`` AND ``flagged > 0`` fired on files that are
+    conforming by definition (committed = the convention), so those firings are
+    measured false positives (e.g. inheritance-convention on a DRF
+    ``FlexFieldsModelSerializer``). The per-edit render uses this to present such
+    a rule as advisory rather than an imperative "Fix these." -- the calibration
+    layer already knows the rule is FP-prone, so its individual edit-time firings
+    should not carry the conformance-failure tone. A rule with ``flagged == 0``
+    (never mis-fired, or inert for the language) is NOT demoted. Fail-open to
+    empty. This is presentation only; block eligibility already excludes these.
+    """
+    out: set[str] = set()
+    for rule, meta in load_block_rules(profile_dir).items():
+        if not isinstance(meta, dict) or rule in SECURITY_BLOCK_RULES:
+            continue  # a hard-class security rule is never tone-demoted
+        try:
+            flagged = int(meta.get("flagged") or 0)
+        except (TypeError, ValueError):
+            flagged = 0
+        if meta.get("active") is False and flagged > 0:
+            out.add(rule)
+    return frozenset(out)
+
+
 def _sample_files(repo_root: Path, loaded) -> list[tuple[str, str]]:
     """Repo-relative path + archetype for the calibration corpus (deduped, bounded).
 

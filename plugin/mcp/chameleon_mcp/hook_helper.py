@@ -6299,6 +6299,28 @@ def posttool_verify() -> int:
         if violations:
             violations = [v for v in violations if v.get("rule") != "cross-file-importers"]
 
+        # A rule calibration demoted for flagging conforming committed code
+        # (enforcement.json active:false + flagged>0) is measured FP-prone, so its
+        # per-edit firings render as advisory, not an imperative "Fix these." --
+        # the calibration layer already knows it mis-fires. Downgrade to info so it
+        # leaves the actionable bucket AND stops ratcheting per-file escalation.
+        # Security rules are never demoted (excluded in fp_demoted_rules).
+        if violations:
+            try:
+                from chameleon_mcp.enforcement_calibration import fp_demoted_rules
+
+                _demoted = fp_demoted_rules(_enf_profile_dir(repo_root))
+                if _demoted:
+                    for _v in violations:
+                        if (
+                            isinstance(_v, dict)
+                            and _v.get("rule") in _demoted
+                            and str(_v.get("severity") or "").lower() != "info"
+                        ):
+                            _v["severity"] = "info"
+            except Exception:
+                pass
+
         # Archetype-SHAPE rules presume the archetype actually fits the file.
         # On a fallback/none-quality match (new directory, no structural
         # sibling) a shape mismatch says "the guess was wrong", not "the file

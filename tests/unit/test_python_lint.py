@@ -181,3 +181,34 @@ def test_framework_methods_exempt_from_snake_case():
     assert "setUp" not in flagged
     assert "tearDown" not in flagged
     assert "badCamelHelper" in flagged
+
+
+def test_property_accessors_exempt_from_snake_case():
+    # A @property / @computed_field / @x.setter accessor is an attribute, not a
+    # function, so its name follows attribute/constant casing (a pydantic
+    # @computed_field named SQLALCHEMY_DATABASE_URI) and must not flag snake_case.
+    # A plain camelCase method still flags, and an unrelated @property elsewhere
+    # must not exempt it.
+    from chameleon_mcp.lint_engine import _python_naming_violations
+
+    naming = {"method_casing": {"pattern": "snake_case", "consistency": 0.95}}
+    content = (
+        "class Settings:\n"
+        "    @computed_field\n"
+        "    @property\n"
+        "    def SQLALCHEMY_DATABASE_URI(self):\n        return 1\n"
+        "    @cached_property\n"
+        "    def okAccessor(self):\n        return 2\n"
+        "    def badCamelMethod(self):\n        pass\n"
+    )
+    flagged = {x.actual for x in _python_naming_violations(content, naming)}
+    assert "SQLALCHEMY_DATABASE_URI" not in flagged
+    assert "okAccessor" not in flagged
+    assert "badCamelMethod" in flagged
+
+    # A comment between the decorator and its def is legal Python and must not
+    # defeat the exemption.
+    commented = (
+        "class S:\n    @property\n    # the DB URI\n    def DATABASE_URI(self):\n        return 1\n"
+    )
+    assert "DATABASE_URI" not in {x.actual for x in _python_naming_violations(commented, naming)}

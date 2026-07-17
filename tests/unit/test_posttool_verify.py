@@ -482,6 +482,53 @@ def test_present_export_importer_note_dropped_on_daemon_path(tmp_path: Path):
     assert "prefer single quotes" in ctx  # unrelated rule kept
 
 
+def test_fp_demoted_rule_rendered_as_advisory_not_fix_these(tmp_path: Path):
+    # A calibration-demoted rule (active:false + flagged>0) must render in the
+    # advisory bucket, not the imperative "[N violation(s)] ... Fix these." one.
+    repo_id = "test_repo_id"
+    (tmp_path / repo_id).mkdir()
+    ts_file = tmp_path / "s.py"
+    ts_file.write_text("x = 1\n", encoding="utf-8")
+
+    violations = [
+        {
+            "rule": "inheritance-convention-violation",
+            "severity": "warning",
+            "message": "INHERITANCE: class Foo should inherit models.Model",
+            "expected": "models.Model",
+            "actual": "object",
+        }
+    ]
+    with (
+        patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=MagicMock()),
+        patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
+        patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
+        patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
+        patch(
+            "chameleon_mcp.enforcement_calibration.fp_demoted_rules",
+            return_value=frozenset({"inheritance-convention-violation"}),
+        ),
+        patch(
+            "chameleon_mcp.daemon_client.call",
+            side_effect=[
+                {"data": {"archetype": "model"}},
+                {"data": {"violations": violations}},
+            ],
+        ),
+    ):
+        result = _run_verify(
+            {"tool_name": "Edit", "tool_input": {"file_path": str(ts_file)}, "session_id": "s1"}
+        )
+
+    ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
+    # The message still surfaces, but under the advisory-note header, NOT the
+    # imperative "[N violation(s)]" conformance-failure header.
+    assert "should inherit" in ctx
+    assert "advisory note" in ctx
+    assert "chameleon: 1 violation]" not in ctx
+
+
 def test_posttool_recorder_still_works():
     captured: list[str] = []
 

@@ -77,6 +77,72 @@ def test_prettier_single_quote_passes_single():
     assert out == []
 
 
+def test_jsx_attribute_double_quotes_not_flagged_under_single_quote():
+    # prettier's jsxSingleQuote defaults False, so JSX attribute values stay
+    # double-quoted even under singleQuote:true -- flagging them steers the model
+    # to break prettier-conforming code.
+    jsx = 'function C() {\n  return <input type="email" className="box" />;\n}\n'
+    out = scan_style_rules(
+        jsx, language="typescript", rules=_prettier(singleQuote=True), file_path="src/C.tsx"
+    )
+    assert all("quoted string" not in v.actual for v in out)
+
+
+def test_jsx_attribute_flagged_when_jsx_single_quote_true():
+    jsx = 'function C() {\n  return <input type="email" />;\n}\n'
+    out = scan_style_rules(
+        jsx,
+        language="typescript",
+        rules=_prettier(singleQuote=True, jsxSingleQuote=True),
+        file_path="src/C.tsx",
+    )
+    assert any("double-quoted" in v.actual for v in out)
+
+
+def test_js_assignment_double_still_flagged_alongside_jsx():
+    # The JSX skip must NOT suppress an ordinary JS double-quoted assignment
+    # (prettier reformats it to single); only the no-space `name="v"` attribute
+    # shape is exempt, not `key: "v"` or `x = "v"`.
+    out = scan_style_rules(
+        'const g = "hi";\nconst o = { key: "v" };\n',
+        language="typescript",
+        rules=_prettier(singleQuote=True),
+        file_path="src/x.tsx",
+    )
+    assert sum("double-quoted" in v.actual for v in out) == 2
+
+
+def test_compact_assignment_in_ts_still_flags():
+    # The JSX skip is gated on ACTUAL JSX presence in the content, not the
+    # extension: a compact (no-space) double-quoted assignment in a file with no
+    # JSX (`const x="y"`, which prettier rewrites to single) is not a JSX attribute
+    # and must still flag, even though its `x="y"` shape matches the signature. A
+    # TS generic in the same file must not fool the JSX detector.
+    out = scan_style_rules(
+        'const a: Array<string> = [];\nconst x="y";\n',
+        language="typescript",
+        rules=_prettier(singleQuote=True),
+        file_path="a.ts",
+    )
+    assert any("double-quoted" in v.actual for v in out)
+
+
+def test_jsx_attribute_in_js_file_not_flagged():
+    # `.js` is a valid JSX host (Babel/React). A JSX attribute in a .js file whose
+    # content contains JSX is correctly double-quoted and must not flag; a compact
+    # assignment in a plain .js file (no JSX) still flags.
+    jsx_js = 'function C() {\n  return <input className="x" type="email" />;\n}\n'
+    out = scan_style_rules(
+        jsx_js, language="typescript", rules=_prettier(singleQuote=True), file_path="App.js"
+    )
+    assert all("quoted string" not in v.actual for v in out)
+
+    plain_js = scan_style_rules(
+        'const x="y";\n', language="typescript", rules=_prettier(singleQuote=True), file_path="u.js"
+    )
+    assert any("double-quoted" in v.actual for v in plain_js)
+
+
 def test_prettier_double_quote_flags_single():
     out = scan_style_rules(
         "const a = 'x';\n", language="typescript", rules=_prettier(singleQuote=False)

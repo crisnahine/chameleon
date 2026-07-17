@@ -4,6 +4,37 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.3] - 2026-07-18
+
+### Fixed
+- Style lint no longer flags a double-quoted JSX attribute value
+  (`className="x"`). prettier's `jsxSingleQuote` governs JSX quoting separately
+  and defaults to false, so JSX attributes stay double-quoted even under
+  `singleQuote: true` — flagging them steered the model to break
+  prettier-conforming code (the single highest-frequency false positive across
+  the framework audit). The skip fires only when the file actually contains JSX
+  (so a compact `const x="y"` assignment in a plain `.js`/`.ts` file still flags,
+  and a TS generic like `Array<string>` never fools the detector), and honors an
+  explicit `jsxSingleQuote: true`.
+- The Python method snake_case rule no longer flags a `@property` /
+  `@cached_property` / `@computed_field` / `@x.setter` accessor. A property is an
+  attribute accessor, so its name follows attribute/constant casing (a pydantic
+  `@computed_field` named `SQLALCHEMY_DATABASE_URI`), not function snake_case. A
+  comment between the decorator and its `def` no longer defeats the exemption.
+- A rule calibration demoted for flagging conforming committed code
+  (`enforcement.json` `active:false` with `flagged>0`, e.g. inheritance-convention
+  on a DRF `FlexFieldsModelSerializer`) now renders as an advisory note rather
+  than an imperative "Fix these." — the calibration layer already measured it as
+  false-positive-prone, so its per-edit firings no longer carry the
+  conformance-failure tone or ratchet per-file escalation. Security rules are
+  never demoted.
+- The inheritance-convention lint no longer flags a cohort of classes that
+  deliberately share a base the archetype's per-file derivation never admitted to
+  `known_bases` (six sibling DRF serializers extending `FlexFieldsModelSerializer`
+  in one file). A base ≥2 top-level classes in the edited file inherit as their
+  primary base is exempted; a lone off-base class, and a class whose primary base
+  deviates while only a secondary mixin is shared, still flag.
+
 ## [4.4.2] - 2026-07-17
 
 ### Fixed
