@@ -61,6 +61,7 @@ def coord(tmp_path):
     for name, root in (("web", web), ("api", api)):
         pd = root / ".chameleon"
         pd.mkdir(parents=True, exist_ok=True)
+        (pd / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
         pd.joinpath("config.json").write_text(
             json.dumps({"enforcement": {"mode": "enforce", "stop_block_cap": 3}}), encoding="utf-8"
         )

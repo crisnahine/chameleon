@@ -4,6 +4,20 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.2] - 2026-07-17
+
+### Fixed
+- A trust grant that outlives its profile no longer keeps the turn-end gate
+  running on an ungoverned repo: `gate_one_root` now requires a COMMITTED
+  profile on disk, matching every other surface's treatment of a
+  profile-less root. Previously a repo that was once trusted and later
+  un-profiled (its `.chameleon/` deleted) kept receiving Stop-hook
+  advisories — observed live as a "no passing test run" nag on a repo with
+  no profile at all — and could even be turn-end blocked, while status and
+  every read tool correctly reported no profile. The per-edit
+  credential/eval security floor is unchanged (it is PreToolUse's,
+  independent of this gate).
+
 ## [4.1.1] - 2026-07-17
 
 Fixes from the qa66 whole-plugin, from-scratch, real-invocation campaign

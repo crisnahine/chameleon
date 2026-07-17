@@ -57,6 +57,7 @@ def make_trusted_repo(tmp_path):
         repo = tmp_path / "repo"
         profile_dir = repo / ".chameleon"
         profile_dir.mkdir(parents=True, exist_ok=True)
+        (profile_dir / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
         profile_dir.joinpath("config.json").write_text(
             json.dumps({"enforcement": {"mode": mode, "correctness_judge": correctness_judge}}),
             encoding="utf-8",

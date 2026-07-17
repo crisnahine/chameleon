@@ -1094,6 +1094,16 @@ def gate_one_root(
     # resolves membership correctly even under a monorepo-shared repo_id.
     if rec is None or not rec.grants_root(ws_root):
         return {"output": {}, "attest": False, "gated": False, "suppressed_reason": None}
+    # Trust vouches for a COMMITTED profile; a grant whose profile is gone
+    # (deleted, never re-inited) or torn has no referent, and every other
+    # surface already treats that root as ungoverned — the turn-end gate must
+    # too, or a leftover grant keeps nagging/blocking a repo with no profile
+    # at all. The per-edit credential/eval security floor is PreToolUse's,
+    # independent of this gate.
+    from chameleon_mcp.bootstrap.transaction import is_committed
+
+    if not is_committed(hh._enf_profile_dir(ws_root)):
+        return {"output": {}, "attest": False, "gated": False, "suppressed_reason": None}
     if profile_diverged_from_grant(rec, ws_root, hh._enf_profile_dir(ws_root)):
         return {"output": {}, "attest": False, "gated": False, "suppressed_reason": None}
 

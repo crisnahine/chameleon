@@ -107,3 +107,35 @@ def test_multiroot_shims_signature_and_patchability():
         ):
             hh.stop_backstop()
         gate_mock.assert_called_once()
+
+
+def test_gate_one_root_skips_trusted_root_with_no_committed_profile(tmp_path, monkeypatch):
+    # A trust grant that outlives its profile (profile deleted or never
+    # re-inited) must leave the root ungoverned at turn end: no advisories,
+    # no blocks, no attestation. Observed live on the chameleon dev repo
+    # itself — a leftover dogfood-era grant kept the test-run nag firing on a
+    # repo with no .chameleon at all.
+    from unittest.mock import MagicMock
+
+    from chameleon_mcp.stop import pipeline
+
+    ws_root = tmp_path / "repo"
+    ws_root.mkdir()
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+
+    rec = MagicMock()
+    rec.grants_root.return_value = True
+    monkeypatch.setattr("chameleon_mcp.profile.trust.trust_state_for", lambda repo_id: rec)
+
+    out = pipeline.gate_one_root(
+        payload={},
+        root={"ws_root": ws_root, "repo_id": "leftover-grant", "repo_data": tmp_path / "data"},
+        session_id="s1",
+        is_subagent=False,
+        daemon_state={"available": False},
+        only_files=None,
+        allow_model_spawn=False,
+    )
+    assert out["gated"] is False
+    assert out["output"] == {}
+    assert out["attest"] is False

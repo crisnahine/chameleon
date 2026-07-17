@@ -61,6 +61,7 @@ def _build_repo(tmp_path: Path, *, mode: str) -> tuple[Path, LoadedProfile]:
     repo = tmp_path / "repo"
     chameleon = repo / ".chameleon"
     chameleon.mkdir(parents=True, exist_ok=True)
+    (chameleon / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     (chameleon / "config.json").write_text(
         json.dumps({"enforcement": {"mode": mode, "stop_backstop": True}}),
         encoding="utf-8",
