@@ -248,7 +248,7 @@ degradation.
 
 Running log. Every issue found during real usage, its impact, and its resolution.
 
-### GAP-001 — `possible_aws_secret` fires on an ordinary file path in prose — OPEN
+### GAP-001 — `possible_aws_secret` fires on an ordinary file path in prose — **RESOLVED (v4.4.16, `94292da`)**
 
 **Cell:** `secret-scan` x (language-agnostic; found on a Markdown doc)
 **Severity:** advisory-noise (NOT a block — see impact)
@@ -298,9 +298,149 @@ can never block an edit. The damage is precision, not availability: the user is 
 is under-precise, so it is not doing the job its own comment claims. This is a defect in the
 mitigation, not accepted behaviour.
 
-**Fix:** deferred to the fix phase (word-boundary the credential-context gate; consider
-excluding path-shaped runs from the 40-char pattern). Must be re-verified across all
-languages since the scanner is language-agnostic.
+**Corroboration that this is a defect, not a design choice:** the *identical* substring bug
+was already found and fixed in a sibling function. `autopass.py:110-112` carries the comment
+*"`auth` must stay exact-only: `author`/`authorship` defeat any prefix scheme"*, and
+`test_autopass_security_surface.py:34` asserts *"word-boundary precision ... must not trip the
+auth category the way the old substring matcher did."* The fix was applied to
+`classify_security_surface` and never carried across to the secret scanner's gate. GAP-001 is
+an unfinished fix.
+
+**Fix applied (v4.4.16):** the gate now matches whole TOKENS using the same tokenization the
+sibling already uses (camelCase split first, then every non-alphanumeric run delimits). Exact
+tokens only, no prefix scheme — a `secret`/`auth` prefix would re-admit "secretary"/"authored".
+The concatenated identifier forms a substring matcher legitimately caught (`SECRETKEY`,
+`AUTHTOKEN`, `ACCESSTOKEN`, ...) are listed literally so no real coverage is lost.
+
+**Green evidence — real hook invocations, A/B across the two deployed versions:**
+
+```
+$ echo '{"tool_name":"Edit","tool_input":{"file_path":".../TESTING.md"},...}' \
+    | CLAUDE_PLUGIN_ROOT=~/.claude/plugins/cache/chameleon/chameleon/4.4.15 \
+      .../4.4.15/hooks/posttool-verify
+{"hookSpecificOutput": {... "[🦎 chameleon: 2 violations]
+  1. detect-secrets flagged a possible_aws_secret at line 57 ...
+  2. detect-secrets flagged a possible_aws_secret at line 59 ..."}}
+
+$ (same payload, v4.4.16)
+{}
+```
+
+**Recall counter-check (the fix must not trade precision for false negatives):**
+
+| Probe file | v4.4.16 result |
+|---|---|
+| `api_key = "<40-char blob>"` | `possible_aws_secret` — still flagged |
+| `SECRETKEY = "<40-char blob>"` | `possible_aws_secret` — still flagged (concatenated form) |
+| `authtoken = "<40-char blob>"` | `possible_aws_secret` — still flagged (concatenated form) |
+| `AWS_SECRET_ACCESS_KEY = "..."` | `Secret Keyword` — still flagged |
+| prose: "authored" + 40-char path + monkey/keyboard/accessible/privately + git SHA | **no hits** |
+
+**Verification status:** unit `6131 passed, 3 skipped` (full suite, no regressions);
+`ruff check` clean; `ruff format --check` clean (471 files). Precision improved, recall
+preserved.
+
+**Known residual (accepted, documented):** the `possible_aws_secret` pattern still matches any
+40-character filesystem path *when a genuine credential word shares the line* (e.g. a comment
+reading "the key lives at /some/40-char/path"). Not fixed deliberately: a real AWS secret
+access key is 40 base64 characters and legitimately contains `/`, so excluding `/`-bearing
+runs would trade a narrow false positive for real false negatives on the exact credential the
+rule exists to catch. The rule is advisory-only, so the residual cost is one advisory line.
+
+**Note for this campaign:** the live session remains pinned to v4.4.15 (its `CLAUDE_PLUGIN_ROOT`
+was resolved at session start), so in-session edits keep running the old gate until the
+session restarts. The fix is verified against v4.4.16 by direct hook invocation above.
+
+**Scanner-level proof (independent of hook display):** scanning the same file with each
+version's scanner directly, so no hook-side ranking or capping can confound the result:
+
+```
+v4.4.15: total hits=6  possible_aws_secret=2 at lines [57, 59]
+v4.4.16: total hits=4  possible_aws_secret=0 at lines []
+```
+
+Both false positives are removed at source; the other 4 hits are untouched.
+
+**OQ-001 (open question, not a claim):** the v4.4.15 *hook* surfaced only 3 violations for a
+file its scanner reports 6 hits on, and the two `possible_aws_secret` hits were among those
+not shown. Something between the scanner and the rendered advisory ranks, caps, or filters
+findings. I have not yet identified that mechanism — grepping `_thresholds.py` and
+`hook_helper.py` for a violations cap found nothing conclusive, and the diff-scoping
+explanation does not fit (the probe payload carried no `old_string`/`new_string`, which should
+force the whole-file fallback). Recorded as an open question rather than guessed at; it is a
+matrix item (advisory display cap / finding ranking) to characterise during execution. It does
+not affect the GAP-001 verdict, which rests on the scanner-level A/B above.
+
+---
+
+### GAP-002 — `reuse-before-create` suggested 4 unrelated tests, 4/4 wrong — OPEN
+
+**Cell:** `reuse-before-create` x Python (found on the chameleon repo itself)
+**Severity:** advisory-noise
+**Found by:** real usage. Editing `tests/unit/test_secret_scanner.py`, the PreToolUse hook
+emitted:
+
+```
+[🦎 chameleon: reuse-before-create]
+- `test_aws_secret_assignment_is_flagged` looks like the existing `test_crypto_secret_paths_flagged` ...
+- `test_file_path_beside_ordinary_word_not_flagged_as_aws_secret` looks like `test_ordinary_path_not_flagged` ...
+- `test_substring_credential_words_do_not_open_the_context_gate` looks like `test_import_preference_not_fooled_by_substring` ...
+- `test_whole_word_credential_context_still_flags` looks like `test_compact_assignment_in_ts_still_flags` ...
+```
+
+**Verified against the real code — all four are wrong:**
+
+| Suggested "duplicate" | What it actually tests | Same subject? |
+|---|---|---|
+| `test_crypto_secret_paths_flagged` | `classify_security_surface()` — path classification | no |
+| `test_ordinary_path_not_flagged` | `classify_security_surface()` — path classification | no |
+| `test_import_preference_not_fooled_by_substring` | import-preference lint | no |
+| `test_compact_assignment_in_ts_still_flags` | TS style baseline | no |
+
+All four match on *name shape* only. Three name a different module entirely; none touches
+`scan_for_secrets`. One suggestion also targeted `test_aws_secret_assignment_is_flagged`, a
+**pre-existing** test the edit never touched — so the advisory is not diff-scoped here.
+
+**Impact / effectiveness:** the detector's stated contract is *"reuse it if the intent
+matches"*, and on this sample intent matched 0/4. Following any suggestion would have produced
+a wrong edit. Cost is wasted reader attention plus a nudge toward incorrect consolidation.
+Precision on this sample: **0%**.
+
+**Status:** OPEN. Needs its own reproduction across all 10 columns before a fix — name-shape
+similarity may be tuned per language, so a Python-only sample is not enough to characterise it.
+
+---
+
+### GAP-003 — placeholder lexicon misses common obvious-fake secret values — OPEN
+
+**Cell:** `secret-placeholder` x (language-agnostic)
+**Severity:** advisory-noise
+**Found by:** real usage. Editing `CHANGELOG.md`, the hook flagged a `Secret Keyword` on a
+pre-existing documentation line whose example values are deliberately fake:
+`token="s3cr3t"`, `db_password="hunter2"` (`hunter2` being the well-known joke password).
+
+**Red evidence:**
+
+```
+$ secret_value_is_placeholder(v) for v in [...]
+  's3cr3t'    False      'xxx'             True
+  'hunter2'   False      'REDACTED'        True
+  'changeme'  False      '<your-key-here>' True
+  'test123'   False      'dummy'           True
+```
+
+The lexicon recognises `xxx`/`REDACTED`/`dummy`/`foo`/`placeholder`/`EXAMPLE` but not
+`changeme` — which is the single most common placeholder in `.env.example`, Docker, and
+Kubernetes documentation.
+
+**Impact / effectiveness:** documentation and example config carrying conventional placeholder
+values are reported as leaked credentials.
+
+**Status:** OPEN, deliberately not fixed in the GAP-001 cycle. Widening a security lexicon
+trades false positives for false negatives (`password="password"` is a genuinely weak
+credential in production but a placeholder in an example file), so it needs its own red/green
+cycle and an explicit decision on which values are safe to whitelist. Flagged here first per
+the campaign's "flag behaviour changes in TESTING.md before making them" rule.
 
 ---
 
