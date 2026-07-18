@@ -5062,7 +5062,27 @@ def posttool_recorder() -> int:
     tool_response = _as_dict(payload.get("tool_response"))
     command = tool_input.get("command", "")
     session_id = payload.get("session_id", "unknown")
-    exit_code = tool_response.get("returnCode") if isinstance(tool_response, dict) else None
+    # The documented Bash PostToolUse response carries `exit_code`
+    # (code.claude.com/docs/en/hooks.md#posttooluse: exit_code / stdout / stderr /
+    # interrupted). Reading `returnCode` matched nothing, so EVERY command logged
+    # the -1 absent-value sentinel and `session_test_run_seen` -- which requires a
+    # zero exit -- could never be true: the turn-end "no passing test run" nudge
+    # was unsatisfiable no matter how much the user tested. `returnCode` is kept
+    # as a fallback so a harness that still sends the old key keeps working.
+    #
+    # An interrupted command (timeout, user cancel) is NOT a passing run even when
+    # it reports exit 0 -- it may have run none of the suite -- so it degrades to
+    # the same sentinel rather than silencing the nudge on work that never
+    # completed.
+    exit_code = None
+    if isinstance(tool_response, dict):
+        if tool_response.get("interrupted"):
+            exit_code = None
+        else:
+            raw = tool_response.get("exit_code")
+            if raw is None:
+                raw = tool_response.get("returnCode")
+            exit_code = raw
 
     if not is_bash:
         _emit({})

@@ -4,6 +4,32 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.18] - 2026-07-18
+
+### Fixed
+- The turn-end "no passing test run this turn" nudge was unsatisfiable: it fired
+  on every source-touching turn no matter how thoroughly the user tested. The
+  Bash PostToolUse recorder read `tool_response["returnCode"]`, but the
+  documented payload carries `exit_code`
+  (`code.claude.com/docs/en/hooks.md#posttooluse`: `exit_code` / `stdout` /
+  `stderr` / `interrupted`). The key never matched, so every command logged the
+  `-1` absent-value sentinel, and `session_test_run_seen` — which requires a zero
+  exit — could never return true. Measured on this installation: **14,254
+  recorded Bash rows, every one `-1`**; on one live session, 17 commands were
+  correctly classified as test runs and all 17 recorded `-1`. The recorder now
+  reads `exit_code`, keeping `returnCode` as a fallback for any harness still
+  sending the old key.
+
+  Every layer was individually correct and unit-tested — the runner classifier
+  matches all the real command shapes, the log writes and signs rows properly,
+  and the consumer's zero-exit requirement is right — which is why this survived:
+  a fixture built from the implementation supplies `returnCode` and passes
+  against the bug. Only a real payload exposes it.
+
+  An `interrupted` command (timeout or user cancel) now degrades to the same
+  non-passing sentinel even when it reports exit 0, so a run that executed none
+  of the suite cannot silence the nudge from the other side.
+
 ## [4.4.17] - 2026-07-18
 
 ### Fixed
