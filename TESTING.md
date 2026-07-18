@@ -618,10 +618,48 @@ something false about the user's behaviour.
 **Also affected:** `exit_code` is the only success signal in the exec log, so any other
 consumer of a *passing* command is equally blind. To be enumerated before the fix.
 
-**Status:** OPEN. The correct field name is being confirmed against the official Claude Code
-hook documentation rather than guessed — a fix that swaps one wrong key for another wrong key
-would look green (the advisory would stop) while still recording nothing. Any fix must also
-keep working when the key is genuinely absent (interrupted/timed-out commands).
+**RESOLVED (v4.4.18, `ad11a35`).**
+
+**Field name confirmed, not guessed.** The documented Bash PostToolUse response
+(`code.claude.com/docs/en/hooks.md#posttooluse`) is
+`{"exit_code": 0, "stdout": ..., "stderr": ..., "interrupted": false}` — the key is
+`exit_code`. Cross-checked empirically against this installation's own logs, which is stronger
+than the doc alone:
+
+```
+exit_code distribution across EVERY recorded Bash row (all sessions):
+   -1  -> 14254
+    0  ->     1
+```
+
+The single `0` is the synthetic probe I hand-fed `returnCode`. In 14,254 real invocations the
+old key never once matched. That is the confirmation that the fix targets the true cause rather
+than swapping one wrong key for another.
+
+**Fix:** read `exit_code`, falling back to `returnCode` so any harness still sending the old key
+keeps working. An `interrupted` command degrades to the non-passing sentinel even when it
+reports exit 0 — a run killed by timeout may have executed none of the suite, and counting it
+would re-create the same false signal from the opposite direction.
+
+**Green evidence — real hook executable, documented payload shape:**
+
+```
+$ echo '{"tool_name":"Bash",...,"tool_response":{"exit_code":0,...,"interrupted":false}}' \
+    | CLAUDE_PLUGIN_ROOT=.../4.4.18 .../4.4.18/hooks/posttool-recorder
+recorder exit: 0
+recorded exit_code      : 0        (was -1)
+test_command_seen       : True
+session_test_run_seen   : True     (was False, permanently)
+```
+
+**Verification status:** full suite `6141 passed, 3 skipped` (+4 new tests), `ruff check` clean,
+`ruff format --check` clean over 473 files.
+
+**Residual limitation, stated plainly:** the end-to-end confirmation that the advisory *stops
+firing* in a live session requires a session started on v4.4.18. This session is pinned to
+v4.4.15, so that final link is verified at the recorder/consumer boundary (above) rather than
+by observing the nudge go silent. Re-check on the next fresh session before the campaign's
+final sign-off.
 
 **Note on the earlier PASS:** `hooks/hook.stop.advisory.test-run-reminder@C6` was marked PASS on
 the evidence that the advisory correctly named the edited files and that a post-test edit had
