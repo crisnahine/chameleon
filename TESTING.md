@@ -668,7 +668,7 @@ signal. The cell will be re-opened and re-evidenced.
 
 ---
 
-### GAP-006 — bootstrap inherits tool config from `$HOME`, discarding the repo's own — OPEN (HIGH)
+### GAP-006 — bootstrap inherits tool config from `$HOME`, discarding the repo's own — **RESOLVED (v4.4.19, `d0f657a`)**
 
 **Cells:** `bootstrap`/tool-config discovery x **C6, C7, C8, C9, C10** (all five Python columns)
 **Severity:** HIGH — silent, wrong-config derivation
@@ -759,9 +759,32 @@ The walk's intent is sound (a sub-package inside a JS monorepo should inherit it
 `orchestrator.py:2192-2213` uses the same signal for extractor selection); only its bounds are
 wrong.
 
-**Status:** OPEN. Fix (1) is the targeted repair for the observed failure and is being
-implemented; fix (2) is recorded as a separate latent defect rather than bundled in, per the
-minimal-diff rule.
+**FIX APPLIED (v4.4.19).** The walk is now bounded three ways — a directory holding `.git` is
+the outer edge of its own project, `$HOME` is never a project root, and the existing 4-level
+depth budget is unchanged. Extracted as `_inherited_signals_root` so the boundary is directly
+testable rather than buried in a 700-line function.
+
+**Green evidence — real bootstrap, same repo, same command:**
+
+```
+before: rules.json entries: 0   python_format: None
+after : rules.json entries: 1   python_format: {'rules': {'line_length': 100},
+                                                'source': 'pyproject.toml'}
+```
+
+The repo's own ruff config now reaches the profile. Inherited-signals root is `None` for all
+seven checked columns (each is its own git repo with its own config), where before the five
+Python ones resolved to `$HOME`.
+
+**Regression:** full suite `6147 passed, 3 skipped` (+6 boundary tests), `ruff check` clean,
+`ruff format --check` clean over 474 files. The genuine monorepo case is covered by two of the
+new tests (`package.json` and `Gemfile` ancestors inside the same git repo still inherit), so
+the fix bounds the walk without disabling it.
+
+**Deliberately NOT fixed (latent, recorded):** even for a legitimate monorepo ancestor,
+inheritance *replaces* rather than defers to the sub-package's own config. That is a second,
+independent defect; bundling it would have widened a targeted fix into a behaviour change to
+the monorepo path, which the campaign's minimal-diff rule forbids without flagging first.
 
 ---
 
