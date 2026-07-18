@@ -149,4 +149,129 @@ def test_assemble_empty_changeset_has_zeroed_signals():
 
     assert facts["files_changed"] == 0
     assert facts["blast_radius"] == 0
+
+
+def test_assemble_excludes_non_source_files_from_unarchetyped_count():
+    # A version-bump/release diff: manifests, lockfiles, docs, and plugin config
+    # alongside two real source files. The engine has no archetype for any of the
+    # non-source files, so is_unarchetyped is True for every path -- but only the
+    # two source files may count. The rest are reviewed by the secret and
+    # dependency passes, not the archetype/logic review, so counting them as
+    # "outside profiled archetypes" spuriously elevates risk on a version bump.
+    changed = [
+        "package.json",
+        "package-lock.json",
+        "uv.lock",
+        "pyproject.toml",
+        "CHANGELOG.md",
+        ".claude-plugin/marketplace.json",
+        "plugin/.claude-plugin/plugin.json",
+        "src/a.ts",
+        "app/models/listing.rb",
+    ]
+
+    facts = assemble_facts(
+        changed,
+        added_lines=20,
+        removed_lines=5,
+        new_files=0,
+        is_unarchetyped=lambda p: True,
+        importers_of=lambda p: 0,
+        block_findings_for=lambda p: 0,
+    )
+
+    assert facts["unarchetyped_files"] == 2
+
+
+def test_assemble_excludes_non_source_files_from_source_count():
+    changed = ["package.json", "uv.lock", "CHANGELOG.md", "src/a.ts"]
+
+    facts = assemble_facts(
+        changed,
+        added_lines=4,
+        removed_lines=0,
+        new_files=0,
+        is_unarchetyped=lambda p: True,
+        importers_of=lambda p: 0,
+        block_findings_for=lambda p: 0,
+    )
+
+    # Only src/a.ts is source; the three non-source files never inflate the count.
+    assert facts["source_files_changed"] == 1
+
+
+def test_assemble_keeps_archetyped_config_as_source():
+    # The skip-list is "unless the archetype specifically covers them": a config
+    # file a repo HAS taught chameleon to archetype is real governed source, so a
+    # false is_unarchetyped keeps it in both counts exactly as before.
+    changed = ["config/settings.json"]
+
+    facts = assemble_facts(
+        changed,
+        added_lines=3,
+        removed_lines=0,
+        new_files=0,
+        is_unarchetyped=lambda p: False,
+        importers_of=lambda p: 0,
+        block_findings_for=lambda p: 0,
+    )
+
+    assert facts["unarchetyped_files"] == 0
+    assert facts["source_files_changed"] == 1
+
+
+def test_assemble_test_deletion_with_manifest_only_stays_eligible():
+    # weakening_combo routes a change to a human only when a test-weakening signal
+    # coincides with a LIVE-SOURCE change. A manifest / version bump is not live
+    # source, so excluding it from source_files_changed keeps a "delete a test +
+    # bump the version" diff eligible (test cleanup, not gutting a spec while
+    # changing the code it covers).
+    facts = assemble_facts(
+        ["package.json", "CHANGELOG.md"],
+        added_lines=3,
+        removed_lines=1,
+        new_files=0,
+        is_unarchetyped=lambda p: True,
+        importers_of=lambda p: 0,
+        block_findings_for=lambda p: 0,
+        deleted_test_files=1,
+    )
+
+    assert facts["source_files_changed"] == 0
+    assert "test weakening" not in " ".join(classify_change(facts)["reasons"])
+
+    # Contrast: the SAME test deletion alongside a real source file is the
+    # dangerous combination and still routes to a human.
+    with_source = assemble_facts(
+        ["src/a.ts", "CHANGELOG.md"],
+        added_lines=3,
+        removed_lines=1,
+        new_files=0,
+        is_unarchetyped=lambda p: p != "src/a.ts",
+        importers_of=lambda p: 0,
+        block_findings_for=lambda p: 0,
+        deleted_test_files=1,
+    )
+
+    assert with_source["source_files_changed"] == 1
+    assert "test weakening" in " ".join(classify_change(with_source)["reasons"])
+
+
+def test_assemble_source_only_diff_unchanged():
+    # Regression guard: a diff with no non-source files behaves exactly as before
+    # the exclusion existed -- every unarchetyped source file still counts.
+    changed = ["src/a.ts", "src/b.ts", "app/models/listing.rb"]
+
+    facts = assemble_facts(
+        changed,
+        added_lines=15,
+        removed_lines=2,
+        new_files=0,
+        is_unarchetyped=lambda p: p != "src/a.ts",
+        importers_of=lambda p: 0,
+        block_findings_for=lambda p: 0,
+    )
+
+    assert facts["unarchetyped_files"] == 2
+    assert facts["source_files_changed"] == 3
     assert facts["security_surface"] is False

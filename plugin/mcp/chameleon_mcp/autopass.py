@@ -34,7 +34,32 @@ from __future__ import annotations
 import re
 
 from chameleon_mcp.conventions import _is_test_path
+from chameleon_mcp.dep_diff import MANIFEST_LOCKFILE_BASENAMES, UNCOVERED_MANIFEST_BASENAMES
 from chameleon_mcp.violation_class import _IGNORE_RE
+
+# File classes that are never archetyped SOURCE: dependency manifests and
+# lockfiles, docs, and config/data. The archetype/logic review has no canonical
+# to vouch for them and they carry no reviewable authorship the auto-pass gate
+# must sign off; the secret scan and the dependency diff review them on their own
+# path instead. Counting them among "files outside profiled archetypes" would
+# elevate a pure version-bump/release diff to needs-human for the wrong reason.
+# The extension set mirrors the pr-review skill's own config/data skip-list;
+# _is_non_source_file adds the extensionless manifests (Gemfile, Pipfile) and the
+# generated markers an extension test alone cannot catch.
+_NON_SOURCE_EXTS = frozenset(
+    {
+        ".json",
+        ".yml",
+        ".yaml",
+        ".toml",
+        ".lock",
+        ".cfg",
+        ".ini",
+        ".md",
+        ".rst",
+        ".txt",
+    }
+)
 
 # Path needles that mark a security-sensitive surface, by category. A change
 # touching any of these always goes to a human, however clean it looks: these are
@@ -203,6 +228,28 @@ def _is_test_file(path: str) -> bool:
         or _is_test_path(p, language="typescript")
         or _is_test_path(p, language="python")
     )
+
+
+def _is_non_source_file(path: str) -> bool:
+    """True when a changed path is a manifest, lockfile, doc, or config/data file.
+
+    These are never archetyped SOURCE the auto-pass gate must vouch for, so the
+    caller excludes them from ``unarchetyped_files`` and ``source_files_changed``
+    -- but only where they are ALSO unarchetyped (the caller keeps the
+    ``is_unarchetyped`` gate), so a repo that HAS taught chameleon to archetype
+    its config keeps that file as governed source. The exclusion weakens no
+    security signal: the secret scan and the dependency diff review these files on
+    their own path, independent of these two facts.
+    """
+    base = str(path).rsplit("/", 1)[-1]
+    if base in MANIFEST_LOCKFILE_BASENAMES or base in UNCOVERED_MANIFEST_BASENAMES:
+        return True
+    lower = base.lower()
+    # Generated / minified artifacts carry no reviewable authorship.
+    if lower == "schema.rb" or ".generated." in lower or lower.endswith((".min.js", ".min.css")):
+        return True
+    dot = lower.rfind(".")
+    return dot != -1 and lower[dot:] in _NON_SOURCE_EXTS
 
 
 def _iter_diff_files(diff_text):
@@ -627,13 +674,24 @@ def assemble_facts(
         "files_changed": len(files),
         "lines_changed": int(added_lines) + int(removed_lines),
         "new_files": int(new_files),
-        "unarchetyped_files": sum(1 for p in files if is_unarchetyped(p)),
+        "unarchetyped_files": sum(
+            1 for p in files if is_unarchetyped(p) and not _is_non_source_file(p)
+        ),
         "blast_radius": max(known_fanouts, default=0),
         "blast_radius_unknown": unknown_fanouts,
         "active_block_findings": sum(int(block_findings_for(p)) for p in files),
         "type_errors": sum(1 for p in files if p in type_errs),
         "security_surface": bool(security_surface_categories(files)),
-        "source_files_changed": sum(1 for p in files if not _is_test_file(p)),
+        # Excludes non-source the same way, which also feeds weakening_combo's
+        # live-source partner below: a test deletion alongside a pure manifest /
+        # version bump is test cleanup, not the "gut a spec while changing the
+        # code it covers" shape, so it stays eligible -- the alignment the
+        # weakening_combo comment already intends by "live-source".
+        "source_files_changed": sum(
+            1
+            for p in files
+            if not _is_test_file(p) and not (_is_non_source_file(p) and is_unarchetyped(p))
+        ),
         "deleted_test_files": int(deleted_test_files),
         "net_test_line_delta": int(net_test_line_delta),
         "removed_guard_lines": int(signals.get("removed_guard_lines", 0) or 0),
