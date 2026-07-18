@@ -1,0 +1,62 @@
+[
+  {
+    "id": "C1",
+    "repo": "ts-plain",
+    "language": "typescript",
+    "framework": null
+  },
+  {
+    "id": "C2",
+    "repo": "ts-nextjs",
+    "language": "typescript",
+    "framework": "nextjs"
+  },
+  {
+    "id": "C3",
+    "repo": "ts-nestjs",
+    "language": "typescript",
+    "framework": "nestjs"
+  },
+  {
+    "id": "C4",
+    "repo": "rb-plain",
+    "language": "ruby",
+    "framework": null
+  },
+  {
+    "id": "C5",
+    "repo": "rb-rails",
+    "language": "ruby",
+    "framework": "rails"
+  },
+  {
+    "id": "C6",
+    "repo": "py-plain",
+    "language": "python",
+    "framework": null
+  },
+  {
+    "id": "C7",
+    "repo": "py-django",
+    "language": "python",
+    "framework": "django"
+  },
+  {
+    "id": "C8",
+    "repo": "py-drf",
+    "language": "python",
+    "framework": "drf"
+  },
+  {
+    "id": "C9",
+    "repo": "py-flask",
+    "language": "python",
+    "framework": "flask"
+  },
+  {
+    "id": "C10",
+    "repo": "py-fastapi",
+    "language": "python",
+    "framework": "fastapi"
+  }
+]
