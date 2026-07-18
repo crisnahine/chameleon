@@ -341,3 +341,430 @@ def test_class_bound_kinds_not_reuse_targets(
     )
     out2 = hook_helper._prewrite_dedup_section(new_content, str(tmp_path / new_path), tmp_path)
     assert "reuse-before-create" in out2
+
+
+def _body_hash_of(content, file_path):
+    hs = hook_helper._extract_method_body_hashes(content, file_path)
+    return hs[0] if hs else (None, None)
+
+
+def test_body_identical_class_method_dup_fires(tmp_path, monkeypatch):
+    # A method written verbatim, whose body exactly matches an existing CLASS-BOUND
+    # method elsewhere, surfaces an extract-to-shared nudge (the OO-framework reuse
+    # gap the exact/semantic passes miss). Uses the hot-path extractor to compute
+    # the catalog body_hash, so index and query agree by construction.
+    content = (
+        "class BuildQuerySet\n  def concurrent(project)\n"
+        "    self.filter(project=project)\n        .exclude(state='finished')\n"
+        "        .count()\n  end\nend\n"
+    )
+    name, bh = _body_hash_of(content, "app/a.rb")
+    assert bh  # body clears the hash floor
+    cat = FunctionCatalog(
+        [
+            CatalogedFunction(
+                name=name,
+                kind="method",
+                file="app/other/querysets.rb",
+                arity=1,
+                required=1,
+                tokens=name_tokens(name),
+                body_hash_lax=bh,
+            )
+        ]
+    )
+    monkeypatch.setattr("chameleon_mcp.function_catalog.load_function_catalog", lambda r: cat)
+    out = hook_helper._prewrite_dedup_section(content, str(tmp_path / "app/a.rb"), tmp_path)
+    assert "reuse-before-create" in out
+    assert "extract a shared" in out
+    assert "app/other/querysets.rb" in out
+    assert "import and reuse" not in out  # a method is not importable
+
+
+def test_body_dup_short_name_still_fires(tmp_path, monkeypatch):
+    # A short method name (`show`, <5 chars) is filtered out of the name-based
+    # passes but must still reach the body-based pass.
+    content = "class Ctrl\n  def show\n    respond_with(@record)\n    log_access(@record.id)\n  end\nend\n"
+    name, bh = _body_hash_of(content, "app/a.rb")
+    assert name == "show" and bh
+    cat = FunctionCatalog(
+        [
+            CatalogedFunction(
+                name="show",
+                kind="method",
+                file="app/other/ctrl.rb",
+                arity=0,
+                required=0,
+                tokens=name_tokens("show"),
+                body_hash_lax=bh,
+            )
+        ]
+    )
+    monkeypatch.setattr("chameleon_mcp.function_catalog.load_function_catalog", lambda r: cat)
+    out = hook_helper._prewrite_dedup_section(content, str(tmp_path / "app/a.rb"), tmp_path)
+    assert "reuse-before-create" in out and "extract a shared" in out
+
+
+def test_body_dup_novel_method_no_fire(tmp_path, monkeypatch):
+    # A method with a unique body must NOT fire (collision-resistant hash -> no
+    # false nudge).
+    content = "class Foo\n  def unique_thing(a, b)\n    a * 7 + b * 13 - 42\n  end\nend\n"
+    cat = FunctionCatalog(
+        [
+            CatalogedFunction(
+                name="something_else",
+                kind="method",
+                file="app/x.rb",
+                arity=1,
+                required=1,
+                tokens=name_tokens("something_else"),
+                body_hash="deadbeefcafe0000",
+            )
+        ]
+    )
+    monkeypatch.setattr("chameleon_mcp.function_catalog.load_function_catalog", lambda r: cat)
+    out = hook_helper._prewrite_dedup_section(content, str(tmp_path / "app/foo.rb"), tmp_path)
+    assert "reuse-before-create" not in out
+
+
+def test_lax_body_hash_context_parity():
+    # The acceptance gate: the SAME method body must produce the SAME lax hash
+    # regardless of surrounding context (class body, after a sibling, top level) so
+    # bootstrap (committed source) and the hot path (proposed content) agree by
+    # construction. Ruby, Python, TS.
+    from chameleon_mcp.function_catalog import extract_method_body_hashes as E
+
+    rb_body = "  def compute(project)\n    self.filter(project: project).count\n    log_it(project)\n  end"
+    h_a = dict(E("class A\n" + rb_body + "\nend\n", "a.rb")).get("compute")
+    h_b = dict(E("class B\n  def other; end\n" + rb_body + "\nend\n", "a.rb")).get("compute")
+    assert h_a and h_a == h_b
+
+    py_body = "    def compute(self, project):\n        rows = self.filter(project=project)\n        return rows.count()"
+    p_a = dict(E("class A:\n" + py_body + "\n", "a.py")).get("compute")
+    p_b = dict(E("class B:\n    x = 1\n" + py_body + "\n    def z(self): pass\n", "a.py")).get(
+        "compute"
+    )
+    assert p_a and p_a == p_b
+
+    ts_body = (
+        "  compute(x: number): number {\n    const y = x * 2;\n    return y + this.offset;\n  }"
+    )
+    t_a = dict(E("class A {\n" + ts_body + "\n}\n", "a.ts")).get("compute")
+    t_b = dict(E("export class A {\n  other() {}\n" + ts_body + "\n}\n", "a.ts")).get("compute")
+    assert t_a and t_a == t_b
+
+
+def test_body_dup_matches_on_lax_field(tmp_path, monkeypatch):
+    # Pass 3 keys the index on body_hash_lax (the reproducible field) when present.
+    content = (
+        "class BuildQuerySet\n  def concurrent(project)\n"
+        "    self.filter(project: project).where.not(state: :done).count\n  end\nend\n"
+    )
+    name, bh = _body_hash_of(content, "app/a.rb")
+    cat = FunctionCatalog(
+        [
+            CatalogedFunction(
+                name=name,
+                kind="method",
+                file="app/other/qs.rb",
+                arity=1,
+                required=1,
+                tokens=name_tokens(name),
+                body_hash=None,
+                body_hash_lax=bh,
+            )
+        ]
+    )
+    monkeypatch.setattr("chameleon_mcp.function_catalog.load_function_catalog", lambda r: cat)
+    out = hook_helper._prewrite_dedup_section(content, str(tmp_path / "app/a.rb"), tmp_path)
+    assert "reuse-before-create" in out and "extract a shared" in out and "app/other/qs.rb" in out
+
+
+def test_python_block_structure_not_collapsed(tmp_path, monkeypatch):
+    # REGRESSION: two Python methods differing ONLY in a statement's block
+    # membership (inside vs after an `if`) have DIFFERENT behavior and must NOT
+    # produce the same lax fingerprint -- a full whitespace collapse would merge
+    # them and draw a false "same body" nudge on conforming code.
+    in_block = (
+        "class Pricing:\n    def apply_discount(self):\n        total = self.subtotal\n"
+        "        if self.member:\n            total = total * 0.9\n            self.log('m')\n"
+        "        return total\n"
+    )
+    after_block = (
+        "class Checkout:\n    def compute_total(self):\n        total = self.subtotal\n"
+        "        if self.member:\n            total = total * 0.9\n        self.log('m')\n"
+        "        return total\n"
+    )
+    _, bh_existing = _body_hash_of(in_block, "a.py")
+    cat = FunctionCatalog(
+        [
+            CatalogedFunction(
+                name="apply_discount",
+                kind="method",
+                file="billing/pricing.py",
+                arity=0,
+                required=0,
+                tokens=name_tokens("apply_discount"),
+                body_hash_lax=bh_existing,
+            )
+        ]
+    )
+    monkeypatch.setattr("chameleon_mcp.function_catalog.load_function_catalog", lambda r: cat)
+    out = hook_helper._prewrite_dedup_section(
+        after_block, str(tmp_path / "billing/checkout.py"), tmp_path
+    )
+    assert "reuse-before-create" not in out  # different control flow -> no false match
+
+
+def test_flush_left_string_span_not_truncated_into_false_match():
+    # REGRESSION: a flush-left (column-0) line inside a triple-quoted string or a
+    # heredoc must not truncate the body span, which would collide two methods that
+    # share only their pre-string prefix. Such methods are skipped (no hash), so no
+    # false "same body" nudge -- the safe direction.
+    from chameleon_mcp.function_catalog import extract_method_body_hashes as E
+
+    rev = (
+        "class R:\n    def monthly_revenue(self):\n        scope = self.records.all()\n"
+        '        sql = """\nSELECT sum(amount) FROM sales\n"""\n        return scope.raw(sql).total\n'
+    )
+    ref = (
+        "class R:\n    def monthly_refunds(self):\n        scope = self.records.all()\n"
+        '        sql = """\nSELECT sum(amount) FROM refunds\n"""\n        return scope.raw(sql).count\n'
+    )
+    a = dict(E(rev, "a.py")).get("monthly_revenue")
+    b = dict(E(ref, "b.py")).get("monthly_refunds")
+    assert not (a is not None and a == b)  # no false collision (both skipped)
+
+    # A properly-INDENTED multi-line string body is NOT over-skipped -- it hashes.
+    described = (
+        'class D:\n    def describe(self):\n        text = """line one\n'
+        '        line two\n        """\n        return text.strip()\n'
+    )
+    assert dict(E(described, "a.py")).get("describe") is not None
+
+
+def test_ts_brace_in_string_not_truncated():
+    # REGRESSION: a `}` inside a TS string/template/comment must not close the
+    # method's brace span early, which would collide two methods sharing a prefix.
+    from chameleon_mcp.function_catalog import extract_method_body_hashes as E
+
+    a = (
+        "class A {\n  buildQuery(): string {\n    const base = this.scope();\n"
+        '    const tpl = "a}b";\n    return base + " WHERE revenue > 0";\n  }\n}\n'
+    )
+    b = (
+        "class B {\n  buildFilter(): string {\n    const base = this.scope();\n"
+        '    const tpl = "a}b";\n    return base + " WHERE refunded = true";\n  }\n}\n'
+    )
+    ha = dict(E(a, "a.ts")).get("buildQuery")
+    hb = dict(E(b, "b.ts")).get("buildFilter")
+    assert ha is not None and hb is not None
+    assert ha != hb  # full bodies captured -> different WHERE clauses differ
+
+
+def test_flush_left_comment_does_not_truncate_span():
+    # REGRESSION: a flush-left comment INSIDE a method body must not close the
+    # indent span early, which would collide two methods sharing a prefix.
+    from chameleon_mcp.function_catalog import extract_method_body_hashes as E
+
+    a = (
+        "class A:\n    def foo(self):\n"
+        "        x = self.compute_base_amount(self.order)\n"
+        "# stray flush-left comment\n"
+        "        y = self.apply_discount(x)\n        return y\n"
+    )
+    b = (
+        "class B:\n    def bar(self):\n"
+        "        x = self.compute_base_amount(self.order)\n"
+        "# stray flush-left comment\n"
+        "        y = self.apply_surcharge(x)\n        return y\n"
+    )
+    ha = dict(E(a, "a.py")).get("foo")
+    hb = dict(E(b, "b.py")).get("bar")
+    assert ha is not None and hb is not None
+    assert ha != hb  # full bodies captured -> divergent tails differ
+
+    r1 = (
+        "class A\n  def foo\n    x = compute_base_amount(order)\n"
+        "# stray comment\n    y = apply_discount(x)\n    y\n  end\nend\n"
+    )
+    r2 = (
+        "class B\n  def bar\n    x = compute_base_amount(order)\n"
+        "# stray comment\n    y = apply_surcharge(x)\n    y\n  end\nend\n"
+    )
+    assert dict(E(r1, "a.rb")).get("foo") != dict(E(r2, "b.rb")).get("bar")
+
+
+def test_ts_regex_literal_brace_not_truncated():
+    # REGRESSION: an unbalanced brace inside a regex literal (/}/, /[}]/) must not
+    # close the method's brace span early. Two methods sharing a >40-char prefix
+    # before such a regex would otherwise collide despite divergent tails.
+    from chameleon_mcp.function_catalog import extract_method_body_hashes as E
+
+    a = (
+        "class A {\n  parseA(): void {\n"
+        "    const base = this.resolveTenantScopeForRequest(this.ctx);\n"
+        "    const re = /}/;\n    this.applyAlphaTransform(base);\n"
+        "    return this.finalizeAlpha(base);\n  }\n}\n"
+    )
+    b = (
+        "class B {\n  parseB(): void {\n"
+        "    const base = this.resolveTenantScopeForRequest(this.ctx);\n"
+        "    const re = /}/;\n    this.applyBetaTransform(base);\n"
+        "    return this.finalizeBeta(base);\n  }\n}\n"
+    )
+    ha = dict(E(a, "a.ts")).get("parseA")
+    hb = dict(E(b, "b.ts")).get("parseB")
+    assert ha is not None and hb is not None
+    assert ha != hb
+
+    # division is not misread as a regex (full body still captured)
+    d = (
+        "class D {\n  calc(): number {\n    const ratio = this.total / this.count;\n"
+        "    const pct = ratio * 100;\n    return Math.round(pct);\n  }\n}\n"
+    )
+    assert dict(E(d, "d.ts")).get("calc") is not None
+
+
+def test_ruby_lowercase_heredoc_delimiter_truncation_skipped():
+    # REGRESSION: a lowercase heredoc delimiter (<<-query, <<~sql) with flush-left
+    # content must be recognized so the truncated span is skipped, not hashed into a
+    # false collision between two methods sharing a pre-heredoc prefix.
+    from chameleon_mcp.function_catalog import extract_method_body_hashes as E
+
+    a = (
+        "class R\n  def alpha_totals(scope)\n"
+        "    base = scope.where(status: :active).includes(:line_items)\n"
+        "    sql = <<-query\nSELECT SUM(amount) FROM sales\nquery\n"
+        "    base.first\n  end\nend\n"
+    )
+    b = (
+        "class R\n  def beta_totals(scope)\n"
+        "    base = scope.where(status: :active).includes(:line_items)\n"
+        "    sql = <<-query\nSELECT SUM(amount) FROM refunds\nquery\n"
+        "    base.last\n  end\nend\n"
+    )
+    assert dict(E(a, "a.rb")).get("alpha_totals") is None
+    assert dict(E(b, "b.rb")).get("beta_totals") is None
+
+    # a spaced `<<` append is NOT a heredoc -> the method still hashes normally
+    app = (
+        "class A\n  def build_rows(items)\n"
+        "    out = []\n    items.each { |i| out << i.to_h.merge(kind: :row) }\n"
+        "    out.sort_by { |r| r[:created_at] }\n  end\nend\n"
+    )
+    assert dict(E(app, "app.rb")).get("build_rows") is not None
+
+
+def test_backslash_continuation_truncation_skipped():
+    # REGRESSION: a flush-left backslash line-continuation truncates the indent span;
+    # a span ending on a dangling `\` must be skipped, not hashed into a false match.
+    from chameleon_mcp.function_catalog import extract_method_body_hashes as E
+
+    a = (
+        "class C:\n    def alpha(self):\n"
+        "        base = self.resolve_tenant_scope_for_request(self.ctx)\n"
+        '        q = "SELECT * FROM sales WHERE x \\\n'
+        'AND y = 1"\n        return self.finalize_alpha(base)\n'
+    )
+    b = (
+        "class C:\n    def beta(self):\n"
+        "        base = self.resolve_tenant_scope_for_request(self.ctx)\n"
+        '        q = "SELECT * FROM refunds WHERE x \\\n'
+        'AND y = 1"\n        return self.finalize_beta(base)\n'
+    )
+    # Both spans end on a dangling `\` -> skipped (None), so the divergent tails can
+    # never be hashed into a false "same body" match.
+    assert dict(E(a, "a.py")).get("alpha") is None
+    assert dict(E(b, "b.py")).get("beta") is None
+
+    # a normal method whose statements complete on their own line still hashes
+    ok = (
+        "class C:\n    def calc(self):\n"
+        "        ratio = self.total_amount_collected / self.count_of_orders\n"
+        "        pct = ratio * 100\n        return round(pct)\n"
+    )
+    assert dict(E(ok, "ok.py")).get("calc") is not None
+
+
+def test_unbalanced_bracket_span_truncation_skipped():
+    # REGRESSION: any multi-line construct whose closing bracket sits flush-left
+    # (%w[], %q{}, an implicit paren continuation, a flush-left block `}`) truncates
+    # the indent span. The general bracket-balance guard skips such a span instead of
+    # hashing the shared prefix into a false collision. One guard for the whole family.
+    from chameleon_mcp.function_catalog import extract_method_body_hashes as E
+
+    # Ruby %w[] with flush-left content
+    rw = (
+        "class R\n  def alpha_cols(scope)\n"
+        "    base = scope.where(active: true).includes(:line_items).order(:id)\n"
+        "    cols = %w[\nname email phone\n]\n    base.pluck(*cols).first\n  end\nend\n"
+    )
+    assert dict(E(rw, "rw.rb")).get("alpha_cols") is None
+
+    # Ruby %q{} with flush-left content
+    rq = (
+        "class R\n  def alpha_sql(scope)\n"
+        "    base = scope.where(active: true).includes(:line_items).order(:id)\n"
+        "    q = %q{\nSELECT * FROM sales\n}\n    base.first\n  end\nend\n"
+    )
+    assert dict(E(rq, "rq.rb")).get("alpha_sql") is None
+
+    # Python implicit paren continuation with flush-left content
+    py = (
+        "class C:\n    def alpha(self):\n"
+        "        base = self.resolve_tenant_scope_for_request(self.ctx)\n"
+        "        vals = func(\nfirst_arg, second_arg,\n        )\n"
+        "        return self.finalize_alpha(base)\n"
+    )
+    assert dict(E(py, "py.py")).get("alpha") is None
+
+    # a normal method with BALANCED brackets (multi-line dict, call) still hashes
+    ok = (
+        "class C:\n    def calc(self):\n"
+        "        ratio = self.compute_ratio(self.total_amount, self.count)\n"
+        "        adjusted = ratio * self.factor_for(self.region)\n"
+        "        return round(adjusted, 2)\n"
+    )
+    assert dict(E(ok, "ok.py")).get("calc") is not None
+
+
+def test_ruby_flush_left_continuation_truncation_skipped():
+    # REGRESSION: Ruby continues a statement across a bare newline (trailing binary
+    # operator, leading-dot method chain) and through a `=begin`..`=end` block comment
+    # forced to column 0. Each truncates the indent span with no bracket/heredoc/
+    # backslash signal; the terminating line or a dangling trailing operator reveals it
+    # so the span is skipped, not hashed into a false collision.
+    from chameleon_mcp.function_catalog import extract_method_body_hashes as E
+
+    # =begin block comment mid-method (deterministic column-0 truncation)
+    beg = (
+        "class R\n  def alpha_calc(scope)\n"
+        "    total = scope.where(active: true).sum(:amount_cents)\n"
+        "=begin\nnote\n=end\n    total / 100\n  end\nend\n"
+    )
+    assert dict(E(beg, "beg.rb")).get("alpha_calc") is None
+
+    # trailing-operator continuation, flush-left
+    top = (
+        "class R\n  def alpha_sum(scope)\n"
+        "    total = scope.first_amount_value_here +\nsecond_amount_value_here\n"
+        "    total.round(2)\n  end\nend\n"
+    )
+    assert dict(E(top, "top.rb")).get("alpha_sum") is None
+
+    # leading-dot method-chain continuation, flush-left
+    dot = (
+        "class R\n  def alpha_map(scope)\n"
+        "    result = scope.where(active: true).order(:id)\n"
+        ".map { |x| x.transform_alpha }\n    result.first\n  end\nend\n"
+    )
+    assert dict(E(dot, "dot.rb")).get("alpha_map") is None
+
+    # a normal Ruby method with a balanced multi-line block still hashes
+    ok = (
+        "class R\n  def compute_total(scope)\n"
+        "    rows = scope.where(active: true).includes(:items)\n"
+        "    rows.map { |r| r.amount_cents }.sum\n  end\nend\n"
+    )
+    assert dict(E(ok, "ok.rb")).get("compute_total") is not None

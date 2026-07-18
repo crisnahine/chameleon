@@ -2929,6 +2929,15 @@ def _split_top_level(s: str) -> list[str]:
     return out
 
 
+def _extract_method_body_hashes(content: str, file_path: str) -> list[tuple[str, str]]:
+    """Thin delegate to the SHARED lax body-hash extractor (bootstrap and the hot
+    path must call the byte-identical function so ``body_hash_lax`` reproduces at
+    100%). Kept as a module symbol for the reuse pass and its tests."""
+    from chameleon_mcp.function_catalog import extract_method_body_hashes
+
+    return extract_method_body_hashes(content, file_path)
+
+
 def _extract_defined_functions(content: str, file_path: str) -> list[tuple[str, int]]:
     """(name, rough_arity) for each function the pending content defines,
     feeding the semantic (token-overlap + shape) pre-write pass. Cheap
@@ -2983,13 +2992,17 @@ def _prewrite_dedup_section(
         )
         from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
+        raw_defs = _extract_defined_functions(proposed_content, file_path)
+        if not raw_defs:
+            return ""  # no function/method defined -> nothing to dedup
+        # The name-based passes need a distinctive (>=5-char, non-stopword) name;
+        # the body-based Pass 3 does not (a short-named `show`/`call` can still be a
+        # verbatim dup), so it keys off raw_defs, not this filtered set.
         defined = [
             (n, arity)
-            for (n, arity) in _extract_defined_functions(proposed_content, file_path)
+            for (n, arity) in raw_defs
             if len(n) >= 5 and n.lower() not in _DEDUP_STOPWORDS
         ]
-        if not defined:
-            return ""
         catalog = load_function_catalog(repo_root)
         if catalog is None:
             return ""
@@ -3048,15 +3061,65 @@ def _prewrite_dedup_section(
                         semantic.append((src, cand.get("name", ""), cand.get("file", "")))
                         break  # one best candidate per new function
 
-        if not exact and not semantic:
+        # Pass 3 — body-identical class-method duplication. A method whose body
+        # matches an existing CLASS-BOUND method elsewhere is a verbatim
+        # re-implementation the exact pass drops (class-bound) and the semantic
+        # pass misses (it skips same-name and only pairs on tokens). This is the
+        # OO-framework reuse case (a queryset/service/model method inlined
+        # verbatim). The lax fingerprint preserves block structure and collapses
+        # only intra-line whitespace, so a match means the bodies are structurally
+        # identical and textually identical up to internal spacing (a genuine
+        # duplicate) -- high-precision; a mis-extracted span or a reflowed body
+        # just fails to match (silent).
+        # "Import and reuse" is wrong for a method, so the wording is EXTRACT-to-
+        # shared. Cross-file (any workspace): a verbatim body dup anywhere is worth
+        # consolidating into a shared helper/concern.
+        body_dups: list[tuple[str, str, str]] = []
+        try:
+            # Match on body_hash_lax only: it is the structure-preserving hash the
+            # hot path reproduces exactly for a verbatim body. The parser body_hash
+            # is a DIFFERENT normalization (full whitespace collapse) that the lax
+            # hash would never equal, so there is no fallback -- a catalog built
+            # before body_hash_lax simply gets no body-dup pass until refresh.
+            bh_index: dict[str, tuple[str, str]] = {}
+            for fn in catalog.functions:
+                if (
+                    fn.body_hash_lax
+                    and fn.file != edited_rel
+                    and fn.kind in _CLASS_BOUND_METHOD_KINDS
+                ):
+                    bh_index.setdefault(fn.body_hash_lax, (fn.file, fn.name))
+            if bh_index:
+                seen_bh: set[str] = set()
+                for nname, nbh in _extract_method_body_hashes(proposed_content, file_path):
+                    if nbh in bh_index and nbh not in seen_bh and nname not in seen_names:
+                        seen_bh.add(nbh)
+                        efile, ename = bh_index[nbh]
+                        body_dups.append((nname, ename, efile))
+        except Exception:
+            body_dups = []
+
+        if not exact and not semantic and not body_dups:
             return ""
         lines = ["[🦎 chameleon: reuse-before-create]"]
-        for name, f in exact[:cap]:
+        for nname, ename, efile in body_dups[:cap]:
+            same = "" if nname == ename else f"`{sanitize_for_chameleon_context(nname)}` has the "
+            lines.append(
+                f"- {same}same body as `{sanitize_for_chameleon_context(ename)}` in "
+                f"{sanitize_for_chameleon_context(efile)} — extract a shared helper/concern "
+                "instead of re-implementing it."
+            )
+        budget = max(0, cap - len(body_dups))
+        for name, f in exact[:budget]:
             lines.append(
                 f"- `{sanitize_for_chameleon_context(name)}` already exists in "
                 f"{sanitize_for_chameleon_context(f)} — import and reuse it."
             )
-        for src, cand_name, cand_file in semantic[: max(0, cap - len(exact))]:
+        # A function already surfaced as a body-dup should not also render under the
+        # softer semantic framing -- one nudge per new function.
+        _body_names = {nname for nname, _, _ in body_dups}
+        semantic = [s for s in semantic if s[0] not in _body_names]
+        for src, cand_name, cand_file in semantic[: max(0, budget - len(exact))]:
             lines.append(
                 f"- `{sanitize_for_chameleon_context(src)}` looks like the existing "
                 f"`{sanitize_for_chameleon_context(cand_name)}` in "

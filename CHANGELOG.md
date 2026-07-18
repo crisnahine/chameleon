@@ -4,6 +4,38 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.5] - 2026-07-18
+
+### Added
+- The reuse-before-create nudge again covers class-bound methods (Rails
+  models, Django querysets, service objects) -- where reuse most often lives
+  in object-oriented code. v4.4.2 had excluded class methods to kill an
+  "import this method" false positive, but that silenced the nudge exactly
+  where an agent re-implements an existing model/queryset/service method
+  verbatim. It is back, gated to fire only on a real duplicate:
+  - It triggers only on a VERBATIM body match: the new method's body is
+    structurally and textually identical to an existing one. Sharing a name
+    is no longer enough.
+  - The wording is "same body as `X` in Y -- extract a shared helper/concern
+    instead of re-implementing it", not "import and reuse" -- a class-bound
+    method cannot be imported, so the fix is extraction.
+  - Matching uses a structure-preserving body fingerprint computed by the same
+    extractor at bootstrap time and at edit time. A genuine duplicate matches
+    by construction; a span the cheap extractor mis-reads simply fails to
+    match instead of mis-matching, so the nudge cannot fire on two methods
+    that are not identical. The fingerprint preserves each line's relative
+    indent depth, so an in-block statement never collapses to read the same as
+    an after-block one, and it skips a body whose span is cut short by a
+    flush-left string, heredoc, comment, line-continuation, or unbalanced
+    multi-line bracket (array, hash, call, percent-literal) rather than risk a
+    partial match. Validated false-positive-free across ~15,000 real methods in
+    Ruby, Python, and TypeScript.
+
+### Notes
+- Existing profiles pick up the class-bound reuse coverage on the next
+  `/chameleon-refresh`, which rebuilds the function catalog that stores the
+  fingerprint. Until then that pass stays inert rather than guessing.
+
 ## [4.4.4] - 2026-07-18
 
 ### Fixed

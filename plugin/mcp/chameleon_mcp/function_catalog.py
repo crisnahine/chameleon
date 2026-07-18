@@ -168,6 +168,16 @@ class CatalogedFunction:
     tokens: frozenset[str]
     body_hash: str | None = None
     body_hash_pnorm: str | None = None
+    # A STRUCTURE-preserving body fingerprint computed by the cheap hot-path
+    # extractor (indent/brace span + relative-indent-aware normalization), stored
+    # at bootstrap so the pre-write hot path -- which cannot spawn a parser -- can
+    # reproduce it byte-for-byte for a VERBATIM method and match it (the parser
+    # body_hash reproduces only 61-93% from a regex walk, and its full whitespace
+    # collapse also merges two Python bodies that differ only by a statement's block
+    # membership). Independent of body_hash. Absent on catalogs built before this
+    # field; the body-dup pass simply does not fire for those until a refresh
+    # backfills it (no regression, no false match).
+    body_hash_lax: str | None = None
 
 
 _IDENTIFIER_RE = re.compile(r"[A-Za-z_$][\w$]*\Z")
@@ -478,6 +488,274 @@ def normalized_body_hash(
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
 
 
+# The "lax" body-fingerprint extractor: a cheap regex header match + indent/brace
+# body-span walk, deliberately NOT a parser span. Its whole purpose is to be
+# IDENTICAL on both sides -- bootstrap runs it over committed source to store
+# body_hash_lax, and the pre-write hot path runs it over the code the model is
+# about to write -- so a verbatim method duplicate produces the same digest on
+# both sides by construction (research: an exact-clone fingerprint only needs the
+# same deterministic function on both sides, not the "true" AST span). Bump
+# LAX_FINGERPRINT_VERSION when the extraction rules change so a stale lax hash is
+# ignored rather than mis-compared.
+LAX_FINGERPRINT_VERSION = 2
+_LAX_TS_EXTS = frozenset({".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"})
+
+
+def _lax_body_fingerprint(source_lines: list[str], start_line: int, end_line: int) -> str | None:
+    """A STRUCTURE-preserving body fingerprint for the lax extractor.
+
+    ``normalized_body_hash`` collapses every whitespace run, which merges two
+    Python bodies that differ only in a statement's block membership (Python's
+    blocks are indentation-delimited) -- a false "same body" match. This keeps each
+    non-blank line's RELATIVE indent depth as a token, so a statement inside a
+    block vs after it produces a different fingerprint. Drops the first (def) line
+    and blank lines; internal whitespace within a line is still collapsed, so
+    reflowing a long call across the same indentation still matches. Returns None
+    below the min-chars floor (trivial bodies collide across a codebase).
+    """
+    if not isinstance(start_line, int) or not isinstance(end_line, int):
+        return None
+    if start_line < 1 or end_line < start_line or start_line > len(source_lines):
+        return None
+    body = source_lines[start_line : min(end_line, len(source_lines))]  # drops the def line
+    norm: list[tuple[int, str]] = []
+    for ln in body:
+        stripped = ln.strip()
+        if not stripped:
+            continue
+        norm.append((len(ln) - len(ln.lstrip()), " ".join(stripped.split())))
+    if not norm:
+        return None
+    base = min(i for i, _ in norm)
+    canon = "\n".join(f"{i - base}:{c}" for i, c in norm)
+    if len(canon) < threshold_int("DUPLICATION_BODY_HASH_MIN_CHARS"):
+        return None
+    import hashlib
+
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:16]
+
+
+_LAX_PY_HDR_RE = re.compile(r"^([ \t]*)(?:async[ \t]+)?def[ \t]+([A-Za-z_]\w*)")
+_LAX_RB_HDR_RE = re.compile(r"^([ \t]*)def[ \t]+(?:self\.)?([A-Za-z_]\w*[?!=]?)")
+_LAX_TS_HDR_RE = re.compile(
+    r"^([ \t]*)(?:public |private |protected |static |async |readonly |get |set |override )*"
+    r"([A-Za-z_$][\w$]*)\s*(?:<[^>]*>)?\s*\([^;]*\)\s*(?::[^{;=]+)?\{"
+)
+# Control-flow keywords the method-header regex matches as a `name(...) {` shape.
+_LAX_TS_KEYWORDS = frozenset(
+    {"if", "for", "while", "switch", "catch", "do", "else", "return", "function", "with"}
+)
+# Ruby heredoc delimiters are legal in any case (`<<~sql`, `<<-query`, `<<HTML`).
+# The delimiter must follow `<<` (plus an optional `~`/`-`/quote) with NO space --
+# a spaced `array << item` append never matches, so broadening to lower-case costs
+# no recall while catching the flush-left-heredoc truncation for every delimiter.
+_RB_HEREDOC_OPEN_RE = re.compile(r"<<[-~]?['\"]?([A-Za-z_]\w*)['\"]?")
+# A captured span ending on one of these trailing tokens continues onto the next
+# (flush-left) line -- a complete Ruby statement never ends on a bare binary
+# operator / comma, so this only fires on a truncated span (recall-safe).
+_RB_TRAILING_CONT_RE = re.compile(r"(?:&&|\|\||=>|->|::|[,+\-*/%&|^<>=~.])$")
+# Preceding significant code chars after which a `/` opens a regex literal (an
+# expression position) rather than a division. Postfix chars (`)`, `]`, `}`,
+# identifiers, digits) mean division and are deliberately excluded.
+_TS_REGEX_PREV = frozenset("(,=:[{!&|?;+-*%<>~^")
+
+
+def _span_string_truncated(body_text: str, ruby: bool, term_line: str = "") -> bool:
+    """True when the indent-scoped span appears to have been cut off INSIDE a
+    multi-line construct (a flush-left line masquerading as the method terminator),
+    so the captured body is a partial prefix. Hashing a truncated body would collide
+    two methods that share only their pre-construct prefix -> a false "same body"
+    nudge. Detecting truncation and skipping (no hash) is the safe direction: recall
+    loss, never a false match, and identical on both index sides. ``term_line`` is
+    the flush-left line that ended the indent walk (empty at EOF); some Ruby
+    continuations only reveal the truncation through that next line.
+    """
+    # A span ending on a dangling line-continuation backslash was cut off mid-
+    # statement (a flush-left continuation line terminated the indent walk before the
+    # statement finished) -- a complete body never ends on a `\`. Covers a backslash-
+    # continued string ("... \) or statement (foo = a + \) written at column 0, in
+    # either language.
+    if body_text.rstrip().endswith("\\"):
+        return True
+    # A span with unbalanced brackets was cut off mid-construct: a multi-line array /
+    # hash / call / percent-literal (`%w[`, `%q{`, `func(`, `[`) whose closing bracket
+    # sits flush-left terminates the indent walk before the construct closes, so only
+    # the shared pre-construct prefix gets hashed. This one balance check subsumes the
+    # whole family of flush-left-continuation truncations that the per-construct guards
+    # above do not. Counting brackets naively also counts brackets inside string/char
+    # literals, but that only ever OVER-skips (recall-safe) and costs ~0.2% on real
+    # code -- far cheaper than the false "same body" nudge an unguarded truncation
+    # would emit.
+    opens = body_text.count("(") + body_text.count("[") + body_text.count("{")
+    closes = body_text.count(")") + body_text.count("]") + body_text.count("}")
+    if opens != closes:
+        return True
+    # Known residual: a Ruby plain "..." / '...' string carrying a literal newline
+    # with flush-left content and balanced brackets is NOT caught here. A quote-parity
+    # guard costs ~3% recall (apostrophes in comments, char literals, interpolation),
+    # and a precise detector needs a full Ruby lexer -- not worth it for a construct
+    # heredocs idiomatically replace (zero occurrences across a 10k-method real-repo
+    # sweep). Left as a bounded gap; a truncated span here fails safe unless two
+    # methods share a 40+ char prefix and the same multi-line string.
+    if ruby:
+        # Ruby continues a statement across a bare newline when a line ends in a
+        # binary operator / comma, when the next line leads with a `.`/`&.` method
+        # chain, or through a `=begin`..`=end` block comment (forced to column 0).
+        # None of these carry a bracket / heredoc / backslash signal, so a flush-left
+        # continuation truncates the span with nothing above to catch it. The next
+        # line (term_line) or a dangling trailing operator reveals it.
+        t = term_line.strip()
+        if t == "=begin" or t.startswith((".", "&.")):
+            return True
+        if _RB_TRAILING_CONT_RE.search(body_text.rstrip()):
+            return True
+        for m in _RB_HEREDOC_OPEN_RE.finditer(body_text):
+            delim = m.group(1)
+            if not re.search(rf"^[ \t]*{re.escape(delim)}[ \t]*$", body_text[m.end() :], re.M):
+                return True  # heredoc opened, its terminator not inside the span
+        return False
+    # Python: an odd count of either triple-quote delimiter means one opened
+    # without a close in the captured span.
+    return body_text.count('"""') % 2 == 1 or body_text.count("'''") % 2 == 1
+
+
+def _ts_body_end(lines: list[str], start: int) -> int:
+    """The line index of a TS/JS method's closing brace, via a STRING-, COMMENT-,
+    and REGEX-aware brace scan. A naive per-char `{`/`}` count miscounts a brace
+    inside a string (`"a}b"`), a template, a comment, or a regex literal (`/}/`),
+    truncating the span early -- which would collide two methods sharing only the
+    pre-token prefix. Braces inside a string/template/`//`/`/* */`/regex are
+    skipped. Templates persist across lines (backtick); a `${...}` interpolation's
+    braces are treated as string content, which is fine for finding the method's
+    own closing brace. A `/` is read as a regex literal (not division) only when
+    the preceding significant code char is empty or expression-opening
+    (`_TS_REGEX_PREV`). A keyword-preceded regex (`return /}/`) is the residual gap:
+    its brace-bearing literal can still truncate the span -- a recall loss when the
+    regex is the last statement, and rarely a false match when a divergent tail
+    follows. The gap is narrow (a bare brace-bearing regex used mid-method); the
+    common assignment/argument regex positions are covered.
+    """
+    depth = 0
+    started = False
+    in_str = ""  # "", or one of ' " `
+    in_block = False
+    prev = ""  # last significant (non-space) code char, for regex-vs-division
+    for j in range(start, min(len(lines), start + 400)):
+        line = lines[j]
+        n = len(line)
+        k = 0
+        while k < n:
+            c = line[k]
+            nxt = line[k + 1] if k + 1 < n else ""
+            if in_block:
+                if c == "*" and nxt == "/":
+                    in_block = False
+                    k += 2
+                else:
+                    k += 1
+                continue
+            if in_str:
+                if c == "\\":
+                    k += 2
+                elif c == in_str:
+                    in_str = ""
+                    k += 1
+                else:
+                    k += 1
+                continue
+            if c == "/" and nxt == "/":
+                break  # line comment -- rest of the line is inert
+            if c == "/" and nxt == "*":
+                in_block = True
+                k += 2
+                continue
+            if c in ("'", '"', "`"):
+                in_str = c
+                prev = c
+                k += 1
+                continue
+            if c == "/" and (prev == "" or prev in _TS_REGEX_PREV):
+                # Regex literal: consume to the closing unescaped '/', treating a
+                # `[...]` char class as opaque (a '/' inside it does not terminate).
+                # Regex literals never span lines, so this stays within the line.
+                k += 1
+                in_class = False
+                while k < n:
+                    rc = line[k]
+                    if rc == "\\":
+                        k += 2
+                        continue
+                    if rc == "[":
+                        in_class = True
+                    elif rc == "]":
+                        in_class = False
+                    elif rc == "/" and not in_class:
+                        k += 1
+                        break
+                    k += 1
+                prev = "/"
+                continue
+            if c == "{":
+                depth += 1
+                started = True
+            elif c == "}":
+                depth -= 1
+            if c not in (" ", "\t"):
+                prev = c
+            k += 1
+        if started and depth <= 0:
+            return j
+    return min(len(lines) - 1, start + 399)
+
+
+def extract_method_body_hashes(content: str, file_path: str) -> list[tuple[str, str]]:
+    """(name, lax_body_hash) per method/def in ``content``, using the shared cheap
+    span extractor. Python/Ruby are indent-scoped (Ruby's span INCLUDES the
+    terminating ``end`` line, matching prism); TS is brace-scoped. Skips bodies
+    below the hash floor. No parser spawn. Reproduces ``body_hash_lax`` exactly."""
+    ext = Path(file_path).suffix.lower()
+    lines = content.splitlines()
+    out: list[tuple[str, str]] = []
+    if ext in (".py", ".pyi", ".rb"):
+        hdr = _LAX_PY_HDR_RE if ext != ".rb" else _LAX_RB_HDR_RE
+        ruby = ext == ".rb"
+        for i, ln in enumerate(lines):
+            m = hdr.match(ln)
+            if not m:
+                continue
+            indent = len(m.group(1))
+            end = i
+            term = ""
+            for j in range(i + 1, len(lines)):
+                s = lines[j]
+                if not s.strip():
+                    continue
+                if len(s) - len(s.lstrip()) <= indent:
+                    stripped = s.strip()
+                    if stripped.startswith("#"):
+                        continue  # a flush-left comment doesn't end a method; keep scanning
+                    if ruby and stripped == "end":
+                        end = j
+                    term = s
+                    break
+                end = j
+            if _span_string_truncated("\n".join(lines[i + 1 : end + 1]), ruby, term):
+                continue  # span cut off inside a multi-line construct -> skip
+            bh = _lax_body_fingerprint(lines, i + 1, end + 1)
+            if bh:
+                out.append((m.group(2), bh))
+    elif ext in _LAX_TS_EXTS:
+        for i, ln in enumerate(lines):
+            m = _LAX_TS_HDR_RE.match(ln)
+            if not m or m.group(2) in _LAX_TS_KEYWORDS:
+                continue  # `if (x) {` / `for (...) {` etc. read as a pseudo-method
+            end = _ts_body_end(lines, i)
+            bh = _lax_body_fingerprint(lines, i + 1, end + 1)
+            if bh:
+                out.append((m.group(2), bh))
+    return out
+
+
 def _function_rows(pf, root: Path) -> tuple[str | None, list[dict]]:
     """Turn one parsed file's callable_signatures into catalog rows.
 
@@ -497,9 +775,21 @@ def _function_rows(pf, root: Path) -> tuple[str | None, list[dict]]:
         return None, []
 
     per_file_cap = threshold_int("DUPLICATION_CATALOG_MAX_FNS_PER_FILE")
-    # Body hashing needs the file's lines; read them once per file, lazily, so
-    # files whose dump predates body spans cost nothing extra.
+    # Read the source ONCE (bounded) and derive both the line list (parser-span
+    # body hashing) and the lax fingerprint map (the cheap extractor, run so each
+    # row carries a body_hash_lax the pre-write hot path reproduces exactly). Keyed
+    # by name; same-name occurrences consume in file order. A file that cannot be
+    # read yields neither -- body_hash and body_hash_lax are simply absent.
     source_lines: list[str] | None = None
+    lax_map: dict[str, list[str]] = {}
+    lax_pos: dict[str, int] = {}
+    try:
+        _content = Path(pf.path).read_bytes()[:1_000_000].decode("utf-8", errors="replace")
+        source_lines = _content.splitlines()
+        for _n, _h in extract_method_body_hashes(_content, str(pf.path)):
+            lax_map.setdefault(_n, []).append(_h)
+    except OSError:
+        source_lines = []
     rows: list[dict] = []
     seen: set[tuple[str, int, int]] = set()
     for entry in raw:
@@ -522,16 +812,6 @@ def _function_rows(pf, root: Path) -> tuple[str | None, list[dict]]:
         body_hash: str | None = None
         body_hash_pnorm: str | None = None
         if isinstance(entry.get("start_line"), int) and isinstance(entry.get("end_line"), int):
-            if source_lines is None:
-                try:
-                    source_lines = (
-                        Path(pf.path)
-                        .read_bytes()[:1_000_000]
-                        .decode("utf-8", errors="replace")
-                        .splitlines()
-                    )
-                except OSError:
-                    source_lines = []
             body_hash = normalized_body_hash(
                 source_lines, entry.get("start_line"), entry.get("end_line")
             )
@@ -552,6 +832,11 @@ def _function_rows(pf, root: Path) -> tuple[str | None, list[dict]]:
             row["body_hash"] = body_hash
         if body_hash_pnorm is not None:
             row["body_hash_pnorm"] = body_hash_pnorm
+        _pos = lax_pos.get(name, 0)
+        _lax = lax_map.get(name)
+        if _lax and _pos < len(_lax):
+            row["body_hash_lax"] = _lax[_pos]
+            lax_pos[name] = _pos + 1
         rows.append(row)
     return rel, rows
 
@@ -582,7 +867,16 @@ def build_function_catalog(files, repo_root: Path | str) -> dict:
 
     collected.sort(key=lambda item: item[0])
     out: dict[str, list[dict]] = {rel: rows for rel, rows in collected[:file_cap]}
-    return {"schema_version": SCHEMA_VERSION, "files": out}
+    # lax_fingerprint_version travels ALONGSIDE (not inside) schema_version so a
+    # change to the lax extraction rules invalidates only the lax hashes -- the
+    # loader ignores body_hash_lax on a stale version and falls back to the parser
+    # body_hash -- without triggering the schema mismatch that would empty the
+    # whole catalog.
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "lax_fingerprint_version": LAX_FINGERPRINT_VERSION,
+        "files": out,
+    }
 
 
 class FunctionCatalog:
@@ -663,6 +957,10 @@ def load_function_catalog(repo_root: Path | str | None) -> FunctionCatalog | Non
     raw_files = data.get("files")
     if not isinstance(raw_files, dict):
         return None
+    # Only trust body_hash_lax when it was written by the running extractor's rules
+    # (a stale version would mis-compare against the current hot-path fingerprint);
+    # otherwise drop it and fall back to the parser body_hash.
+    lax_ok = data.get("lax_fingerprint_version") == LAX_FINGERPRINT_VERSION
 
     functions: list[CatalogedFunction] = []
     for rel, rows in raw_files.items():
@@ -679,6 +977,7 @@ def load_function_catalog(repo_root: Path | str | None) -> FunctionCatalog | Non
             required = row.get("required")
             body_hash = row.get("body_hash")
             body_hash_pnorm = row.get("body_hash_pnorm")
+            body_hash_lax = row.get("body_hash_lax")
             functions.append(
                 CatalogedFunction(
                     name=name,
@@ -691,6 +990,11 @@ def load_function_catalog(repo_root: Path | str | None) -> FunctionCatalog | Non
                     body_hash_pnorm=(
                         body_hash_pnorm
                         if isinstance(body_hash_pnorm, str) and body_hash_pnorm
+                        else None
+                    ),
+                    body_hash_lax=(
+                        body_hash_lax
+                        if lax_ok and isinstance(body_hash_lax, str) and body_hash_lax
                         else None
                     ),
                 )
