@@ -379,6 +379,24 @@ rule exists to catch. The rule is advisory-only, so the residual cost is one adv
 was resolved at session start), so in-session edits keep running the old gate until the
 session restarts. The fix is verified against v4.4.16 by direct hook invocation above.
 
+**CORRECTION (a claim of mine that was wrong).** Partway through this campaign I stated that
+the GAP-001 false positive "has stopped firing" in-session and that the fix was live. That was
+incorrect. It was inferred from two consecutive hook outputs in which lines 57/59 happened not
+to appear — the same non-reproducible variance recorded in OQ-001 — not from any check of which
+engine was running. Verified afterwards:
+
+```
+4.4.15: in_use=YES  gate=SUBSTRING   <- what this session actually runs
+4.4.16: in_use=no   gate=TOKEN
+4.4.17: in_use=no   gate=TOKEN
+```
+
+The session is still on the unfixed substring gate, and the false positive continued to fire
+after I said it had stopped. The fix itself is unaffected — it is proven by the direct-invocation
+A/B and the scanner-level count above, both run against the deployed v4.4.16 — but the
+in-session claim was an unverified inference presented as an observation. Recorded here rather
+than quietly corrected, because the campaign's whole value depends on not doing that.
+
 **Scanner-level proof (independent of hook display):** scanning the same file with each
 version's scanner directly, so no hook-side ranking or capping can confound the result:
 
@@ -579,7 +597,7 @@ similarity may be tuned per language, so a Python-only sample is not enough to c
 
 ---
 
-### GAP-003 — placeholder lexicon misses common obvious-fake secret values — OPEN
+### GAP-003 — placeholder lexicon misses `changeme`/`hunter2` — **RETRACTED: not a gap (my error)**
 
 **Cell:** `secret-placeholder` x (language-agnostic)
 **Severity:** advisory-noise
@@ -604,11 +622,39 @@ Kubernetes documentation.
 **Impact / effectiveness:** documentation and example config carrying conventional placeholder
 values are reported as leaked credentials.
 
-**Status:** OPEN, deliberately not fixed in the GAP-001 cycle. Widening a security lexicon
-trades false positives for false negatives (`password="password"` is a genuinely weak
-credential in production but a placeholder in an example file), so it needs its own red/green
-cycle and an explicit decision on which values are safe to whitelist. Flagged here first per
-the campaign's "flag behaviour changes in TESTING.md before making them" rule.
+**RETRACTED — this is correct behaviour, deliberately chosen, and my proposed fix would have
+been a security regression.** Reading `secret_placeholder.py` before touching it (rather than
+after) shows the module documents this exact decision, naming my two examples explicitly:
+
+```python
+# Values that are clearly NOT a credential -- test/example markers only. A weak
+# but PLAUSIBLY-REAL password (`admin`, `password123`, `123456`, `s3cr3t`,
+# `changeme`, a bare `secret`/`password`) is deliberately absent: committing one
+# is a genuine credential leak the scanner must still flag.
+```
+
+The reasoning is sound and I was wrong to call it a gap. `changeme` is not a harmless
+documentation token — countless production systems ship with `changeme` left unchanged, which
+is precisely the credential leak worth flagging. Whitelisting it would have made the scanner
+blind to one of the most common real-world weak credentials. `s3cr3t` and `hunter2` are the
+same class: plausible as actual passwords, so silence would be the wrong default.
+
+The lexicon's actual contents confirm the line is drawn coherently — it admits only markers
+that can never be a real secret (`test`, `example`, `dummy`, `placeholder`, `redacted`,
+`your-api-key`, `notasecret`, `<...>`/`{{...}}`/`${...}` template shapes) and refuses anything
+that could plausibly be typed as a password.
+
+**What this cell actually evidences:** the flagged CHANGELOG line was prose *documenting* the
+detector, using deliberately fake values. The scanner cannot distinguish documentation-about-a-
+credential from a credential, and the project has explicitly chosen to err toward flagging. The
+advisory is therefore a **correct application of a deliberate policy**, not a defect — one
+advisory line on a file that literally contains `token="s3cr3t"`.
+
+**Process note:** this is the campaign's own rule working. I had a plausible-looking red
+reproduction and a fix ready; reading the source first turned a "gap" into a confirmation. Had
+I applied the fix, I would have weakened a security check while reporting it as an improvement.
+Recorded rather than quietly deleted, because a retracted finding is evidence about the
+review process.
 
 ---
 
