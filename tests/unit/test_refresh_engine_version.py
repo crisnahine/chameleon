@@ -165,13 +165,13 @@ def test_refresh_rebootstraps_on_schema_outdated(tmp_path, monkeypatch):
     of noop-preserving stale clustering, mirroring the engine-version guard
     just above and the too-new-schema refusal below (which must NOT re-derive,
     the opposite direction)."""
-    from chameleon_mcp.bootstrap.orchestrator import ENGINE_MIN_VERSION
+    from chameleon_mcp.bootstrap.orchestrator import ENGINE_VERSION
     from chameleon_mcp.profile.schema import CURRENT_SCHEMA_VERSION
 
     repo_root = _seed_repo(
         tmp_path,
         monkeypatch,
-        engine_version=ENGINE_MIN_VERSION,  # matches -> only schema triggers it
+        engine_version=ENGINE_VERSION,  # matches -> only schema triggers it
         schema_version=CURRENT_SCHEMA_VERSION - 1,
     )
     called: dict = {}
@@ -231,7 +231,7 @@ def test_session_drift_banner_fires_on_engine_mismatch(tmp_path, monkeypatch):
 
 def test_drift_status_no_engine_flag_when_versions_match(tmp_path, monkeypatch):
     from chameleon_mcp import index_db
-    from chameleon_mcp.bootstrap.orchestrator import ENGINE_MIN_VERSION
+    from chameleon_mcp.bootstrap.orchestrator import ENGINE_VERSION
 
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "_data"))
     monkeypatch.setattr(index_db, "_INDEX_CONN", None)
@@ -242,7 +242,7 @@ def test_drift_status_no_engine_flag_when_versions_match(tmp_path, monkeypatch):
         json.dumps(
             {
                 "schema_version": 8,
-                "engine_min_version": ENGINE_MIN_VERSION,
+                "engine_version": ENGINE_VERSION,
                 "archetypes": {},
             }
         ),
@@ -255,9 +255,9 @@ def test_drift_status_no_engine_flag_when_versions_match(tmp_path, monkeypatch):
 def test_refresh_noops_when_engine_matches(tmp_path, monkeypatch):
     """Same noop-eligible setup but a current engine stamp must still noop —
     the guard fires only on a genuine mismatch, not on every refresh."""
-    from chameleon_mcp.bootstrap.orchestrator import ENGINE_MIN_VERSION
+    from chameleon_mcp.bootstrap.orchestrator import ENGINE_VERSION
 
-    repo_root = _seed_repo(tmp_path, monkeypatch, engine_version=ENGINE_MIN_VERSION)
+    repo_root = _seed_repo(tmp_path, monkeypatch, engine_version=ENGINE_VERSION)
 
     def fake_bootstrap(path, *, force=False, paths_glob=None, **kw):
         raise AssertionError("bootstrap_repo must NOT be called when engine matches")

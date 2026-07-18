@@ -147,18 +147,34 @@ def test_only_failing_canonical_cluster_is_dropped(tmp_path):
     assert cid is None and chosen is None
 
 
-def test_engine_min_version_tracks_package_version():
+def test_engine_version_tracks_package_version():
     """The write-side engine stamp must equal the package __version__ (which the
-    read-side loader gate at loader.py uses), so freshly bootstrapped profiles
-    aren't rejected AND the refresh engine-guard can detect a real upgrade.
-    importlib.metadata alone returns a 0.5.7 fallback when chameleon-mcp isn't
-    pip-installed (run via PYTHONPATH), which silently disables both."""
+    read-side loader gate at loader.py uses), so the refresh engine-guard can
+    detect a real upgrade. importlib.metadata alone returns a 0.5.7 fallback when
+    chameleon-mcp isn't pip-installed (run via PYTHONPATH), which silently
+    disables it.
+
+    This deliberately no longer asserts anything about ENGINE_MIN_VERSION: the
+    two were one field, which made every profile demand the exact engine that
+    wrote it and cut older engines off from a profile they can read perfectly.
+    The compatibility floor is now a separate static constant."""
+    import chameleon_mcp
+    from chameleon_mcp.bootstrap.orchestrator import ENGINE_VERSION
+    from chameleon_mcp.profile.loader import ENGINE_VERSION as READ_SIDE_VERSION
+
+    assert ENGINE_VERSION == chameleon_mcp.__version__
+    assert ENGINE_VERSION == READ_SIDE_VERSION  # write-side stamp == read-side gate
+
+
+def test_engine_min_version_is_a_static_floor_below_the_release():
+    """The compatibility floor must never track the release, or every release
+    orphans the one before it."""
     import chameleon_mcp
     from chameleon_mcp.bootstrap.orchestrator import ENGINE_MIN_VERSION
-    from chameleon_mcp.profile.loader import ENGINE_VERSION
+    from chameleon_mcp.profile.loader import _version_tuple
 
-    assert ENGINE_MIN_VERSION == chameleon_mcp.__version__
-    assert ENGINE_MIN_VERSION == ENGINE_VERSION  # write-side stamp == read-side gate
+    assert ENGINE_MIN_VERSION != chameleon_mcp.__version__
+    assert _version_tuple(ENGINE_MIN_VERSION) < _version_tuple(chameleon_mcp.__version__)
 
 
 def test_schema_version_constants_agree():

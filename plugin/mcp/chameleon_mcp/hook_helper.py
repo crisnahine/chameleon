@@ -789,10 +789,10 @@ def _drift_banner_for_repo(repo_root: Path, session_id: str | None = None) -> st
         # firing every session until the user refreshes (which clears the
         # mismatch). Falls through to the edit-drift logic when versions match.
         try:
-            from chameleon_mcp.bootstrap.orchestrator import ENGINE_MIN_VERSION
+            from chameleon_mcp.bootstrap.orchestrator import ENGINE_VERSION
             from chameleon_mcp.tools import _engine_version_changed
 
-            if _engine_version_changed(resolved_root / ".chameleon", ENGINE_MIN_VERSION):
+            if _engine_version_changed(resolved_root / ".chameleon", ENGINE_VERSION):
                 emarker = _plugin_data_dir() / repo_id / _ENGINE_BANNER_FILENAME
                 if _marker_path_is_fresh(emarker, threshold_int("DRIFT_BANNER_TTL_SECONDS")):
                     return None
@@ -1142,11 +1142,11 @@ def _maybe_auto_refresh(repo_root: Path) -> None:
         # shipped — the exact wait this trigger exists to avoid.
         migration_due = False
         try:
-            from chameleon_mcp.bootstrap.orchestrator import ENGINE_MIN_VERSION
+            from chameleon_mcp.bootstrap.orchestrator import ENGINE_VERSION
             from chameleon_mcp.tools import _engine_version_changed
 
             if (
-                _engine_version_changed(profile_dir, ENGINE_MIN_VERSION)
+                _engine_version_changed(profile_dir, ENGINE_VERSION)
                 or not (profile_dir / "enforcement.json").is_file()
             ):
                 migration_due = True

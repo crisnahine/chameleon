@@ -389,15 +389,118 @@ v4.4.16: total hits=4  possible_aws_secret=0 at lines []
 
 Both false positives are removed at source; the other 4 hits are untouched.
 
-**OQ-001 (open question, not a claim):** the v4.4.15 *hook* surfaced only 3 violations for a
-file its scanner reports 6 hits on, and the two `possible_aws_secret` hits were among those
-not shown. Something between the scanner and the rendered advisory ranks, caps, or filters
-findings. I have not yet identified that mechanism — grepping `_thresholds.py` and
-`hook_helper.py` for a violations cap found nothing conclusive, and the diff-scoping
-explanation does not fit (the probe payload carried no `old_string`/`new_string`, which should
-force the whole-file fallback). Recorded as an open question rather than guessed at; it is a
-matrix item (advisory display cap / finding ranking) to characterise during execution. It does
-not affect the GAP-001 verdict, which rests on the scanner-level A/B above.
+**OQ-001 — RESOLVED, not a defect.** The observation was that the hook surfaced 3 violations
+for a file whose scanner reports 6 hits, so something appeared to cap or rank findings. Traced
+to source and disproved:
+
+- `_render_violation_sections` (`hook_helper.py:5897`) renders **every** row it is given,
+  partitioned into actionable vs info. There is no `[:n]` slice and no cap.
+- The only upstream filter is `_displayable_violations` (`hook_helper.py:6788`), which strips
+  rows suppressed by an inline `chameleon-ignore` directive. Nothing else drops rows.
+- Diff-scoping was ruled out experimentally: the same file scanned via a payload **with** a
+  reversible `old_string`/`new_string` and **without** one returns the identical 5 violations.
+  That is correct by design — `secret-detected-in-content` is in `BLOCK_ELIGIBLE_RULES`, and
+  block-eligible rules are passed as the exempt set so they always surface whole-file.
+
+The real cause is content variance: the hook fires on the file as it exists at that instant,
+and this file was edited repeatedly between fires. Re-scanning each committed state confirms
+the hit set tracks content exactly:
+
+```
+191b376 -> 2 hits: possible_aws_secret@57, @59
+94292da -> 2 hits: possible_aws_secret@57, @59
+c725a55 -> 6 hits: Secret Keyword@420,@440, possible_aws_secret@57,@59, password_assignment@333,@440
+f8e0a2a -> 6 hits: Secret Keyword@448,@468, possible_aws_secret@57,@59, password_assignment@361,@468
+```
+
+One intermediate fire (3 violations at lines 401/421/333) does not correspond to any committed
+state — it scanned an uncommitted mid-edit version, whose exact bytes are no longer
+reconstructible. Stated as a limitation rather than back-filled with a guess. **No cap or
+ranking mechanism exists; no bug here.**
+
+---
+
+### GAP-004 — every release makes its profiles unreadable to older engines — OPEN (HIGH)
+
+**Cell:** `bootstrap`/`engine_min_version` x (language-agnostic; hit on the chameleon repo itself)
+**Severity:** HIGH — total guidance loss, not noise
+**Found by:** real usage. Mid-campaign, this session's PreToolUse hook emitted:
+
+```
+[🦎 chameleon: profile degraded]
+**Profile degraded**: chameleon could not load this repo's `.chameleon/` profile
+(profile written by a newer chameleon), so NO pattern guidance is available for this edit
+... Upgrade chameleon to the version that wrote this profile
+(a /chameleon-refresh on this older engine will not fix it).
+```
+
+A v4.4.16 run had refreshed the profile; the live v4.4.15 session then refused it outright.
+
+**Root cause (`bootstrap/orchestrator.py:728`):**
+
+```python
+from chameleon_mcp import __version__ as ENGINE_MIN_VERSION
+```
+
+The profile's `engine_min_version` is aliased to the **current plugin version**, so every
+profile declares "you need at least the exact engine that wrote me". The read gate
+(`profile/loader.py:603`) then refuses any older engine. The field's *name* means "minimum
+compatible engine"; its *value* is "the engine that happened to write this".
+
+**Red evidence 1 — the gate is purely cosmetic.** Same profile, same reader (v4.4.15), only
+the stamp changed:
+
+```
+A) profile exactly as written by v4.4.16:
+   4.4.15 reader: REFUSED -> profile requires engine >= 4.4.16 but this engine is 4.4.15
+B) byte-identical profile, ONLY the version stamp lowered:
+   4.4.15 reader: LOADED ok, archetypes=4
+```
+
+**Red evidence 2 — the true floor is ~24 releases lower.** Neutralising the stamp and loading
+the *current* (schema 8) profile under every cached engine on this host:
+
+```
+3.0.0 OK 4   3.1.0 OK 4   3.4.0 OK 4   4.1.0 OK 4   4.4.0  OK 4   4.4.14 OK 4
+3.0.1 OK 4   3.1.1 OK 4   4.0.0 OK 4   4.1.1 OK 4   4.4.1  OK 4   4.4.15 OK 4
+3.0.2 OK 4   3.1.2 OK 4   4.0.1 OK 4   4.1.2 OK 4   4.4.2  OK 4   4.4.16 OK 4
+3.0.3 OK 4   3.1.4 OK 4                4.2.0 OK 4   4.4.10 OK 4
+```
+
+**24 of 24 engines back to 3.0.0 read it perfectly.** The declared floor of 4.4.16 is wrong by
+the entire tested range. `schema_version` (8, unchanged since v2.69.0) is already the real
+structural gate — its own comment says *"written here (8) is refused by old engines (MAX=7),
+signaling the rebuild"* — so `engine_min_version` is a redundant second gate that fires on
+every release.
+
+**Impact / effectiveness:** in any mixed-version team — the normal case — one member upgrading
+and running `/chameleon-refresh` silently strips every colleague of all pattern guidance until
+they upgrade too, and the banner tells them a refresh will not fix it. The plugin degrades to
+zero value for those users, on every release, including releases (like v4.4.16) whose only
+change was a comment-level precision fix.
+
+**Why the naive fix is wrong (and the real root cause):** the field is **overloaded**. Besides
+the read gate, `tools._engine_version_changed` (tested in
+`tests/unit/test_refresh_engine_version.py`) reads the same key to detect an engine upgrade and
+force a re-cluster on refresh — and *that* use legitimately needs the writer's actual version.
+Simply lowering the constant would make every refresh believe the engine changed and re-cluster
+every time. One field is carrying two incompatible semantics.
+
+**PROPOSED FIX — flagged before implementation, per the campaign's behaviour-change rule.**
+Separate the two meanings:
+
+1. Write `engine_version` = the writing engine's real version (new key) — consumed by
+   `_engine_version_changed` for refresh staleness.
+2. Keep `engine_min_version` = an explicit, manually-maintained compatibility floor — consumed
+   by the loader's read gate. Set to `3.0.0`, the oldest version empirically verified above
+   (deliberately not claiming untested 2.69.0), with a comment stating it may only be raised
+   when a genuinely backward-incompatible profile change lands, and that `schema_version` is
+   the mechanism for structural breaks.
+3. `_engine_version_changed` reads `engine_version` and falls back to `engine_min_version` for
+   profiles written before this change, so existing profiles keep correct staleness behaviour.
+
+Adding an optional key is backward compatible — the 24-engine probe proves older readers ignore
+unknown profile keys — so no `schema_version` bump is required.
 
 ---
 

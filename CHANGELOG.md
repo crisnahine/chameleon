@@ -4,6 +4,37 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.17] - 2026-07-18
+
+### Fixed
+- Every release made its own profiles unreadable to every older engine. The
+  profile's `engine_min_version` was aliased to the package `__version__`
+  (`bootstrap/orchestrator.py`), so a profile declared "you need at least the
+  exact engine that wrote me" and the loader's read gate refused anything older.
+  In a mixed-version team that meant one member upgrading and running
+  `/chameleon-refresh` silently stripped every colleague of ALL pattern guidance
+  ("profile degraded ... a /chameleon-refresh on this older engine will not fix
+  it") until they upgraded too — on every release, including releases that
+  changed nothing about the profile format. Measured against the cached engines
+  on one host: 24 of 24 engines from 3.0.0 through 4.4.16 load a current
+  (schema 8) profile perfectly once the stamp is neutralised, so the declared
+  floor was wrong by the entire tested range.
+
+  The field was carrying two incompatible meanings, which is why the naive fix
+  breaks refresh: the same key is read by `_engine_version_changed` to force a
+  re-cluster after an engine upgrade, and that use legitimately needs the
+  WRITER's version. The two are now separate: `engine_version` records the
+  engine that wrote the profile (refresh staleness), while `engine_min_version`
+  is an explicit static compatibility floor (the read gate), pinned to `3.0.0` —
+  the oldest version empirically verified — and raised only when a genuinely
+  backward-incompatible profile change lands. `PROFILE_SCHEMA_VERSION` remains
+  the mechanism for structural breaks, as its own comment always intended.
+  `_profile_engine_version` prefers `engine_version` and falls back to
+  `engine_min_version`, so profiles written before the split keep correct
+  staleness behaviour. Adding an optional key is backward compatible (the
+  24-engine probe confirms older readers ignore unknown profile keys), so no
+  schema bump is required.
+
 ## [4.4.16] - 2026-07-18
 
 ### Fixed

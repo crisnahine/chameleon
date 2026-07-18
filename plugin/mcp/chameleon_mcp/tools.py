@@ -5671,10 +5671,10 @@ def get_drift_status(repo: str) -> dict:
     # the version-aware refresh (the refresh itself re-clusters on mismatch).
     engine_version_mismatch = False
     if _profile_root is not None:
-        from chameleon_mcp.bootstrap.orchestrator import ENGINE_MIN_VERSION
+        from chameleon_mcp.bootstrap.orchestrator import ENGINE_VERSION
 
         engine_version_mismatch = _engine_version_changed(
-            _profile_root / ".chameleon", ENGINE_MIN_VERSION
+            _profile_root / ".chameleon", ENGINE_VERSION
         )
 
     # A pre-current schema_version means the clustering algorithm changed
@@ -8279,7 +8279,16 @@ def _persisted_paths_glob(profile_dir: Path) -> str | None:
 
 
 def _profile_engine_version(profile_dir) -> str:
-    """Return the engine_min_version stamped in the profile, or '' if absent."""
+    """Return the engine version that WROTE the profile, or '' if absent.
+
+    Prefers ``engine_version`` (the writer's version). Falls back to
+    ``engine_min_version`` for profiles written before the two were split apart:
+    back then that key held the writer's version, so the fallback keeps refresh
+    staleness correct for every already-written profile. On current profiles the
+    fallback is never reached, which matters because ``engine_min_version`` is now
+    a static compatibility floor -- reading it here would report "engine changed"
+    on every refresh forever.
+    """
     import json as _json
 
     for fname in ("archetypes.json", "profile.json"):
@@ -8289,7 +8298,9 @@ def _profile_engine_version(profile_dir) -> str:
                 data = _json.loads(p.read_text(encoding="utf-8"))
             except Exception:
                 continue
-            v = data.get("engine_min_version") if isinstance(data, dict) else None
+            if not isinstance(data, dict):
+                continue
+            v = data.get("engine_version") or data.get("engine_min_version")
             if v:
                 return str(v)
     return ""
@@ -8657,9 +8668,9 @@ def _refresh_repo_locked(repo_path, *, force: bool, analysis_root: Path | None =
     # Engine-upgrade guard: a profile written by an older engine can have
     # unchanged files yet stale clustering/analysis. Re-derive fully instead of
     # noop-ing so the profile reflects the current engine.
-    from chameleon_mcp.bootstrap.orchestrator import ENGINE_MIN_VERSION
+    from chameleon_mcp.bootstrap.orchestrator import ENGINE_VERSION
 
-    if _engine_version_changed(profile_dir, ENGINE_MIN_VERSION):
+    if _engine_version_changed(profile_dir, ENGINE_VERSION):
         return bootstrap_repo(
             str(repo_path), force=True, paths_glob=persisted_pg, analysis_root=analysis_root
         )

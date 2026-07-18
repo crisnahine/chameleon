@@ -720,12 +720,37 @@ def _glob_for_extractor(extractor: Extractor) -> str:
 # written here (8) is refused by old engines (MAX=7), signaling the rebuild.
 PROFILE_SCHEMA_VERSION = 8
 
-# Use the package's bump-synced __version__ (same source as the read-side gate
-# in profile/loader.py:ENGINE_VERSION). importlib.metadata.version("chameleon-mcp")
+# Two DIFFERENT facts get stamped into every profile, and conflating them broke
+# mixed-version teams:
+#
+#   ENGINE_VERSION      the engine that wrote this profile. Refresh compares it
+#                       to the running engine to force a re-cluster after an
+#                       upgrade (analysis logic changes even when files do not),
+#                       so it must track the release.
+#   ENGINE_MIN_VERSION  the OLDEST engine that can still read this profile. The
+#                       loader's read gate refuses anything below it.
+#
+# These were one field aliased to __version__, which made every profile declare
+# "you need the exact engine that wrote me". One teammate upgrading and running
+# /chameleon-refresh then stripped every colleague of all guidance until they
+# upgraded too -- on every release, including releases that changed nothing about
+# the profile. Measured: 24 cached engines from 3.0.0 to 4.4.16 all load a
+# current (schema 8) profile once the stamp is neutralised.
+#
+# Raise ENGINE_MIN_VERSION ONLY for a change older engines genuinely cannot read,
+# and prefer PROFILE_SCHEMA_VERSION for structural breaks -- that is what it is
+# for (an over-cap schema_version is already refused by older readers). 3.0.0 is
+# the oldest version empirically verified above; earlier engines are untested
+# rather than known-bad, so the floor deliberately does not claim them.
+#
+# Use the package's bump-synced __version__ (same source as the read-side gate in
+# profile/loader.py:ENGINE_VERSION). importlib.metadata.version("chameleon-mcp")
 # returns a stale 0.5.7 fallback when the package isn't pip-installed (run via
 # PYTHONPATH / the plugin's module path), which would make the engine stamp
 # meaningless and the refresh engine-version guard inert.
-from chameleon_mcp import __version__ as ENGINE_MIN_VERSION
+from chameleon_mcp import __version__ as ENGINE_VERSION
+
+ENGINE_MIN_VERSION = "3.0.0"
 
 
 def _workspace_report_for_envelope(w: dict) -> dict:
@@ -2486,6 +2511,7 @@ def _bootstrap_single(
     archetypes_data: dict = {
         "schema_version": PROFILE_SCHEMA_VERSION,
         "engine_min_version": ENGINE_MIN_VERSION,
+        "engine_version": ENGINE_VERSION,
         "generation": generation,
         "archetypes": {},
     }
@@ -2493,6 +2519,7 @@ def _bootstrap_single(
     canonicals_data: dict = {
         "schema_version": PROFILE_SCHEMA_VERSION,
         "engine_min_version": ENGINE_MIN_VERSION,
+        "engine_version": ENGINE_VERSION,
         "generation": generation,
         "canonicals": {},
     }
@@ -2500,6 +2527,7 @@ def _bootstrap_single(
     rules_data: dict = {
         "schema_version": PROFILE_SCHEMA_VERSION,
         "engine_min_version": ENGINE_MIN_VERSION,
+        "engine_version": ENGINE_VERSION,
         "generation": generation,
         "rules": {},
     }
@@ -2722,6 +2750,7 @@ def _bootstrap_single(
     profile_data: dict = {
         "schema_version": PROFILE_SCHEMA_VERSION,
         "engine_min_version": ENGINE_MIN_VERSION,
+        "engine_version": ENGINE_VERSION,
         "generation": generation,
         "repo_id": repo_id,
         "language": extractor.language,
@@ -3313,7 +3342,7 @@ def _build_summary_md(
 
     Delegates to the shared renderer in ``chameleon_mcp.profile.summary``.
     The ``engine_version`` override ensures bootstrap uses the live
-    ENGINE_MIN_VERSION constant rather than reading it back from profile.json
+    ENGINE_VERSION constant rather than reading it back from profile.json
     (which hasn't been written yet at summary-generation time).
     """
     from chameleon_mcp.profile.summary import render_summary_md
@@ -3324,5 +3353,5 @@ def _build_summary_md(
         profile_meta=profile_data,
         idioms_text=idioms_md,
         rules_data=rules_data,
-        engine_version=ENGINE_MIN_VERSION,
+        engine_version=ENGINE_VERSION,
     )
