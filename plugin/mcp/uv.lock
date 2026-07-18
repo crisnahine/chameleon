@@ -119,7 +119,7 @@ wheels = [
 
 [[package]]
 name = "chameleon-mcp"
-version = "4.4.11"
+version = "4.4.12"
 source = { editable = "." }
 dependencies = [
     { name = "detect-secrets" },

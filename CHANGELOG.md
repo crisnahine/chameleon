@@ -4,6 +4,23 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.12] - 2026-07-18
+
+### Fixed
+- The turn-end review layer (the Stop-hook correctness / duplication / idiom
+  lenses) was silently dead on current Claude CLIs. The reviewer spawns
+  `claude -p --bare`, and `--bare` now drops OAuth/keychain on current CLIs --
+  but it does so with an EXIT-0 "Not logged in / Please run /login" body, not a
+  nonzero exit. The auth-loss probe only ran in the nonzero branch, so the exit-0
+  auth-error string was mistaken for a successful review: it was returned as the
+  review output (unparseable, so no findings surfaced), `--bare` was recorded as
+  working, and the reviewer never fell back to a plain spawn. The auth-loss probe
+  now runs REGARDLESS of exit code, so an exit-0 "Not logged in" is detected,
+  recorded (later spawns skip `--bare`), and retried plain -- which keeps auth and
+  produces a real review. Found and verified via real usage (the reviewer spawn
+  now returns a real response instead of the auth-error string). Restores the
+  entire turn-end review layer on affected CLIs.
+
 ## [4.4.11] - 2026-07-18
 
 ### Fixed

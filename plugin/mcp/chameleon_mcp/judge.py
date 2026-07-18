@@ -1568,16 +1568,22 @@ def _spawn_reviewer_status(
 
     proc, fail = _run(args, timeout_s)
     if use_bare and proc is not None:
-        if proc.returncode == 0:
-            _record_bare_auth(ok=True)
-        elif _spawn_lost_auth(proc):
-            # The functional probe's verdict: --bare stripped the credentials.
-            # Remember it and retry plain within the remaining wall budget.
+        # --bare drops OAuth/keychain on current CLIs. CRUCIALLY that shows up as an
+        # EXIT-0 "Not logged in / Please run /login" body, not a nonzero exit -- so the
+        # auth-loss probe must run REGARDLESS of exit code. Checking it only in the
+        # nonzero branch (the prior bug) mistook the exit-0 auth-error string for a
+        # successful review, recorded --bare as working, never fell back, and left the
+        # entire turn-end review layer silently dead. Detect it by output shape, record
+        # the failure (so later spawns skip --bare), and retry plain -- which keeps
+        # auth and produces a real review.
+        if _spawn_lost_auth(proc):
             _record_bare_auth(ok=False)
             proc, fail = _run(
                 [a for a in args if a != "--bare"],
                 max(1.0, deadline - time.monotonic()),
             )
+        elif proc.returncode == 0:
+            _record_bare_auth(ok=True)
     if proc is None:
         return None, fail
     if proc.returncode != 0:
