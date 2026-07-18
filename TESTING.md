@@ -206,6 +206,35 @@ column exercises FastAPI ones. Every phase names the inventory items it fills.
 | C9 `py-flask` | Flask blueprints | Add a blueprint with routes, schema, and service, register it on the factory, then change a service signature two blueprints call. Exercises the factory/blueprint pattern. |
 | C10 `py-fastapi` | FastAPI | Add a router with pydantic schemas, a service, and a `Depends` dependency, then change a response model used by two routers. Exercises DI and response-model conventions. |
 
+### 3.4 Language-scoped rules: N/A cells are asserted, never skipped
+
+Some enforcement rules are deliberately scoped to a subset of languages. Read literally from
+`violation_class.py:235-253` (`BLOCK_RULE_LANGUAGES`):
+
+| Rule | Languages it may block in | TS | Ruby | Python |
+|---|---|---|---|---|
+| `secret-detected-in-content` | all (`None`) | yes | yes | yes |
+| `eval-call` | all (`None`) | yes | yes | yes |
+| `import-preference-violation` | all (`None`) | yes | yes | yes |
+| `file-naming-convention-violation` | all (`None`) | yes | yes | yes |
+| `naming-convention-violation` | typescript, ruby, python | yes | yes | yes |
+| `phantom-import` | typescript, ruby, python | yes | yes | yes |
+| `jsx-presence-mismatch` | **typescript only** | yes | **n/a** | **n/a** |
+| `inheritance-convention-violation` | **ruby, python only** | **n/a** | yes | yes |
+
+Two rules are language exclusives by design, so 2 of the 8 block-eligible rules have
+legitimately inapplicable columns. **These cells are not skipped.** An `n/a` cell is converted
+into a positive assertion and tested like any other: *the rule must correctly NOT fire in this
+language*. A `jsx-presence-mismatch` that fired on a Ruby file, or an
+`inheritance-convention-violation` that fired on TypeScript, would be a real bug — so the cell
+carries a real invocation and real evidence, and is marked `N/A-ASSERTED` rather than `PASS`.
+A cell marked `n/a` with no evidence would be indistinguishable from an untested one.
+
+Also verified for the enforcement rows: `BLOCK_ELIGIBLE_RULES` has exactly **8** members, and
+`BLANKET_IMMUNE_RULES` is `{eval-call, secret-detected-in-content}` — the two a *bare*
+`chameleon-ignore` may never suppress (they must be named explicitly). Both facts are
+themselves matrix items.
+
 **Deliberate-break inventory (P5, per column).** Each column gets the same four provocations,
 expressed natively: (a) a hard-coded credential, (b) an `eval`/`exec`-class dynamic execution,
 (c) an import the repo's own conventions discourage, (d) a violation of the column's dominant
