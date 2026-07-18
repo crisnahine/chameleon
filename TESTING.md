@@ -109,7 +109,109 @@ _(populated in Phase 1 — see section 3 for the matrix)_
 
 ## 3. Coverage Matrix
 
-_(populated in Phase 1)_
+### 3.1 The framework axis (10 columns)
+
+Frameworks are language-bound, so the axis is the **language x framework** product that
+actually exists in the code, not a meaningless cross-product (there is no "Rails column for
+Python"). Every column below is a real classification path in
+`bootstrap/orchestrator.py::_classify_framework` or a real framework-aware code layer,
+verified by reading the source:
+
+| # | Column | Language | Framework value | How the classifier reaches it (verified) |
+|---|---|---|---|---|
+| C1 | `ts-plain` | TypeScript/JS | `None` | no `next` dep, no `@nestjs/*` dep — proves the agnostic core |
+| C2 | `ts-nextjs` | TypeScript/JS | `nextjs` | `next` in deps, or `next.config.{js,mjs,ts,cjs}` (`orchestrator.py:533-538`) |
+| C3 | `ts-nestjs` | TypeScript/JS | `nestjs` | both `@nestjs/core` and `@nestjs/common` in deps (`orchestrator.py:531`) |
+| C4 | `rb-plain` | Ruby | `None` | no `config/application.rb`, no `gem "rails"` — proves the agnostic core |
+| C5 | `rb-rails` | Ruby | `rails` | `config/application.rb`, or `gem "rails"` in Gemfile (`orchestrator.py:485-490`) |
+| C6 | `py-plain` | Python | `None` | no django/flask/fastapi dep, no django `manage.py` — proves the agnostic core |
+| C7 | `py-django` | Python | `django` | `manage.py` whose *content* names django/`DJANGO_SETTINGS_MODULE` (`orchestrator.py:504-506`) |
+| C8 | `py-drf` | Python | `django` **+ DRF layer** | classified `django`; DRF is a distinct *code layer*, not a distinct classification — see note |
+| C9 | `py-flask` | Python | `flask` | `flask` or `flask-*` dep, no fastapi (`orchestrator.py:522`) |
+| C10 | `py-fastapi` | Python | `fastapi` | `fastapi` or `fastapi-*` dep — checked first, most specific (`orchestrator.py:520`) |
+
+**Note on DRF (verified, resolves a docs-vs-code ambiguity):** `_classify_framework` never
+returns `"drf"` — a DRF repo classifies as `django`, and `principles.py:60` states this
+outright (*"DRF folds into django"*). DRF is nonetheless a genuine framework-aware layer with
+its own code paths, so it earns its own column rather than being folded into C7:
+`signatures.py:179` (Django/DRF filename-role archetypes), `bootstrap/naming.py:303` (naming a
+cluster by its Django/DRF role), `conventions.py:1705`+`2359` (Python authz-guard derivation,
+the DRF/Django analog of the Rails blanket guard), `lint_engine.py:4552-4696` (APIView cohort
++ authz-guard lint), `extractors/python.py:248` (DRF base classes read from the AST). C7 vs C8
+is the test that separates plain-Django behaviour from the DRF layer.
+
+The agnostic columns (C1, C4, C6) are not filler: chameleon's core claim is that it is
+framework-agnostic and learns each repo's own conventions. A column where `framework` is
+`None` is the only place that claim is actually under test.
+
+### 3.2 Matrix shape and execution strategy
+
+The item axis is the inventory (section 2). Full coverage means **every item x every one of
+the 10 columns**. Executing that as isolated one-off probes would be both enormous and
+unrealistic — and the brief calls for *epic, highly complex real-world tasks*. So execution is
+organised as:
+
+- **10 epic scenarios, one per column.** Each is a multi-phase, realistic engineering
+  narrative run end-to-end against that column's fresh repo, driving the full plugin
+  lifecycle in order: bootstrap -> trust -> orient -> per-edit conformance -> enforcement ->
+  teach -> refresh -> review -> turn-end. One epic scenario fills the large majority of its
+  column's cells through genuine use, exactly as a real user would produce them.
+- **Targeted probes for what a happy-path narrative cannot reach.** Degraded and damaged
+  states, boundary inputs, malformed hook payloads, trust states, and lifecycle chains are
+  driven explicitly per column (this is the "Pass 2 depth" discipline the project's own
+  `CLAUDE.md` mandates, and where real bugs live).
+- **Evidence is captured per cell**, never inferred from a neighbouring cell. A cell filled
+  by an epic scenario cites the concrete invocation and output that filled it.
+
+A cell is PASS only with (a) a real invocation, (b) captured output, and (c) a correctness
+**and** effectiveness judgement. "Ran without error" is explicitly not PASS.
+
+_(Item rows are populated once the inventory extraction completes.)_
+
+### 3.3 The 10 epic scenarios
+
+Each scenario is a realistic engineering narrative, run end-to-end against that column's fresh
+repo. The phases are identical across columns so the matrix stays comparable, but the *work*
+in each phase is native to that stack — a Rails column exercises Rails conventions, a FastAPI
+column exercises FastAPI ones. Every phase names the inventory items it fills.
+
+**Shared phase spine (all 10 columns):**
+
+| Phase | What is driven | Primary items filled |
+|---|---|---|
+| P0 Cold open | `detect_repo` on an unprofiled repo; statusline; SessionStart with no profile | detect_repo, session-start, statusline, no-profile fail-open |
+| P1 Bootstrap | `/chameleon-init` for real | bootstrap pipeline (discovery, extraction, clustering, canonical, naming, import graph, conventions, principles, rules, indexes, summary, transaction), framework classification, `conventions.md` mirror |
+| P2 Trust | read tools while untrusted, then `/chameleon-trust` | trust gate, untrusted-injection suppression, trust token, comprehension tools under both states |
+| P3 Orient | `describe_codebase`, `search_codebase`, `get_callers`/`get_callees`/`get_blast_radius`/`query_symbol_importers` | every comprehension tool, per language |
+| P4 Conformance | real feature work: add a new file in an established archetype, then edit an existing one | PreToolUse Tier 1 + Tier 2 injection, canonical excerpt, archetype facts, nearby signatures, inbound callers, PostToolUse verify + lint |
+| P5 Enforcement | deliberately violate a hard-class rule (credential, eval/exec, banned import); then override with `chameleon-ignore` | PreToolUse deny, PostToolUse block, escalation L0->L2, inline override, shadow/off modes |
+| P6 Teach | `/chameleon-teach` a real idiom + a competing import; `/chameleon-auto-idiom` | teach_profile, teach_profile_structured, competing imports, counterexamples, idiom candidates, idiom coverage |
+| P7 Drift + refresh | mutate the repo, observe drift, `/chameleon-refresh` | drift status, staleness, refresh repair, production-ref derivation, noop-vs-repair |
+| P8 Review | branch with a real diff: `/chameleon-pr-review`, autopass verdict, contract breaks, duplication, dependency scan | review dispatcher actions, refuter, ledgers, cross-file context |
+| P9 Turn-end | provoke the Stop pipeline: lenses, VERIFY, delivery next turn | stop-backstop, review job, advisories, finding ledger, resurface |
+| P10 Depth probes | damaged/stale artifacts, malformed hook payloads, boundary inputs, trust states, lifecycle chain | fail-open behaviour, repair, robustness |
+
+**Per-column scenario (the domain work that drives P4-P8):**
+
+| Col | Repo | Epic scenario |
+|---|---|---|
+| C1 `ts-plain` | domain service, no framework | Add a settlement-reconciliation service + repository + validator across the existing archetypes, then change a shared repository signature and follow the blast radius to every caller. Proves the agnostic core with zero framework signal. |
+| C2 `ts-nextjs` | Next.js App Router | Add an authenticated route group: server component, client component, `app/api` route handler, and a `lib/` service — then rename a shared lib export and repair every importer. Exercises the server/client split and Next.js roles. |
+| C3 `ts-nestjs` | NestJS | Add a full feature module (controller + service + module + DTO + entity) wired into the root module, then change a service method signature consumed by two other modules. Exercises decorator-anchored archetypes and DI. |
+| C4 `rb-plain` | plain Ruby gem | Add a new client + service + validator following the gem's own conventions, then change a public method used across the lib. Proves the Ruby agnostic core with no Rails signal. |
+| C5 `rb-rails` | Rails 8 | Add a model + controller + service + job + serializer for a new domain concept with a migration, then alter a model association other classes rely on. Exercises the Rails-aware layer and the Rails+frontend hybrid path. |
+| C6 `py-plain` | plain Python lib | Add a repository + service + client for a new bounded context, then change a shared dataclass field consumed across modules. Proves the Python agnostic core. |
+| C7 `py-django` | plain Django | Add a new app (models, views, urls, forms, admin, tests) and wire it into settings/urls, then change a model field other apps query. Exercises Django roles *without* DRF. |
+| C8 `py-drf` | Django + DRF | Add a viewset + serializer + permission for a new resource, then remove an authz guard from an existing viewset. The authz-guard derivation and the APIView cohort lint are the point of this column. |
+| C9 `py-flask` | Flask blueprints | Add a blueprint with routes, schema, and service, register it on the factory, then change a service signature two blueprints call. Exercises the factory/blueprint pattern. |
+| C10 `py-fastapi` | FastAPI | Add a router with pydantic schemas, a service, and a `Depends` dependency, then change a response model used by two routers. Exercises DI and response-model conventions. |
+
+**Deliberate-break inventory (P5, per column).** Each column gets the same four provocations,
+expressed natively: (a) a hard-coded credential, (b) an `eval`/`exec`-class dynamic execution,
+(c) an import the repo's own conventions discourage, (d) a violation of the column's dominant
+archetype shape. Each is run twice — once expecting the block, once with a
+`chameleon-ignore` override — and once under `CHAMELEON_ENFORCE=0` to confirm advisory-only
+degradation.
 
 ---
 
