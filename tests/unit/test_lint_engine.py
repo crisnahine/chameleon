@@ -1088,7 +1088,10 @@ class TestRubyNamingConventionLint:
         assert len(violations) == 0
 
     def test_inheritance_convention_violation(self):
-        content = "class MyService\n  def execute\n  end\nend\n"
+        # A class extending the WRONG base is a deviation and is flagged. (A
+        # base-less `class MyService` is now exempt, aligning Ruby to Python -- see
+        # test_inheritance_fp_fixes; only a wrong non-known base is a deviation.)
+        content = "class MyService < SomeUnrelatedBase\n  def execute\n  end\nend\n"
         conventions = {
             "inheritance": {
                 "dominant_base": "ActiveInteraction::Base",
@@ -1134,9 +1137,10 @@ class TestRubyNamingConventionLint:
         assert violations == [], [v.message for v in violations]
 
     def test_inheritance_lint_flags_sibling_top_level_class(self):
-        # Two top-level classes, the second lacks the base -> still flagged
-        # (the inner-class skip must not suppress same-indent siblings).
-        content = "class A < ApplicationController\nend\nclass B\nend\n"
+        # Two top-level classes, the second extends a WRONG base -> still flagged
+        # (the inner-class skip must not suppress same-indent siblings). A base-less
+        # sibling would be exempt now, so the sibling here carries a wrong base.
+        content = "class A < ApplicationController\nend\nclass B < SomeUnrelatedBase\nend\n"
         conventions = {
             "inheritance": {
                 "dominant_base": "ApplicationController",

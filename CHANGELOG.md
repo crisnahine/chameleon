@@ -4,6 +4,30 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.8] - 2026-07-18
+
+### Fixed
+- The `inheritance-convention-violation` rule was measured ~100% false-positive
+  across four real repos (45 firings, 0 true positives). Two independent,
+  false-positive-safe fixes cut the dominant drivers:
+  - A file that resolves to an archetype only by a WEAK match (match_quality
+    `fallback`/`none`, or a `path_only` basis) is not a confident member of that
+    archetype, so applying its dominant-base convention is noise (a
+    `lib/exceptions.rb` path-matched to a CLI archetype and told to "inherit
+    Base"). The inheritance advisory is now dropped on such matches. Enforcement
+    is unaffected and byte-identical: the block path already gates block-eligible
+    inheritance on `confidence=high` + `match_quality=ast`, and the drop condition
+    is provably disjoint from `match_quality=ast`, so a weak match never blocks on
+    inheritance. This eliminated the archetype over-resolution false positives
+    (Django `exceptions.py`/`storage`/`notifications`/`provider` mis-routed to a
+    test archetype; the mastodon `lib/**` grab-bag) -- 14 to 2 on Django.
+  - The Ruby inheritance check no longer flags a base-less `class Foo` (no
+    `< Base`) as a missed inheritance, aligning it to the Python check, which
+    already exempts a base-less `class Foo:`. Real base-less Ruby classes are
+    legitimate standalone or mixin-composed classes (a service that `include`s its
+    behavior, a middleware, a config module), not deviations. A class that extends
+    the WRONG (non-known) base is still flagged.
+
 ## [4.4.7] - 2026-07-18
 
 ### Fixed

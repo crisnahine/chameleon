@@ -6001,6 +6001,28 @@ def _drop_test_structural_findings(
     return [v for v in violations if v.get("rule") not in _TEST_SUPPRESSED_STRUCTURAL_RULES]
 
 
+def _drop_inheritance_on_weak_match(
+    violations: list[dict], match_quality: str | None, match_basis: str | None
+) -> list[dict]:
+    """On a WEAK archetype match, drop the inheritance-convention advisory.
+
+    ``inheritance-convention-violation`` enforces the archetype's dominant-base
+    convention, which only makes sense for a file that is a real member of the
+    archetype. On a fallback/none match_quality or a path_only basis the file was
+    matched by path substring alone (a lib/exceptions.rb resolved to a CLI archetype
+    and told to "inherit Base"), so the convention does not apply and the advisory is
+    ~100% false-positive noise. Enforcement is unaffected: the block path already
+    gates block-eligible inheritance on confidence=high + match_quality=ast, so a
+    weak match never blocks on it -- this only removes the advisory surfacing. Other
+    rules are untouched; fail-open to the full list."""
+    if not violations:
+        return violations
+    weak = match_quality in ("fallback", "none") or match_basis == "path_only"
+    if not weak:
+        return violations
+    return [v for v in violations if v.get("rule") != "inheritance-convention-violation"]
+
+
 def posttool_verify() -> int:
     """PostToolUse Edit/Write/NotebookEdit: archetype conformance lint.
 
@@ -6194,6 +6216,7 @@ def posttool_verify() -> int:
         _decision_data = arch_result.get("data") or {}
         decision_match_quality = _decision_data.get("match_quality")
         decision_confidence_band = _decision_data.get("confidence_band")
+        decision_match_basis = _decision_data.get("match_basis")
 
         if repo_id:
             try:
@@ -6454,6 +6477,19 @@ def posttool_verify() -> int:
                 )
             except Exception:
                 pass
+
+        # Inheritance FP: on a WEAK archetype match (fallback/none quality, or a
+        # path_only basis) the file is not a confident member of the archetype whose
+        # dominant-base convention inheritance-convention-violation enforces, so the
+        # advisory is ~100% false-positive noise (a lib/exceptions.rb path-matched to
+        # a CLI archetype, told to inherit Base). Drop it; enforcement is unaffected
+        # (the block path already gates block-eligible inheritance on high+ast, so a
+        # weak match never blocks on it). Scoped to posttool_verify, like the drops
+        # above.
+        if violations:
+            violations = _drop_inheritance_on_weak_match(
+                violations, decision_match_quality, decision_match_basis
+            )
 
         # A rule calibration demoted for flagging conforming committed code
         # (enforcement.json active:false + flagged>0) is measured FP-prone, so its

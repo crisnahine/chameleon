@@ -4298,7 +4298,12 @@ def lint_conventions(
                     _class_root = class_name.split("::", 1)[0] if "::" in class_name else None
                     if _sc_root not in _known_roots and _sc_root != _class_root:
                         continue
-                if superclass is None or (
+                # A base-less `class Foo` (no `< Base`) is a legitimate standalone
+                # class (middleware, a config module, a plain service), not a missed
+                # inheritance -- the Python check (`_python_inheritance_violations`)
+                # already exempts it, so align Ruby to it. Only a class that DOES
+                # extend something outside the archetype's known bases is a deviation.
+                if superclass is not None and (
                     superclass not in known_bases
                     and superclass.rsplit("::", 1)[-1] not in known_base_tails
                 ):

@@ -508,11 +508,15 @@ def test_file_naming_active_when_committed_files_match_casing(tmp_path):
 
 
 def test_inheritance_demoted_when_witness_breaks_dominant_base(tmp_path):
-    # The witness declares a top-level class without the archetype's dominant base,
-    # so inheritance-convention-violation fires and the rule must NOT block.
+    # The witness declares a top-level class extending a base OUTSIDE the archetype's
+    # dominant base, so inheritance-convention-violation fires and the rule must NOT
+    # block. (A base-less class is now exempt, aligning Ruby to Python, so the
+    # witness carries a wrong base to still trigger the calibration demotion.)
     repo = tmp_path
     (repo / "app").mkdir(parents=True)
-    (repo / "app" / "thing.rb").write_text("class Thing\nend\n", encoding="utf-8")
+    (repo / "app" / "thing.rb").write_text(
+        "class Thing < SomeUnrelatedBase\nend\n", encoding="utf-8"
+    )
 
     class _Loaded:
         canonicals = {
