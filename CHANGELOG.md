@@ -4,6 +4,30 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.9] - 2026-07-18
+
+### Added
+- A per-edit `missing-required-method` advisory closes an effectiveness gap: the
+  `class_contract` artifact (an archetype's required methods, derived at bootstrap)
+  was advertised in the pre-edit block but no lint ever verified it. Now, on a
+  post-edit lint, a class that extends the archetype's dominant base but omits a
+  method the entire cohort defines is nudged (an ActiveJob subclass without
+  `perform`, a service without `call`). It is advisory-only (never block-eligible),
+  Ruby + Python, and false-positive-safe by construction:
+  - Only a method the cohort defines at 100% frequency is enforced. A genuine
+    abstract-method contract is always 1.0 (the base raises `NotImplementedError`,
+    so every subclass implements it); a method in the 0.95-0.99 band is instead a
+    commonly-overridden method with a base default, or one some members inherit via
+    a mixin -- flagging it is a false positive the file-level check cannot see
+    through. Measured ~0 false positives at 1.0 versus ~91% below it, across
+    gitlabhq, ef-api, mastodon, maybe, and Django (1500+ files, 0 false positives).
+  - Only a class DIRECTLY extending the dominant base is in the cohort (matched on
+    the full qualified base name, or its unqualified short form -- not a different
+    class that merely shares a common tail like `Foo::Base`); the base class itself
+    is exempt; and the method is flagged only when it is defined nowhere in the file.
+  - Wired through every lint path (in-process, the `lint_file` tool, and the daemon)
+    so the artifact reaches the check rather than silently vanishing.
+
 ## [4.4.8] - 2026-07-18
 
 ### Fixed

@@ -4334,6 +4334,17 @@ def lint_conventions(
             _python_inheritance_violations(scan_content, conventions.get("inheritance") or {})
         )
 
+    # Post-edit consumer of the class_contract artifact: a class extending the
+    # archetype's dominant base that omits a >= 95%-frequency required method (an
+    # ApplicationJob without `perform`). The pre-edit block already advertises this
+    # contract; before this check nothing verified it post-edit.
+    if "missing-required-method" not in ignored_rules:
+        violations.extend(
+            _required_method_violations(
+                scan_content, conventions.get("class_contract") or {}, language
+            )
+        )
+
     if "required-guard-convention" not in ignored_rules:
         if language == "ruby":
             violations.extend(_required_guard_violations(scan_content, conventions))
@@ -4654,4 +4665,125 @@ def _python_inheritance_violations(scan_content: str, inheritance: dict) -> list
                 ),
             )
         )
+    return out
+
+
+# A required method is enforced only when EVERY cohort member defines it (derived
+# frequency exactly 1.0), and only for an archetype with a real derivation sample.
+# A genuine abstract-method contract is 1.0 by construction (the base raises
+# NotImplementedError, so every subclass implements it -- perform, call, validate,
+# render, up/down). A method in the 0.95-0.99 band is instead a commonly-overridden
+# method WITH a base default (a SystemCheck#show_error at 0.96) or one some members
+# inherit via a mixin -- flagging it is a false positive the file-level check cannot
+# see through. The variance that drags frequency below 1.0 IS the mixin/inheritance
+# signal, so a 1.0 gate is self-protecting (measured ~0 FP at 1.0, ~91% FP below it).
+_CONTRACT_METHOD_MIN_FREQUENCY = 1.0
+_CONTRACT_METHOD_MIN_SAMPLE = 8
+_RUBY_TOPLEVEL_CLASS_RE = re.compile(r"^[ \t]*class\s+([\w:]+)(?:\s*<\s*([\w:]+))?", re.MULTILINE)
+
+
+def _contract_base_tail(name: str) -> str:
+    """Unqualified tail of a base name across Ruby (``A::B``) and Python (``a.b``)."""
+    return name.rsplit("::", 1)[-1].rsplit(".", 1)[-1]
+
+
+def _defines_method(scan_content: str, method: str, language: str) -> bool:
+    """True when ``method`` is defined ANYWHERE in the file. File-level on purpose:
+    if the method exists on any class in the file, the contract nag is suppressed --
+    the maximally false-positive-safe direction for an advisory."""
+    esc = re.escape(method)
+    if language == "ruby":
+        # `def perform` / `def self.perform`. A Ruby method name may end in ? or !,
+        # so the required name must be a WHOLE name, not a prefix (`call` != `caller`).
+        return re.search(rf"\bdef\s+(?:self\.)?{esc}(?![A-Za-z0-9_?!])", scan_content) is not None
+    return re.search(rf"\bdef\s+{esc}\s*\(", scan_content) is not None
+
+
+def _required_method_violations(
+    scan_content: str, class_contract: dict, language: str | None
+) -> list[Violation]:
+    """Advisory when a class extending the archetype's dominant base omits a method
+    the cohort defines at >= 95% frequency (an ApplicationJob without ``perform``, a
+    BaseService without ``call``). This is the post-edit consumer of the
+    ``class_contract`` artifact, which the pre-edit block already advertises but no
+    lint verified before.
+
+    False-positive-safe by construction: only a top-level class DIRECTLY extending
+    the dominant base is in the cohort (a helper, or a subclass of a sibling that
+    inherits the method, is not); the base class itself is exempt; only a >= 95%
+    method is enforced (a 66%-common one is a legitimate option); and the method is
+    flagged only when it is defined nowhere in the file. Ruby + Python only. Never
+    block-eligible."""
+    if language not in ("ruby", "python") or not isinstance(class_contract, dict):
+        return []
+    required = class_contract.get("required_methods")
+    base = class_contract.get("base")
+    freqs = class_contract.get("frequencies") or {}
+    sample = class_contract.get("sample_size") or 0
+    if not required or not isinstance(base, str) or sample < _CONTRACT_METHOD_MIN_SAMPLE:
+        return []
+    mandatory = [
+        m
+        for m in required
+        if isinstance(m, str) and (freqs.get(m) or 0) >= _CONTRACT_METHOD_MIN_FREQUENCY
+    ]
+    if not mandatory:
+        return []
+    base_tail = _contract_base_tail(base)
+
+    # Is a top-level class DIRECTLY extending the dominant base present (and not the
+    # base itself)? Only such a class is in the cohort the contract governs. A
+    # subclass of a sibling (`ChildJob < BackfillJob`) inherits the method and is not
+    # flagged. scan_content is already strings/comments-stripped by the caller, so a
+    # class decl inside a heredoc cannot trip this.
+    # A superclass is the contract base when it matches the FULL qualified name, or
+    # is the UNqualified short form (`< Base` inside the base's own module). A
+    # DIFFERENT qualified class that merely shares the tail (`< Foo::Base` vs the
+    # contract `ActiveInteraction::Base`) is NOT the base -- it is an intermediate the
+    # class inherits the method through, so a bare-tail match would wrongly pull it
+    # into the cohort. `Base` is a very common Ruby tail, so this guard is load-bearing.
+    def _sup_is_base(sup: str | None) -> bool:
+        if not sup:
+            return False
+        if sup == base:
+            return True
+        return "::" not in sup and "." not in sup and sup == base_tail
+
+    def _extends_base() -> bool:
+        if language == "ruby":
+            for m in _RUBY_TOPLEVEL_CLASS_RE.finditer(scan_content):
+                cls, sup = m.group(1), m.group(2)
+                if _contract_base_tail(cls) == base_tail:
+                    continue  # the base class itself
+                if _sup_is_base(sup):
+                    return True
+            return False
+        for m in _PY_CLASS_BASES_LINT_RE.finditer(scan_content):
+            if len(m.group(1)) != 0:
+                continue  # only a column-0 class is top-level in Python
+            cls = m.group(2)
+            if _contract_base_tail(cls) == base_tail:
+                continue
+            if any(_sup_is_base(b) for b in _py_positional_bases(m.group(3))):
+                return True
+        return False
+
+    if not _extends_base():
+        return []
+
+    out: list[Violation] = []
+    for method in mandatory:
+        if not _defines_method(scan_content, method, language):
+            out.append(
+                Violation(
+                    rule="missing-required-method",
+                    expected=f"def {method}",
+                    actual="absent",
+                    severity="warning",
+                    message=(
+                        f"CONTRACT: every class extending {base} in this archetype "
+                        f"defines {method}; this subclass does not."
+                    ),
+                )
+            )
     return out

@@ -5205,6 +5205,11 @@ def _lint_file_in_process(
         # the rule can never fire on this path.
         if conv_data.get("required_guards", {}).get(archetype_name):
             arch_conv["required_guards"] = conv_data["required_guards"][archetype_name]
+        # class_contract drives the missing-required-method advisory. Like the keys
+        # above, the lint reads the per-archetype slice, so it must be threaded in or
+        # the check reads nothing (the artifact is otherwise pre-edit-only).
+        if conv_data.get("class_contract", {}).get(archetype_name):
+            arch_conv["class_contract"] = conv_data["class_contract"][archetype_name]
         # The test-quality pass gates on the archetype name but reads no convention
         # keys; lint_conventions early-returns on an empty conventions dict. A
         # test/spec archetype usually has no import/naming/inheritance conventions,
