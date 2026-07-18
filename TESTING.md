@@ -882,11 +882,39 @@ witness below as a loose reference, not a template."* The sibling and collaborat
 sections are also correct. But the canonical witness — the part the model is told to imitate —
 is from the wrong layer.
 
-**Status:** OPEN. Fix (2) is the higher-value repair and should come first: a witness-less
-archetype is strictly better than a wrong-layer witness, and it fixes this class of failure for
-every future scanner false positive, not just this one. Fix (1) narrows the pattern to
-interpolation of non-constant expressions. Both need the C2 (Next.js) reproduction re-checked,
-since it reported the same symptom in `lib/repositories`.
+**Design-intent nuance found while scoping the fix (changes what the fix should be).** The drop
+is not an oversight. `orchestrator.py:1405-1409` documents it explicitly:
+
+```
+- ``(None, None)`` when the cluster is unknown to the selection (only-failing
+  scans, which intentionally stay dropped so an unsafe witness is never
+  surfaced).
+```
+
+So dropping a cluster whose every witness candidate failed the safety scan is a **deliberate
+security decision**, and it is a correct one in isolation: chameleon must never hold up a file
+containing a dangerous pattern as the thing to imitate.
+
+The defect is the **interaction**, which that design did not anticipate. Dropping the cluster
+does not produce "no guidance" as intended — the archetype resolver then falls back and hands
+those files a *different* cluster's witness (`match_quality: fallback`). So the safety
+mechanism's actual effect is to swap a same-layer witness for a wrong-layer one, which is the
+opposite of what it was protecting against.
+
+This means fix (2) is **not** in tension with the security intent: emitting the archetype
+witness-less still never surfaces the unsafe file, while preserving the archetype name,
+siblings, and conventions, and denying the fallback its chance to substitute a validator.
+Flagged here per the campaign's rule before touching a deliberate design.
+
+**Status:** OPEN, with the fix design settled:
+1. **(higher value, do first)** emit a witness-less archetype instead of dropping the cluster,
+   so a scan-excluded cohort yields honest partial guidance rather than wrong-layer guidance.
+   This immunizes against *every* future scanner false positive, not just this pattern.
+2. narrow `raw_sql_concat` so interpolation of compile-time constants is not flagged.
+
+Both need the C2 (Next.js) reproduction re-checked afterwards, since it reported the same
+symptom in `lib/repositories`, and the regression rule requires re-running the item across all
+10 columns.
 
 ---
 
