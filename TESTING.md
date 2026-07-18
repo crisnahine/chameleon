@@ -559,6 +559,77 @@ this session ran degraded, with zero pattern guidance, for several edits.
 
 ---
 
+### GAP-005 — the turn-end test-run advisory can never be satisfied — OPEN
+
+**Cell:** `hooks/hook.stop.advisory.test-run-reminder` + `aux`/exec-log x (language-agnostic)
+**Severity:** persistent false positive (advisory)
+**Found by:** real usage — and it contradicts a cell I had already marked PASS, which is why
+it is written up rather than quietly amended.
+
+**Symptom.** The Stop advisory fired at me twice in this session:
+
+```
+[🦎 chameleon: no passing test run this turn]
+You edited test_secret_scanner.py, secret_scanner.py, qa-matrix.py,
+test_engine_min_version_floor.py, orchestrator.py with no recorded passing test run.
+```
+
+Both times I had run the full suite in that same turn, passing (`6137 passed, 3 skipped`).
+
+**Red evidence — the live session's own exec log:**
+
+```
+session log a225d7ec79ead109.jsonl : rows=1928  passing_test=0
+  rows with test_command_seen=True      : 17
+  their exit_code distribution          : {-1: 17}
+  rows with test_command_seen AND exit 0: 0
+```
+
+Every real test run WAS correctly classified (17 of them), and every one recorded
+`exit_code: -1`. `session_test_run_seen` requires `test_command_seen AND exit_code == 0`
+(`exec_log.py:589-591`), so it returns False forever and the nudge can never be satisfied.
+
+**Root cause (`hook_helper.py:5065`):**
+
+```python
+exit_code = tool_response.get("returnCode") if isinstance(tool_response, dict) else None
+...
+exit_code=int(exit_code) if exit_code is not None else -1,
+```
+
+The recorder reads `returnCode` from the Bash PostToolUse `tool_response`. The real payload
+evidently does not carry that key, so the value is always `None`, normalised to `-1`.
+
+**Why this survived unit testing** — and why the campaign brief insists on real invocations:
+every layer is individually correct and independently testable. `classify_test_command`
+correctly returns `True` for all four of my real command shapes, including the piped
+`... | tail -6` form. `append_exec_log` writes and HMAC-signs the row correctly.
+`session_test_run_seen` correctly requires a zero exit. A synthetic probe I fed
+`{"returnCode": 0}` recorded `exit_code 0` and made `session_test_run_seen` return **True** —
+because I had read the source first and handed it the shape the code wants. Only the *real*
+payload disagrees. A mock built from the implementation cannot find this class of bug; it
+encodes the same wrong assumption.
+
+**Impact / effectiveness:** the advisory is unsatisfiable. It nags on every turn that touched
+source, forever, no matter how thoroughly the user tested — the precise "cry wolf" pattern that
+trains users to ignore a signal. Worse, its wording ("no recorded passing test run") asserts
+something false about the user's behaviour.
+
+**Also affected:** `exit_code` is the only success signal in the exec log, so any other
+consumer of a *passing* command is equally blind. To be enumerated before the fix.
+
+**Status:** OPEN. The correct field name is being confirmed against the official Claude Code
+hook documentation rather than guessed — a fix that swaps one wrong key for another wrong key
+would look green (the advisory would stop) while still recording nothing. Any fix must also
+keep working when the key is genuinely absent (interrupted/timed-out commands).
+
+**Note on the earlier PASS:** `hooks/hook.stop.advisory.test-run-reminder@C6` was marked PASS on
+the evidence that the advisory correctly named the edited files and that a post-test edit had
+indeed occurred. That observation was true, but it did not test the *satisfiability* of the
+signal. The cell will be re-opened and re-evidenced.
+
+---
+
 ### GAP-002 — `reuse-before-create` suggested 4 unrelated tests, 4/4 wrong — OPEN
 
 **Cell:** `reuse-before-create` x Python (found on the chameleon repo itself)
