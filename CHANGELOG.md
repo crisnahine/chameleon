@@ -4,6 +4,43 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.7] - 2026-07-18
+
+### Fixed
+- A test file with no dedicated test directory buckets to its enclosing app or
+  component directory, so a SOURCE archetype claims it and its production-shape
+  structural rules (default export, top-level constructs, named-export count,
+  use-client/server signal) fire on test code they never fit. Those four rules
+  are now dropped on a test path in the per-edit lint. Measured 67% fewer
+  per-edit findings on React test files and 58% on Django test files, with zero
+  change on repos whose tests route correctly (Rails, FastAPI, Flask).
+  jsx-presence-mismatch (the only block-eligible structural rule) is kept, so the
+  block partition and Stop arming stay byte-identical.
+- The Secret Keyword placeholder filter now judges the EXACT flagged token
+  instead of requiring every value on the line to be a placeholder. A co-located
+  non-secret argument (`login(username="eric", password="test")`) no longer keeps
+  a placeholder hit alive. The scanner carries a boolean verdict computed at scan
+  time and never stores the raw value. Security-preserving: a real credential is
+  never a placeholder, the concat-obfuscation defense still runs first, and a real
+  secret co-located with a placeholder on one line still keeps its hit. The
+  co-located guard is key-aware: a non-placeholder value under a credential-named
+  key (`token="s3cr3t"`, `db_password="hunter2"`) keeps the hit even when the value
+  is short and low-entropy, so a WEAK real secret sharing a folded line with a
+  placeholder is never dropped, while a co-located `username="eric"` (a non-secret
+  key) still drops. The deterministic hard-secret path is untouched.
+- Diff-scoped per-edit lint no longer re-surfaces a pre-existing line-anchored
+  finding (e.g. a style violation naming its line number) as "introduced" when an
+  edit shifts line numbers. The finding key ignores the line-number reference, so
+  a pre-existing finding matches its shifted counterpart; a genuinely different
+  finding (different overage, different symbol) still keys distinctly. The
+  introduced-finding diff is a MULTISET diff (count increase), not set membership,
+  so a genuinely NEW instance of a line-anchored rule -- a second command-injection
+  an edit adds to a file that already had one -- still surfaces even though it
+  shares a normalized key with the pre-existing one, while a single shifted finding
+  stays deduped. This keeps the security-adjacent dangerous-sink advisories
+  (command-injection, insecure-deserialization, insecure-random, weak-hash,
+  sql-string-interpolation) from being masked on the per-edit path.
+
 ## [4.4.6] - 2026-07-18
 
 ### Fixed

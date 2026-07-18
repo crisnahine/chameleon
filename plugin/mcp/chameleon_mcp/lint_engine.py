@@ -46,7 +46,6 @@ fast and deterministic.
 
 from __future__ import annotations
 
-import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1524,48 +1523,16 @@ def _is_self_assignment_line(line: str) -> bool:
 # placeholders are dropped).
 _KEYWORD_DETECTOR_KINDS = frozenset({"Secret Keyword", "password_assignment"})
 
-# Values that are clearly NOT a credential -- test/example markers only. A weak
-# but PLAUSIBLY-REAL password (`admin`, `password123`, `123456`, `s3cr3t`,
-# `changeme`, a bare `secret`/`password`) is deliberately absent: committing one
-# is a genuine credential leak the scanner must still flag. An exact match is
-# unconditional (`test` is never a real secret); the PATTERNS below add an entropy
-# backstop so a real key that merely starts with "your-" is not dropped.
-_PLACEHOLDER_SECRET_VALUES = frozenset(
-    {
-        "test",
-        "testing",
-        "example",
-        "dummy",
-        "sample",
-        "placeholder",
-        "redacted",
-        "none",
-        "null",
-        "nil",
-        "todo",
-        "tbd",
-        "xxx",
-        "foo",
-        "bar",
-        "baz",
-        "fixme",
-        "fake",
-        "mock",
-        "your-secret-key",
-        "your_secret_key",
-        "your-api-key",
-        "your_api_key",
-        "yoursecretkey",
-        "notasecret",
-        "not-a-secret",
-    }
+# The placeholder-value classifier lives in a dependency-free leaf module so the
+# secret scanner can compute a per-hit verdict at scan time without a circular
+# import. Re-imported here as aliases so every existing reference below is unchanged.
+from chameleon_mcp.secret_placeholder import (  # noqa: E402
+    line_has_colocated_real_secret,
 )
-_PLACEHOLDER_SECRET_RE = re.compile(
-    r"^(?:your[-_]|my[-_]secret|put[-_]your|xxx+)"
-    r"|[-_]here$|<[^>]*>|\{\{.*\}\}|\$\{[^}]*\}|%\([^)]*\)|example\.(?:com|org)"
-    r"|^x+$|^0+$|^\.+$|^-+$",
-    re.IGNORECASE,
+from chameleon_mcp.secret_placeholder import (  # noqa: E402
+    secret_value_is_placeholder as _secret_value_is_placeholder,
 )
+
 # A string value ASSIGNED to a keyword (`password = "..."` / `key: "..."`), read
 # from the value position only -- never any literal on the line -- so a real key
 # in `env("KEY", "AKIA...")` or `cond ? "real" : "x"` is never mistaken for the
@@ -1576,32 +1543,16 @@ _PLACEHOLDER_SECRET_RE = re.compile(
 _ASSIGNED_STR_VALUE_RE = re.compile(r"""[=:]\s*(?:[rbfuRBFU]{0,2})['"]([^'"]*)['"]""")
 
 
-def _shannon_entropy(s: str) -> float:
-    from collections import Counter
-
-    n = len(s)
-    if n == 0:
-        return 0.0
-    return -sum((c / n) * math.log2(c / n) for c in Counter(s).values())
-
-
-def _secret_value_is_placeholder(value: str) -> bool:
-    v = value.strip()
-    if not v or v.lower() in _PLACEHOLDER_SECRET_VALUES:
-        return True  # empty, or an exact known placeholder -- never a real key
-    # A placeholder-SHAPED value only counts when its entropy is low: a real
-    # credential that happens to start with "your-" is high-entropy and stays.
-    return bool(_PLACEHOLDER_SECRET_RE.search(v)) and _shannon_entropy(v) < 3.5
-
-
 def _keyword_hit_is_placeholder(hit: dict, lines: list[str]) -> bool:
-    """True when a keyword-style hit's line assigns ONLY placeholder values.
+    """True when a keyword-style hit's flagged value is a clear placeholder.
 
-    A hit carries only its type and line number, not the exact flagged value, so
-    the check requires EVERY assigned string literal on the line to be a clear
-    placeholder. A line carrying any real-looking value -- a multi-assignment or an
-    env default that also holds a genuine secret -- keeps its hit, so a real secret
-    sitting next to a placeholder on the same line is never dropped.
+    When the scanner computed a per-hit ``value_placeholder`` verdict from the
+    EXACT flagged token (the precise path), that verdict decides it -- so a
+    placeholder value survives even when a co-located non-secret arg
+    (`username="eric"`) sits on the same line. Absent that boolean (an older hit,
+    or the `password_assignment` fallback kind with no per-value token), fall back
+    to the conservative "every assigned string literal on the line is a
+    placeholder" check. Either way a real-looking value is never dropped.
     """
     if str(hit.get("type")) not in _KEYWORD_DETECTOR_KINDS:
         return False
@@ -1610,10 +1561,26 @@ def _keyword_hit_is_placeholder(hit: dict, lines: list[str]) -> bool:
     # literal). Reading the original line would see only a fragment (possibly a
     # placeholder), so the value the detector actually flagged is not recoverable
     # here -- never suppress it, keeping the concat-obfuscation defense intact.
+    # This short-circuit runs BEFORE the boolean so a folded token can never leak.
     if hit.get("concat_folded"):
         return False
     ln = hit.get("line_number")
-    if not isinstance(ln, int) or not (1 <= ln <= len(lines)):
+    line_ok = isinstance(ln, int) and 1 <= ln <= len(lines)
+    if "value_placeholder" in hit:
+        if not hit["value_placeholder"]:
+            return False  # the exact flagged token is real -> keep
+        # The flagged token is a placeholder, but detect-secrets flags a multi-
+        # assignment line only ONCE, so a real secret under a DIFFERENT key on the
+        # same line would be lost if we dropped here. Keep the hit if any co-located
+        # assignment carries a real credential -- a non-placeholder value under a
+        # secret-named key (`token="s3cr3t"`, weak but real) or any high-entropy
+        # value. A co-located username/email under a non-secret key is not a secret,
+        # so the common `login(username="x", password="test")` still drops. Missing
+        # the line falls back to keeping (safe).
+        if not line_ok:
+            return False
+        return not line_has_colocated_real_secret(lines[ln - 1])
+    if not line_ok:
         return False
     values = _ASSIGNED_STR_VALUE_RE.findall(lines[ln - 1])
     return bool(values) and all(_secret_value_is_placeholder(v) for v in values)

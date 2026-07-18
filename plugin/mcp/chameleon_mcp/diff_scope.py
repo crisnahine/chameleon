@@ -33,6 +33,15 @@ isolation and add nothing to the hook hot path beyond a second in-process lint.
 
 from __future__ import annotations
 
+import re
+
+# "line 29" -> "line": a line-anchored finding (style-rule-violation embeds the
+# line number in its message/actual) must key the same before and after an edit
+# shifts line numbers, or it re-surfaces as "introduced" on any edit that adds or
+# removes lines above it. Column counts and other numbers are left intact, so a
+# genuinely different finding (101 vs 102 cols) still keys distinctly.
+_LINE_REF_RE = re.compile(r"\bline\s+\d+", re.IGNORECASE)
+
 # The guaranteed-minimum exempt set: a leaked credential or an eval/exec sink is a
 # deterministic security fact that must always surface. The production wiring in
 # posttool_verify passes the WIDER `violation_class.BLOCK_ELIGIBLE_RULES` (a
@@ -105,8 +114,17 @@ def _reverse_one(text: str, old: object, new: object, replace_all: bool) -> str 
     return text.replace(new, old, 1)
 
 
+def _norm_line_refs(s: object) -> object:
+    return _LINE_REF_RE.sub("line", s) if isinstance(s, str) else s
+
+
 def _finding_key(v: dict) -> tuple:
-    return (v.get("rule"), v.get("expected"), v.get("actual"), v.get("message"))
+    return (
+        v.get("rule"),
+        _norm_line_refs(v.get("expected")),
+        _norm_line_refs(v.get("actual")),
+        _norm_line_refs(v.get("message")),
+    )
 
 
 def edit_introduced_violations(
@@ -118,15 +136,28 @@ def edit_introduced_violations(
     the pre set, plus every exempt (security) finding regardless. Pre-existing
     non-exempt findings are dropped. Order is preserved from ``post_violations``.
 
-    Findings are keyed by (rule, expected, actual, message); identical keys are
-    fungible (no line number distinguishes them), so a repeat of an existing
-    finding is treated as pre-existing -- a safe, recall-only simplification.
+    Findings are keyed by (rule, expected, actual, message); the line-number
+    reference is normalized out of the key so a shifted pre-existing finding
+    matches its counterpart. The diff is a MULTISET diff, not set membership: a key
+    that appears N times pre and M times post introduces max(0, M-N) instances. A
+    single shifted finding (1 pre, 1 post) is pre-existing (0 introduced), but a
+    NEW instance of a line-anchored rule -- a second `command-injection` an edit
+    adds to a file that already had one -- surfaces, because its normalized key's
+    post count exceeds its pre count. Set membership would have masked it.
     """
-    pre_keys = {_finding_key(v) for v in pre_violations if isinstance(v, dict)}
+    from collections import Counter
+
+    pre_counts = Counter(_finding_key(v) for v in pre_violations if isinstance(v, dict))
+    seen: Counter = Counter()
     out: list[dict] = []
     for v in post_violations:
         if not isinstance(v, dict):
             continue
-        if v.get("rule") in exempt_rules or _finding_key(v) not in pre_keys:
+        if v.get("rule") in exempt_rules:
+            out.append(v)
+            continue
+        key = _finding_key(v)
+        seen[key] += 1
+        if seen[key] > pre_counts.get(key, 0):
             out.append(v)
     return out

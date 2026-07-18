@@ -5963,6 +5963,44 @@ def _displayable_violations(
         return list(violations)
 
 
+# Production-SHAPE structural rules that presume a source-file role: a default
+# export, production top-level constructs, a named-export count, a use-client/
+# server signal. A test file legitimately has none of these, but a test file
+# mis-routed to a SOURCE archetype (no dedicated test dir, so it buckets to its
+# enclosing app/component dir) is linted as production and gets these firings.
+# jsx-presence-mismatch is deliberately EXCLUDED: it is the only block-eligible
+# structural rule, so keeping it leaves the hard partition + Stop arming byte-
+# identical on test files (same discipline as the v4.4.6 diff-aware lint).
+_TEST_SUPPRESSED_STRUCTURAL_RULES: frozenset[str] = frozenset(
+    {
+        "named-export-count-bucket-mismatch",
+        "top-level-node-kinds-mismatch",
+        "default-export-kind-mismatch",
+        "content-signal-mismatch",
+    }
+)
+
+
+def _drop_test_structural_findings(
+    violations: list[dict], rel_path: str, language: str | None
+) -> list[dict]:
+    """On a TEST file, drop the production-shape structural findings. A test file's
+    shape never matches a source archetype's, so those findings are pure mis-routing
+    noise (a from-scratch task hits them on every new test file). Non-test paths are
+    returned unchanged, and any error fails open to the full list. Never drops a
+    block-eligible rule (jsx stays), so enforcement is untouched."""
+    if not violations:
+        return violations
+    try:
+        from chameleon_mcp.conventions import _is_test_path
+
+        if not _is_test_path(rel_path, language=language):
+            return violations
+    except Exception:
+        return violations
+    return [v for v in violations if v.get("rule") not in _TEST_SUPPRESSED_STRUCTURAL_RULES]
+
+
 def posttool_verify() -> int:
     """PostToolUse Edit/Write/NotebookEdit: archetype conformance lint.
 
@@ -6401,6 +6439,21 @@ def posttool_verify() -> int:
         # no pre-edit injection) still see the full importer surface.
         if violations:
             violations = [v for v in violations if v.get("rule") != "cross-file-importers"]
+
+        # Class I: a test file with no dedicated test dir buckets to its enclosing
+        # app/component dir, so a SOURCE archetype claims it and its production-shape
+        # structural rules fire on test code they never fit. Drop those on a test
+        # path (jsx-presence-mismatch stays -> the block partition + Stop arming are
+        # byte-identical). Scoped to posttool_verify, like the cross-file drop above.
+        if violations:
+            try:
+                from chameleon_mcp.lint_engine import detect_language
+
+                violations = _drop_test_structural_findings(
+                    violations, _repo_rel(repo_root, file_path), detect_language(file_path)
+                )
+            except Exception:
+                pass
 
         # A rule calibration demoted for flagging conforming committed code
         # (enforcement.json active:false + flagged>0) is measured FP-prone, so its

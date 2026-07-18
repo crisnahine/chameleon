@@ -15,6 +15,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from chameleon_mcp.secret_placeholder import secret_value_is_placeholder
+
 _FALLBACK_PATTERNS = (
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "aws_access_key"),
     (re.compile(r"\b[A-Za-z0-9/+=]{40}\b"), "possible_aws_secret"),
@@ -105,11 +107,20 @@ def _try_detect_secrets(content: str) -> list[dict[str, Any]] | None:
                     for s in scan_line(line):
                         if s.type in _NOISY_DETECT_SECRETS_TYPES:
                             continue
+                        # Compute the placeholder verdict from the EXACT flagged
+                        # token here, then discard it -- the raw value is never
+                        # stored (secret_value stays redacted). This lets the
+                        # keyword filter judge the precise token instead of every
+                        # value on the line. A real high-entropy credential is
+                        # never in the placeholder set, so its verdict is False.
                         hits.append(
                             {
                                 "type": s.type,
                                 "line_number": line_no,
                                 "secret_value": "<redacted>",
+                                "value_placeholder": secret_value_is_placeholder(
+                                    s.secret_value or ""
+                                ),
                             }
                         )
                 except Exception:

@@ -177,3 +177,82 @@ def test_production_exempt_keeps_every_block_eligible_finding_whole_file():
     assert "phantom-import" in got
     assert "naming-convention-violation" in got
     assert "some-style-advisory" not in got
+
+
+def test_finding_key_is_line_number_insensitive():
+    # BUG #2: a line-anchored finding (style-rule-violation embeds "line N" in its
+    # message/actual) must match its post-edit counterpart after a line shift, or a
+    # pre-existing finding re-surfaces as "introduced" on any edit that adds/removes
+    # lines above it. The docstring already promises "no line number distinguishes
+    # them" -- enforce it in the key.
+    pre = [
+        {
+            "rule": "style-rule-violation",
+            "expected": "<matches config>",
+            "actual": "line 29 is 101 cols (max 100)",
+            "message": "line 29 is 101 columns; max 100.",
+        }
+    ]
+    post = [
+        {
+            "rule": "style-rule-violation",
+            "expected": "<matches config>",
+            "actual": "line 31 is 101 cols (max 100)",  # same violation, shifted 2 lines
+            "message": "line 31 is 101 columns; max 100.",
+        }
+    ]
+    # pre-existing -> must NOT be re-surfaced as introduced
+    assert edit_introduced_violations(pre, post, frozenset()) == []
+    # but a genuinely different overage (102 vs 101 cols) is still distinct
+    post2 = [
+        {
+            "rule": "style-rule-violation",
+            "expected": "<matches config>",
+            "actual": "line 31 is 102 cols (max 100)",
+            "message": "line 31 is 102 columns; max 100.",
+        }
+    ]
+    assert len(edit_introduced_violations(pre, post2, frozenset())) == 1
+
+
+def _sink(line):
+    # A dangerous-sink advisory whose ONLY per-instance discriminator is the line
+    # number (command-injection, insecure-random, weak-hash, ...). After line-ref
+    # normalization two instances share a key, so a set-based diff masks a new one.
+    return {
+        "rule": "command-injection",
+        "expected": "",
+        "actual": "",
+        "message": f"SECURITY: shell command built from a variable at line {line}.",
+    }
+
+
+def test_new_instance_of_line_anchored_rule_still_surfaces():
+    # An edit ADDS a second command-injection; the file already had one. After
+    # line-ref normalization both share a key, but a NEW instance must still surface
+    # -- the diff is a MULTISET diff (count increase), not set membership.
+    pre = [_sink(12)]
+    post = [_sink(5), _sink(12)]  # new sink at line 5, old shifted to 12
+    got = edit_introduced_violations(pre, post, frozenset())
+    assert len(got) == 1
+    assert got[0]["rule"] == "command-injection"
+
+
+def test_line_shifted_single_finding_not_resurfaced():
+    # Count parity: one pre, one post (same finding, shifted) -> 0 introduced. This
+    # is the v4.4.7 line-ref fix; the multiset diff must preserve it.
+    assert edit_introduced_violations([_sink(12)], [_sink(31)], frozenset()) == []
+
+
+def test_pre_existing_duplicate_pair_not_surfaced():
+    # Two pre, two post of the same normalized key -> 0 introduced (both pre-existing).
+    pre = [_sink(4), _sink(9)]
+    post = [_sink(6), _sink(11)]
+    assert edit_introduced_violations(pre, post, frozenset()) == []
+
+
+def test_three_post_two_pre_surfaces_one():
+    # Three post instances, two pre -> exactly one newly introduced.
+    pre = [_sink(4), _sink(9)]
+    post = [_sink(2), _sink(6), _sink(11)]
+    assert len(edit_introduced_violations(pre, post, frozenset())) == 1
