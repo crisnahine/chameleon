@@ -4,6 +4,34 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.6] - 2026-07-18
+
+### Fixed
+- The per-edit conformance lint's ADVISORY is now diff-scoped: an `Edit` /
+  `MultiEdit` is nagged only for the advisory findings it INTRODUCED, not for
+  every pre-existing convention issue elsewhere in the file. Whole-file
+  attribution -- an edit flagged for a style / convention issue on a line it
+  never touched -- was the top false-positive source across every effectiveness
+  eval (79 to 100% of per-edit findings). chameleon reconstructs the pre-edit
+  content from the tool input, lints it the same way as the post-edit content,
+  and drops the advisory findings present in both.
+  - ENFORCEMENT is unchanged. Every block-eligible rule (secrets, eval,
+    phantom-import, naming / import / inheritance / jsx / file-naming) is exempt
+    and surfaces whole-file, so the block partition, the inline block, and the
+    turn-end Stop-backstop arming are computed from exactly the same findings as
+    before. A pre-existing broken import or a credential still surfaces and
+    blocks; a follow-up clean edit can never disarm a block-eligible violation an
+    earlier edit in the turn introduced.
+  - Measured 93 to 100% fewer per-edit advisory findings on benign edits across
+    Ruby, TypeScript (NestJS), and React fixtures, while every genuinely
+    introduced finding still surfaces (verified against an injected-violation
+    control).
+  - Scope is narrow and fail-safe: `Write` / `NotebookEdit` author the whole
+    file (no pre-edit content to diff against, so whole-file lint stands), a
+    `replace_all` edit or any ambiguous reversal falls back to whole-file, and
+    any error fails open to the whole-file findings. Kill switch:
+    `CHAMELEON_DIFF_LINT=0`.
+
 ## [4.4.5] - 2026-07-18
 
 ### Added

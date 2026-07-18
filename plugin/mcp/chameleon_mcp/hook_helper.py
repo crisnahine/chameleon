@@ -6347,6 +6347,46 @@ def posttool_verify() -> int:
                 repo_root, archetype_name, content, file_path, content_truncated=content_truncated
             )
 
+        # Diff-scope the ADVISORY findings. An Edit/MultiEdit modifies PART of a
+        # file, so an advisory finding it did not introduce (present in the pre-edit
+        # content too) is whole-file-attribution noise -- the top false-positive
+        # source across every effectiveness eval ("honest guards, diluted by
+        # whole-file non-diff-aware"), and measured to be 79-100% of per-edit
+        # findings. Reconstruct the pre-edit content, lint it the same way, and keep
+        # only the findings the edit ADDED. Every ENFORCEMENT-relevant rule
+        # (`BLOCK_ELIGIBLE_RULES` -- secrets, eval, phantom-import, naming/import/
+        # inheritance/jsx/file-naming) is EXEMPT and surfaces whole-file, so the
+        # `hard` partition, the inline block, and the Stop-backstop arming
+        # (`blockable_unresolved`) are computed from exactly the same findings as
+        # before -- enforcement is byte-identical to whole-file lint, and a
+        # follow-up clean edit can never disarm a still-present block-eligible
+        # violation an earlier edit in the turn introduced. Only the pure-advisory
+        # dilution is removed. A Write authors the whole file (reconstruct returns
+        # None -> whole-file stands), a replace_all/ambiguous reversal falls back to
+        # whole-file, and any error fails open to whole-file findings.
+        if violations and os.environ.get("CHAMELEON_DIFF_LINT") != "0":
+            try:
+                from chameleon_mcp.diff_scope import (
+                    edit_introduced_violations,
+                    reconstruct_pre_edit_content,
+                )
+                from chameleon_mcp.violation_class import BLOCK_ELIGIBLE_RULES
+
+                _pre_content = reconstruct_pre_edit_content(tool_name, tool_input, content)
+                if _pre_content is not None and _pre_content != content:
+                    _pre_violations = _lint_file_in_process(
+                        repo_root,
+                        archetype_name,
+                        _pre_content,
+                        file_path,
+                        content_truncated=content_truncated,
+                    )
+                    violations = edit_introduced_violations(
+                        _pre_violations, violations, exempt_rules=BLOCK_ELIGIBLE_RULES
+                    )
+            except Exception:
+                pass  # fail open to whole-file findings
+
         # Drop the still-present-export importer note on the per-edit path
         # (both the daemon and in-process lint emit it). It is edit-independent
         # static context -- for a name the module still exports it fires the same
