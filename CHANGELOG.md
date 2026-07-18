@@ -4,6 +4,27 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.13] - 2026-07-18
+
+### Fixed
+- The auto-pass router (`get_autopass_verdict`, the pr-review skill's Step 3h)
+  counted package manifests, lockfiles, docs, and config files as "unarchetyped
+  source". Those files resolve no archetype, so a pure version-bump / release
+  diff (`package.json`, `uv.lock`, `CHANGELOG.md`, `pyproject.toml`, plugin
+  config) was scored `risk: elevated` / `auto_pass_eligible: false` with the
+  misleading reason "N file(s) outside profiled archetypes" -- a change with
+  nothing to logic-review routed to a human on a false signal. `assemble_facts`
+  now excludes manifests, lockfiles, docs, and config/data from both
+  `unarchetyped_files` and `source_files_changed`, but only where the file is
+  ALSO unarchetyped, so a repo that has taught chameleon to archetype its config
+  keeps it as governed source. Reuses `dep_diff`'s manifest basename sets for the
+  extensionless cases (`Gemfile`, `Pipfile`) an extension test cannot catch. No
+  security signal is weakened: the secret scan and the dependency-change diff
+  review these files on their own independent paths, and the security-surface
+  check still scans the full unfiltered file list. Verified via real usage (the
+  live v4.4.11..HEAD release diff drops from `risk: elevated` to `risk: low`,
+  while a source-only diff is byte-identical).
+
 ## [4.4.12] - 2026-07-18
 
 ### Fixed
