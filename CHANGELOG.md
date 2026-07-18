@@ -4,6 +4,31 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.14] - 2026-07-18
+
+### Fixed
+- The turn-end reviewer's `--bare` auth-loss probe (v4.4.12) ran on exit 0, but
+  it is a substring match for auth phrases (`not logged in` / `invalid api key` /
+  `authentication error` / `oauth token expired`). A genuine review of auth /
+  login code names those phrases in its own verdict prose, so a clean exit-0
+  review was misread as an auth-error body: the review was discarded,
+  `--bare` was disabled globally for 24h, and the clamped retry could drop the
+  turn's findings. What separates a real review from an auth-error body is
+  STRUCTURE, not vocabulary: a real review carries a findings JSON array, an
+  auth-error body (plain OR wrapped in a stream-json `result` string) carries
+  none. The probe now fires only when there is also NO findings array
+  (`_output_has_findings_array`). Preserves the v4.4.12 revival (a real auth-error
+  body still falls back) while a real review of auth code is never discarded, and
+  is robust to a slightly-off finding shape or a stream-json-wrapped auth body.
+  Found and fixed via `/chameleon-receiving-code-review` processing an adversarial
+  review.
+- Corrected the auto-pass `_is_non_source_file` comments (v4.4.13): the
+  dependency-change diff reviews only the known package manifests/lockfiles, not
+  an arbitrary `.json` / `.toml` config file. The secret scan still runs on every
+  changed file (pre-archetype); dropping a generic config-as-code file from the
+  two risk facts is an accepted advisory-router tradeoff, not a claimed
+  dependency-review safety net. No code-path change.
+
 ## [4.4.13] - 2026-07-18
 
 ### Fixed
