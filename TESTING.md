@@ -810,6 +810,86 @@ the monorepo path, which the campaign's minimal-diff rule forbids without flaggi
 
 ---
 
+### GAP-007 — a `raw_sql_concat` false positive deletes the entire data-access archetype — OPEN (HIGH)
+
+**Cells:** `bootstrap`/canonical-selection x **C1, C2** (reported independently in both)
+**Severity:** HIGH — silently substitutes wrong guidance for the repo's most security-sensitive layer
+**Found by:** wave-1 execution; **root cause verified by me directly**, not relayed.
+
+**User-visible symptom (my own invocation, not an agent's):**
+
+```
+src/repositories/carrier-repository.ts
+    archetype     : cluster-57791e2a   match_quality: fallback   confidence: low
+    witness       : src/validators/carrier-validator.ts     <- a VALIDATOR, wrong layer
+src/services/shipment-service.ts
+    archetype     : service            match_quality: ast        confidence: medium
+    witness       : src/services/carrier-service.ts         <- correct
+```
+
+`src/repositories/` holds 7 files and is the single most uniform cohort in the repo (identical
+structure down to error-message phrasing), yet it produces **no archetype**. The derived set is
+`model, serializer, service, test, util, cluster-57791e2a` — no `repository`. An edit to the
+data layer is handed a validator as the pattern to imitate.
+
+**Root cause, measured per cohort:**
+
+```
+dangerous-pattern scan:
+  src/repositories   7/7 flagged     <- every file excluded
+  src/validators     0/8
+  src/services       0/7
+  src/models         0/8
+  src/serializers    0/8
+```
+
+Every repository file trips `poisoning_scanner.scan_for_dangerous_patterns`, so none is
+eligible to be a canonical witness, so the cluster has no witness, so the archetype is dropped.
+
+**The flag is a false positive on the safest possible SQL:**
+
+```
+{"kind": "raw_sql_concat", "match": "`SELECT ${COLUMNS} FROM ${TABLE}", "position": 1870}
+
+const TABLE = 'carriers';                        // hardcoded literal
+const COLUMNS = `...`;                           // module-level constant
+params.push(filter.status);                      // user values are parameterized
+clauses.push(`status = $${params.length}`);      // placeholders, never interpolated
+```
+
+The only interpolation is of **compile-time constants** — a fixed table name and a fixed column
+list. Every user-supplied value goes through `$1`/`$2` placeholders. This is the textbook
+correct pattern, and the scanner treats it as SQL injection.
+
+**Two distinct defects, both needed for the failure:**
+
+1. **`raw_sql_concat` cannot distinguish constant interpolation from user-input
+   interpolation.** Any repository that names its table in a `const` and builds
+   `` `SELECT ${COLUMNS} FROM ${TABLE}` `` is flagged — which is how a large share of real
+   data-access code is written.
+2. **A cluster whose every file is scan-excluded is DELETED rather than emitted
+   witness-less.** This is the more serious architectural fault: it converts *"I have no safe
+   example to show you"* into *"here is an example from an unrelated layer"*, silently. Missing
+   guidance would be honest; wrong guidance is worse than none. Independently flagged by the
+   C1 and C4 verifiers as its own defect.
+
+**Impact / effectiveness:** the security scanner degrades security-relevant guidance. The
+repository layer is exactly where SQL-injection mistakes happen, and it is the one layer
+chameleon gives no correct pattern for — while confidently offering a validator instead.
+Partial mitigations exist and deserve credit: `match_quality: fallback` and `confidence: low`
+are reported honestly, and the preflight hedges with *"Mixed-cluster archetype: treat the
+witness below as a loose reference, not a template."* The sibling and collaborator-signature
+sections are also correct. But the canonical witness — the part the model is told to imitate —
+is from the wrong layer.
+
+**Status:** OPEN. Fix (2) is the higher-value repair and should come first: a witness-less
+archetype is strictly better than a wrong-layer witness, and it fixes this class of failure for
+every future scanner false positive, not just this one. Fix (1) narrows the pattern to
+interpolation of non-constant expressions. Both need the C2 (Next.js) reproduction re-checked,
+since it reported the same symptom in `lib/repositories`.
+
+---
+
 ### GAP-002 — `reuse-before-create` suggested 4 unrelated tests, 4/4 wrong — OPEN
 
 **Cell:** `reuse-before-create` x Python (found on the chameleon repo itself)
