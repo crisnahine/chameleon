@@ -37,15 +37,19 @@ from chameleon_mcp.conventions import _is_test_path
 from chameleon_mcp.dep_diff import MANIFEST_LOCKFILE_BASENAMES, UNCOVERED_MANIFEST_BASENAMES
 from chameleon_mcp.violation_class import _IGNORE_RE
 
-# File classes that are never archetyped SOURCE: dependency manifests and
+# File classes that are not archetyped SOURCE: dependency manifests and
 # lockfiles, docs, and config/data. The archetype/logic review has no canonical
-# to vouch for them and they carry no reviewable authorship the auto-pass gate
-# must sign off; the secret scan and the dependency diff review them on their own
-# path instead. Counting them among "files outside profiled archetypes" would
-# elevate a pure version-bump/release diff to needs-human for the wrong reason.
-# The extension set mirrors the pr-review skill's own config/data skip-list;
-# _is_non_source_file adds the extensionless manifests (Gemfile, Pipfile) and the
-# generated markers an extension test alone cannot catch.
+# to vouch for them, so counting them among "files outside profiled archetypes"
+# elevates a pure version-bump/release diff to needs-human for the wrong reason.
+# The secret scan still runs on every one of them (it is pre-archetype), and the
+# dependency-change diff reviews the KNOWN package manifests/lockfiles; a generic
+# config-as-code file (a .json rules engine, a .toml policy) gets neither the
+# convention review nor the dependency review -- an accepted tradeoff, since the
+# auto-pass router is advisory (it never blocks) and its whole job is to mark the
+# routine slice, not to be the only gate on config-driven logic. The extension
+# set mirrors the pr-review skill's own config/data skip-list; _is_non_source_file
+# adds the extensionless manifests (Gemfile, Pipfile) and the generated markers an
+# extension test alone cannot catch.
 _NON_SOURCE_EXTS = frozenset(
     {
         ".json",
@@ -238,8 +242,11 @@ def _is_non_source_file(path: str) -> bool:
     -- but only where they are ALSO unarchetyped (the caller keeps the
     ``is_unarchetyped`` gate), so a repo that HAS taught chameleon to archetype
     its config keeps that file as governed source. The exclusion weakens no
-    security signal: the secret scan and the dependency diff review these files on
-    their own path, independent of these two facts.
+    SECRET signal: the secret scan is pre-archetype and runs on every changed file
+    regardless of this classifier. The dependency-change diff still reviews the
+    known package manifests/lockfiles; the router being advisory, dropping a
+    generic config-as-code file from these two risk facts trades a rare
+    false-negative for the common version-bump false-positive this exists to fix.
     """
     base = str(path).rsplit("/", 1)[-1]
     if base in MANIFEST_LOCKFILE_BASENAMES or base in UNCOVERED_MANIFEST_BASENAMES:

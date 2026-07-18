@@ -1371,6 +1371,22 @@ def _spawn_lost_auth(proc) -> bool:
     return bool(_NOT_LOGGED_IN_RE.search(blob))
 
 
+def _output_has_findings_array(stdout: str) -> bool:
+    """True when the reviewer stdout carries a findings JSON ARRAY (a real
+    review), as opposed to a bare auth-error body.
+
+    The array need only be PRESENT, not coerce to valid Findings: a genuine
+    review of auth / login code whose finding titles name auth phrases
+    ("authentication error", "not logged in") must never read as an auth-loss
+    body, and a slightly-off finding shape is still a review, not a login
+    failure. An auth-error body -- plain OR wrapped in a stream-json ``result``
+    string -- carries no array, so the ABSENCE of one is the reliable auth-loss
+    signal that a phrase match alone is not (the phrase appears in real auth
+    reviews too).
+    """
+    return any(_extract_json_array(t) is not None for t in _stream_json_texts(stdout))
+
+
 # True only inside the detached judge_async child process. Only that child may
 # take the generous fallback budget below: a spawn inside the Stop hook never
 # can, because the stop-backstop wrapper caps the whole hook at 55s and the
@@ -1571,12 +1587,21 @@ def _spawn_reviewer_status(
         # --bare drops OAuth/keychain on current CLIs. CRUCIALLY that shows up as an
         # EXIT-0 "Not logged in / Please run /login" body, not a nonzero exit -- so the
         # auth-loss probe must run REGARDLESS of exit code. Checking it only in the
-        # nonzero branch (the prior bug) mistook the exit-0 auth-error string for a
+        # nonzero branch (the original bug) mistook the exit-0 auth-error string for a
         # successful review, recorded --bare as working, never fell back, and left the
-        # entire turn-end review layer silently dead. Detect it by output shape, record
-        # the failure (so later spawns skip --bare), and retry plain -- which keeps
-        # auth and produces a real review.
-        if _spawn_lost_auth(proc):
+        # entire turn-end review layer silently dead.
+        #
+        # But an auth-phrase match ALONE is not auth loss: a genuine review of auth /
+        # login code names those phrases in its own findings ("authentication error
+        # path unhandled", "when the user is not logged in"). What separates a real
+        # review from an auth-error body is STRUCTURE, not vocabulary -- a review
+        # carries a findings JSON array, an auth-error body (plain OR wrapped in a
+        # stream-json result string) carries none. So gate the match on the ABSENCE
+        # of a findings array -- else a clean review of an auth diff is discarded,
+        # --bare is disabled globally for a day, and the clamped retry can drop the
+        # turn's findings. Detect real auth loss by output shape, record it (later
+        # spawns skip --bare), and retry plain -- which keeps auth and reviews.
+        if _spawn_lost_auth(proc) and not _output_has_findings_array(proc.stdout or ""):
             _record_bare_auth(ok=False)
             proc, fail = _run(
                 [a for a in args if a != "--bare"],

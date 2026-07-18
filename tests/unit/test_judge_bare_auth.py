@@ -11,6 +11,7 @@ session pays the discovery at most once.
 
 from __future__ import annotations
 
+import json
 import time
 from unittest.mock import patch
 
@@ -87,6 +88,79 @@ def test_bare_success_keeps_flag(tmp_path):
     assert len(calls) == 1
     assert "--bare" in calls[0]
     assert judge._BARE_AUTH_OK is True
+
+
+def _review_naming_auth() -> str:
+    """A real --bare review (exit 0 stream-json) whose FINDINGS name auth phrases.
+
+    The finding titles/descriptions contain "authentication error" and "not
+    logged in", the exact strings the auth-loss regex matches -- so a
+    phrase-only probe would discard this genuine review.
+    """
+    return json.dumps(
+        {
+            "type": "result",
+            "result": json.dumps(
+                [
+                    {
+                        "severity": "medium",
+                        "file": "auth.py",
+                        "line": 42,
+                        "title": "authentication error path unhandled",
+                        "description": "the user is not logged in branch is skipped",
+                    }
+                ]
+            ),
+        }
+    )
+
+
+@pytest.mark.real_judge_spawn
+def test_bare_success_reviewing_auth_code_not_mistaken_for_auth_loss(tmp_path):
+    # A genuine --bare review (exit 0) whose findings name auth phrases must NOT be
+    # read as an auth-loss body. A real review carries a findings array; an
+    # auth-error body carries none. Without the structural guard, a clean review of
+    # auth / login code is discarded, --bare is disabled globally for 24h, and the
+    # clamped retry can drop the turn's findings.
+    review = _review_naming_auth()
+    calls: list = []
+
+    def run(args, **kwargs):
+        calls.append(list(args))
+        return _Proc(0, stdout=review)
+
+    with patch("subprocess.run", side_effect=run):
+        assert judge._spawn_reviewer_status("prompt", tmp_path) == (review, None)
+    # One spawn only: no needless fallback, and --bare stays enabled.
+    assert len(calls) == 1
+    assert "--bare" in calls[0]
+    assert judge._BARE_AUTH_OK is True
+
+
+@pytest.mark.real_judge_spawn
+def test_bare_auth_error_wrapped_in_stream_json_is_still_detected(tmp_path):
+    # Robustness: even if a --bare auth failure is delivered as an EXIT-0
+    # stream-json result whose body is the login message (not a plain body), it
+    # carries no findings array, so it is still detected as auth loss and falls
+    # back to a plain spawn -- the structural check, not a text-presence check, is
+    # what makes this hold.
+    wrapped = json.dumps({"type": "result", "result": "Not logged in. Please run /login"})
+    calls: list = []
+
+    def run(args, **kwargs):
+        calls.append(list(args))
+        if "--bare" in args:
+            return _Proc(0, stdout=wrapped)
+        return _Proc(0, stdout="[]")
+
+    with patch("subprocess.run", side_effect=run):
+        out, fail = judge._spawn_reviewer_status("prompt", tmp_path)
+
+    assert (out, fail) == ("[]", None)
+    assert len(calls) == 2
+    assert "--bare" in calls[0]
+    assert "--bare" not in calls[1]
+    assert judge._BARE_AUTH_OK is False
 
 
 @pytest.mark.real_judge_spawn
