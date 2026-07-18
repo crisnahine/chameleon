@@ -470,6 +470,55 @@ def _python_dep_names(repo_root: Path) -> set[str]:
     return names
 
 
+def _inherited_signals_root(repo_root: Path) -> Path | None:
+    """The monorepo ancestor whose tooling signals this repo inherits, or None.
+
+    A sub-package with no manifest of its own (a Python service inside a JS
+    monorepo) should read the monorepo root's tool configs and extractor signal.
+    The walk that finds it must stay INSIDE the project, though: unbounded, it
+    escaped to ``$HOME``, matched the stray ``package.json`` a global
+    ``npm install -g`` leaves there, and read tool configs from it INSTEAD of the
+    repo -- so every Python repo a few levels under ``$HOME`` silently derived
+    with its own ruff/black config discarded and shipped an empty rules.json.
+
+    Three bounds, each closing a way out of the project:
+      * a repo that has its own manifest never inherits (unchanged);
+      * a directory holding ``.git`` is the outer edge of its own project, so a
+        repo root never looks above itself and a matching ancestor above an
+        intervening repo root is not reachable;
+      * ``$HOME`` is never a project root, even when it happens to hold a
+        manifest.
+
+    The 4-level depth budget is unchanged.
+    """
+    own_js = (repo_root / "package.json").is_file() or (repo_root / "tsconfig.json").is_file()
+    own_ruby = (repo_root / "Gemfile").is_file() or any(repo_root.glob("*.gemspec"))
+    if own_js or own_ruby:
+        return None
+    if (repo_root / ".git").exists():
+        return None
+
+    try:
+        home: Path | None = Path.home()
+    except (OSError, RuntimeError):
+        home = None
+
+    ancestor = repo_root.parent
+    for _ in range(4):
+        if home is not None and ancestor == home:
+            return None
+        # The manifest check precedes the .git check so a monorepo root carrying
+        # both is still inherited from -- it is the intended target.
+        if (ancestor / "package.json").is_file() or (ancestor / "Gemfile").is_file():
+            return ancestor
+        if (ancestor / ".git").exists():
+            return None
+        if ancestor.parent == ancestor:
+            return None
+        ancestor = ancestor.parent
+    return None
+
+
 def _classify_framework(repo_root: Path, language: str | None) -> str | None:
     """Best-effort discrete framework family for the repo, or None.
 
@@ -2167,18 +2216,7 @@ def _bootstrap_single(
 
     workspace = detect_workspace(repo_root)
 
-    inherited_signals_from: Path | None = None
-    own_js = (repo_root / "package.json").is_file() or (repo_root / "tsconfig.json").is_file()
-    own_ruby = (repo_root / "Gemfile").is_file() or any(repo_root.glob("*.gemspec"))
-    if not own_js and not own_ruby:
-        ancestor = repo_root.parent
-        for _ in range(4):
-            if (ancestor / "package.json").is_file() or (ancestor / "Gemfile").is_file():
-                inherited_signals_from = ancestor
-                break
-            if ancestor.parent == ancestor:
-                break
-            ancestor = ancestor.parent
+    inherited_signals_from = _inherited_signals_root(repo_root)
     if inherited_signals_from is not None:
         tool_configs = read_tool_configs(inherited_signals_from)
     else:

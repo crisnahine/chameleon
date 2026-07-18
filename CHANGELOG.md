@@ -4,6 +4,37 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.19] - 2026-07-18
+
+### Fixed
+- Bootstrap could read a repo's tool configuration from `$HOME`, silently
+  discarding the repo's own. A repo with no `package.json` / `tsconfig.json` /
+  `Gemfile` / `*.gemspec` of its own walks up to four ancestors looking for one,
+  so a sub-package inside a JS monorepo inherits that monorepo's tooling. The
+  walk had no boundary: it escaped the repository entirely and, four levels under
+  `$HOME`, matched the stray `package.json` a global `npm install -g` leaves
+  there — then read tool configs from **that** directory *instead of* the repo.
+
+  Measured across five freshly-built Python repos (Django, DRF, Flask, FastAPI,
+  and a framework-agnostic package), every one declaring `line-length = 100`
+  under `[tool.ruff]`: all five shipped `rules.json` with **zero** entries, and
+  the profile reported no Python tool configuration at all. `read_tool_configs`
+  on the repo returned `{'line_length': 100}` while the value actually used —
+  read from `$HOME` — was `None`. A TypeScript repo in the same tree was
+  unaffected only because its own `package.json` short-circuits the walk.
+
+  The walk is now bounded three ways: a directory holding `.git` is the outer
+  edge of its own project (so a repo root never looks above itself, and a
+  matching ancestor above an intervening repo root is unreachable), `$HOME` is
+  never treated as a project root, and the existing 4-level depth budget is
+  unchanged. A genuine monorepo ancestor inside the same repository still
+  inherits exactly as before. Extracted as `_inherited_signals_root` so the
+  boundary is directly testable.
+
+  Known and unfixed (recorded, not bundled): even for a legitimate monorepo
+  ancestor, inheritance *replaces* rather than defers to the sub-package's own
+  config, so a sub-package's settings still lose to the root's.
+
 ## [4.4.18] - 2026-07-18
 
 ### Fixed
