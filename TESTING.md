@@ -1,10 +1,32 @@
 # Chameleon — Full-Matrix Real-Usage Test Campaign
 
-**Status:** IN PROGRESS — Phase 1 (inventory + environment)
+**Status:** IN PROGRESS — Phase 3 (execution wave 1: P0-P2 across all 10 columns)
 **Branch:** `plugin-testing-fixes`
 **Baseline commit:** `27fd8d3` (Release v4.4.15) — clean tree, no uncommitted changes
-**Plugin version under test:** 4.4.15
+**Plugin version under test:** started at 4.4.15, now **4.4.19** (four fixes shipped by this campaign)
 **Started:** 2026-07-18
+
+### Resume pointer (read this first after any interruption)
+
+| | |
+|---|---|
+| Cell ledger | `tests/matrix/cells.jsonl` — 7,680 cells; `python3 scripts/qa-matrix.py status` |
+| Inventory | `tests/matrix/inventory.jsonl` — 768 items with `file:line` anchors |
+| Deploy gate | `./scripts/qa-deploy.sh verify` **must pass before any cell is marked green** |
+| Test repos | `~/Documents/Projects/chameleon-fullmatrix-qa/` — 10 fresh repos, all committed |
+| Next action | Fold wave-1 (P0-P2) results into the ledger, then run wave 2 (P3-P5) |
+
+**Fixes shipped so far (each with red evidence, green evidence, and a regression run):**
+
+| Gap | Severity | Fix | Version |
+|---|---|---|---|
+| GAP-001 | advisory noise | credential-context gate matched substrings (`auth` in "authored") | 4.4.16 |
+| GAP-004 | **HIGH** | every release orphaned the profiles it wrote (25 engines locked out) | 4.4.17 |
+| GAP-005 | false positive | turn-end test-run advisory unsatisfiable (wrong payload key) | 4.4.18 |
+| GAP-006 | **HIGH** | bootstrap read tool config from `$HOME`, discarding the repo's own | 4.4.19 |
+
+GAP-002 open. GAP-003 retracted (my error — the proposed fix would have been a security
+regression). OQ-001 resolved as not-a-defect.
 
 This file is the source of truth for the campaign. On any interruption, compaction, or
 restart: re-read this file and `git log --oneline`, then resume from the first cell that is
