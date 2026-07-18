@@ -4,6 +4,28 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.16] - 2026-07-18
+
+### Fixed
+- The credential-context gate that keeps the shape-only secret patterns
+  (`possible_aws_secret`, `high_entropy_hex`) from flooding advisories matched
+  its credential words as SUBSTRINGS, so ordinary prose opened it: `auth` inside
+  "authored"/"author"/"authority", `key` inside "monkey"/"keyboard"/"turkey",
+  `access` inside "accessible", `secret` inside "secretary", `private` inside
+  "privately". Because the `possible_aws_secret` pattern's character class
+  includes `/`, any 40-character filesystem path also matches its shape — so a
+  documentation line naming a file next to the word "authored" was reported as a
+  leaked AWS credential, with advice to rotate it. The gate now matches whole
+  TOKENS, the same word-boundary precision `classify_security_surface` already
+  applies to paths (camelCase split first, then every non-alphanumeric run
+  delimits), so `AWS_SECRET_KEY`, `api-key`, `apiKey`, and `{"access": ...}`
+  still open it while ordinary words no longer do. The concatenated identifier
+  forms a substring matcher used to catch (`SECRETKEY`, `AUTHTOKEN`,
+  `ACCESSTOKEN`, ...) are listed literally so the change loses no real coverage.
+  Advisory-only rules throughout — `possible_aws_secret` remains excluded from
+  the deterministic hard-block kinds — so this is a precision fix, not a change
+  in what can block.
+
 ## [4.4.15] - 2026-07-18
 
 ### Fixed

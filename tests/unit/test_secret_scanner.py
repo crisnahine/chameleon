@@ -69,6 +69,41 @@ def test_aws_secret_assignment_is_flagged():
     assert any(h["type"] == "possible_aws_secret" for h in scan_for_secrets(src))
 
 
+def test_file_path_beside_ordinary_word_not_flagged_as_aws_secret():
+    # The credential-context gate must key on whole words. "authored" is prose,
+    # not a credential token, and a 40-char filesystem path is not a secret --
+    # the pattern's character class includes '/', so any path of that length
+    # matches its shape. Together they used to report a leaked AWS credential
+    # for an ordinary sentence naming a file.
+    src = "| Dev tree (where fixes are authored) | `/Users/crisn/Documents/Projects/chameleon` |"
+    assert [h for h in scan_for_secrets(src) if h["type"] == "possible_aws_secret"] == []
+
+
+def test_substring_credential_words_do_not_open_the_context_gate():
+    # Each line carries a 40-char base64-shaped run whose only "credential"
+    # context is a substring buried in an ordinary English word.
+    blob = "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0"
+    for word in ("authored", "monkey", "keyboard", "accessible", "privately", "secretary"):
+        src = f"The {word} value {blob} is ordinary prose"
+        hits = [h for h in scan_for_secrets(src) if h["type"] == "possible_aws_secret"]
+        assert hits == [], f"{word!r} must not open the credential-context gate"
+
+
+def test_whole_word_credential_context_still_flags():
+    # The gate must keep firing on real credential words, including possessive
+    # and punctuated forms -- word-boundary matching must not narrow coverage.
+    blob = "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0"
+    for line in (
+        f'secret = "{blob}"',
+        f'api_key: "{blob}"',
+        f"# the token below is live: {blob}",
+        f'{{"access": "{blob}"}}',
+        f"PRIVATE={blob}",
+    ):
+        hits = [h for h in scan_for_secrets(line) if h["type"] == "possible_aws_secret"]
+        assert hits, f"credential context must still flag: {line!r}"
+
+
 def test_bare_git_sha_in_comment_not_flagged_as_hex():
     # A 40-char hex run with no credential token is a git SHA / sourcemap hash.
     src = "# see commit a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0 for the fix"

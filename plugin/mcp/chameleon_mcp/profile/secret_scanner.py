@@ -75,10 +75,58 @@ _NOISY_DETECT_SECRETS_TYPES = frozenset(
 # (api_token = "...") still flags while bare identifiers and hashes do not.
 _CONTEXT_GATED_KINDS = frozenset({"possible_aws_secret", "high_entropy_hex"})
 
-_CREDENTIAL_CONTEXT = re.compile(
-    r"secret|key|token|password|passwd|credential|auth|apikey|api_key|access|private",
-    re.IGNORECASE,
+# Credential words that open the context gate, matched as whole TOKENS rather
+# than substrings. A bare alternation matched inside ordinary prose -- "auth" in
+# "authored", "key" in "monkey", "access" in "accessible", "secret" in
+# "secretary" -- so a sentence naming a file next to a 40-char path reported a
+# leaked AWS credential. Tokenizing is the same word-boundary precision
+# `classify_security_surface` already applies to paths, for the same reason.
+#
+# Exact-only, no prefix scheme: "auth"/"secret" as prefixes would re-admit
+# "authored" and "secretary". The concatenated identifier forms a substring
+# matcher used to catch (SECRETKEY, AUTHTOKEN) are therefore listed literally --
+# none of them is an ordinary English word, so listing them costs no precision.
+_CREDENTIAL_WORDS = frozenset(
+    {
+        "auth",
+        "access",
+        "private",
+        "key",
+        "keys",
+        "apikey",
+        "apikeys",
+        "accesskey",
+        "secretkey",
+        "privatekey",
+        "secretaccesskey",
+        "token",
+        "tokens",
+        "authtoken",
+        "accesstoken",
+        "refreshtoken",
+        "secret",
+        "secrets",
+        "apisecret",
+        "password",
+        "passwords",
+        "passwd",
+        "pwd",
+        "credential",
+        "credentials",
+    }
 )
+
+
+def _credential_words_in(text: str) -> bool:
+    """True when ``text`` carries a credential word as a whole token.
+
+    camelCase boundaries split first (``apiKey`` -> ``api`` ``key``), then every
+    non-alphanumeric run delimits, so ``AWS_SECRET_KEY``, ``api-key``, and
+    ``{"access": ...}`` all tokenize to the credential word while ``authored``
+    and ``monkey`` stay single non-credential tokens.
+    """
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", text)
+    return any(t in _CREDENTIAL_WORDS for t in re.findall(r"[a-z0-9]+", spaced.lower()))
 
 
 def _try_detect_secrets(content: str) -> list[dict[str, Any]] | None:
@@ -159,7 +207,7 @@ def _scan_patterns(
         if cached is None:
             start = line_starts[idx]
             end = line_starts[idx + 1] - 1 if idx + 1 < len(line_starts) else len(content)
-            cached = bool(_CREDENTIAL_CONTEXT.search(content, start, end))
+            cached = _credential_words_in(content[start:end])
             context_ok_by_line[idx] = cached
         return cached
 
