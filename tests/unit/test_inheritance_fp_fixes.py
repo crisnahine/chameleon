@@ -110,3 +110,76 @@ def test_weak_match_never_drops_other_rules():
 def test_empty_and_none_safe():
     assert _drop_inheritance_on_weak_match([], "fallback", "path_only") == []
     assert _drop_inheritance_on_weak_match(None, "fallback", "path_only") is None
+
+
+# ---- Defect E: same-role extension is intra-role reuse, not a base deviation ----
+# A controller extending another *Controller, a serializer extending another
+# *Serializer, is reusing a sibling/intermediate of the SAME role (which itself
+# roots at the archetype's base) -- not a wrong-base deviation. Only a CROSS-role
+# base (a controller extending a Model) is flagged. Verified: 30 of 31 mastodon
+# residual inheritance FPs are same-role extensions.
+
+_CONTROLLER_CONV = {
+    "inheritance": {
+        "dominant_base": "Api::BaseController",
+        "frequency": 0.74,
+        "known_bases": ["Api::BaseController", "Admin::BaseController"],
+    }
+}
+
+
+def test_ruby_same_role_intermediate_not_flagged():
+    # A controller extending a project intermediate controller (not a known base)
+    # is same-role reuse -> exempt.
+    src = "class FooController < Admin::SettingsController\n  def index\n  end\nend\n"
+    assert "inheritance-convention-violation" not in _rules(
+        lint_conventions(src, _CONTROLLER_CONV, language="ruby")
+    )
+
+
+def test_ruby_cross_role_base_still_flagged():
+    # FN GUARD: a controller extending a NON-controller base (cross-role) is a real
+    # deviation and still flags.
+    src = "class FooController < SomeDomainModel\n  def index\n  end\nend\n"
+    assert "inheritance-convention-violation" in _rules(
+        lint_conventions(src, _CONTROLLER_CONV, language="ruby")
+    )
+
+
+def test_ruby_generic_base_word_is_not_a_role():
+    # `Base` (and Error/Class/...) is a GENERIC trailing word, not a role, so an
+    # archetype whose dominant base ends in a generic word grants no role exemption:
+    # a class extending an unrelated `*Base` is still flagged.
+    conv = {"inheritance": {"dominant_base": "ActiveInteraction::Base", "frequency": 0.82}}
+    src = "class MyService < SomeUnrelatedBase\n  def execute\n  end\nend\n"
+    assert "inheritance-convention-violation" in _rules(
+        lint_conventions(src, conv, language="ruby")
+    )
+
+
+def test_python_same_role_serializer_not_flagged():
+    conv = {"inheritance": {"dominant_base": "serializers.ModelSerializer", "frequency": 0.7}}
+    src = "class PageSearchSerializer(PageResultSerializer):\n    pass\n"
+    assert "inheritance-convention-violation" not in _rules(
+        lint_conventions(src, conv, language="python")
+    )
+
+
+def test_python_cross_role_still_flagged():
+    conv = {"inheritance": {"dominant_base": "serializers.ModelSerializer", "frequency": 0.7}}
+    src = "class WidgetThing(SomeExternalModel):\n    pass\n"
+    assert "inheritance-convention-violation" in _rules(
+        lint_conventions(src, conv, language="python")
+    )
+
+
+def test_base_role_suffix_helper():
+    from chameleon_mcp.lint_engine import _base_role_suffix
+
+    assert _base_role_suffix("Api::BaseController") == "Controller"
+    assert _base_role_suffix("serializers.ModelSerializer") == "Serializer"
+    assert _base_role_suffix("BaseService") == "Service"
+    assert _base_role_suffix("ApplicationRecord") == "Record"
+    # generic trailing words are not roles
+    assert _base_role_suffix("ActiveInteraction::Base") is None
+    assert _base_role_suffix("StandardError") is None

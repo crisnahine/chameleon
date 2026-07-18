@@ -4,6 +4,23 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.10] - 2026-07-18
+
+### Fixed
+- `inheritance-convention-violation` no longer flags a class that extends another
+  class of the SAME role as the archetype's dominant base (a `*Controller`
+  extending a project `Admin::SettingsController`, a `*Serializer` extending
+  another `*Serializer`). Such a superclass is a sibling or intermediate of the
+  same role that itself roots at the archetype's base -- intra-role reuse, not a
+  wrong-base deviation. Only a CROSS-role base (a controller extending a Model) is
+  now flagged. This eliminated the last large residual false-positive class (30 of
+  31 remaining inheritance firings on a real Rails repo were same-role
+  extensions), while a genuine cross-role deviation still flags. The role word is
+  the trailing CamelCase word of the base name (`BaseController` -> `Controller`),
+  matched case-sensitively (so `Microservice` is not treated as a `Service` role),
+  and generic trailing words (`Base`, `Error`, `Class`, ...) grant no exemption so
+  a class extending an unrelated `*Base` still flags.
+
 ## [4.4.9] - 2026-07-18
 
 ### Added

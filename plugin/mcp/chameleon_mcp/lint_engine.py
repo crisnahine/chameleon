@@ -924,6 +924,57 @@ def _top_level_kinds_match(file_kinds: list[str], expected: list[str]) -> bool:
     return True
 
 
+# A trailing CamelCase word that names an ARCHETYPE ROLE (`Controller`, `Serializer`,
+# `Service`) rather than a generic base marker. When the dominant base carries such a
+# role, a class extending ANOTHER class of the same role (a `*Controller` extending a
+# project `*Controller` intermediate) is intra-role reuse -- the intermediate itself
+# roots at the archetype's base -- not a wrong-base deviation. The generic markers are
+# excluded because half the classes in a repo end in `Base`/`Error`, which would over-
+# exempt (an unrelated `SomeUnrelatedBase` must still flag).
+_GENERIC_BASE_WORDS: frozenset[str] = frozenset(
+    {
+        "Base",
+        "Error",
+        "Class",
+        "Module",
+        "Object",
+        "Impl",
+        "Mixin",
+        "Concern",
+        "Struct",
+        "Exception",
+    }
+)
+_ROLE_SUFFIX_RE = re.compile(r"[A-Z][a-z]+$")
+
+
+def _base_role_suffix(base: str) -> str | None:
+    """The archetype-role word a base name ends in (`BaseController` -> `Controller`,
+    `serializers.ModelSerializer` -> `Serializer`), or None when the trailing word is a
+    generic base marker (`Base`, `Error`) or too short to be a role."""
+    tail = base.rsplit("::", 1)[-1].rsplit(".", 1)[-1]
+    m = _ROLE_SUFFIX_RE.search(tail)
+    if not m:
+        return None
+    word = m.group(0)
+    if len(word) < 3 or word in _GENERIC_BASE_WORDS:
+        return None
+    return word
+
+
+def _superclass_shares_base_role(superclass: str, dominant_base: str) -> bool:
+    """True when ``superclass`` is another class of the SAME role as the dominant base
+    (a `*Controller` when the base is a `*Controller`), i.e. intra-role reuse of a
+    sibling/intermediate that itself roots at the archetype's base -- not a deviation.
+    Returns False when the dominant base carries no role word, so a generic-base
+    archetype grants no exemption and a genuinely wrong base still flags."""
+    role = _base_role_suffix(dominant_base)
+    if not role:
+        return False
+    sup_tail = superclass.rsplit("::", 1)[-1].rsplit(".", 1)[-1]
+    return sup_tail.endswith(role)
+
+
 def _namespace_local_base(class_name: str, known_bases: set[str], dominant: str) -> str:
     """The known base whose namespace most deeply ENCLOSES ``class_name``.
 
@@ -4298,6 +4349,15 @@ def lint_conventions(
                     _class_root = class_name.split("::", 1)[0] if "::" in class_name else None
                     if _sc_root not in _known_roots and _sc_root != _class_root:
                         continue
+                # A superclass of the SAME role as the dominant base (`FooController`
+                # extending a project `Admin::SettingsController`) is intra-role reuse
+                # of a sibling/intermediate that itself roots at the archetype's base,
+                # not a wrong-base deviation. Only a CROSS-role base (a controller
+                # extending a Model) is a real deviation.
+                if superclass is not None and _superclass_shares_base_role(
+                    superclass, dominant_base
+                ):
+                    continue
                 # A base-less `class Foo` (no `< Base`) is a legitimate standalone
                 # class (middleware, a config module, a plain service), not a missed
                 # inheritance -- the Python check (`_python_inheritance_violations`)
@@ -4645,6 +4705,11 @@ def _python_inheritance_violations(scan_content: str, inheritance: dict) -> list
             or (dominant_module is not None and "." in b and b.rsplit(".", 1)[0] == dominant_module)
             for b in bases
         ):
+            continue
+        # Same-role reuse: a serializer extending another *Serializer (its primary
+        # base) is intra-role reuse of a sibling/intermediate that itself roots at the
+        # archetype's base, not a cross-role deviation. Mirrors the Ruby role exemption.
+        if _superclass_shares_base_role(bases[0], dominant_base):
             continue
         # The file-shared exemption is PRIMARY-base only: a class IS one of the
         # file's shared types when its FIRST base is the shared one. A foreign
