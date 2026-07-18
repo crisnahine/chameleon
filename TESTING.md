@@ -103,7 +103,35 @@ so the host profile store stays untouched.
 
 ## 2. Inventory
 
-_(populated in Phase 1 — see section 3 for the matrix)_
+Extracted from source by 7 parallel readers (one per surface), then **adversarially re-audited**
+by 7 more, each told to find items the first pass missed and to flag any evidence anchor that
+did not say what was claimed. The audit raised the count from 527 to **768** — a 46% miss rate
+on the first pass, which is why the second pass exists.
+
+Every item carries a `file:line` anchor and a concrete "how a real user triggers this". The
+machine-readable list is `tests/matrix/inventory.jsonl`; it is the checklist the cell ledger is
+generated from, so an item cannot be silently dropped.
+
+| Surface | Items | Language-sensitive | Framework-sensitive |
+|---|---:|---:|---:|
+| `hooks` | 163 | 37 | 9 |
+| `skills` | 27 | 15 | 6 |
+| `mcp-tools` | 69 | 35 | 11 |
+| `bootstrap` | 170 | 85 | 35 |
+| `enforcement` | 73 | 48 | 17 |
+| `aux` | 113 | 28 | 2 |
+| `framework-layers` | 153 | 129 | 147 |
+| **TOTAL** | **768** | **377** | **227** |
+
+Independently spot-verified before trusting the extraction: `@_wire_tool` appears exactly 19
+times in `server.py` (16 flat tools + 3 dispatchers), and the three action tuples hold 13 + 7 +
+14 = 34 actions, giving 50 callable MCP entry points. `BLOCK_ELIGIBLE_RULES` has exactly 8
+members. Both matched the agents' claims.
+
+**Scale, stated honestly:** 768 items x 10 columns = **7,680 cells**. This is 46% above the
+5,270 figure the campaign was scoped against, because that figure came from the unverified
+first pass. The decision (literal full coverage, multi-session) is unchanged; the number is
+recorded here so no later summary understates the work.
 
 ---
 
