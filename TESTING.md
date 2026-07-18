@@ -420,7 +420,7 @@ ranking mechanism exists; no bug here.**
 
 ---
 
-### GAP-004 — every release makes its profiles unreadable to older engines — OPEN (HIGH)
+### GAP-004 — every release makes its profiles unreadable to older engines — **RESOLVED (v4.4.17, `631c5f5`)**
 
 **Cell:** `bootstrap`/`engine_min_version` x (language-agnostic; hit on the chameleon repo itself)
 **Severity:** HIGH — total guidance loss, not noise
@@ -501,6 +501,43 @@ Separate the two meanings:
 
 Adding an optional key is backward compatible — the 24-engine probe proves older readers ignore
 unknown profile keys — so no `schema_version` bump is required.
+
+**FIX APPLIED as proposed (v4.4.17).** Implemented exactly the three-part split flagged above,
+with no scope creep.
+
+**Green evidence — a profile written by the fixed engine, read by every cached engine:**
+
+```
+profile written by v4.4.17 (engine_version=4.4.17, engine_min_version=3.0.0, schema_version=8)
+
+  3.0.0  OK archetypes=5     4.0.0  OK archetypes=5     4.4.1  OK archetypes=5
+  3.0.1  OK archetypes=5     4.0.1  OK archetypes=5     4.4.2  OK archetypes=5
+  3.0.2  OK archetypes=5     4.1.0  OK archetypes=5     4.4.10 OK archetypes=5
+  3.0.3  OK archetypes=5     4.1.1  OK archetypes=5     4.4.14 OK archetypes=5
+  3.1.0  OK archetypes=5     4.1.2  OK archetypes=5     4.4.15 OK archetypes=5
+  3.1.1  OK archetypes=5     4.2.0  OK archetypes=5     4.4.16 OK archetypes=5
+  3.1.2  OK archetypes=5     4.4.0  OK archetypes=5     4.4.17 OK archetypes=5
+  3.1.4  OK / 3.2.0 OK / 3.3.0 OK / 3.4.0 OK
+
+25 engines can read it (before the fix: only 4.4.16 and newer)
+```
+
+The refresh that produced it was a real `refresh_repo(force=True)` through the deployed v4.4.17,
+which reported `status: success` and re-derived 5 archetypes.
+
+**Regression handling:** the full unit suite is `6137 passed, 3 skipped` (up from 6131 — the six
+new tests), `ruff check` clean, `ruff format --check` clean over 472 files. Three existing tests
+failed against the fix and each was examined rather than blanket-updated:
+`test_engine_min_version_tracks_package_version` **encoded the old conflated behaviour**, so it
+was split into two tests that keep the real invariant it was protecting (the importlib `0.5.7`
+stale-fallback guard now asserted against `ENGINE_VERSION`) and add the new floor contract; the
+two refresh tests were seeding fixtures with `ENGINE_MIN_VERSION` as a stand-in for "the current
+engine", so they now use `ENGINE_VERSION` — same intent, correct constant.
+
+**Effectiveness:** this restored the plugin's core value for an entire class of user. Before the
+fix, a mixed-version team lost all guidance on every release; after it, a profile written today
+is readable by every engine back to 3.0.0. The campaign itself was the victim that surfaced it —
+this session ran degraded, with zero pattern guidance, for several edits.
 
 ---
 
