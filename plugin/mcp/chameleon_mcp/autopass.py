@@ -65,6 +65,33 @@ _NON_SOURCE_EXTS = frozenset(
     }
 )
 
+# Extensionless VCS / tooling metadata + ignore dotfiles: pure config, never
+# archetyped authored source. They need an explicit basename set because the
+# leading-dot name is the whole token (`.gitignore`.rfind(".") == 0), so the
+# extension test below can never catch them.
+_NON_SOURCE_DOTFILES = frozenset(
+    {
+        ".gitignore",
+        ".gitattributes",
+        ".gitmodules",
+        ".gitkeep",
+        ".dockerignore",
+        ".npmignore",
+        ".eslintignore",
+        ".prettierignore",
+        ".stylelintignore",
+        ".editorconfig",
+        ".npmrc",
+        ".nvmrc",
+        ".node-version",
+        ".ruby-version",
+        ".python-version",
+        ".tool-versions",
+        ".yarnrc",
+        ".browserslistrc",
+    }
+)
+
 # Path needles that mark a security-sensitive surface, by category. A change
 # touching any of these always goes to a human, however clean it looks: these are
 # the classes where a machine false-negative is most expensive (auth bypass, a bad
@@ -235,7 +262,8 @@ def _is_test_file(path: str) -> bool:
 
 
 def _is_non_source_file(path: str) -> bool:
-    """True when a changed path is a manifest, lockfile, doc, or config/data file.
+    """True for a manifest, lockfile, doc, config/data file, ambient .d.ts
+    declaration, or VCS/tooling metadata dotfile (.gitignore, .editorconfig, ...).
 
     These are never archetyped SOURCE the auto-pass gate must vouch for, so the
     caller excludes them from ``unarchetyped_files`` and ``source_files_changed``
@@ -254,6 +282,14 @@ def _is_non_source_file(path: str) -> bool:
     lower = base.lower()
     # Generated / minified artifacts carry no reviewable authorship.
     if lower == "schema.rb" or ".generated." in lower or lower.endswith((".min.js", ".min.css")):
+        return True
+    # Ambient TypeScript declaration files are generated/vendored type surface
+    # (e.g. next-env.d.ts is tool-generated "do not edit"), never archetyped
+    # authored source; the .ts extension test alone would keep them as source.
+    if lower.endswith(".d.ts"):
+        return True
+    # Extensionless VCS / tooling metadata dotfiles.
+    if lower in _NON_SOURCE_DOTFILES:
         return True
     dot = lower.rfind(".")
     return dot != -1 and lower[dot:] in _NON_SOURCE_EXTS

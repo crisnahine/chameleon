@@ -4,6 +4,22 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.15] - 2026-07-18
+
+### Fixed
+- The auto-pass router (`get_autopass_verdict`) counted VCS/tooling dotfiles
+  (`.gitignore`, `.dockerignore`, `.editorconfig`, `.npmrc`, ...) and ambient
+  TypeScript declaration files (`*.d.ts`, e.g. a regenerated `next-env.d.ts`)
+  as "files outside profiled archetypes", elevating a routine PR to needs-human
+  for the wrong reason. `_is_non_source_file` classified them as authored source
+  because its extension check never matches an extensionless dotfile
+  (`.gitignore`.rfind(".") == 0) or the `.ts` tail of a `.d.ts`. It now excludes
+  ambient `.d.ts` declarations and a curated set of non-source dotfiles from both
+  the `unarchetyped_files` and `source_files_changed` facts, the same
+  false-positive class the v4.4.12-v4.4.14 version-bump/manifest/docs work
+  addressed. Real source is unaffected. See `_NON_SOURCE_DOTFILES` and
+  `_is_non_source_file` in `autopass.py`.
+
 ## [4.4.14] - 2026-07-18
 
 ### Fixed
