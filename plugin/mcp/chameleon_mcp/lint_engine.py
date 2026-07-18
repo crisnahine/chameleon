@@ -343,7 +343,7 @@ _JSX_SELF_CLOSING = re.compile(r"(?<![A-Za-z0-9_])<[A-Za-z][\w.]*(?:\s[^<>]*?)?/
 _JSX_FRAGMENT = re.compile(r"<>|</>")
 
 
-def _extract_typescript(content: str) -> DimensionSnapshot:
+def _extract_typescript(content: str, file_path: str | None = None) -> DimensionSnapshot:
     """Pull DimensionSnapshot out of TS-family content via regex heuristics.
 
     Order of operations matters: we strip strings/comments BEFORE the JSX
@@ -407,6 +407,17 @@ def _extract_typescript(content: str) -> DimensionSnapshot:
         or _JSX_SELF_CLOSING.search(stripped) is not None
         or _JSX_FRAGMENT.search(stripped) is not None
     )
+    # A `.ts` / `.mts` / `.cts` file cannot legally contain JSX -- only `.tsx` / `.jsx`
+    # can. So any angle brackets in a `.ts` file are generics, comparisons, or a
+    # template-string SVG (`\`<svg>...</svg>\``), never JSX. The regex scan can
+    # misread such a template literal as JSX and fire the block-eligible
+    # jsx-presence-mismatch ERROR on conforming code (a real false positive observed
+    # in real usage). Force it False for these extensions so the structural check
+    # never misclassifies them; zero signal loss (JSX is a .tsx/.jsx concept).
+    if file_path:
+        _ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
+        if _ext in ("ts", "mts", "cts"):
+            jsx_present = False
 
     head = content[:200]
     cs = content_signal_match_for(head)
@@ -814,7 +825,7 @@ def extract_dimensions(
     if language is None:
         language = detect_language(file_path)
     if language == "typescript":
-        return _extract_typescript(content)
+        return _extract_typescript(content, file_path=file_path)
     if language == "ruby":
         return _extract_ruby(content)
     if language == "python":
@@ -3062,32 +3073,52 @@ def _ts_ambient_block_spans(content: str) -> list[tuple[int, int]]:
 _TS_THEN_RE = re.compile(r"\.then\s*\(")
 
 
-def _then_without_catch_violations(scan_content: str) -> list[Violation]:
-    """Flag a single-line ``.then(`` that has no ``.catch`` on the same line.
+_THEN_CATCH_LOOKAHEAD = 3
 
-    Advisory only: an unhandled promise rejection is a real smell, but most
-    real ``.then`` usages either chain ``.catch`` (often on another line) or sit
-    inside an awaited/try-guarded context. We deliberately judge one physical
-    line at a time so only the bare ``x.then(fn)`` with no sibling rejection
-    handler is flagged, keeping the precision high enough for an advisory nudge.
+
+def _then_without_catch_violations(scan_content: str) -> list[Violation]:
+    """Flag a bare ``x.then(fn)`` statement whose promise rejection is unhandled.
+
+    Advisory only. A ``.then`` is NOT a smell when the promise is RETURNED,
+    AWAITED, or arrow-returned (rejection is delegated to the caller / an enclosing
+    try), nor when a ``.catch`` is chained on the same line or the next few lines
+    (a multi-line promise chain). Those exemptions are the dominant real patterns
+    (`return api.get(x).then(...)`, `() => import('./x').then(...)`, a
+    `.then(...)` immediately followed by `.catch(...)`), where flagging is a false
+    positive. Only a truly bare statement-level ``x.then(fn)`` with no rejection
+    handler anywhere near it is flagged.
     """
     out: list[Violation] = []
-    for line in scan_content.splitlines():
+    lines = scan_content.splitlines()
+    for i, line in enumerate(lines):
         if ".catch" in line:
             continue
-        if _TS_THEN_RE.search(line):
-            out.append(
-                Violation(
-                    rule="then-without-catch",
-                    expected=".catch handler",
-                    actual=".then with no .catch",
-                    severity="info",
-                    message=(
-                        "ASYNC: .then on this line has no .catch; an unhandled "
-                        "rejection is silent -- chain .catch or await inside try"
-                    ),
-                )
+        m = _TS_THEN_RE.search(line)
+        if not m:
+            continue
+        head = line[: m.start()]
+        # returned / awaited / voided / arrow-returned promise -> rejection is the
+        # caller's or an enclosing try's responsibility, not an unhandled smell.
+        if head.lstrip().startswith(("return ", "await ", "void ")) or "=>" in head:
+            continue
+        # `.catch` chained on a following line within a small window handles it.
+        if any(
+            ".catch" in lines[j]
+            for j in range(i + 1, min(i + 1 + _THEN_CATCH_LOOKAHEAD, len(lines)))
+        ):
+            continue
+        out.append(
+            Violation(
+                rule="then-without-catch",
+                expected=".catch handler",
+                actual=".then with no .catch",
+                severity="info",
+                message=(
+                    "ASYNC: .then on this line has no .catch; an unhandled "
+                    "rejection is silent -- chain .catch or await inside try"
+                ),
             )
+        )
     return out
 
 

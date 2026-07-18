@@ -1735,7 +1735,7 @@ def _get_archetype_with_loaded(
     language = detect_language(str(p)) or loaded.profile.get("language")
     if language not in ("typescript", "ruby", "python"):
         language = None
-    snapshot = extract_dimensions(content, language=language)
+    snapshot = extract_dimensions(content, language=language, file_path=str(p))
 
     canonicals = loaded.canonicals.get("canonicals", {}) or {}
     scored: list[tuple[str, float, int]] = []
@@ -3334,7 +3334,7 @@ def lint_file(
     if language not in ("typescript", "ruby", "python"):
         language = None
 
-    snapshot = _extract_dimensions(working_content, language=language)
+    snapshot = _extract_dimensions(working_content, language=language, file_path=file_path)
     best_ast_violations: list = []
     best_confidence = 0.0
     best_struct_count = float("inf")

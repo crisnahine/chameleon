@@ -4,6 +4,26 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.11] - 2026-07-18
+
+### Fixed
+- `jsx-presence-mismatch` (a block-eligible ERROR) no longer fires on a `.ts` /
+  `.mts` / `.cts` file. Those extensions cannot legally contain JSX -- only
+  `.tsx` / `.jsx` can -- so any angle brackets are generics, comparisons, or a
+  template-string SVG (`` `<svg>...</svg>` ``). A nested template literal could
+  leak `</svg>` past the string scan and be misread as JSX, hard-flagging
+  conforming code with "move JSX to a component file. Fix these." `jsx_present`
+  is now forced False for these extensions where dimensions are extracted, with
+  zero signal loss (JSX detection on `.tsx` / `.jsx` is unchanged). Found and
+  verified via real usage.
+- `then-without-catch` no longer flags a `.then` whose promise rejection is
+  delegated or handled elsewhere: a RETURNED promise (`return x.then(...)`), an
+  arrow-returned one (`() => import('./m').then(...)`), an AWAITED/voided one, or
+  a `.then(...)` immediately followed by a chained `.catch(...)` on a nearby line.
+  These are the dominant real patterns; flagging them was a false positive (the
+  noisiest advisory in practice). A truly bare statement-level `x.then(fn)` with
+  no rejection handler still fires.
+
 ## [4.4.10] - 2026-07-18
 
 ### Fixed
