@@ -668,6 +668,103 @@ signal. The cell will be re-opened and re-evidenced.
 
 ---
 
+### GAP-006 — bootstrap inherits tool config from `$HOME`, discarding the repo's own — OPEN (HIGH)
+
+**Cells:** `bootstrap`/tool-config discovery x **C6, C7, C8, C9, C10** (all five Python columns)
+**Severity:** HIGH — silent, wrong-config derivation
+**Found by:** wave-1 execution. Five *independent* column agents reported it separately
+("Tool-config discovery escapes the repository and reads `$HOME`, silently discarding the repo's
+ruff config"), which is what made it worth chasing over the other 94 gap reports.
+
+**I initially dismissed this as unreproducible, and I was wrong.** My check for ancestor config
+files reported `none` for every level:
+
+```
+/Users/crisn -> none
+```
+
+That was a **broken verification**, not a negative result: the `ls` was globbing
+`~/.eslintrc*`, zsh aborted the whole command on the no-match error, and it never evaluated
+`~/package.json` at all. The file exists:
+
+```
+-rw-r--r--  1 crisn  staff  72 Apr 20 09:07 /Users/crisn/package.json
+{ "dependencies": { "@anthropic-ai/claude-code": "^2.1.114" } }
+```
+
+Recorded because a false negative from a buggy probe is the most dangerous outcome in this
+campaign — it would have closed a real HIGH-severity bug as noise.
+
+**Root cause (`bootstrap/orchestrator.py:2170-2185`):**
+
+```python
+if not own_js and not own_ruby:
+    ancestor = repo_root.parent
+    for _ in range(4):
+        if (ancestor / "package.json").is_file() or (ancestor / "Gemfile").is_file():
+            inherited_signals_from = ancestor
+            break
+        ancestor = ancestor.parent
+if inherited_signals_from is not None:
+    tool_configs = read_tool_configs(inherited_signals_from)   # REPLACES the repo's own
+else:
+    tool_configs = read_tool_configs(repo_root)
+```
+
+A repo with no `package.json`/`tsconfig.json`/`Gemfile`/`*.gemspec` of its own walks up to four
+ancestors for a `package.json` or `Gemfile`. The walk has **no boundary** — no VCS check, no
+`$HOME` guard — and on a match it **replaces** the repo's config rather than supplementing it.
+
+From `~/Documents/Projects/chameleon-fullmatrix-qa/py-plain` the fourth hop is `$HOME`, which
+carries a stray `package.json` from a global `npm install -g @anthropic-ai/claude-code`.
+
+**Red evidence — full causal chain, each step measured:**
+
+```
+read_tool_configs(py-plain)   python_format = {'line_length': 100}    <- the repo's real config
+read_tool_configs($HOME)      python_format = None                    <- what bootstrap uses
+
+real bootstrap_repo(py-plain, force=True):
+  bootstrap status  : success
+  rules.json entries: 0
+  rule keys         : []
+  python_format     : None
+```
+
+Every Python column ships an empty `rules.json` while the languages whose own marker files stop
+the walk do not:
+
+```
+py-django 0   py-drf 0   py-flask 0   py-fastapi 0   py-plain 0
+ts-plain  4   rb-rails 1
+```
+
+`ts-plain` is unaffected only because its own `package.json` sets `own_js` and skips the walk.
+
+**Impact / effectiveness:** any Python (or otherwise non-JS/Ruby) repo within four directory
+levels of *any* `package.json` silently derives from the wrong tooling. A stray `package.json`
+in `$HOME` is not exotic — it is the normal residue of one `npm install -g`, so this likely
+affects a large share of real users. The failure is silent and inverted: the profile reports no
+Python tool config while the repo plainly has one, and the user is never told their `ruff`
+settings were overridden by an unrelated directory. Worse than losing config, an ancestor's
+`prettier`/`eslint` settings can be applied to a repo that has nothing to do with them.
+
+**Two distinct defects here (the second is latent, not yet fixed):**
+1. The walk is unbounded — it escapes the repository, and even the filesystem's project area,
+   to `$HOME`.
+2. Even for a *legitimate* monorepo ancestor, inheritance **replaces** rather than defers to the
+   repo's own config, so a sub-package's own settings are discarded.
+
+The walk's intent is sound (a sub-package inside a JS monorepo should inherit its tooling —
+`orchestrator.py:2192-2213` uses the same signal for extractor selection); only its bounds are
+wrong.
+
+**Status:** OPEN. Fix (1) is the targeted repair for the observed failure and is being
+implemented; fix (2) is recorded as a separate latent defect rather than bundled in, per the
+minimal-diff rule.
+
+---
+
 ### GAP-002 — `reuse-before-create` suggested 4 unrelated tests, 4/4 wrong — OPEN
 
 **Cell:** `reuse-before-create` x Python (found on the chameleon repo itself)
