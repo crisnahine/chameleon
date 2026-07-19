@@ -397,6 +397,25 @@ def test_class_shapes_extends_marks_dropped_bases(tmp_path):
     assert shape["bases"] == ["models.Model", "Mixin"]
 
 
+def test_class_shapes_capture_generic_base(tmp_path):
+    # A subscripted generic base (BaseRepository[User], Generic[T],
+    # ModelViewSet[Order]) is the standard typed-Python idiom. Dropping it
+    # entirely leaves the class looking base-less, so inheritance and
+    # class-contract derivation miss the shared base of a whole typed cohort.
+    # The subscript is stripped to the base's own name.
+    rec = _dump(_write(tmp_path, "c.py", "class R(BaseRepository[User]):\n    pass\n"))
+    shape = next(c for c in rec["class_shapes"] if c["name"] == "R")
+    assert shape["bases"] == ["BaseRepository"]
+    assert shape["extends"] == "BaseRepository"
+
+
+def test_class_shapes_capture_dotted_generic_base(tmp_path):
+    # Same for a namespaced generic base (typing.Generic[T], mod.Base[X]).
+    rec = _dump(_write(tmp_path, "c.py", "class S(mod.Base[X], Mixin):\n    pass\n"))
+    shape = next(c for c in rec["class_shapes"] if c["name"] == "S")
+    assert shape["bases"] == ["mod.Base", "Mixin"]
+
+
 # --------------------------------------------------------------------------- #
 # Regression (cloud review): _module_exports must see bindings inside top-level
 # try/if blocks, and an __init__ must re-export sibling submodules.

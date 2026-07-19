@@ -90,10 +90,22 @@ def _decorator_targets(decorators) -> list[str]:
 
 
 def _base_names(class_node: cst.ClassDef) -> list[str]:
-    """Dotted name of each base class, in declaration order."""
+    """Dotted name of each base class, in declaration order.
+
+    A subscripted generic base (``BaseRepository[User]``, ``Generic[T]``,
+    ``mod.Base[X]``) is the standard typed-Python idiom, but ``_dotted_name``
+    cannot name a Subscript. Dropping it silently is worse than unhelpful: a
+    whole typed cohort looks base-less, so its shared base and class contract
+    never derive, and a class like ``C(mod.Base[X], Mixin)`` reports ``Mixin``
+    as its FIRST base -- the wrong base entirely. Unwrap the subscript and keep
+    the base's own name, which is the level conventions are counted at anyway.
+    """
     out = []
     for base in class_node.bases:
-        name = _dotted_name(base.value)
+        node = base.value
+        if isinstance(node, cst.Subscript):
+            node = node.value
+        name = _dotted_name(node)
         if name:
             out.append(name)
     return out

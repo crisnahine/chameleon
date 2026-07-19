@@ -4,6 +4,22 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.37] - 2026-07-20
+
+### Fixed
+- The libcst dump silently DROPPED subscripted generic base classes, which is the
+  root cause v4.4.36 only half-fixed: `_dotted_name` cannot name a `cst.Subscript`
+  (its own docstring says so), so `class R(BaseRepository[User])` emitted NO base
+  at all. v4.4.36 normalized `BaseRepository[User]` -> `BaseRepository` at count
+  time, but on the Python path that string never reached the counter. Worse, a
+  class like `class C(mod.Base[X], Mixin)` reported `bases: ["Mixin"]` -- the
+  WRONG base as its first, not merely a missing one, so `extends` and every
+  dominance count keyed off it were actively incorrect. `_base_names` now unwraps
+  a Subscript to the base's own name. End-to-end: a 7-class typed repository
+  cohort that previously derived `inheritance: {}` now derives
+  `dominant_base: BaseRepository, frequency: 1.0`. Found by two independent
+  full-matrix columns (Python and FastAPI).
+
 ## [4.4.36] - 2026-07-20
 
 ### Fixed
