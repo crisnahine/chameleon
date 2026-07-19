@@ -14,7 +14,7 @@
 | Inventory | `tests/matrix/inventory.jsonl` — 768 items with `file:line` anchors |
 | Deploy gate | `./scripts/qa-deploy.sh verify` **must pass before any cell is marked green** |
 | Test repos | `~/Documents/Projects/chameleon-fullmatrix-qa/` — 10 fresh repos, all committed |
-| Next action | Fold wave-2A results, triage the 25 wave-1 FAILs, then run wave 2B (archetype-dependent surfaces, now unblocked by the v4.4.21 fix) |
+| Next action | Fix GAP-011 (isolated, small); then GAP-010 (threshold calibration); then GAP-008/009 (larger). 63 FAILs and 230 gap reports await triage. Waves 1, 2A, 2B folded. |
 
 **Fixes shipped so far (each with red evidence, green evidence, and a regression run):**
 
@@ -1040,6 +1040,65 @@ distinguishes "this symbol genuinely has no callers" from "an entire call class 
 indexed for this language". `truncated` answers a different question. A correct fix therefore
 ADDS a coverage signal (or narrows the note), rather than overloading `truncated`. Recorded
 because an imprecise finding is how a future fix gets aimed at the wrong line.
+
+---
+
+### GAP-009 — archetype naming/granularity collapses real layers into raw hash clusters — OPEN (CRITICAL)
+
+**Cells:** `bootstrap`/clustering+naming x **C1, C3, C4, C6, C7** (5 columns)
+**Severity:** CRITICAL per the C3 verifier; the archetype name is the primary thing the model is
+told a file IS.
+
+Measured per column: C3 (NestJS) **54% of archetypes are unnamed `cluster-<hash>`**, collapsing
+4 distinct layers into one; C7 (Django) `services.py` / `selectors.py` / `tests.py` all collapse
+into one hash cluster because the Django-aware layer only recognises
+views/models/forms/admin/urls/apps/migrations; C4 (plain Ruby) derives **3 archetypes for 8
+distinct roles**; C6 collapses six architectural layers into one 51-file archetype; C1 carries
+two hash clusters.
+
+A hash name conveys nothing and cannot be reasoned from, and the collapse makes the canonical
+witness structurally unrepresentative — C3's feature modules are told at **exact/high confidence,
+with no hedge**, to "mirror closely" the root `AppModule`, which is 1 of 8 and the outlier.
+
+### GAP-010 — `min_sample_size=10` zeroes out most convention families on ordinary repos — OPEN (CRITICAL)
+
+**Cell:** `bootstrap`/convention derivation x C3 (NestJS), corroborated by C8 (DRF)
+A 6-8 controller/service NestJS API — a completely ordinary shape — has cohorts below the gate,
+so **10 of 13 convention families derive empty**. C8 reports the same shape: a Django role
+cohort's size equals the app count, so four convention families are gated out. The threshold is
+calibrated above the typical unit of these codebases, making the product's core output
+near-empty on normal repos rather than toy ones.
+
+### GAP-011 — eslint JS config parsing silently corrupts globs — OPEN (HIGH)
+
+**Cell:** `bootstrap`/tool-config x C1
+`_jsish_to_json` (`bootstrap/tool_config.py`) strips `/* */` block comments with **no
+string-literal awareness**, so a glob containing `/**/` is mangled:
+
+```
+_jsish_to_json("{ files: ['tests/**/*.ts'] }")            -> {"files": ["tests*.ts"]}
+_jsish_to_json("{ ignorePatterns: ['**/*.d.ts','src/**/gen'] }") -> {"ignorePatterns": ["**gen"]}
+```
+
+The second case silently **merges two array elements into one**. Isolated to this path:
+`_parse_eslint_js_via_node` returns the correct value, while the default `_parse_eslint_js`
+(node-eval is opt-in behind `CHAMELEON_ALLOW_ESLINT_EVAL` for sound security reasons) returns the
+corrupted one. No warning is emitted. Harmful rather than merely incomplete: the recorded
+override scope `tests*.ts` matches essentially nothing, so a consumer believes the test-only
+relaxations apply to a different file set.
+
+### GAP-012 — derived conventions are computed and never delivered — OPEN (HIGH)
+
+**Cells:** `bootstrap`/conventions x C1 (two independent instances)
+1. `forbidden_upward_edges` is derived correctly (all 12 edges verified, zero counterexamples)
+   but `grep -rn forbidden_upward_edges` over the engine returns exactly two hits: the writer
+   (`import_graph.py:404`) and a presence check (`idiom_coverage.py:776`). Nothing injects it, no
+   lint rule reads it, `conventions.md` has no LAYERING section. Correct data, never delivered.
+2. The callable-signature consensus (`constructor(db: QueryClient)`, 7/7 — the strongest
+   convention in the repo) is mirrored into the canonical's `normative_shape` **only**
+   (`orchestrator.py:2758-2764`). A witnessless archetype therefore derives it and drops it. This
+   is the residual of GAP-007: v4.4.21 restored the archetype's identity, but its conventions
+   still do not reach the model because delivery is keyed to having a canonical.
 
 ---
 
