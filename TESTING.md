@@ -810,7 +810,7 @@ the monorepo path, which the campaign's minimal-diff rule forbids without flaggi
 
 ---
 
-### GAP-007 — a `raw_sql_concat` false positive deletes the entire data-access archetype — OPEN (HIGH)
+### GAP-007 — a `raw_sql_concat` false positive deletes the entire data-access archetype — **RESOLVED (v4.4.20 + v4.4.21)**
 
 **Cells:** `bootstrap`/canonical-selection x **C1, C2** (reported independently in both)
 **Severity:** HIGH — silently substitutes wrong guidance for the repo's most security-sensitive layer
