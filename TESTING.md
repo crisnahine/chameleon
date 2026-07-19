@@ -1070,6 +1070,38 @@ cohort's size equals the app count, so four convention families are gated out. T
 calibrated above the typical unit of these codebases, making the product's core output
 near-empty on normal repos rather than toy ones.
 
+**Measured across five realistic framework repos — the gate is above the natural cohort size:**
+
+```
+ts-nestjs   13/13 archetypes below the gate   (largest cohort: 8)
+py-drf      12/12 below                       (largest: 7)
+py-django   15/16 below                       (largest: 12)
+ts-nextjs   12/13 below                       (largest: 10)
+rb-rails     9/13 below                       (largest: 14)
+```
+
+A NestJS API with 6-8 controllers has 6-8 members per role. That is the natural unit of the
+codebase, not a small sample. The module's own comment shows the author anticipated this —
+*"Env-overridable ... so a repo smaller than the default can still derive these sections instead
+of getting `{}` on every archetype it has"* — but the DEFAULT is what every user gets, and the
+override requires knowing it exists and choosing a number.
+
+**PROPOSED CHANGE — flagged before implementing, per the campaign rule.** Lower the default
+`MIN_SAMPLE_SIZE` from 10 to 5. The number is chosen from measurement, not preference —
+re-deriving ts-nestjs at each floor:
+
+```
+MIN_SAMPLE_SIZE=10   7 populated archetype-sections  (body_shape, callable_signatures only)
+MIN_SAMPLE_SIZE=5   14 populated  (+ class_contract, + key_exports)
+MIN_SAMPLE_SIZE=4   16 populated  (+2 key_exports only — diminishing, and 4 is a thin sample)
+```
+
+Five doubles the derived guidance and restores the two highest-value families (`class_contract`,
+the base-class/required-method contract; `key_exports`, the reuse-before-create list), while
+stopping short of the thin-sample regime. It also aligns with `MIN_SAMPLE_SIZE_NAMING = 5`, the
+floor this same module already considers trustworthy — so the change adopts an in-repo
+precedent rather than inventing a threshold.
+
 ### GAP-011 — eslint JS config parsing silently corrupts globs — **RESOLVED (v4.4.22, `cbf90d9`)**
 
 **Cell:** `bootstrap`/tool-config x C1
