@@ -3,7 +3,7 @@
 **Status:** IN PROGRESS — Phase 3 (execution wave 1: P0-P2 across all 10 columns)
 **Branch:** `plugin-testing-fixes`
 **Baseline commit:** `27fd8d3` (Release v4.4.15) — clean tree, no uncommitted changes
-**Plugin version under test:** started at 4.4.15, now **4.4.19** (four fixes shipped by this campaign)
+**Plugin version under test:** started at 4.4.15, now **4.4.21** (six fixes shipped by this campaign)
 **Started:** 2026-07-18
 
 ### Resume pointer (read this first after any interruption)
@@ -14,7 +14,7 @@
 | Inventory | `tests/matrix/inventory.jsonl` — 768 items with `file:line` anchors |
 | Deploy gate | `./scripts/qa-deploy.sh verify` **must pass before any cell is marked green** |
 | Test repos | `~/Documents/Projects/chameleon-fullmatrix-qa/` — 10 fresh repos, all committed |
-| Next action | Fold wave-1 (P0-P2) results into the ledger, then run wave 2 (P3-P5) |
+| Next action | Fold wave-2A results, triage the 25 wave-1 FAILs, then run wave 2B (archetype-dependent surfaces, now unblocked by the v4.4.21 fix) |
 
 **Fixes shipped so far (each with red evidence, green evidence, and a regression run):**
 
@@ -24,9 +24,14 @@
 | GAP-004 | **HIGH** | every release orphaned the profiles it wrote (25 engines locked out) | 4.4.17 |
 | GAP-005 | false positive | turn-end test-run advisory unsatisfiable (wrong payload key) | 4.4.18 |
 | GAP-006 | **HIGH** | bootstrap read tool config from `$HOME`, discarding the repo's own | 4.4.19 |
+| GAP-007a | precision | `raw_sql_concat` flagged constant-only interpolation (partial — did not fix the symptom) | 4.4.20 |
+| GAP-007b | **HIGH** | scan-excluded cohort deleted, so edits got a wrong-layer witness | 4.4.21 |
 
 GAP-002 open. GAP-003 retracted (my error — the proposed fix would have been a security
 regression). OQ-001 resolved as not-a-defect.
+
+**Open, awaiting their own cycle:** rb-plain derives 3 archetypes for 8 distinct roles
+(clustering granularity, C4); 25 wave-1 FAILs untriaged; 94 wave-1 gap reports to work through.
 
 This file is the source of truth for the campaign. On any interruption, compaction, or
 restart: re-read this file and `git log --oneline`, then resume from the first cell that is
