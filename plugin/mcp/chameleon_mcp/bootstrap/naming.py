@@ -25,6 +25,7 @@ so the result is still readable but obviously generic.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
@@ -726,7 +727,104 @@ def _base_name_for(
                     return candidate
         return "class"
 
+    # Before giving up on a name, take one from the directory the cohort lives
+    # in. The token ladder above is an allow-list of 19 well-known names, so a
+    # repo whose layers are called anything else -- repositories, validators,
+    # selectors, dto, entities, guards, adapters -- fell through to
+    # `cluster-<hash>`. Measured: 54% of a NestJS repo's archetypes unnamed, and
+    # a 7-file cohort living entirely in src/repositories/ named
+    # cluster-63d4a2fb. The archetype name is the primary thing the model is
+    # told a file IS, and a hash conveys nothing it can reason from.
+    #
+    # Placed here, AFTER every specific rule, so it only ever replaces the hash
+    # and can never preempt a known token.
+    dir_name = _dominant_layer_name(member_paths)
+    if dir_name is not None:
+        return dir_name
+
     return None
+
+
+# Directory segments that group code without describing its ROLE. A cohort
+# sitting in one of these shares a location, not a purpose, so naming it after
+# the segment would be worse than the hash it replaces.
+_STRUCTURAL_DIRS: frozenset[str] = frozenset(
+    {
+        "src",
+        "lib",
+        "app",
+        "apps",
+        "pkg",
+        "pkgs",
+        "packages",
+        "internal",
+        "source",
+        "sources",
+        "core",
+        "common",
+        "shared",
+        "modules",
+        "main",
+        "code",
+        "project",
+        "dist",
+        "build",
+        "out",
+        "vendor",
+        "node_modules",
+        "test",
+        "tests",
+        "spec",
+        "specs",
+        "__tests__",
+    }
+)
+
+# How much of a cohort must agree on one directory before it names the whole
+# archetype. Below this the cohort spans layers and no single name is honest.
+_DOMINANT_DIR_RATIO = 0.8
+
+# A directory only evidences a LAYER once several files share it. One or two
+# files in a folder is a location, not a role, so those keep the hash rather
+# than borrowing a name they have not earned.
+_DOMINANT_DIR_MIN_MEMBERS = 3
+
+
+def _singularize(token: str) -> str:
+    """`repositories` -> `repository`, `validators` -> `validator`.
+
+    Archetype names read as a singular role ("controller", "model"), matching
+    every entry in the token ladder above.
+    """
+    if len(token) > 3 and token.endswith("ies"):
+        return token[:-3] + "y"
+    if len(token) > 2 and token.endswith("s") and not token.endswith("ss"):
+        return token[:-1]
+    return token
+
+
+def _dominant_layer_name(member_paths: Iterable[str]) -> str | None:
+    """Name derived from the directory a cohort overwhelmingly shares, or None.
+
+    Reads each member's IMMEDIATE parent directory, which is where a layer name
+    lives (``src/repositories/carrier-repository.ts`` -> ``repositories``).
+    Returns None when the cohort spans directories, when the shared segment is
+    structural rather than a role, or when the result would not sanitize.
+    """
+    parents: list[str] = []
+    for path in member_paths or ():
+        segments = [s for s in str(path).replace("\\", "/").split("/")[:-1] if s]
+        if segments:
+            parents.append(segments[-1].lower())
+    if len(parents) < _DOMINANT_DIR_MIN_MEMBERS:
+        return None
+
+    top, count = Counter(parents).most_common(1)[0]
+    if count / len(parents) < _DOMINANT_DIR_RATIO:
+        return None
+    if top in _STRUCTURAL_DIRS:
+        return None
+    return _sanitize(_singularize(top))
 
 
 def _short_hash_for(cluster: Any) -> str:

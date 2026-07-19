@@ -4,6 +4,45 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.24] - 2026-07-19
+
+### Fixed
+- An archetype whose directory is not one of 19 hardcoded names no longer falls
+  back to an unreadable `cluster-<hash>`. The naming ladder recognised
+  `components`, `controllers`, `models`, `services`, `serializers`, `jobs`,
+  `policies`, `queries`, `utils` and ten more — so any repo whose layers are
+  called anything else (`repositories`, `validators`, `selectors`, `dto`,
+  `entities`, `guards`, `adapters`, `handlers`, `gateways`) got a hash. Measured:
+  a 7-file cohort living entirely in `src/repositories/` was named
+  `cluster-63d4a2fb`. The archetype name is the primary thing the model is told
+  a file IS, and a hash carries nothing it can reason from.
+
+  A cohort that overwhelmingly shares one meaningful directory now takes its
+  name from that directory, singularised (`repositories` -> `repository`). The
+  rule is language- and framework-agnostic, and deliberately conservative: it
+  runs only AFTER every specific rule (so a known token, and the richer
+  `class-<dir>` AST-shape form, still win), requires 80% of the cohort to agree
+  on one directory, requires at least 3 members (one file in a folder is a
+  location, not a layer), and ignores structural directories (`src`, `lib`,
+  `app`, `packages`, `internal`, ...) that group code without describing its
+  role.
+
+  Real-usage effect — share of archetypes left unnamed:
+
+  | repo | before | after | names now derived |
+  |---|---:|---:|---|
+  | ts-plain | 2 of 7 | **0** | `repository`, `validator` |
+  | py-django | collapsed | **1 of 16** | `admin`, `form`, `urls`, `view`, + per-app |
+  | py-plain | 1 of 4 | **0** | `schema` |
+  | rb-plain | 0 | 0 | unchanged |
+
+  Honest limits: a NestJS repo is unchanged at 54% hashed, because its clusters
+  span several feature directories at once — that is a clustering-granularity
+  problem, not a naming one, and is tracked separately. And where a cohort's
+  directory names a DOMAIN rather than a role (a Django app's unrecognised
+  service/selector layer becoming `billing`), the name says where the code lives
+  rather than what it is — weaker than a role name, still far better than a hash.
+
 ## [4.4.23] - 2026-07-19
 
 ### Changed

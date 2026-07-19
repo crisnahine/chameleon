@@ -683,3 +683,60 @@ class TestPythonPriors:
             members=["app/models/user.rb", "app/models/post.rb"],
         )
         assert _base_name_for(c) == "model"  # via the Rails/agnostic path, not python prior
+
+
+# --------------------------------------------------------------------------- #
+# GAP-009: the token ladder is a hardcoded allow-list of 19 directory names
+# (components, controllers, models, services, serializers, ...). Any repo whose
+# layers are named outside it -- repositories, validators, selectors, dto,
+# entities, guards, adapters, handlers -- fell through to `cluster-<hash>`.
+# Measured: 54% of NestJS archetypes unnamed, and a 7-file cohort living
+# entirely in src/repositories/ named cluster-63d4a2fb. The archetype name is
+# the primary thing the model is told a file IS, so a hash conveys nothing.
+#
+# A cluster whose members overwhelmingly share one meaningful directory segment
+# should take its name from that segment. This is language- and
+# framework-agnostic and strictly better than a hash.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "directory,expected",
+    [
+        ("repositories", "repository"),
+        ("validators", "validator"),
+        ("selectors", "selector"),
+        ("entities", "entity"),
+        ("adapters", "adapter"),
+        ("handlers", "handler"),
+        ("gateways", "gateway"),
+    ],
+)
+def test_unlisted_layer_directory_names_the_cluster(directory, expected):
+    members = [f"src/{directory}/thing_{i}.ts" for i in range(7)]
+    name = _base_name_for(_cluster(bucket=f"src/{directory}:ts", members=members))
+    assert name == expected, f"src/{directory}/ cohort fell back to {name!r}"
+
+
+def test_structural_directories_do_not_name_a_cluster():
+    # `src`, `lib`, `app` and friends carry no role information; a cohort spread
+    # across them must still fall back rather than be named "src".
+    for d in ("src", "lib", "app", "packages", "internal"):
+        members = [f"{d}/a_{i}.ts" for i in range(7)]
+        name = _base_name_for(_cluster(bucket=f"{d}:ts", members=members))
+        assert name != d.rstrip("s"), f"{d}/ must not name a cluster"
+
+
+def test_mixed_directories_do_not_take_a_name():
+    # No single dominant directory -> no honest name to derive.
+    members = [f"src/repositories/a_{i}.ts" for i in range(3)] + [
+        f"src/serializers/b_{i}.ts" for i in range(3)
+    ]
+    name = _base_name_for(_cluster(bucket="src:ts", members=members))
+    assert name != "repository"
+
+
+def test_known_token_still_wins_over_the_directory_fallback():
+    # The existing ladder is more specific; the fallback must not preempt it.
+    members = [f"app/controllers/c_{i}.rb" for i in range(7)]
+    assert _base_name_for(_cluster(bucket="app/controllers:rb", members=members)) == "controller"
