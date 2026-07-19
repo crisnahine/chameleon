@@ -1110,8 +1110,14 @@ _RUBY_DSL_ALLOWLIST = frozenset(
 )
 # Longest-first alternation so ``validates`` is tried before ``validate`` (``\b``
 # already disambiguates, but ordering keeps the match unambiguous).
+# Any leading indent, NOT a literal two spaces: the standard Rails API layout
+# wraps a class in `module Api` / `module V1`, indenting the body to 4 or 6
+# spaces, and a `^  ` anchor silently matched none of it -- so controllers, the
+# most module-nested archetype in every Rails app, derived no DSL convention at
+# all. Mirrors lint_engine's `_RUBY_DSL_RE`, which had the any-indent form all
+# along (same intent, two regexes, one wrong).
 _RUBY_DSL_CALL_RE = re.compile(
-    r"^  (" + "|".join(sorted(_RUBY_DSL_ALLOWLIST, key=lambda s: (-len(s), s))) + r")\b",
+    r"^[ \t]+(" + "|".join(sorted(_RUBY_DSL_ALLOWLIST, key=lambda s: (-len(s), s))) + r")\b",
     re.MULTILINE,
 )
 
@@ -2056,11 +2062,25 @@ def extract_method_call_conventions(files: list[ParsedFile]) -> dict:
     call_counts: Counter[str] = Counter()
 
     for f in files:
+        seen: set[str] = set()
+        # The parser already recorded every class-body macro call with its
+        # enclosing class, at any module-nesting depth. Prefer it: it cannot be
+        # fooled by indentation the way a line regex can. The raw-bytes regex
+        # stays as the fallback for a degraded or legacy profile whose extras
+        # carry no class_body_calls.
+        body_calls = (getattr(f, "extras", None) or {}).get("class_body_calls")
+        if isinstance(body_calls, list) and body_calls:
+            for call in body_calls:
+                name = call.get("name") if isinstance(call, dict) else None
+                if name in _RUBY_DSL_ALLOWLIST and name not in seen:
+                    call_counts[name] += 1
+                    seen.add(name)
+            continue
+
         try:
             content = f.path.read_bytes()[:50_000].decode("utf-8", errors="replace")
         except OSError:
             continue
-        seen: set[str] = set()
         for m in _RUBY_DSL_CALL_RE.finditer(content):
             call = m.group(1)
             if call not in seen:

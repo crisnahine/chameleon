@@ -4,6 +4,33 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.38] - 2026-07-20
+
+### Fixed
+- Ruby DSL conventions were silently dropped for module-nested classes -- the
+  standard Rails API layout (`module Api; module V1; class UsersController`).
+  `_RUBY_DSL_CALL_RE` anchored on a literal two-space indent (`^  `), so a class
+  body indented to 4 or 6 spaces by its module wrappers matched nothing, and
+  `extract_method_call_conventions` returned `{}` for the cohort. Controllers are
+  the most module-nested archetype in every Rails app, so the archetype that most
+  needs `before_action` / `rescue_from` guidance got none: on a real Rails fixture
+  `conventions.json` carried `method_calls` for model/service/serializer/query and
+  omitted `controller` entirely. The class-contract pass compounds it by filtering
+  allowlisted macros out of `dsl_macros` on the grounds that the Common DSL line
+  already covers them -- a line that never fired for nested classes.
+
+  The extractor now prefers the parser's own `class_body_calls` (recorded with the
+  enclosing class at any nesting depth, so indentation cannot fool it), keeping the
+  raw-bytes regex only as the fallback for a degraded or legacy profile, and that
+  fallback is corrected to any-indent (`^[ \t]+`) -- the form `lint_engine`'s
+  `_RUBY_DSL_RE` had all along. Same intent, two regexes, one wrong.
+
+  End-to-end: the 9 module-nested controllers now derive
+  `{'common_top5': ['before_action'], 'sample_size': 9}` (was `{}`); top-level
+  models are unchanged. Found by the full-matrix Rails column, then adversarially
+  verified -- which confirmed the outcome while REFUTING the reported mechanism
+  (the AST extractor handles nesting correctly at any depth; only this regex did not).
+
 ## [4.4.37] - 2026-07-20
 
 ### Fixed

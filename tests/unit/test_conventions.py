@@ -783,6 +783,31 @@ class TestMethodCallExtractor:
         result = extract_method_call_conventions(files)
         assert result == {}
 
+    def test_detects_dsl_calls_in_module_nested_classes(self, tmp_path):
+        # The standard Rails API layout wraps controllers in module Api / module
+        # V1, indenting the class body to 6 spaces. The DSL convention must not
+        # depend on how deeply the class is nested -- controllers are the most
+        # module-nested archetype in every Rails app, so losing this leaves them
+        # with no DSL guidance at all.
+        files = []
+        for i in range(9):
+            files.append(
+                _make_ruby_file(
+                    tmp_path,
+                    f"c{i}_controller.rb",
+                    "module Api\n"
+                    "  module V1\n"
+                    f"    class C{i}Controller < ApplicationController\n"
+                    "      before_action :set_record, only: %i[show update]\n"
+                    "      rescue_from ActiveRecord::RecordNotFound, with: :not_found\n"
+                    "    end\n"
+                    "  end\n"
+                    "end\n",
+                )
+            )
+        result = extract_method_call_conventions(files)
+        assert "before_action" in result.get("common_top5", [])
+
 
 class TestFormatSessionInheritance:
     def test_inheritance_enforced_in_session(self):
