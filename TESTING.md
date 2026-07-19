@@ -37,6 +37,9 @@
 | GAP-016 | **HIGH** | `.gemspec` dependency changes silently unreviewed (gem's primary manifest) | 4.4.30 |
 | GAP-017 | precision | ruff `line-length` enforced despite `ignore=['E501']` | 4.4.31 |
 | GAP-018 | **HIGH** | constant-SQL `raw_sql_concat` exemption worked TS-only; Ruby/Python unprotected | 4.4.33 |
+| GAP-019 | **HIGH** | generic base classes fragmented inheritance/class-contract dominance counts | 4.4.36 |
+| GAP-020 | **HIGH** | libcst dropped subscripted generic bases entirely (root cause of GAP-019's Python half; also made the WRONG base first) | 4.4.37 |
+| GAP-021 | **HIGH** | Ruby DSL conventions dropped for module-nested classes (Rails API layout); `^  ` two-space anchor | 4.4.38 |
 | GAP-009b-ii | **HIGH** | naming table listed 6 of 15 NestJS role suffixes; feature-co-located `*.repository.ts` hashed | 4.4.34 |
 | GAP-017-ii | precision | root E501 opt-out overridden by an enforcing sibling app's `line_length` (mixed per-app config) | 4.4.34 |
 
@@ -45,6 +48,24 @@ regression). OQ-001 resolved as not-a-defect. GAP-009b-ii and GAP-017-ii were ca
 step-7 fresh-repo re-verification: both original fixes held on the structure they were tuned
 against and broke on a common alternative layout of the same framework (feature-co-located Nest
 roles; mixed per-app ruff config).
+
+**Adversarially verified before fixing (wave 9 HIGH gaps).** Three reported HIGH gaps went
+through a refute-by-default verification pass; only the ones that survived were fixed:
+
+- *Ruby module-nested DSL* — **CONFIRMED, outcome; mechanism REFUTED.** The AST extractor
+  handles module nesting correctly at any depth; the defect was solely the `^  ` two-space
+  anchor in `_RUBY_DSL_CALL_RE`. Fixed as GAP-021 (v4.4.38) by preferring `class_body_calls`
+  and correcting the fallback regex. Fixing the reported mechanism would have been wasted work.
+- *Python `sql-string-interpolation` missing* — **REFUTED as a defect.** The fact is true (the
+  rule is Ruby-only, `lint_engine.py:2297`), but the framing is wrong: TypeScript is equally
+  uncovered, so this is a documented Ruby-exclusive rule, not a Python hole. Writing a Python
+  raw-SQL rule would have been a new capability with its own precision risk, not a fix.
+- *Ruby archetype granularity* — **CONFIRMED, real, deferred.** `CLUSTER_PATH_BUCKET_DEPTH=2`
+  pushes the role segment into `sub_bucket` for `lib/<pkg>/<role>/` layouts, collapsing distinct
+  roles into one archetype so no per-role convention clears its floor
+  (`signatures.py:501-508`). Fails safe (empty, never wrong). The naive fix (depth=3) was tested
+  during verification and re-fragments the spec cluster, so this needs its own cycle via the
+  existing split-by-sub-bucket pass rather than a global threshold flip. **Open.**
 
 **Open, awaiting their own cycle:** rb-plain derives 3 archetypes for 8 distinct roles
 (clustering granularity, C4); 25 wave-1 FAILs untriaged; 94 wave-1 gap reports to work through.
