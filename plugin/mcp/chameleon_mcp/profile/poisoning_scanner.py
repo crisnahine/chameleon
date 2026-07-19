@@ -120,8 +120,13 @@ def _interpolates_only_constants(matched_sql: str) -> bool:
     A match with no interpolation at all is not exempted (it cannot reach here --
     every arm requires a slot).
     """
+    # re.findall on a multi-group alternation returns '' (empty string), NOT
+    # None, for the groups that did not participate -- so `g is not None` always
+    # matched group 1 (the TS ${...} slot) and left Ruby #{...} / Python {...}
+    # slots extracted as ''. Test on truthiness: an empty slot is never a valid
+    # interpolation anyway, so `if g` selects the one group that actually matched.
     slots = [
-        next(g for g in groups if g is not None)
+        next((g for g in groups if g), "")
         for groups in _INTERPOLATION_SLOT.findall(matched_sql)
     ]
     if not slots:

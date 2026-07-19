@@ -4,6 +4,23 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.33] - 2026-07-19
+
+### Fixed
+- The constant-only `raw_sql_concat` exemption (v4.4.20) worked for TypeScript
+  ONLY; Ruby and Python were silently unprotected. `_interpolates_only_constants`
+  extracted the interpolation slot with `next(g for g in groups if g is not None)`,
+  but `re.findall` on the multi-group alternation returns `''` (empty string), not
+  `None`, for groups that did not participate -- so it always picked group 1 (the
+  TS `${...}` slot) and read the Ruby `#{...}` / Python `{...}` slot as empty. A
+  Rails/Django repositories cohort building safe SQL from a `#{TABLE}` / `{COLUMNS}`
+  module constant therefore still tripped `raw_sql_concat`, still lost its canonical
+  witness, and (via the paired v4.4.21 change) was emitted witnessless -- the exact
+  regression the exemption was written to prevent, in two of the three languages.
+  Fixed by testing the slot on truthiness (`next((g for g in groups if g), "")`),
+  which selects the group that actually matched and falls through safely on an
+  empty `${}`. Found by the step-7 clean-code review.
+
 ## [4.4.32] - 2026-07-19
 
 ### Fixed

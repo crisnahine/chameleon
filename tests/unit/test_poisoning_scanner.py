@@ -473,3 +473,30 @@ def test_ts_call_expression_interpolation_still_flagged():
 def test_ts_lowercase_identifier_still_flagged():
     # A lower-case identifier is a variable, not a module constant.
     assert "raw_sql_concat" in _kinds("`SELECT * FROM ${table}`")
+
+
+# --------------------------------------------------------------------------- #
+# GAP-018: the constant-only exemption (GAP-007a) worked for TypeScript ONLY.
+# _interpolates_only_constants used `next(g for g in groups if g is not None)`,
+# but re.findall on a multi-group alternation returns '' (empty string), NOT
+# None, for non-participating groups -- so it always picked group 1 (the TS
+# ${...} slot), leaving the extracted Ruby/Python slot as ''. A Rails/Django
+# repositories cohort building safe SQL from a #{TABLE} / {COLUMNS} module
+# constant still tripped raw_sql_concat and lost its canonical witness.
+# --------------------------------------------------------------------------- #
+
+
+def test_ruby_constant_interpolation_not_flagged():
+    assert "raw_sql_concat" not in _kinds('sql = "SELECT #{COLUMNS} FROM #{TABLE}"')
+
+
+def test_python_constant_interpolation_not_flagged():
+    assert "raw_sql_concat" not in _kinds('sql = f"SELECT {COLUMNS} FROM {TABLE}"')
+
+
+def test_ruby_value_interpolation_still_flagged_after_exemption():
+    assert "raw_sql_concat" in _kinds('db.query("SELECT * FROM users WHERE id = #{params[:id]}")')
+
+
+def test_python_value_interpolation_still_flagged_after_exemption():
+    assert "raw_sql_concat" in _kinds('cur.execute(f"SELECT * FROM users WHERE id = {user_id}")')
