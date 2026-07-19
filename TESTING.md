@@ -1484,6 +1484,22 @@ Run directly against v4.4.32 before folding the deep-probe wave, so agent claims
   "present:True"; the mtime cache on `_prose_injection_unsafe` had not re-scanned. A fresh
   process confirmed no leak.)
 
+- **Merge-driver idioms union: clean on real input (LOW gap is tamper-only, WONTFIX).** The wave
+  flagged that the idioms.md union can leave `## active` + `## Active` duplicated. Bounded it
+  precisely: the REAL scenario (both branches chameleon-authored, both lowercase `## active`)
+  merges to ONE heading with both idioms kept. The duplicate occurs ONLY when a human has
+  hand-capitalized a branch to `## Active` -- which chameleon never writes. A case-insensitive
+  section match would fix it but touches a shared markdown parser for a tamper-only cosmetic
+  edge; not worth the diff. Accepted and documented, not fixed.
+
+- **Deep-probe severity summary: ZERO high/critical across all probed surfaces.** Damaged/stale
+  artifacts, malformed hook payloads, boundary file/path inputs, trust states, per-language dump
+  scripts, the daemon, the merge driver, schema migration, and the MCP stdio transport -- every
+  gap surfaced was LOW or info. The fail-open, honest-degradation, and repair contracts hold. The
+  only recurring theme (benign corrupt idioms.md surfaced/persisted) is cosmetic and NOT a
+  security leak (injection/secret content is dropped, verified above). A JSON-RPC nit (unknown
+  method returns -32602 not -32601) is FastMCP transport behavior, not chameleon's to fix.
+
 ### GAP-017 — ruff `line-length` enforced despite `ignore = ["E501"]` — **RESOLVED (v4.4.31)**
 
 **Cells:** `enforcement`/style-rule-violation x C6 (py-plain)
