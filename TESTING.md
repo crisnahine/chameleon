@@ -1462,6 +1462,16 @@ Run directly against v4.4.32 before folding the deep-probe wave, so agent claims
   archetypes), not noop-preserve, and the user-authored `idioms.md` survives the repair
   byte-identical.
 
+- **Statusline: correct + within budget (steady state).** Correct output for every input:
+  `ts-plain (trusted)` for the trusted repo, `(untrusted)` for unprofiled, empty output (rc=0)
+  for a nonexistent path, honest `$PWD` fallback on empty/garbage stdin, and empty output in 7ms
+  under `CHAMELEON_DISABLE=1`. Timing: **~94ms/run on a warm cache** (5-run zsh `time`), under the
+  documented <100ms budget; the cold-cache first run and the fallback-to-a-huge-repo case reach
+  ~100-122ms. (Self-correction: my first pass reported 139ms and every repo as `chameleon
+  (untrusted)` -- both were harness bugs: I used the wrong payload field (`current_dir` instead
+  of the real `workspace.project_dir`) and my timing spawned `python3` 3x per run outside the
+  statusline. Re-measured correctly: correct output, ~94ms warm.)
+
 ### GAP-017 — ruff `line-length` enforced despite `ignore = ["E501"]` — **RESOLVED (v4.4.31)**
 
 **Cells:** `enforcement`/style-rule-violation x C6 (py-plain)
