@@ -3,7 +3,7 @@
 **Status:** IN PROGRESS — Phase 3 (execution wave 1: P0-P2 across all 10 columns)
 **Branch:** `plugin-testing-fixes`
 **Baseline commit:** `27fd8d3` (Release v4.4.15) — clean tree, no uncommitted changes
-**Plugin version under test:** started at 4.4.15, now **4.4.22** (eight fixes shipped by this campaign)
+**Plugin version under test:** started at 4.4.15, now **4.4.23** (nine fixes shipped; v4.4.22 released to origin)
 **Started:** 2026-07-18
 
 ### Resume pointer (read this first after any interruption)
@@ -14,7 +14,7 @@
 | Inventory | `tests/matrix/inventory.jsonl` — 768 items with `file:line` anchors |
 | Deploy gate | `./scripts/qa-deploy.sh verify` **must pass before any cell is marked green** |
 | Test repos | `~/Documents/Projects/chameleon-fullmatrix-qa/` — 10 fresh repos, all committed |
-| Next action | GAP-010 (threshold calibration, medium); then GAP-012 (undelivered conventions); then GAP-008/009 (largest). 63 FAILs and 230 gap reports await triage. Waves 1, 2A, 2B folded. |
+| Next action | GAP-012 (undelivered conventions); then GAP-009 (archetype naming); then GAP-008 (call-graph method dispatch, largest). 63 FAILs and 230 gap reports await triage. |
 
 **Fixes shipped so far (each with red evidence, green evidence, and a regression run):**
 
@@ -27,6 +27,7 @@
 | GAP-007a | precision | `raw_sql_concat` flagged constant-only interpolation (partial — did not fix the symptom) | 4.4.20 |
 | GAP-007b | **HIGH** | scan-excluded cohort deleted, so edits got a wrong-layer witness | 4.4.21 |
 | GAP-011 | **HIGH** | eslint globs silently corrupted; array elements merged | 4.4.22 |
+| GAP-010 | **CRITICAL** | derivation floor above natural cohort size; conventions empty on ordinary repos | 4.4.23 |
 
 GAP-002 open. GAP-003 retracted (my error — the proposed fix would have been a security
 regression). OQ-001 resolved as not-a-defect.
@@ -1061,7 +1062,7 @@ A hash name conveys nothing and cannot be reasoned from, and the collapse makes 
 witness structurally unrepresentative — C3's feature modules are told at **exact/high confidence,
 with no hedge**, to "mirror closely" the root `AppModule`, which is 1 of 8 and the outlier.
 
-### GAP-010 — `min_sample_size=10` zeroes out most convention families on ordinary repos — OPEN (CRITICAL)
+### GAP-010 — `min_sample_size=10` zeroes out most convention families on ordinary repos — **RESOLVED (v4.4.23, `37ffb73`)**
 
 **Cell:** `bootstrap`/convention derivation x C3 (NestJS), corroborated by C8 (DRF)
 A 6-8 controller/service NestJS API — a completely ordinary shape — has cohorts below the gate,
@@ -1101,6 +1102,26 @@ the base-class/required-method contract; `key_exports`, the reuse-before-create 
 stopping short of the thin-sample regime. It also aligns with `MIN_SAMPLE_SIZE_NAMING = 5`, the
 floor this same module already considers trustworthy — so the change adopts an in-repo
 precedent rather than inventing a threshold.
+
+**FIXED (v4.4.23).** Default lowered 10 -> 5. Green evidence — real re-derivation, populated
+archetype-sections per repo:
+
+| repo | before | after | families recovered |
+|---|---:|---:|---|
+| ts-nestjs | 7 | **14** | `class_contract`, `key_exports` |
+| py-drf | (12/12 gated) | **41** | `class_contract`, `inheritance`, `required_guards`, `naming`, `key_exports` |
+| py-django | (15/16 gated) | **55** | `class_contract`, `inheritance`, `error_handling`, `doc_coverage` |
+| rb-rails | (9/13 gated) | **42** | `class_contract`, `inheritance`, `method_calls` |
+
+Every framework repo recovers `class_contract` — the base-class and required-method contract,
+the most directly actionable thing chameleon can tell a model about a new file — and DRF derives
+`required_guards` (the permission-class convention) at all, which C8 had reported as entirely
+gated out.
+
+**Regression:** full suite `6166 passed, 3 skipped`; ruff clean. Two tests hardcoded a fixture
+size chosen to sit just under the old floor; both now size off `MIN_SAMPLE_SIZE - 1`, so the
+invariant they actually protect ("below the floor derives nothing") holds at any calibration
+rather than breaking on the next one.
 
 ### GAP-011 — eslint JS config parsing silently corrupts globs — **RESOLVED (v4.4.22, `cbf90d9`)**
 
