@@ -1465,6 +1465,15 @@ of the wave's clean bill of health is recorded above (54/54 hook-robustness prob
 clean/no-leak, 45 damaged-artifact probes with honest degradation + repair, statusline within
 budget, daemon fallback verified, idioms injection dropped).
 
+- **Step-7 adversarial regression: all probed fixes hold under hostile input.** Crafted inputs
+  designed to REGRESS each tricky fix: GAP-001 (whole-word `key` + a 40-char path -> 0 false
+  positives); GAP-015 (`findByEmailAddress` vs `findByPhoneNumber` -> no shared token, the CRUD
+  verb correctly stripped); GAP-011 (globs beside a comment containing `'**/'` -> parse-fail SAFE
+  fallback, which is correct: a `*/` inside a JS block comment closes it early, so the input is
+  genuinely malformed and records no corrupted glob rather than a wrong one); GAP-017
+  (`ignore=['E5']` -> True since the prefix covers E501, `ignore=['E502']` -> False). None
+  regressed; the one that could not parse failed safe (no corruption), not loudly.
+
 ### Independent deep-probe ground truth (my own probes, to validate agent claims)
 
 Run directly against v4.4.32 before folding the deep-probe wave, so agent claims have a baseline:
