@@ -1434,6 +1434,25 @@ over the cap, not a false clean.
 
 ---
 
+### Independent deep-probe ground truth (my own probes, to validate agent claims)
+
+Run directly against v4.4.32 before folding the deep-probe wave, so agent claims have a baseline:
+
+- **Hook robustness: 54/54 clean.** All 6 hooks x {empty, garbage, empty-object, null-fields,
+  null-nested, 2MB-huge, null-byte+traversal path, 500-level deep-nest, unicode-NFD} exit 0 with
+  valid JSON or empty. No crash, no hang, no non-zero exit. The fail-open contract holds.
+- **MCP read-tool boundary: clean, no leak.** `get_pattern_context` and `detect_repo` on
+  `/etc/passwd`, a `../../../etc/passwd` traversal, an empty string, a nonexistent path, and a
+  unicode-NFD path all return a structured `no_repo`/`no_profile`/`profile_present` envelope,
+  never a passwd leak and never a crash. Verified in fresh processes AND in a same-process
+  sequence (the long-running MCP-server scenario): a bad-path call never poisons a subsequent
+  good-path call.
+- **Self-correction logged:** my first boundary harness reported a `get_pattern_context`
+  TypeError. Traced to a bug in MY probe (`repo.get('id','none')` returns `None`, not the string
+  default, so `None[:8]` raised), NOT the tool. Re-verified in isolation: the tool is robust.
+  Recorded because catching my own harness bug before reporting it as a plugin bug is the
+  discipline this campaign runs on.
+
 ### GAP-017 — ruff `line-length` enforced despite `ignore = ["E501"]` — **RESOLVED (v4.4.31)**
 
 **Cells:** `enforcement`/style-rule-violation x C6 (py-plain)
