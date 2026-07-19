@@ -4,6 +4,39 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.25] - 2026-07-19
+
+### Fixed
+- The NestJS filename-role map covered six suffixes and missed the roles a real
+  Nest codebase carries most, so those files were left to directory bucketing
+  and scattered into per-feature mixed clusters. Measured on a 6-feature Nest
+  API: **`.dto.ts` is the single largest role at 17 files** — ahead of every
+  mapped suffix — plus `.repository.ts` (6), `.entity.ts` (6),
+  `.interceptor.ts` (2), `.filter.ts` and `.decorator.ts`. Those 33 files never
+  reached a per-role sample size, so their class contracts and reusable exports
+  never derived and **54%** of the repo's archetypes were named
+  `cluster-<hash>`.
+
+  This is exactly the failure the function's own docstring already described
+  ("without it each feature directory forms its own mixed cluster ... the
+  per-edit block degrades to a mixed `cluster-*` witness"); the suffix list was
+  simply incomplete. Added `.dto` `.entity` `.repository` `.interceptor`
+  `.filter` `.decorator` `.pipe` `.middleware` `.strategy`. `.config.ts` is
+  deliberately excluded — it is not Nest-distinctive (Next.js, Vite and Jest all
+  use it) and the config-module prior already covers the Nest case.
+
+  Real-usage effect on that repo:
+
+  | | before | after |
+  |---|---:|---:|
+  | archetypes | 13 | 9 |
+  | unnamed `cluster-<hash>` | 7 (54%) | **1 (11%)** |
+  | populated convention sections | 14 | **20** |
+
+  `dto` and `entity` now exist as first-class role archetypes. Regression across
+  the other TypeScript columns: ts-plain and ts-nextjs both derive 0 hashed
+  archetypes, unchanged in shape.
+
 ## [4.4.24] - 2026-07-19
 
 ### Fixed

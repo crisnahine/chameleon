@@ -37,7 +37,13 @@ def test_case_insensitive_suffix():
 def test_no_role_for_plain_component_or_module_index():
     assert nestjs_role_for_path("src/app.ts") is None
     assert nestjs_role_for_path("src/components/Button.tsx") is None
-    assert nestjs_role_for_path("src/orders/orders.dto.ts") is None  # not in the role set
+    # `.config.ts` stays deliberately out of the role set: it is not
+    # Nest-distinctive (Next.js, Vite and Jest all use it) and the config-module
+    # prior already covers the Nest case. `.dto.ts` USED to sit here too, but it
+    # is the largest role in a real Nest codebase (17 files in the matrix repo)
+    # and is now mapped.
+    assert nestjs_role_for_path("src/orders/orders.config.ts") is None
+    assert nestjs_role_for_path("src/orders/orders.helper.ts") is None
 
 
 def test_no_role_for_non_ts():

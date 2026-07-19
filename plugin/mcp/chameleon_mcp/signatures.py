@@ -312,6 +312,26 @@ _NESTJS_ROLE_SUFFIXES: tuple[tuple[str, str], ...] = (
     (".service.ts", "service"),
     (".module.ts", "module"),
     (".guard.ts", "guard"),
+    # The roles a real Nest codebase carries most, which the original six left
+    # to directory bucketing. Measured on a 6-feature Nest API: `.dto.ts` is the
+    # single LARGEST role at 17 files, ahead of every mapped suffix, plus
+    # `.repository.ts` (6), `.entity.ts` (6), `.interceptor.ts` (2), `.filter.ts`
+    # and `.decorator.ts` -- 33 files that never reached a per-role sample size
+    # and instead formed per-feature mixed clusters, leaving 54% of the repo's
+    # archetypes named `cluster-<hash>`.
+    #
+    # `.config.ts` is deliberately NOT here: it is not Nest-distinctive (Next.js,
+    # Vite and Jest all use it) and the config-module prior already covers the
+    # Nest case.
+    (".dto.ts", "dto"),
+    (".entity.ts", "entity"),
+    (".repository.ts", "repository"),
+    (".interceptor.ts", "interceptor"),
+    (".filter.ts", "filter"),
+    (".decorator.ts", "decorator"),
+    (".pipe.ts", "pipe"),
+    (".middleware.ts", "middleware"),
+    (".strategy.ts", "strategy"),
 )
 
 

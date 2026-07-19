@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import pytest
+
 from chameleon_mcp.signatures import (
     ClusterKey,
     bucket_named_export_count,
     compute_signature,
     content_signal_match_for,
+    nestjs_role_for_path,
     path_pattern_bucket_for,
 )
 
@@ -236,3 +239,52 @@ class TestComputeSignature:
         assert d["jsx_present"] is True
         assert d["top_level_node_kinds"] == ["ImportDeclaration"]
         assert d["default_export_kind"] is None
+
+
+# --------------------------------------------------------------------------- #
+# GAP-009b: the NestJS role-suffix map covered only 6 suffixes, so the roles a
+# real Nest codebase uses most were left to directory bucketing and scattered
+# into per-feature mixed clusters. Measured on a 6-feature Nest API: .dto.ts is
+# the single largest role at 17 files, plus .repository.ts (6), .entity.ts (6),
+# .interceptor.ts (2), .filter.ts and .decorator.ts -- 33 files that never
+# reached a per-role sample size, leaving 54% of archetypes as cluster-<hash>.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("src/invoices/dto/create-invoice.dto.ts", "dto"),
+        ("src/invoices/entities/invoice.entity.ts", "entity"),
+        ("src/invoices/invoices.repository.ts", "repository"),
+        ("src/common/interceptors/logging.interceptor.ts", "interceptor"),
+        ("src/common/filters/all-exceptions.filter.ts", "filter"),
+        ("src/common/decorators/public.decorator.ts", "decorator"),
+        ("src/common/pipes/parse-id.pipe.ts", "pipe"),
+        ("src/auth/jwt.strategy.ts", "strategy"),
+        ("src/common/middleware/request-id.middleware.ts", "middleware"),
+    ],
+)
+def test_nestjs_role_suffixes_cover_the_common_roles(path, expected):
+    assert nestjs_role_for_path(path) == expected
+
+
+def test_nestjs_roles_group_across_feature_directories():
+    # The point of the map: the same role in different features buckets together.
+    a = nestjs_role_for_path("src/invoices/dto/create-invoice.dto.ts")
+    b = nestjs_role_for_path("src/shipments/dto/create-shipment.dto.ts")
+    assert a == b == "dto"
+
+
+def test_already_mapped_roles_are_unchanged():
+    assert nestjs_role_for_path("src/invoices/invoices.controller.ts") == "controller"
+    assert nestjs_role_for_path("src/invoices/invoices.service.ts") == "service"
+    assert nestjs_role_for_path("src/invoices/invoices.module.ts") == "module"
+
+
+def test_non_role_typescript_is_still_directory_bucketed():
+    # A plain .ts must return None so it is bucketed by directory unchanged.
+    assert nestjs_role_for_path("src/utils/money.ts") is None
+    assert nestjs_role_for_path("src/main.ts") is None
+    # A spec is a test, not a role -- test detection owns it.
+    assert nestjs_role_for_path("src/invoices/invoices.service.spec.ts") != "service"
