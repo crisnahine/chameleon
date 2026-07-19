@@ -3,7 +3,7 @@
 **Status:** IN PROGRESS — Phase 3 (execution wave 1: P0-P2 across all 10 columns)
 **Branch:** `plugin-testing-fixes`
 **Baseline commit:** `27fd8d3` (Release v4.4.15) — clean tree, no uncommitted changes
-**Plugin version under test:** started at 4.4.15, now **4.4.24** (ten fixes shipped; v4.4.22 released to origin, CI green)
+**Plugin version under test:** started at 4.4.15, now **4.4.25** (eleven fixes shipped; v4.4.22 released to origin, CI green)
 **Started:** 2026-07-18
 
 ### Resume pointer (read this first after any interruption)
@@ -14,7 +14,7 @@
 | Inventory | `tests/matrix/inventory.jsonl` — 768 items with `file:line` anchors |
 | Deploy gate | `./scripts/qa-deploy.sh verify` **must pass before any cell is marked green** |
 | Test repos | `~/Documents/Projects/chameleon-fullmatrix-qa/` — 10 fresh repos, all committed |
-| Next action | GAP-009b (clustering granularity: 4 NestJS layers merged into one cluster); then GAP-008 (call-graph method dispatch). 63 FAILs and 230 gap reports await triage. |
+| Next action | GAP-008 (call-graph method dispatch, 7 columns); then the Python `services.py`/`selectors.py` role gap; then 63 FAILs and 230 gap reports. |
 
 **Fixes shipped so far (each with red evidence, green evidence, and a regression run):**
 
@@ -29,6 +29,7 @@
 | GAP-011 | **HIGH** | eslint globs silently corrupted; array elements merged | 4.4.22 |
 | GAP-010 | **CRITICAL** | derivation floor above natural cohort size; conventions empty on ordinary repos | 4.4.23 |
 | GAP-009a | **CRITICAL** | archetypes named `cluster-<hash>` when the layer dir is outside a 19-token allow-list | 4.4.24 |
+| GAP-009b | **CRITICAL** | NestJS role map missed `.dto`/`.entity`/`.repository`; 54% of archetypes hashed | 4.4.25 |
 
 GAP-002 open. GAP-003 retracted (my error — the proposed fix would have been a security
 regression). OQ-001 resolved as not-a-defect.
@@ -1046,7 +1047,7 @@ because an imprecise finding is how a future fix gets aimed at the wrong line.
 
 ---
 
-### GAP-009 — archetype naming/granularity collapses real layers into raw hash clusters — **NAMING HALF RESOLVED (v4.4.24); granularity half OPEN**
+### GAP-009 — archetype naming/granularity collapses real layers into raw hash clusters — **RESOLVED (v4.4.24 + v4.4.25)**
 
 **Cells:** `bootstrap`/clustering+naming x **C1, C3, C4, C6, C7** (5 columns)
 **Severity:** CRITICAL per the C3 verifier; the archetype name is the primary thing the model is
@@ -1093,13 +1094,41 @@ one file in it is a location, not a layer. The third expected the richer `class-
 which revealed I had placed the rule BEFORE the specific rules despite its own comment claiming
 it ran after; moving it to just before the give-up fixed the test and honoured the design.
 
-**GRANULARITY HALF STILL OPEN.** NestJS is unchanged at 54% hashed. Its clusters span several
-feature directories at once (`src/orders/`, `src/billing/`, ...), so there is no dominant
-directory and no honest name to derive — correctly, the rule declines. That is a clustering
-problem: 4 distinct NestJS layers are being merged into one cluster. Naming cannot fix a cluster
-that should not exist. Also unresolved: where a cohort's directory names a DOMAIN rather than a
+**GRANULARITY HALF — ALSO RESOLVED (v4.4.25).** The NestJS clusters were per-feature
+(`src/invoices`, `src/shipments`, ...) because NestJS puts the role in the FILENAME, not the
+directory, and the role-suffix map covered only six suffixes. Measuring the repo's actual
+suffixes was decisive:
+
+```
+17 .dto.ts        <- the LARGEST role, unmapped
+ 8 .module.ts        (mapped)     7 .service.ts     (mapped)
+ 7 .controller.ts    (mapped)     6 .repository.ts  <- unmapped
+ 6 .entity.ts     <- unmapped     2 .interceptor.ts <- unmapped
+ 1 .guard.ts         (mapped)     1 .filter.ts / 1 .decorator.ts <- unmapped
+```
+
+33 files were unmapped, so they never reached a per-role sample size and instead formed
+per-feature mixed clusters. The function's own docstring already described this exact failure —
+the list was simply incomplete. Added `.dto .entity .repository .interceptor .filter .decorator
+.pipe .middleware .strategy`; `.config.ts` deliberately excluded (not Nest-distinctive; Next.js,
+Vite and Jest all use it).
+
+**Green evidence — real re-derivation of the NestJS repo:**
+
+| | before | after |
+|---|---:|---:|
+| archetypes | 13 | 9 |
+| unnamed `cluster-<hash>` | 7 (**54%**) | 1 (**11%**) |
+| populated convention sections | 14 | **20** |
+
+`dto` and `entity` are now first-class role archetypes. Regression across the other TypeScript
+columns: ts-plain and ts-nextjs both derive **0** hashed archetypes, shape unchanged.
+
+**One residual, unchanged and honest:** where a cohort's directory names a DOMAIN rather than a
 role (a Django app's unrecognised service/selector layer becoming `billing`), the name says where
-the code lives rather than what it is — better than a hash, weaker than a role name.
+the code lives rather than what it is — better than a hash, weaker than a role name. Python has
+`_PY_ROLE_NAMES` for filename roles but does not map `services.py`/`selectors.py`, which is the
+same class of incompleteness this fix closed for TypeScript.
 
 ### GAP-010 — `min_sample_size=10` zeroes out most convention families on ordinary repos — **RESOLVED (v4.4.23, `37ffb73`)**
 
