@@ -4,6 +4,34 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.23] - 2026-07-19
+
+### Changed
+- The archetype derivation floor (`MIN_SAMPLE_SIZE`) drops from 10 to 5. It sat
+  ABOVE the natural cohort size of a framework repo, so `class_contract`,
+  `key_exports`, `inheritance`, `error_handling`, `required_guards` and
+  `method_calls` derived `{}` on ordinary codebases rather than small ones.
+  Measured across five realistic repos: **13/13** archetypes fell below the floor
+  on NestJS (largest cohort 8), **12/12** on DRF (largest 7), **15/16** on
+  Django, **12/13** on Next.js, **9/13** on Rails. A 6-8 member role cohort *is*
+  the unit of those codebases.
+
+  The value is chosen from measurement. Re-deriving one NestJS repo at each floor
+  gave 7 populated archetype-sections at 10, 14 at 5, and 16 at 4 — the last
+  adding only two more `key_exports` while dropping into genuinely coincidental
+  sample sizes. 5 also matches `MIN_SAMPLE_SIZE_NAMING`, the floor this same
+  module already treats as trustworthy, so the change adopts an existing in-repo
+  precedent rather than inventing a threshold.
+
+  Real-usage effect (populated archetype-sections after re-derivation):
+  NestJS 7 -> 14, DRF 41, Django 55, Rails 42. DRF now derives `required_guards`
+  (the permission-class convention) at all, and every framework repo recovers
+  `class_contract` — the base-class and required-method contract that is the most
+  directly actionable thing chameleon can tell a model about a new file.
+
+  Still env-overridable via `CHAMELEON_MIN_SAMPLE_SIZE`, and still a real floor:
+  a 3-file cohort remains coincidence, not a convention.
+
 ## [4.4.22] - 2026-07-19
 
 ### Fixed

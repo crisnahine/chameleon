@@ -164,7 +164,11 @@ def test_minority_rich_anchor_does_not_beat_dominant_cohort():
 
 
 def test_below_sample_size_returns_empty():
-    files = [_ruby_interaction(i) for i in range(9)]
+    # Sized off the constant, not a literal: the invariant is "below the floor
+    # derives nothing", which must hold at whatever the floor is calibrated to.
+    from chameleon_mcp.conventions import MIN_SAMPLE_SIZE
+
+    files = [_ruby_interaction(i) for i in range(MIN_SAMPLE_SIZE - 1)]
     assert extract_class_contract_conventions(files, language="ruby") == {}
 
 

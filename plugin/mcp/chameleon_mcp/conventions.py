@@ -36,7 +36,22 @@ def _int_env(name: str, default: int) -> int:
 # Env-overridable like the other sample-size floors (CALLABLE_SIGNATURE_MIN_FILES,
 # IMPORT_ORDERING_MIN_SAMPLE, ...) so a repo smaller than the default can still
 # derive these sections instead of getting {} on every archetype it has.
-MIN_SAMPLE_SIZE = _int_env("CHAMELEON_MIN_SAMPLE_SIZE", 10)
+#
+# The default was 10, which sat ABOVE the natural cohort size of a framework repo
+# and so emptied these sections on ordinary codebases rather than small ones.
+# Measured across five realistic repos: 13/13 archetypes below the floor on
+# NestJS (largest cohort 8), 12/12 on DRF (largest 7), 15/16 on Django, 12/13 on
+# Next.js, 9/13 on Rails. A 6-8 member role cohort IS the unit of those
+# codebases; treating it as an untrustworthy sample means the product's core
+# output is near-empty for most users.
+#
+# 5 is chosen from measurement, not preference. Re-deriving one NestJS repo at
+# each floor gave 7 populated archetype-sections at 10, 14 at 5 (recovering
+# class_contract and key_exports), and 16 at 4 — the last adding only two more
+# key_exports while dropping into genuinely coincidental sample sizes. It also
+# matches MIN_SAMPLE_SIZE_NAMING below: both answer the same question — how many
+# siblings make a convention trustworthy — so they should not disagree.
+MIN_SAMPLE_SIZE = _int_env("CHAMELEON_MIN_SAMPLE_SIZE", 5)
 MIN_SAMPLE_SIZE_NAMING = 5
 
 # Conventions sections keyed at the repo level rather than by archetype name.

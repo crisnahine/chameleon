@@ -1125,3 +1125,45 @@ def test_merge_taught_competing_noop_when_no_prior():
     new = {"conventions": {"imports": {"c": {"preferred": [], "competing": []}}}}
     merge_taught_competing({}, new)
     assert new["conventions"]["imports"]["c"]["competing"] == []
+
+
+# --------------------------------------------------------------------------- #
+# GAP-010: the derivation floor sat above the natural cohort size of framework
+# repos. Measured across five realistic repos, 13/13 (NestJS), 12/12 (DRF),
+# 15/16 (Django), 12/13 (Next.js) and 9/13 (Rails) archetypes fell below it, so
+# class_contract / key_exports / inheritance / error_handling / required_guards
+# derived {} on essentially every archetype a real user has.
+# --------------------------------------------------------------------------- #
+
+
+def test_derivation_floor_admits_a_normal_framework_cohort():
+    """A 6-8 member role cohort is the natural unit of a NestJS/DRF codebase, not
+    a thin sample. The floor must admit it."""
+    from chameleon_mcp.conventions import MIN_SAMPLE_SIZE
+
+    assert MIN_SAMPLE_SIZE <= 6, (
+        f"MIN_SAMPLE_SIZE={MIN_SAMPLE_SIZE} excludes a 6-member role cohort, which is the "
+        "typical archetype size in a real framework repo"
+    )
+
+
+def test_derivation_floor_matches_the_naming_floor_precedent():
+    """Both floors answer the same question -- how many sibling files make a
+    convention trustworthy -- so they should not disagree."""
+    from chameleon_mcp.conventions import MIN_SAMPLE_SIZE, MIN_SAMPLE_SIZE_NAMING
+
+    assert MIN_SAMPLE_SIZE == MIN_SAMPLE_SIZE_NAMING
+
+
+def test_derivation_floor_still_rejects_a_thin_sample():
+    """The floor must remain a real floor: a 3-file cohort is coincidence, not a
+    convention."""
+    from chameleon_mcp.conventions import MIN_SAMPLE_SIZE
+
+    assert MIN_SAMPLE_SIZE > 3
+
+
+def test_derivation_floor_is_env_overridable():
+    from chameleon_mcp.conventions import _int_env
+
+    assert _int_env("CHAMELEON_MIN_SAMPLE_SIZE_UNSET_PROBE", 7) == 7

@@ -98,7 +98,10 @@ def test_authz_guard_below_floor_empty(tmp_path):
 
 
 def test_authz_guard_below_min_sample_empty(tmp_path):
-    for i in range(6):
+    # Sized off the constant so the invariant survives a floor recalibration.
+    from chameleon_mcp.conventions import MIN_SAMPLE_SIZE
+
+    for i in range(MIN_SAMPLE_SIZE - 1):
         (tmp_path / f"g{i}.py").write_text(_guarded(i), encoding="utf-8")
     files = PythonExtractor().parse_repo(tmp_path).files
     assert extract_python_authz_guard_conventions(files) == {}
