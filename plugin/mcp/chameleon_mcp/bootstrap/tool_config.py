@@ -1127,6 +1127,58 @@ _SINGLE_QUOTE_STRING_RE = re.compile(r"'((?:\\.|[^'\\])*)'")
 _TRAILING_COMMA_RE = re.compile(r",(\s*[\]}])")
 
 
+def _strip_js_comments(text: str) -> str:
+    """Remove JS comments, ignoring comment markers inside string literals.
+
+    A regex pass cannot do this. `/\\*.*?\\*/` reads the `/**/` inside an ordinary
+    glob as a block comment, so `'tests/**/*.ts'` collapsed to `tests*.ts`; worse,
+    a strip that OPENED in one array element and CLOSED in the next swallowed the
+    boundary, silently merging `['**/*.d.ts', 'src/**/gen']` into `['**gen']`. The
+    line-comment pass had the same flaw with a narrower guard: it excluded only a
+    preceding `:`, so `https://` survived but any other doubled slash in a string
+    (`'a/b//c'`) was truncated. Nothing warned; the corrupted globs were recorded
+    as if parsed cleanly.
+
+    Single forward scan tracking the active string delimiter. Quotes are only
+    special outside a comment, comment markers only outside a string, and a
+    backslash escapes the next character inside a string. An unterminated comment
+    consumes the remainder, which leaves the payload unparseable and routes it to
+    the documented parse-fail path rather than yielding a corrupted config.
+    """
+    out: list[str] = []
+    i, n = 0, len(text)
+    quote: str | None = None
+    while i < n:
+        ch = text[i]
+        if quote is not None:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in "'\"`":
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n:
+            if text[i + 1] == "*":
+                end = text.find("*/", i + 2)
+                i = n if end == -1 else end + 2
+                continue
+            if text[i + 1] == "/":
+                end = text.find("\n", i)
+                i = n if end == -1 else end
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _jsish_to_json(text: str) -> str:
     """Coerce a JS-ish object literal into something json.loads can handle.
 
@@ -1139,8 +1191,7 @@ def _jsish_to_json(text: str) -> str:
     spread, function values, regex literals) will still fall through to the
     parse-fail path, which is the documented fallback.
     """
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
-    text = re.sub(r"(^|[^:])//[^\n]*", r"\1", text)
+    text = _strip_js_comments(text)
 
     def _swap_quotes(m: re.Match[str]) -> str:
         inner = m.group(1)

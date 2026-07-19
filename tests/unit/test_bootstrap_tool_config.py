@@ -698,3 +698,68 @@ class TestRubocopTolerantParse:
         parsed, warning = _parse_rubocop_yaml(cfg)
         assert parsed is None
         assert warning and "malformed YAML" in warning
+
+
+# --------------------------------------------------------------------------- #
+# GAP-011: comment stripping must be string-literal aware. The naive
+# `/\*.*?\*/` pass treated the `/**/` inside a glob as a block comment, so
+# `'tests/**/*.ts'` became `tests*.ts` and, worse, a strip that opened in one
+# array element and closed in the next silently MERGED them. The recorded
+# override scope then matched essentially nothing, with no warning.
+# --------------------------------------------------------------------------- #
+
+
+def test_glob_with_globstar_survives_comment_stripping():
+    from chameleon_mcp.bootstrap.tool_config import _jsish_to_json
+
+    assert json.loads(_jsish_to_json("{ files: ['tests/**/*.ts'] }")) == {
+        "files": ["tests/**/*.ts"]
+    }
+    assert json.loads(_jsish_to_json('{ files: ["tests/**/*.ts"] }')) == {
+        "files": ["tests/**/*.ts"]
+    }
+
+
+def test_adjacent_array_elements_are_not_merged():
+    from chameleon_mcp.bootstrap.tool_config import _jsish_to_json
+
+    # The strip used to open at the `/*` in the first element and close at the
+    # `*/` in the second, swallowing the boundary between them.
+    out = json.loads(_jsish_to_json("{ ignorePatterns: ['**/*.d.ts', 'src/**/gen'] }"))
+    assert out == {"ignorePatterns": ["**/*.d.ts", "src/**/gen"]}
+
+
+def test_url_inside_a_string_is_not_mangled():
+    from chameleon_mcp.bootstrap.tool_config import _jsish_to_json
+
+    assert json.loads(_jsish_to_json("{ url: 'https://x.test/a/**/b' }")) == {
+        "url": "https://x.test/a/**/b"
+    }
+    # The old `//` pass guarded only against a preceding ':', so a doubled slash
+    # anywhere else in a string was truncated.
+    assert json.loads(_jsish_to_json("{ p: 'a/b//c' }")) == {"p": "a/b//c"}
+
+
+def test_real_comments_are_still_stripped():
+    from chameleon_mcp.bootstrap.tool_config import _jsish_to_json
+
+    assert json.loads(_jsish_to_json("{ a: 1 /* real comment */, b: 2 }")) == {"a": 1, "b": 2}
+    assert json.loads(_jsish_to_json("{\n  // leading line comment\n  a: 1\n}")) == {"a": 1}
+    assert json.loads(_jsish_to_json("{ a: 1, // trailing\n  b: 2 }")) == {"a": 1, "b": 2}
+
+
+def test_comment_markers_inside_strings_are_preserved():
+    from chameleon_mcp.bootstrap.tool_config import _jsish_to_json
+
+    assert json.loads(_jsish_to_json("{ a: 'not /* a */ comment' }")) == {
+        "a": "not /* a */ comment"
+    }
+    assert json.loads(_jsish_to_json("{ a: 'not // a comment' }")) == {"a": "not // a comment"}
+
+
+def test_unterminated_block_comment_degrades_without_raising():
+    from chameleon_mcp.bootstrap.tool_config import _jsish_to_json
+
+    # Must not raise; the payload is then unparseable and takes the documented
+    # parse-fail path rather than yielding a corrupted config.
+    _jsish_to_json("{ a: 1 /* never closed")

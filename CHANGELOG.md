@@ -4,6 +4,38 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.22] - 2026-07-19
+
+### Fixed
+- JS/CJS ESLint configs had their globs silently corrupted. `_jsish_to_json`
+  stripped comments with a regex that had no string-literal awareness, so the
+  `/**/` inside an ordinary glob was read as a block comment:
+
+  ```
+  { files: ['tests/**/*.ts'] }              -> {"files": ["tests*.ts"]}
+  { ignorePatterns: ['**/*.d.ts','src/**/gen'] } -> {"ignorePatterns": ["**gen"]}
+  { url: 'https://x.test/a/**/b' }          -> {"url": "https://x.test/ab"}
+  ```
+
+  The second case is the worst: the strip opened at the `/*` in one array element
+  and closed at the `*/` in the next, **silently merging two entries into one**.
+  The line-comment pass had the same flaw with a narrower guard — it excluded only
+  a preceding `:`, so `https://` survived while any other doubled slash in a
+  string (`'a/b//c'`) was truncated.
+
+  Nothing warned, so `rules.json` recorded the mangled globs as if parsed cleanly
+  and a consumer would believe the test-only relaxations applied to a file set
+  that matches essentially nothing. Comment stripping is now a single forward
+  scan that tracks the active string delimiter: quotes are special only outside a
+  comment, comment markers only outside a string, and a backslash escapes the next
+  character. An unterminated comment consumes the remainder, leaving the payload
+  unparseable so it takes the documented parse-fail path instead of yielding a
+  corrupted config.
+
+  Only the no-eval parser was affected; `_parse_eslint_js_via_node` (opt-in behind
+  `CHAMELEON_ALLOW_ESLINT_EVAL`) always returned the correct value, which is how
+  the defect was isolated to this path.
+
 ## [4.4.21] - 2026-07-19
 
 ### Fixed
