@@ -2196,6 +2196,49 @@ _CONFIG_MALFORMED_BANNER = (
     "Fix the JSON and run /chameleon-doctor to confirm enforcement is restored.\n\n"
 )
 
+
+def _config_json_torn(repo_root_path: Path | None) -> bool:
+    """True when the repo's ``.chameleon/config.json`` exists but is unparseable.
+
+    A torn config on a repo with no git remote flips identity to a path-hash that
+    no trust record matches, so it surfaces as 'untrusted' rather than as the
+    enforcement-degraded state -- and untrusted withholds the archetype, routing
+    the per-edit hook to its no-archetype branch. Both the no-archetype and the
+    archetype-present untrusted paths detect this to lead with repair guidance
+    instead of a misleading /chameleon-trust prompt. Fail-open: any read trouble
+    returns False (the caller keeps the normal prompt).
+    """
+    try:
+        if repo_root_path is not None:
+            cfgp = _enf_profile_dir(repo_root_path) / "config.json"
+            if cfgp.is_file():
+                try:
+                    json.loads(cfgp.read_text(encoding="utf-8"))
+                except Exception:
+                    return True
+    except Exception:
+        return False
+    return False
+
+
+def _torn_config_repair_context() -> str:
+    """The <chameleon-context> block that leads with torn-config repair guidance.
+
+    Re-granting trust binds the path-hash id, so a later JSON repair silently
+    drops the grant -- the user must repair the JSON FIRST, not /chameleon-trust.
+    Shared by every untrusted path that detects a torn config so the guidance is
+    identical wherever the torn config surfaces.
+    """
+    return (
+        "<chameleon-context>\n[🦎 chameleon]\n\n"
+        + _CONFIG_MALFORMED_BANNER.rstrip()
+        + "\nOn a repo with no git remote, a torn config.json also resets "
+        "the repo's identity, which can surface as 'untrusted' — repair the "
+        "JSON first, then re-run /chameleon-trust only if still prompted.\n"
+        "</chameleon-context>"
+    )
+
+
 # A trusted repo whose PROFILE (not just config.json) is corrupt, written by an
 # unsupported newer schema, or requires a newer engine loads no archetype data, so
 # the per-edit block would emit {} -- indistinguishable from a healthy repo editing
@@ -3870,7 +3913,15 @@ def preflight_and_advise() -> int:
             and _should_emit_untrusted_prompt(repo_id, payload.get("session_id"))
         ):
             _metric(advisory_emitted=True, repo_id=repo_id, trust_state="untrusted")
-            _emit_chameleon_context(_UNTRUSTED_PROFILE_PROMPT)
+            # A torn config.json on a repo with no git remote surfaces as untrusted
+            # AND zeroes the archetype, routing here rather than to the archetype
+            # branch's own torn-config check. Lead with repair guidance -- a
+            # /chameleon-trust prompt cannot help until the JSON is fixed, and
+            # granting trust binds the path-hash id so a later repair drops it.
+            if _config_json_torn(repo_root_path):
+                _emit_chameleon_context(_torn_config_repair_context())
+            else:
+                _emit_chameleon_context(_UNTRUSTED_PROFILE_PROMPT)
             return 0
         _metric(advisory_emitted=False, repo_id=repo_id, trust_state=trust_state)
         _emit({})
@@ -3886,25 +3937,10 @@ def preflight_and_advise() -> int:
     session_id = payload.get("session_id")
     if trust_state == "untrusted" and repo_id:
         # A torn/unparseable config.json can present as "untrusted" rather than as
-        # the enforcement-degraded state: on a repo with NO git remote, identity
-        # falls back to config.json's repo_uuid, so a torn config flips the repo_id
-        # to a path-hash that no trust record matches. Telling the user to
-        # /chameleon-trust then is misleading (and re-granting binds the path-hash
-        # id, so a later JSON repair silently drops trust). Detect a torn config and
-        # lead with the repair guidance instead. Fail-open: any read trouble keeps
-        # the normal trust prompt.
-        _config_torn = False
-        try:
-            if repo_root_path is not None:
-                _cfgp = _enf_profile_dir(repo_root_path) / "config.json"
-                if _cfgp.is_file():
-                    try:
-                        json.loads(_cfgp.read_text(encoding="utf-8"))
-                    except Exception:
-                        _config_torn = True
-        except Exception:
-            _config_torn = False
-        if _config_torn and _should_emit_untrusted_prompt(repo_id, session_id):
+        # the enforcement-degraded state (see _config_json_torn). Lead with repair
+        # guidance instead of the /chameleon-trust prompt. Fail-open: any read
+        # trouble keeps the normal trust prompt.
+        if _config_json_torn(repo_root_path) and _should_emit_untrusted_prompt(repo_id, session_id):
             _metric(
                 advisory_emitted=True,
                 repo_id=repo_id,
@@ -3912,14 +3948,7 @@ def preflight_and_advise() -> int:
                 archetype=archetype_name,
                 confidence=confidence_band,
             )
-            _emit_chameleon_context(
-                "<chameleon-context>\n[🦎 chameleon]\n\n"
-                + _CONFIG_MALFORMED_BANNER.rstrip()
-                + "\nOn a repo with no git remote, a torn config.json also resets "
-                "the repo's identity, which can surface as 'untrusted' — repair the "
-                "JSON first, then re-run /chameleon-trust only if still prompted.\n"
-                "</chameleon-context>"
-            )
+            _emit_chameleon_context(_torn_config_repair_context())
             return 0
         if _should_emit_untrusted_prompt(repo_id, session_id):
             block = _UNTRUSTED_PROFILE_PROMPT

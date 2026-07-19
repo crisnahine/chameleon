@@ -256,3 +256,63 @@ class TestConfigMalformedObservable:
         tail = src[na : na + 900]
         assert "if _cfg_malformed:" in tail
         assert "_CONFIG_MALFORMED_BANNER" in tail
+
+    def test_no_archetype_untrusted_torn_config_surfaces_repair_banner(self, tmp_path):
+        # A torn config.json on a repo with no git remote flips identity to a
+        # path-hash no trust grant matches -> trust_state=untrusted, and untrusted
+        # withholds the archetype, so preflight takes the no-archetype path. The
+        # dedicated repair guidance ("no git remote resets identity, repair the
+        # JSON first, don't just /chameleon-trust") must be reachable there, not
+        # only in the archetype-present branch -- otherwise the user is told to
+        # trust a repo whose config is torn, which cannot help.
+        import io
+        import os
+        from unittest.mock import MagicMock, patch
+
+        prof = tmp_path / ".chameleon"
+        prof.mkdir()
+        (prof / "config.json").write_text('{ "repo_uuid": "abc", TORN', encoding="utf-8")
+
+        file_path = str(tmp_path / "src" / "models" / "driver.ts")
+        Path(file_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(file_path).write_text("export const x = 1;\n", encoding="utf-8")
+
+        payload = {
+            "tool_name": "Edit",
+            "tool_input": {"file_path": file_path, "new_string": "export const x = 2;"},
+            "session_id": "sess-torn-untrusted",
+        }
+        untrusted = {
+            "data": {
+                "archetype": None,
+                "canonical_excerpt": None,
+                "rules": [],
+                "idioms": "",
+                "repo": {
+                    "id": "pathhash-id",
+                    "trust_state": "untrusted",
+                    "profile_status": "profile_present",
+                },
+            }
+        }
+
+        captured: list[str] = []
+        with (
+            patch("sys.stdin", io.StringIO(json.dumps(payload))),
+            patch("sys.stdout") as mock_stdout,
+            patch.dict(os.environ, {"CHAMELEON_PLUGIN_DATA": str(tmp_path / "data")}, clear=False),
+            patch("chameleon_mcp.daemon_client.call", MagicMock(return_value=untrusted)),
+            patch("chameleon_mcp.profile.loader.find_repo_root", return_value=tmp_path),
+            patch("chameleon_mcp.tools._compute_repo_id", return_value="pathhash-id"),
+            patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
+            patch("chameleon_mcp.tools.get_pattern_context", MagicMock(return_value=untrusted)),
+            patch("chameleon_mcp.drift.observations.record_edit_observation"),
+            patch("chameleon_mcp.metrics.emit_hook_metric"),
+        ):
+            mock_stdout.write = lambda s: captured.append(s)
+            from chameleon_mcp.hook_helper import preflight_and_advise
+
+            preflight_and_advise()
+
+        output = "".join(captured)
+        assert "repair the JSON" in output, f"expected torn-config repair banner, got: {output!r}"

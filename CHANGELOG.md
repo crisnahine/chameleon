@@ -4,6 +4,24 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.35] - 2026-07-20
+
+### Fixed
+- The torn-config repair banner was unreachable in the exact scenario it was
+  written for. On a repo with no git remote, a torn `.chameleon/config.json`
+  flips the repo identity to a path-hash no trust record matches, so the repo
+  surfaces as `untrusted` -- and an untrusted repo withholds the archetype, which
+  routes the per-edit hook to its no-archetype branch and returns before the
+  archetype-present branch where the repair guidance lived. The user got the
+  generic "profile present, untrusted -> /chameleon-trust" prompt instead, which
+  cannot help (the config is still torn, and granting trust binds the path-hash
+  id so a later JSON repair silently drops the grant). The torn-config detection
+  and the repair banner ("repair the JSON first, then re-run /chameleon-trust
+  only if still prompted") are now shared helpers (`_config_json_torn`,
+  `_torn_config_repair_context`) reachable from both the no-archetype and the
+  archetype-present untrusted paths. Surfaced by the full-matrix execution across
+  4 language columns (C1/C3/C8/C9).
+
 ## [4.4.34] - 2026-07-19
 
 ### Fixed
