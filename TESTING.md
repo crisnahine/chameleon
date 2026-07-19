@@ -970,6 +970,68 @@ symptom in `lib/repositories`, and the regression rule requires re-running the i
 
 ---
 
+### GAP-008 — the call graph is blind to method dispatch, so `get_callers` answers 0 for live code — OPEN (HIGH)
+
+**Cells:** `mcp-tools`/call-graph x **C2, C4, C5, C6, C8, C9, C10** (7 of 10 columns, independently)
+**Severity:** HIGH — the comprehension layer's headline use case returns a confidently wrong answer
+**Found by:** wave 2A. Reported separately by seven column agents in three languages; **verified
+directly by me** on C9.
+
+**Red evidence (my own invocation, Flask column):**
+
+```
+symbol: list_compliance_alerts   defined in app/services/carrier_service.py
+real call sites found by grep: 4
+    app/blueprints/drivers/routes.py:78:   drivers  = service.list_compliance_alerts(horizon...)
+    app/blueprints/carriers/routes.py:84:  carriers = service.list_compliance_alerts(horizon...)
+    app/cli.py:42:  carriers = CarrierService().list_compliance_alerts(horizon_days)
+    app/cli.py:43:  drivers  = DriverService().list_compliance_alerts(horizon_days)
+
+get_callers -> found=True  total=0  truncated=False  callers=[]
+```
+
+Four real, statically-resolvable call sites; the tool reports **zero**.
+
+**Scope — this is not one language or one tool.** The same blindness was reported independently as:
+`self.<attr>.<method>()` and router->service wiring invisible (C10, FastAPI: 168 + 56 sites);
+attribute-receiver calls never reach the index (C9, Flask); instance-method calls invisible to
+`get_callers`/`get_callees`/`get_blast_radius` (C6); `cls.<method>()` classmethod dispatch
+produces zero edges (C8, DRF); bare-constant receivers never joined (C4, Ruby); zero cross-file
+edges at all (C5, Rails); every repository method reports 0 callers (C2, Next.js). The C1
+(framework-agnostic TypeScript) column is *exact* by contrast — because its call sites are
+module-level functions, not method dispatch.
+
+**Why it matters more than a missing feature:** the plugin's own contract says *"Only
+`found: true` is a real answer"*, and the digest instructs the model to use `get_blast_radius` /
+`query_symbol_importers` **before renaming or changing a signature**. Here `found: true`,
+`total: 0`, `truncated: false` is the shape of a confident, complete answer. A user who follows
+the documented workflow before a rename is told nothing depends on the symbol, and breaks four
+call sites.
+
+**Credit where due — there IS a hedge, and it is well written:**
+
+> "No caller in the committed calls snapshot. Absence is NOT evidence of dead code: dynamic
+> dispatch, reflection, and callers added since the last refresh are invisible. Run
+> /chameleon-refresh to update the snapshot before treating this as unused."
+
+That note is honest and prominent. But it is subtly **mis-attributing**: it blames dynamic
+dispatch, reflection, and staleness. None of those applies here — `service.list_compliance_alerts(...)`
+is an ordinary statically-resolvable call in a freshly-refreshed profile. The note therefore
+reads as "rare edge cases may be missing" when the truth is "the dominant call form in
+object-oriented code is never indexed". A user calibrating on that note will trust the zero.
+
+**Status:** OPEN, not yet fixed. This is a capability gap in the indexer rather than a
+regression, and the fix (resolving attribute/`self`/`cls` receivers to their defining class) is
+a substantially larger change than anything shipped in this campaign. Two things should be
+separated when it is picked up:
+1. **Indexer coverage** — resolve method dispatch so the answers are right.
+2. **Honesty of the interim answer** — until (1) lands, an answer that omits an entire call
+   class should not present as `truncated: false`, and the note should name the real limitation
+   rather than implying it is only dynamic dispatch. (2) is small, independently shippable, and
+   removes the dangerous part of the failure even before (1).
+
+---
+
 ### GAP-002 — `reuse-before-create` suggested 4 unrelated tests, 4/4 wrong — OPEN
 
 **Cell:** `reuse-before-create` x Python (found on the chameleon repo itself)
