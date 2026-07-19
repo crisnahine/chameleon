@@ -30,6 +30,8 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
+from chameleon_mcp.signatures import _NESTJS_ROLE_SUFFIXES
+
 _NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 
 _GENERIC_TAIL_SEGMENTS = frozenset(
@@ -505,16 +507,14 @@ _TS_PRIORS: tuple[
     # feature (users/users.controller.ts), so the role lives in the filename, not
     # a directory chain -- an empty dir chain matches any location, and the
     # majority filename predicate gates. Names are framework-neutral (the suffix
-    # IS the role); .controller/.resolver/.gateway are NestJS-distinct while
-    # .service/.module/.guard are shared with Angular. Placed above the generic
-    # directory entries so a *.service.ts wins its role over a coarse services/
-    # bucket; placed below the Next.js/Remix entries so app/pages routing wins.
-    ((), _fn_ends_with(".controller.ts"), (), "controller"),
-    ((), _fn_ends_with(".resolver.ts"), (), "resolver"),
-    ((), _fn_ends_with(".gateway.ts"), (), "gateway"),
-    ((), _fn_ends_with(".service.ts"), (), "service"),
-    ((), _fn_ends_with(".module.ts"), (), "module"),
-    ((), _fn_ends_with(".guard.ts"), (), "guard"),
+    # IS the role). Generated from the SAME _NESTJS_ROLE_SUFFIXES map that buckets
+    # these clusters in signatures.py, so the naming table can never again drift
+    # from the clustering that produced the cluster (a *.repository.ts cohort once
+    # bucketed as repository:ts but fell to cluster-<hash> because this table only
+    # listed six of the fifteen roles). Placed above the generic directory entries
+    # so a *.service.ts wins its role over a coarse services/ bucket; placed below
+    # the Next.js/Remix entries so app/pages routing wins.
+    *tuple(((), _fn_ends_with(suffix), (), role) for suffix, role in _NESTJS_ROLE_SUFFIXES),
     (("components",), _fn_any, (), "component"),
     (("ui",), _fn_any, (), "ui-component"),
     (("hooks",), _fn_starts_with("use"), (), "hook"),

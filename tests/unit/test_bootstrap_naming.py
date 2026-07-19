@@ -301,6 +301,48 @@ class TestTsPriors:
         )
         assert _base_name_for(c) == "component"
 
+    def test_nestjs_repository_suffix_feature_colocated(self):
+        # Idiomatic NestJS puts *.repository.ts one per feature dir, so no single
+        # directory dominates -- the suffix role, not a shared dir, must name it.
+        c = _cluster(
+            bucket="repository:ts",
+            members=[
+                "src/appointments/appointments.repository.ts",
+                "src/billing/billing.repository.ts",
+                "src/patients/patients.repository.ts",
+            ],
+        )
+        assert _base_name_for(c) == "repository"
+
+    def test_nestjs_dto_suffix_feature_colocated(self):
+        c = _cluster(
+            bucket="dto:ts",
+            members=[
+                "src/appointments/create-appointment.dto.ts",
+                "src/billing/create-invoice.dto.ts",
+            ],
+        )
+        assert _base_name_for(c) == "dto"
+
+    def test_nestjs_entity_suffix_feature_colocated(self):
+        c = _cluster(
+            bucket="entity:ts",
+            members=[
+                "src/appointments/appointment.entity.ts",
+                "src/billing/invoice.entity.ts",
+            ],
+        )
+        assert _base_name_for(c) == "entity"
+
+    def test_ts_priors_cover_every_nestjs_role_suffix(self):
+        # Guard against the naming table drifting from the authoritative
+        # role-suffix map again (the two lists silently diverged once already).
+        from chameleon_mcp.signatures import _NESTJS_ROLE_SUFFIXES
+
+        for suffix, role in _NESTJS_ROLE_SUFFIXES:
+            members = [f"src/feat_{i}/x{i}{suffix}" for i in range(2)]
+            assert _ts_prior_match(members) == role, f"{suffix} did not name {role}"
+
     def test_ts_prior_skipped_when_any_member_is_ruby(self):
         # First member is .ts so the language tell says TS, but a stray .rb in
         # the cluster trips the no-.rb-anywhere purity gate; the TS prior is

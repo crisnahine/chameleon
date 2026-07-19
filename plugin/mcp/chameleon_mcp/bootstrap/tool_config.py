@@ -394,7 +394,17 @@ def _read_python_format(
 
     if fmt:
         return fmt, source, warning
-    if scan_subdirs:
+    # The subdir fallback is ONLY for a config-less root (a monorepo whose ruff
+    # config lives in backend/). A root that DID declare a ruff/black config is
+    # authoritative even when it yields an empty fmt -- most commonly a
+    # `line-length = N` + `ignore = ["E501"]` opt-out, which drops line_length
+    # above. Treating that empty fmt as "root declared nothing" let the fallback
+    # resurrect an enforcing sibling app's line_length repo-wide, flagging every
+    # long line in the E501-ignoring apps the root opted out for. So gate the
+    # fallback on the root having declared no formatter config at all, not on the
+    # derived fmt being empty.
+    root_declared_format = bool(ruff) or bool(black)
+    if scan_subdirs and not root_declared_format:
         sub_fmt, sub_source, sub_warning = _read_python_format_from_subdirs(repo_root)
         # A root-level parse failure is still worth surfacing even when a
         # sub-project supplies the actual config — it means the root's own

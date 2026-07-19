@@ -36,9 +36,15 @@
 | GAP-015 | precision | duplication overlap counted CRUD verbs as reuse signal (agents' FP-rate unreproduced) | 4.4.29 |
 | GAP-016 | **HIGH** | `.gemspec` dependency changes silently unreviewed (gem's primary manifest) | 4.4.30 |
 | GAP-017 | precision | ruff `line-length` enforced despite `ignore=['E501']` | 4.4.31 |
+| GAP-018 | **HIGH** | constant-SQL `raw_sql_concat` exemption worked TS-only; Ruby/Python unprotected | 4.4.33 |
+| GAP-009b-ii | **HIGH** | naming table listed 6 of 15 NestJS role suffixes; feature-co-located `*.repository.ts` hashed | 4.4.34 |
+| GAP-017-ii | precision | root E501 opt-out overridden by an enforcing sibling app's `line_length` (mixed per-app config) | 4.4.34 |
 
 GAP-002 open. GAP-003 retracted (my error — the proposed fix would have been a security
-regression). OQ-001 resolved as not-a-defect.
+regression). OQ-001 resolved as not-a-defect. GAP-009b-ii and GAP-017-ii were caught by the
+step-7 fresh-repo re-verification: both original fixes held on the structure they were tuned
+against and broke on a common alternative layout of the same framework (feature-co-located Nest
+roles; mixed per-app ruff config).
 
 **Open, awaiting their own cycle:** rb-plain derives 3 archetypes for 8 distinct roles
 (clustering granularity, C4); 25 wave-1 FAILs untriaged; 94 wave-1 gap reports to work through.

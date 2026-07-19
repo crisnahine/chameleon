@@ -800,3 +800,21 @@ class TestRuffLineLengthEnforcement:
         self._write(tmp_path, "[tool.ruff]\nline-length = 100\n")
         res = read_tool_configs(tmp_path)
         assert (res.python_format or {}).get("line_length") == 100
+
+    def test_root_e501_optout_not_overridden_by_enforcing_subdir(self, tmp_path):
+        # Mixed per-app layout: the root opts out of E501, but a sibling app
+        # enforces it. The root's explicit opt-out is authoritative for the
+        # repo-wide format -- the subdir fallback (meant only for a config-less
+        # root) must not resurrect the enforcing sibling's line_length, or every
+        # file in the E501-ignoring apps gets a false line-length violation.
+        self._write(
+            tmp_path,
+            '[tool.ruff]\nline-length = 100\n\n[tool.ruff.lint]\nselect = ["E"]\nignore = ["E501"]\n',
+        )
+        enforcing = tmp_path / "enrollments"
+        enforcing.mkdir()
+        (enforcing / "pyproject.toml").write_text(
+            "[tool.ruff]\nline-length = 100\n", encoding="utf-8"
+        )
+        res = read_tool_configs(tmp_path)
+        assert (res.python_format or {}).get("line_length") is None

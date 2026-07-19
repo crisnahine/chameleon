@@ -4,6 +4,32 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.34] - 2026-07-19
+
+### Fixed
+- NestJS archetype naming drifted from the clustering that produced the cluster:
+  a `*.repository.ts` (or `*.dto.ts` / `*.entity.ts` / `*.interceptor.ts` / ...)
+  cohort was correctly role-bucketed by `signatures._NESTJS_ROLE_SUFFIXES` (fifteen
+  roles) but the `_TS_PRIORS` naming table hardcoded only six suffixes, so a
+  feature-co-located `*.repository.ts` cohort (one per feature dir, no dominant
+  directory) fell through to a meaningless `cluster-<hash>` name. `.dto.ts` /
+  `.entity.ts` survived only by luck of directory layout (a shared `dto/` /
+  `entities/` dir). The naming table's suffix priors are now generated from the
+  SAME `_NESTJS_ROLE_SUFFIXES` map, so the two can never diverge again, with a
+  guard test asserting parity. Surfaced by the step-7 fresh-repo re-verification
+  on an idiomatic per-feature NestJS layout.
+- Python line-length enforcement no longer false-positives on a mixed per-app
+  E501 layout. When a repo's root ruff config opts out of E501 (the common
+  `line-length = N` + `ignore = ["E501"]` "format toward N, don't fail on length"
+  pattern), `_read_python_format` correctly drops `line_length` -- but that left
+  the derived `fmt` empty, indistinguishable from "root declared no config", so
+  the `scan_subdirs` fallback (meant only for a config-less root) resurrected an
+  enforcing sibling app's `line_length` repo-wide and flagged every long line in
+  the E501-ignoring apps. The fallback is now gated on the root having declared no
+  ruff/black config at all, not on the derived `fmt` being empty, so an explicit
+  root opt-out is authoritative. Surfaced by the step-7 fresh-repo re-verification
+  on a mixed-config Django repo.
+
 ## [4.4.33] - 2026-07-19
 
 ### Fixed
