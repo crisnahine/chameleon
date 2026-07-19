@@ -237,6 +237,27 @@ def read_tool_configs(repo_root: Path) -> ToolConfigResult:
     return result
 
 
+def _ruff_ignores_e501(ruff: dict) -> bool:
+    """True when a ruff config turns the line-length lint (E501) off.
+
+    E501 is off if it appears in the ignore list -- as ``E501`` itself or a
+    covering prefix (``E5``, ``E``) -- under ``[tool.ruff.lint]`` (current) or
+    the legacy top-level ``[tool.ruff]``. A bare ``noqa``/select nuance is not
+    modeled: this only suppresses on an EXPLICIT ignore, the unambiguous opt-out.
+    """
+    prefixes = ("e501", "e5", "e")
+
+    def _ignored(section) -> bool:
+        if not isinstance(section, dict):
+            return False
+        ignore = section.get("ignore")
+        if not isinstance(ignore, list):
+            return False
+        return any(isinstance(c, str) and c.strip().lower() in prefixes for c in ignore)
+
+    return _ignored(ruff.get("lint")) or _ignored(ruff)
+
+
 def _read_python_format(
     repo_root: Path, *, scan_subdirs: bool = True
 ) -> tuple[dict | None, str | None, str | None]:
@@ -306,6 +327,18 @@ def _read_python_format(
 
         ll_ruff = _coerce_positive_int(ruff.get("line-length"))
         ll = ll_ruff if ll_ruff is not None else _coerce_positive_int(black.get("line-length"))
+        # A ruff `line-length` is BOTH the formatter wrap target and the E501
+        # lint threshold. When the config explicitly ignores E501, the repo has
+        # opted out of FAILING on long lines (a very common "format toward N,
+        # don't lint length" pattern), so recording it as an enforced max would
+        # flag a line the repo's own `ruff check` passes. Since line_length's
+        # only consumer is the line-length style-rule enforcement, drop the ruff
+        # value in that case (a black line-length, which has no lint at all, is
+        # likewise never an enforced max -- but black is only reached when ruff
+        # sets nothing, so a black-derived ll is left as-is for the formatter).
+        if ll_ruff is not None and _ruff_ignores_e501(ruff):
+            ll_ruff = None
+            ll = _coerce_positive_int(black.get("line-length"))
         if ll is not None:
             fmt["line_length"] = ll
             if source is None:

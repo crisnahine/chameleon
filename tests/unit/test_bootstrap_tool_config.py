@@ -763,3 +763,40 @@ def test_unterminated_block_comment_degrades_without_raising():
     # Must not raise; the payload is then unparseable and takes the documented
     # parse-fail path rather than yielding a corrupted config.
     _jsish_to_json("{ a: 1 /* never closed")
+
+
+class TestRuffLineLengthEnforcement:
+    """A ruff `line-length` is dual-purpose: the formatter's wrap target AND the
+    E501 lint threshold. E501 is NOT in ruff's default select, and a config can
+    explicitly `ignore = ["E501"]`. When length-linting is off, chameleon must
+    not record line_length as an ENFORCED max -- doing so flags a long line the
+    repo's own `ruff check` passes (a false style-rule-violation). The common
+    `line-length = N` + `ignore = ["E501"]` pattern is "format toward N, don't
+    fail on longer lines".
+    """
+
+    def _write(self, tmp_path, body):
+        (tmp_path / "pyproject.toml").write_text(body, encoding="utf-8")
+
+    def test_e501_ignored_suppresses_enforced_line_length(self, tmp_path):
+        self._write(
+            tmp_path,
+            '[tool.ruff]\nline-length = 100\n\n[tool.ruff.lint]\nselect = ["E"]\nignore = ["E501"]\n',
+        )
+        res = read_tool_configs(tmp_path)
+        # line_length is not recorded as an enforced max -> no style-rule-violation.
+        assert (res.python_format or {}).get("line_length") is None
+
+    def test_line_length_enforced_when_e501_not_ignored(self, tmp_path):
+        self._write(
+            tmp_path,
+            '[tool.ruff]\nline-length = 100\n\n[tool.ruff.lint]\nselect = ["E", "E501"]\n',
+        )
+        res = read_tool_configs(tmp_path)
+        assert (res.python_format or {}).get("line_length") == 100
+
+    def test_bare_line_length_still_recorded(self, tmp_path):
+        # No lint section at all: preserve existing behavior (record it).
+        self._write(tmp_path, "[tool.ruff]\nline-length = 100\n")
+        res = read_tool_configs(tmp_path)
+        assert (res.python_format or {}).get("line_length") == 100

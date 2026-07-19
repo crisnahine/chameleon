@@ -4,6 +4,29 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.31] - 2026-07-19
+
+### Fixed
+- A ruff `line-length` no longer produces a `style-rule-violation` when the repo
+  has turned the line-length lint (E501) off. In ruff, `line-length` is BOTH the
+  formatter's wrap target and the E501 threshold, E501 is not in ruff's default
+  select, and a config can explicitly `ignore = ["E501"]` — the very common
+  "format toward N, don't fail on longer lines" pattern. Chameleon read
+  `line-length = 100` and flagged a 105-column line as a violation while the
+  repo's own `ruff check` passed it, because the extraction never inspected the
+  `[tool.ruff.lint]` ignore list.
+
+  Extraction now checks whether E501 is explicitly ignored (as `E501`, or a
+  covering `E5`/`E` prefix, under `[tool.ruff.lint]` or the legacy top-level
+  `[tool.ruff]`); when it is, `line_length` is not recorded as an enforced max
+  (its only consumer is the style-rule check). Verified across the five Python
+  columns: the two repos that ignore E501 (`py-plain`, `py-django`, `py-flask`)
+  stop flagging long lines, while the two that enforce it (`py-drf`, `py-fastapi`)
+  keep the max-100 rule. Scope note: only an EXPLICIT `ignore` is treated as the
+  opt-out; the separate ruff nuance that E501 must also be actively selected is
+  left as documented follow-up, since changing the no-select default would alter
+  enforcement for every ruff repo that merely sets a line-length.
+
 ## [4.4.30] - 2026-07-19
 
 ### Fixed
