@@ -126,8 +126,7 @@ def _interpolates_only_constants(matched_sql: str) -> bool:
     # slots extracted as ''. Test on truthiness: an empty slot is never a valid
     # interpolation anyway, so `if g` selects the one group that actually matched.
     slots = [
-        next((g for g in groups if g), "")
-        for groups in _INTERPOLATION_SLOT.findall(matched_sql)
+        next((g for g in groups if g), "") for groups in _INTERPOLATION_SLOT.findall(matched_sql)
     ]
     if not slots:
         return False

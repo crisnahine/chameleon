@@ -47,10 +47,10 @@ def _int_env(name: str, default: int) -> int:
 #
 # 5 is chosen from measurement, not preference. Re-deriving one NestJS repo at
 # each floor gave 7 populated archetype-sections at 10, 14 at 5 (recovering
-# class_contract and key_exports), and 16 at 4 — the last adding only two more
+# class_contract and key_exports), and 16 at 4 -- the last adding only two more
 # key_exports while dropping into genuinely coincidental sample sizes. It also
-# matches MIN_SAMPLE_SIZE_NAMING below: both answer the same question — how many
-# siblings make a convention trustworthy — so they should not disagree.
+# matches MIN_SAMPLE_SIZE_NAMING below: both answer the same question -- how many
+# siblings make a convention trustworthy -- so they should not disagree.
 MIN_SAMPLE_SIZE = _int_env("CHAMELEON_MIN_SAMPLE_SIZE", 5)
 MIN_SAMPLE_SIZE_NAMING = 5
 
