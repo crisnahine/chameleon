@@ -55,6 +55,7 @@ const SCHEMA = {
 }
 
 const WAVE_SIZE = (args && args.waveSize) || 50
+const OFFSET = (args && args.offset) || 0
 const LIVE_VER = (args && args.liveVersion) || '4.4.34'
 const LIVE_DIR = HOME + '/.claude/plugins/cache/chameleon/chameleon/' + LIVE_VER
 
@@ -72,12 +73,14 @@ const results = await parallel(Object.keys(COLS).map(col => () => {
       `Dump script for this language: ${LIVE_DIR}/scripts/${c.dump}. Inline comment syntax: ${c.cmt}`,
       '',
       `SELECT YOUR BATCH: read ${DEV}/tests/matrix/cells.jsonl, filter to rows where`,
-      `column=="${col}" AND status=="PENDING", and take the FIRST ${WAVE_SIZE} by file order. Those`,
-      `${WAVE_SIZE} item_ids are your work list for this wave. (A prior wave already PASSED earlier`,
-      `rows, so this slice is fresh.) Run e.g.:`,
+      `column=="${col}" AND status=="PENDING" (in file order), SKIP the first ${OFFSET}, then take`,
+      `the next ${WAVE_SIZE}. Those item_ids are your work list for this wave. (Folded waves already`,
+      `PASSED earlier rows, and a concurrent wave owns a different offset slice, so this slice is`,
+      `yours alone.) Run e.g.:`,
       `  python3 -c "import json;`,
-      `  [print(r['item_id']) for r in (json.loads(l) for l in open('${DEV}/tests/matrix/cells.jsonl'))`,
-      `   if r['column']=='${col}' and r['status']=='PENDING']" | head -${WAVE_SIZE}`,
+      `  ids=[r['item_id'] for r in (json.loads(l) for l in open('${DEV}/tests/matrix/cells.jsonl'))`,
+      `   if r['column']=='${col}' and r['status']=='PENDING'];`,
+      `  print('\\n'.join(ids[${OFFSET}:${OFFSET + WAVE_SIZE}]))"`,
       '',
       `Drive EACH selected item with a REAL invocation appropriate to its surface, observe the`,
       `ACTUAL output, and return a verdict per item. Real-usage execution -- no mocks, no unit`,
