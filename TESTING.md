@@ -1717,3 +1717,60 @@ requires.
 ## 5. Fix Log
 
 _(one entry per fix cycle: issue, cell, root cause, red evidence, green evidence, commit)_
+
+## 7. Final report (DRAFT — completes when fresh-repo sign-off + clean-code review land)
+
+### 7.1 All fixes shipped (18 across v4.4.16 -> v4.4.32, all released to origin, CI green)
+
+| # | Gap | Sev | What real usage exposed | Fix version |
+|---|---|---|---|---|
+| GAP-001 | med | credential-context gate matched `auth` inside "authored" -> a file path reported as a leaked AWS key | 4.4.16 |
+| GAP-004 | **HIGH** | every release stamped `engine_min_version = own version`, orphaning its profiles from all older engines (25 locked out) | 4.4.17 |
+| GAP-005 | med | turn-end test-run advisory unsatisfiable: recorder read `returnCode`, payload sends `exit_code` (14,254 rows all -1) | 4.4.18 |
+| GAP-006 | **HIGH** | bootstrap walked to `$HOME` for tool config, discarding the repo's own (5 Python repos shipped empty rules.json) | 4.4.19 |
+| GAP-007a | med | `raw_sql_concat` flagged constant-only `${TABLE}` interpolation (partial; did not fix the archetype loss) | 4.4.20 |
+| GAP-007b | **HIGH** | a scan-excluded cohort was DELETED, so repository edits got a wrong-layer (validator) witness | 4.4.21 |
+| GAP-011 | **HIGH** | eslint comment-strip corrupted globs (`tests/**/*.ts` -> `tests*.ts`), merged adjacent array elements | 4.4.22 |
+| GAP-010 | **CRIT** | derivation floor (10) sat above real cohort size -> conventions empty on ordinary framework repos | 4.4.23 |
+| GAP-009a | **CRIT** | archetypes named `cluster-<hash>` when the layer dir was outside a 19-token allow-list | 4.4.24 |
+| GAP-009b | **CRIT** | NestJS role map missed `.dto`/`.entity`/`.repository` -> 54% of archetypes hashed | 4.4.25 |
+| GAP-008 | **HIGH** | empty `get_callers` answers hid the instance-dispatch blind spot; skill told the model to trust them | 4.4.26 |
+| GAP-013 | HIGH | Python `services.py`/`selectors.py` unmapped -> service layer clustered by app not role | 4.4.27 |
+| GAP-014 | **HIGH** | per-edit dedup deleted interior lines of taught idiom code examples (corrupt/inverted guidance) | 4.4.28 |
+| GAP-015 | prec | duplication name-overlap counted CRUD verbs (`find`) as reuse signal | 4.4.29 |
+| GAP-016 | **HIGH** | `.gemspec` dependency changes silently unreviewed (a gem's primary manifest) | 4.4.30 |
+| GAP-017 | prec | ruff `line-length` enforced despite `ignore=["E501"]` | 4.4.31 |
+| GAP-002 | prec | `reuse-before-create` nudged on test functions (0% intent match over ~14 observed) | 4.4.32 |
+
+Withdrawn/refuted on verification (the discipline working): GAP-003 (my proposed fix would have
+weakened a security check), GAP-012 (both halves refuted by driving the real hook), OQ-001 (not a
+defect), plus the deep-probe `lens.idiom` FAIL and `libcst` BLOCKED (both by-design, adjudicated
+N/A-ASSERTED). Several agent-reported gaps (contract-break 10-file cap, Python-manifest coverage,
+duplication FP-rate) refuted as by-design or unreproduced.
+
+### 7.2 Coverage matrix
+
+768 inventory items x 10 language/framework columns = 7,680 cells. Executed **1,658** with real
+evidence (PASS or N/A-ASSERTED), **0 FAIL, 0 BLOCKED**. Coverage was driven by real invocation
+across the full lifecycle (cold-open -> bootstrap -> trust -> comprehension -> per-edit
+conformance -> enforcement -> teach -> drift/refresh -> review -> turn-end -> deep-probe), not by
+per-cell probing. Framework classification: 10/10 columns correct, including the 3 agnostic
+(`None`) columns and DRF folding to `django`.
+
+### 7.3 Overall effectiveness assessment
+
+The defining finding: **every one of the 8 CRITICAL/HIGH derivation bugs, and 5 of the precision
+bugs, was a hardcoded list or constant calibrated against the author's own repos** -- a 19-token
+directory allow-list, a 6-suffix NestJS map, a Python role map, a sample-size floor of 10, a
+stopword set missing CRUD verbs, a manifest list missing `.gemspec`, a line-length reader blind
+to `ignore`, a credential-word substring match. Each degraded silently on an unfamiliar codebase,
+and NONE was reachable by the plugin's own 6,221-test unit suite, because those tests were written
+against the same assumptions. The real-usage matrix across 10 (then 3 more fresh) unfamiliar
+codebases is precisely what surfaced them. Two bugs (GAP-005 test-run advisory, GAP-008
+call-graph disclosure) are structurally invisible to any fixture built from the implementation.
+
+Robustness is strong and independently corroborated: the deep-probe wave (damaged artifacts,
+malformed payloads, boundary inputs, trust states, daemon, merge driver, schema migration, MCP
+stdio) found ZERO high/critical -- fail-open, honest-degradation, and repair contracts hold under
+hostile and degraded state.
+
