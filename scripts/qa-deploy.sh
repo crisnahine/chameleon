@@ -40,7 +40,7 @@ version() {
 tree_differs() {
     ! diff -rq --exclude='__pycache__' --exclude='.venv' --exclude='node_modules' \
         --exclude='.in_use' --exclude='.pytest_cache' --exclude='.ruff_cache' \
-        --exclude='.claude' \
+        --exclude='.claude' --exclude='.orphaned_at' --exclude='.in_use' \
         "$1" "$2" >/dev/null 2>&1
 }
 
@@ -85,6 +85,20 @@ cmd_verify() {
 
     echo "==> verifying the running plugin is the dev plugin (v${ver})"
 
+    # The campaign folds agent evidence (which quotes absolute paths) into the
+    # matrix ledger and TESTING.md, so a developer home path can sneak into a
+    # tracked file and redden CI's no-personal-paths guard. Run the same guard
+    # here so a fold regression is caught before a push, not after.
+    if [ -x "${DEV_ROOT}/scripts/check-no-personal-paths.sh" ]; then
+        if ! bash "${DEV_ROOT}/scripts/check-no-personal-paths.sh" >/dev/null 2>&1; then
+            echo "    FAIL: a tracked file contains a developer home path (CI would redden)." >&2
+            echo "          Run scripts/check-no-personal-paths.sh to see which." >&2
+            rc=1
+        else
+            echo "    OK: no personal paths in tracked files"
+        fi
+    fi
+
     if [ ! -d "${cache_dir}" ]; then
         echo "    FAIL: no cache dir for v${ver} -- nothing loads this version yet." >&2
         echo "          Run 'qa-deploy.sh deploy'." >&2
@@ -95,7 +109,7 @@ cmd_verify() {
         echo "    FAIL: running copy differs from the dev tree. Offending paths:" >&2
         diff -rq --exclude='__pycache__' --exclude='.venv' --exclude='node_modules' \
             --exclude='.in_use' --exclude='.pytest_cache' --exclude='.ruff_cache' \
-            --exclude='.claude' \
+            --exclude='.claude' --exclude='.orphaned_at' --exclude='.in_use' \
             "${DEV_ROOT}/plugin" "${cache_dir}" 2>&1 | head -20 >&2
         rc=1
     else
