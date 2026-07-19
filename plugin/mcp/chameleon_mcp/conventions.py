@@ -1121,6 +1121,25 @@ def _unqualified_name(base: str) -> str:
     return base.rsplit("::", 1)[-1]
 
 
+def _strip_type_params(base: str) -> str:
+    """Drop a generic type-parameter suffix from a base class name.
+
+    A typed cohort subclasses the SAME base parameterized per model:
+    ``BaseRepository[User]``, ``BaseRepository[Order]``, ... (Python ``[...]``) or
+    ``Repository<User>`` (TS ``<...>``). Counting the raw subscripted strings
+    fragments the dominance signal so the shared base never clears the floor. Cut
+    at the first ``[`` or ``<`` so every variant normalizes to ``BaseRepository``.
+    A base with no subscript, or one starting with the bracket, is returned
+    stripped-unchanged (class names never begin with a bracket).
+    """
+    cut = len(base)
+    for sep in ("[", "<"):
+        i = base.find(sep)
+        if i > 0:
+            cut = min(cut, i)
+    return base[:cut].strip()
+
+
 def _dominant_base_family(base_counts: Counter[str]) -> tuple[str, list[str], int] | None:
     """Group bases by unqualified name; return the largest multi-namespace family.
 
@@ -1171,8 +1190,11 @@ def _python_inheritance_conventions(files: list[ParsedFile], total: int) -> dict
             bases = sh.get("bases")
             if not isinstance(bases, list):
                 continue
-            for base in bases:
-                if isinstance(base, str) and base and base != "object" and base not in seen_bases:
+            for raw_base in bases:
+                if not isinstance(raw_base, str) or not raw_base:
+                    continue
+                base = _strip_type_params(raw_base)
+                if base and base != "object" and base not in seen_bases:
                     base_counts[base] += 1
                     seen_bases.add(base)
 
@@ -1391,7 +1413,7 @@ def _collect_contract_classes(files: list[ParsedFile], *, language: str) -> list
             # `extends` is the fallback for TS, which never populates `bases`.
             base = next(iter(shape.get("bases") or []), None) or shape.get("extends")
             if base:
-                rec["base"] = base
+                rec["base"] = _strip_type_params(base)
             # TS-only: the interfaces a class `implements`. This is the anchor a
             # decorator or base cannot give -- @Injectable is shared by every
             # NestJS provider, but `implements CanActivate`/`NestInterceptor`/
@@ -1423,7 +1445,7 @@ def _collect_contract_classes(files: list[ParsedFile], *, language: str) -> list
                 rec["methods"].add(mname)
             base = sig.get("base_class")
             if base and not rec["base"]:
-                rec["base"] = base
+                rec["base"] = _strip_type_params(base)
 
         for _rec in by_name.values():
             # Tag the source file so the anchor gate can count DISTINCT FILES (its

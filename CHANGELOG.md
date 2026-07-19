@@ -4,6 +4,21 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.36] - 2026-07-20
+
+### Fixed
+- Inheritance and class-contract derivation now normalize generic-parameterized
+  base classes. A typed cohort subclasses the SAME base parameterized per model
+  (`BaseRepository[User]`, `BaseRepository[Order]`, ... in Python, or
+  `Repository<User>` in TypeScript), and the extractors counted the raw
+  subscripted strings as distinct bases, so N classes sharing one generic base
+  produced N single-count bases that never cleared the dominance floor -- the
+  shared base and its class contract were silently missed, exactly on the typed
+  repository / DRF generic-view layers where the convention is strongest. Base
+  names are now cut at the first `[` or `<` (`_strip_type_params`) before the
+  dominance count, so every `BaseRepository[X]` normalizes to `BaseRepository`.
+  Surfaced by the full-matrix execution on a typed Python (Flask) column.
+
 ## [4.4.35] - 2026-07-20
 
 ### Fixed

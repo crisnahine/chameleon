@@ -209,6 +209,20 @@ def test_inheritance_derivation_skips_object_only():
     assert out == {}
 
 
+def test_inheritance_derivation_normalizes_generic_base():
+    from chameleon_mcp.conventions import extract_inheritance_conventions
+
+    # A typed repository cohort subclasses the SAME base parameterized per model:
+    # BaseRepository[User], BaseRepository[Order], ... Counting the raw subscripted
+    # strings fragments the dominance signal so the shared base never clears the
+    # floor. The generic type-param must be normalized away.
+    models = ["User", "Order", "Invoice", "Payment", "Refund", "Ledger", "Account"]
+    files = [_model(i, [f"BaseRepository[{m}]"]) for i, m in enumerate(models)]
+    out = extract_inheritance_conventions(files, language="python")
+    assert out.get("dominant_base") == "BaseRepository"
+    assert out.get("frequency", 0) >= 0.6
+
+
 def test_inheritance_lint_flags_wrong_base():
     from chameleon_mcp.lint_engine import lint_conventions
 
