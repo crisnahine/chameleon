@@ -2070,9 +2070,23 @@ def _witness_dedup_idiom_lines(text: str, witness: str) -> str:
         return text
     kept: list[str] = []
     checked = 0
+    in_fence = False
     for line in text.splitlines():
         stripped = line.strip()
-        if stripped and checked < _IDIOM_BLOCK_DEDUP_MAX_LINES:
+        # A fenced code block is the TAUGHT example -- it must be delivered
+        # verbatim. Dropping a line inside it because the canonical witness also
+        # contains that line corrupts the example (a good example resembles the
+        # canonical file by construction, so the collision is near-certain), and
+        # the model is then told to imitate broken or semantically inverted code.
+        # Only prose OUTSIDE a fence is a dedup candidate. The toggle counts an
+        # opening ``` as already inside, so the fence markers themselves and every
+        # line between them are preserved; an unterminated fence keeps everything
+        # after it, failing safe toward showing the example rather than gutting it.
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            kept.append(line)
+            continue
+        if not in_fence and stripped and checked < _IDIOM_BLOCK_DEDUP_MAX_LINES:
             checked += 1
             if stripped in witness:
                 continue

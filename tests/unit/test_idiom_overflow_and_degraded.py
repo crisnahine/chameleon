@@ -145,3 +145,76 @@ def test_healthy_no_archetype_stays_silent(tmp_path):
     # file) must NOT emit the degraded banner -- that would be false noise.
     out = _run_preflight(tmp_path, "profile_present")
     assert "profile degraded" not in out.lower()
+
+
+# --------------------------------------------------------------------------- #
+# Witness-dedup must not reach inside fenced code examples. The per-edit dedup
+# drops idiom lines that appear verbatim in the canonical witness (redundant
+# prose the model can read off the witness). Applied line-by-line with no fence
+# awareness, it deleted INTERIOR lines of a taught Example/Counterexample --
+# and a good idiom example resembles the canonical file by construction, so the
+# collision is near-certain, not incidental. The model was then handed a
+# syntactically broken (or semantically inverted) example to imitate: strictly
+# worse than dropping the idiom. Reported independently in C5, C6, C9, C10.
+# --------------------------------------------------------------------------- #
+
+from chameleon_mcp.hook_helper import _witness_dedup_idiom_lines
+
+
+def test_dedup_preserves_fenced_example_lines_shared_with_witness():
+    idiom = (
+        "### commit-in-service-only\n"
+        "Only a service calls commit().\n"
+        "\n"
+        "Example:\n"
+        "```\n"
+        "def create(self, payload):\n"
+        "    obj = Model(**payload)\n"
+        "    self.repository.commit()\n"
+        "    return obj\n"
+        "```\n"
+    )
+    # A realistic canonical witness that shares the boilerplate lines.
+    witness = (
+        "class CarrierService:\n"
+        "    def create(self, payload):\n"
+        "        obj = Model(**payload)\n"
+        "        return obj\n"
+    )
+    out = _witness_dedup_idiom_lines(idiom, witness)
+    # Every line INSIDE the fence survives verbatim -- the example must parse.
+    for code_line in (
+        "def create(self, payload):",
+        "obj = Model(**payload)",
+        "self.repository.commit()",
+        "return obj",
+    ):
+        assert code_line in out, f"fenced example lost {code_line!r}"
+
+
+def test_dedup_still_drops_redundant_prose_outside_fences():
+    # The dedup's real job is unchanged: a PROSE line the witness already shows
+    # verbatim is still redundant and still dropped.
+    idiom = "### x\nStatus: active\nshared prose line\ntail prose\n"
+    witness = "shared prose line\n"
+    out = _witness_dedup_idiom_lines(idiom, witness)
+    assert "shared prose line" not in out
+    assert "tail prose" in out
+
+
+def test_dedup_handles_counterexample_fence_too():
+    idiom = "### x\nCounterexample:\n```\nshipment = Shipment.new\nshipment.save\n```\n"
+    witness = "shipment = Shipment.new\nother\n"
+    out = _witness_dedup_idiom_lines(idiom, witness)
+    assert "shipment = Shipment.new" in out
+    assert "shipment.save" in out
+
+
+def test_dedup_survives_unterminated_fence_without_dropping_code():
+    # A malformed idiom (fence never closed) must fail safe: keep the code region
+    # rather than dedup into it.
+    idiom = "### x\nExample:\n```\ndef create(self, payload):\n    return obj\n"
+    witness = "    def create(self, payload):\n        return obj\n"
+    out = _witness_dedup_idiom_lines(idiom, witness)
+    assert "def create(self, payload):" in out
+    assert "return obj" in out

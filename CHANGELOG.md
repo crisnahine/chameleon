@@ -4,6 +4,30 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.28] - 2026-07-19
+
+### Fixed
+- The per-edit witness-dedup no longer reaches inside a taught idiom's fenced
+  code example. `_witness_dedup_idiom_lines` drops idiom lines that appear
+  verbatim in the canonical witness (redundant prose the model can read off the
+  witness) — but it ran line-by-line with no fence awareness, so it also deleted
+  INTERIOR lines of an Example/Counterexample code block. A good idiom example
+  resembles the canonical file by construction, so the collision is near-certain
+  rather than incidental: measured, a 4-line example collapsed to the single line
+  `self.repository.commit()` because its other three lines also appeared in the
+  witness. The model was then told to imitate a syntactically broken (or, worse,
+  semantically inverted) example — strictly worse than dropping the idiom
+  entirely. Reported independently in four language/framework columns.
+
+  Dedup now tracks fenced code blocks and only considers prose OUTSIDE a fence;
+  every line between ``` markers is delivered verbatim. The dedup's real job is
+  unchanged (a redundant prose line the witness already shows is still dropped),
+  and an unterminated fence fails safe toward showing the example. The fix is
+  anti-correlated-value in reverse: the more canonical an idiom's example, the
+  more it was previously gutted, so the idioms teams invest most in were hit
+  hardest. `_idiom_titles_kept_after_shaping` shares the same helper, so the
+  shown-title accounting stays consistent automatically.
+
 ## [4.4.27] - 2026-07-19
 
 ### Fixed
