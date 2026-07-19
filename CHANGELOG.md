@@ -4,6 +4,30 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.29] - 2026-07-19
+
+### Changed
+- The duplication-candidate name-token stopword set gains the CRUD / data-access
+  verbs it omitted: `find` `update` `delete` `remove` `fetch` `load` `save` `add`
+  `insert`. These are exactly as generic as `get` / `set` / `create` / `build`,
+  which were already stopwords — nearly every data helper finds, updates, or
+  saves something — so overlap on the VERB paired unrelated queries
+  (`findActiveShipments` collided with `findPendingShipments` on `find`).
+  Stripping them forces a duplication match to rest on the shared DOMAIN noun,
+  which is what the min-shared-token bar is for.
+
+  Measured on a real DRF catalog: a new `find_by_status` went from matching every
+  `find_*` in the repo to **0 raw candidates**; a new `update_invoice` now rests
+  only on the domain noun `invoice`. `filter` and `list` are deliberately kept
+  OUT — in DRF `filter` names a real role (`filters.py`) and both can carry a
+  genuine domain concern, so they retain their reuse signal.
+
+  Scope note: this completes the stopword set by its own stated rule (a match
+  must rest on a domain token, not a verb every function shares) and reduces
+  candidate volume measurably. It is not claimed to eliminate any specific
+  false-positive rate — the semantic lens's `min_shared=2` gate and the LLM
+  refuter remain the precision backstops.
+
 ## [4.4.28] - 2026-07-19
 
 ### Fixed

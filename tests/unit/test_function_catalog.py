@@ -44,6 +44,34 @@ class TestNameTokens:
         # get/to/is are generic verbs carrying no reuse signal.
         assert fc.name_tokens("getUserData") == frozenset({"user"})
 
+    def test_crud_verbs_are_stopwords(self):
+        # find/update/delete/remove/fetch/load/save are generic data-access
+        # verbs, exactly as devoid of reuse signal as get/set/create (already
+        # stopwords). A match must rest on the DOMAIN noun, not the CRUD verb, or
+        # every findX pairs with every other findX.
+        assert fc.name_tokens("findShipment") == frozenset({"shipment"})
+        assert fc.name_tokens("updateInvoice") == frozenset({"invoice"})
+        assert fc.name_tokens("deleteCarrier") == frozenset({"carrier"})
+        assert fc.name_tokens("fetchOrder") == frozenset({"order"})
+        assert fc.name_tokens("saveDraft") == frozenset({"draft"})
+
+    def test_two_find_functions_no_longer_share_a_reuse_token(self):
+        # The FP mechanism: two unrelated queries used to collide on {find}.
+        a = fc.name_tokens("findActiveShipments")
+        b = fc.name_tokens("findPendingShipments")
+        # `find` is gone from both, so the only overlap is the domain noun. A
+        # single shared domain token is below the min-shared bar, so this
+        # correctly stops being a duplication candidate.
+        assert "find" not in (a | b)
+        assert a & b == frozenset({"shipments"})
+
+    def test_domain_nouns_are_not_stopwords(self):
+        # The line the fix must not cross: a domain noun carries real reuse
+        # signal and must survive, even a CRUD-adjacent one like `filter`
+        # (a DRF role, not a generic verb).
+        for noun in ("shipment", "carrier", "invoice", "credit", "filter", "serializer"):
+            assert noun in fc.name_tokens(f"{noun}Handler"), noun
+
     def test_single_char_tokens_dropped(self):
         assert fc.name_tokens("aB") == frozenset()
 

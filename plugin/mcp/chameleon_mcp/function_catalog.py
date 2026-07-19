@@ -82,6 +82,25 @@ _STOPWORD_TOKENS = frozenset(
         "handle",
         "process",
         "run",
+        # CRUD / data-access verbs. As generic as get/set/create above: nearly
+        # every data helper finds, updates, deletes, or saves something, so
+        # overlap on the VERB pairs unrelated queries (findActiveShipments vs
+        # findPendingShipments collided on `find`). Stripping them forces a match
+        # to rest on the shared DOMAIN noun, which is what the min-shared bar
+        # wants. Measured as the top non-domain shared tokens across the CRUD
+        # repos in the test matrix (`find` alone spanned 53 distinct names).
+        # `filter`/`list` are deliberately NOT here: in DRF `filter` is a role
+        # (filters.py) and both can name a real domain concern, so they keep
+        # their reuse signal.
+        "find",
+        "update",
+        "delete",
+        "remove",
+        "fetch",
+        "load",
+        "save",
+        "add",
+        "insert",
         "fn",
         "func",
         "method",
