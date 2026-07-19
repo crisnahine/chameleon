@@ -83,7 +83,7 @@ Verified end-to-end, not assumed. The plugin that really executes in a Claude Co
 
 | Hop | Path | Role | State at campaign start |
 |---|---|---|---|
-| 1. Dev tree | `/Users/crisn/Documents/Projects/chameleon` | where fixes are authored | branch `plugin-testing-fixes` @ `16a0638` |
+| 1. Dev tree | `~/Documents/Projects/chameleon` | where fixes are authored | branch `plugin-testing-fixes` @ `16a0638` |
 | 2. Marketplace clone | `~/.claude/plugins/marketplaces/chameleon` | install source | branch `main` @ `27fd8d3`, clean |
 | 3. **Version-keyed cache** | `~/.claude/plugins/cache/chameleon/chameleon/4.4.15/` | **what hooks + MCP actually execute** | materialized from hop 2 |
 
@@ -91,7 +91,7 @@ Hop 3 was confirmed by a real `chameleon_telemetry(action="doctor")` call, which
 hook interpreter as:
 
 ```
-hooks resolve `uv run --project /Users/crisn/.claude/plugins/cache/chameleon/chameleon/4.4.15/mcp python`
+hooks resolve `uv run --project ~/.claude/plugins/cache/chameleon/chameleon/4.4.15/mcp python`
 ```
 
 The cache directory is keyed by the version string in `plugin.json` — 46 historical version
@@ -111,7 +111,7 @@ Mandatory protocol after every fix cycle:
 1. Commit the fix in the dev tree on `plugin-testing-fixes`.
 2. `scripts/bump-version.sh <new-version>` (keeps the six manifests in sync).
 3. Propagate to the marketplace clone:
-   `git -C ~/.claude/plugins/marketplaces/chameleon fetch /Users/crisn/Documents/Projects/chameleon plugin-testing-fixes && git -C ~/.claude/plugins/marketplaces/chameleon reset --hard FETCH_HEAD`
+   `git -C ~/.claude/plugins/marketplaces/chameleon fetch ~/Documents/Projects/chameleon plugin-testing-fixes && git -C ~/.claude/plugins/marketplaces/chameleon reset --hard FETCH_HEAD`
 4. Materialize/refresh the version-keyed cache dir for the new version.
 5. Clear `~/.local/share/chameleon/interp.cache` when the interpreter ladder is touched.
 6. **Assert** the running copy matches the dev tree before re-running any cell — a fix is
@@ -709,7 +709,7 @@ ruff config"), which is what made it worth chasing over the other 94 gap reports
 files reported `none` for every level:
 
 ```
-/Users/crisn -> none
+~ -> none
 ```
 
 That was a **broken verification**, not a negative result: the `ls` was globbing
@@ -717,7 +717,7 @@ That was a **broken verification**, not a negative result: the `ls` was globbing
 `~/package.json` at all. The file exists:
 
 ```
--rw-r--r--  1 crisn  staff  72 Apr 20 09:07 /Users/crisn/package.json
+-rw-r--r--  1 crisn  staff  72 Apr 20 09:07 ~/package.json
 { "dependencies": { "@anthropic-ai/claude-code": "^2.1.114" } }
 ```
 

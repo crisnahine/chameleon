@@ -73,9 +73,10 @@ def test_file_path_beside_ordinary_word_not_flagged_as_aws_secret():
     # The credential-context gate must key on whole words. "authored" is prose,
     # not a credential token, and a 40-char filesystem path is not a secret --
     # the pattern's character class includes '/', so any path of that length
-    # matches its shape. Together they used to report a leaked AWS credential
-    # for an ordinary sentence naming a file.
-    src = "| Dev tree (where fixes are authored) | `/Users/crisn/Documents/Projects/chameleon` |"
+    # matches its shape (the path below is exactly 40 such chars -- keep it that
+    # way or this stops exercising the pattern). Together they used to report a
+    # leaked AWS credential for an ordinary sentence naming a file.
+    src = "| Dev tree (where fixes are authored) | `/Users/you/Projects/acme/services/billing` |"
     assert [h for h in scan_for_secrets(src) if h["type"] == "possible_aws_secret"] == []
 
 
