@@ -3,7 +3,7 @@
 **Status:** IN PROGRESS — Phase 3 (execution wave 1: P0-P2 across all 10 columns)
 **Branch:** `plugin-testing-fixes`
 **Baseline commit:** `27fd8d3` (Release v4.4.15) — clean tree, no uncommitted changes
-**Plugin version under test:** started at 4.4.15, now **4.4.29** (fifteen fixes shipped; v4.4.22 released to origin, CI green)
+**Plugin version under test:** started at 4.4.15, now **4.4.30** (sixteen fixes shipped; v4.4.22 released to origin, CI green)
 **Started:** 2026-07-18
 
 ### Resume pointer (read this first after any interruption)
@@ -34,6 +34,7 @@
 | GAP-013 | HIGH | Python `services.py`/`selectors.py` unmapped, so the service layer clustered by app | 4.4.27 |
 | GAP-014 | **HIGH** | per-edit dedup deleted interior lines of taught idiom code examples | 4.4.28 |
 | GAP-015 | precision | duplication overlap counted CRUD verbs as reuse signal (agents' FP-rate unreproduced) | 4.4.29 |
+| GAP-016 | **HIGH** | `.gemspec` dependency changes silently unreviewed (gem's primary manifest) | 4.4.30 |
 
 GAP-002 open. GAP-003 retracted (my error — the proposed fix would have been a security
 regression). OQ-001 resolved as not-a-defect.
@@ -1404,6 +1405,31 @@ in the repo to **0 raw candidates**; `update_invoice` now rests only on the doma
 **Honest framing:** this completes a stopword set by its own principle and reduces candidate
 volume; it is not claimed to hit the agents' FP numbers, which I could not reproduce. The
 `min_shared=2` gate and the LLM refuter remain the precision backstops.
+
+---
+
+### GAP-016 — `.gemspec` dependency changes are silently unreviewed — **RESOLVED (v4.4.30)**
+
+**Cells:** `mcp-tools`/scan_dependency_changes x C4 (rb-plain gem)
+`scan_dependency_diff` routed only exact-basename `Gemfile` to the gem scanners. A gem declares
+its runtime dependencies in its `.gemspec` (`spec.add_dependency`), so a gemspec change was
+neither parsed nor flagged as uncovered — completely silent. rb-plain's `freightline.gemspec`
+has 8 real `add_dependency` lines, all invisible to review.
+
+**Verified:** `is_uncovered_manifest("freightline.gemspec")` was False AND it wasn't parsed —
+so a malicious `add_dependency "evil", github: "..."` produced zero findings.
+
+**FIXED (v4.4.30).** The gem-line regex matches the `add_dependency` family; `.gemspec` routes
+to the two gem scanners and the collect gate admits it by suffix. Real gemspec after the fix:
+adding `concurrent-ruby` flags `new-dependency`; a `github:` source flags both `new-dependency`
+and `non-registry-source`. Regression: `6215 passed`; ruff clean.
+
+**Note on the sibling claims:** the agents also flagged Python manifests (C6/C7/C10) as
+uncovered. Those are a DELIBERATE, documented boundary — `pyproject.toml`/`requirements.txt` ARE
+in `UNCOVERED_MANIFEST_BASENAMES` and surface as `uncovered_manifests` (honest "not parsed", not
+silent). The gemspec gap was the real one: silent, not flagged. `get_contract_breaks`'s 10-file
+cap (C8) was also checked and REFUTED — it returns `status: degraded, reason: diff_too_large`
+over the cap, not a false clean.
 
 ---
 
