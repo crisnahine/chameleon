@@ -3,7 +3,7 @@
 **Status:** IN PROGRESS — Phase 3 (execution wave 1: P0-P2 across all 10 columns)
 **Branch:** `plugin-testing-fixes`
 **Baseline commit:** `27fd8d3` (Release v4.4.15) — clean tree, no uncommitted changes
-**Plugin version under test:** started at 4.4.15, now **4.4.32** (eighteen fixes shipped; **v4.4.32 released to origin** — all 18 fixes on main, tagged, CI/release running)
+**Plugin version under test:** started at 4.4.15, now **4.4.32** (eighteen fixes shipped and **released to origin**, CI green). Deep-probe wave complete.
 **Started:** 2026-07-18
 
 ### Resume pointer (read this first after any interruption)
@@ -14,7 +14,7 @@
 | Inventory | `tests/matrix/inventory.jsonl` — 768 items with `file:line` anchors |
 | Deploy gate | `./scripts/qa-deploy.sh verify` **must pass before any cell is marked green** |
 | Test repos | `~/Documents/Projects/chameleon-fullmatrix-qa/` — 10 fresh repos, all committed |
-| Next action | Deep-probe wave RUNNING (damaged-artifact / malformed-payload / boundary / trust-state / daemon / merge-driver / schema-migration / MCP-stdio / statusline). Fold it, then final sign-off (step 7). |
+| Next action | Deep-probe wave FOLDED (861 cell-writes, 0 dropped, ZERO high/critical). Ledger 1,658 done / 0 FAIL / 0 BLOCKED. Remaining: final skeptical-reviewer sign-off (step 7). |
 
 **Fixes shipped so far (each with red evidence, green evidence, and a regression run):**
 
@@ -1433,6 +1433,37 @@ cap (C8) was also checked and REFUTED — it returns `status: degraded, reason: 
 over the cap, not a false clean.
 
 ---
+
+### Deep-probe wave outcome (Pass 2 depth, 15 agents + adversarial verify)
+
+Folded **861 cell-writes** into the ledger, **0 dropped ids**. Statuses: 803 PASS, 56
+N/A-ASSERTED, and 2 that needed adjudication (below). **Gap severity: 22 LOW + 1 info -- ZERO
+high or critical** across damaged/stale artifacts, malformed hook payloads, boundary file/path
+inputs, trust states, per-language dump scripts, the daemon, the merge driver, schema migration,
+and the MCP stdio transport.
+
+The two non-PASS cells, both adjudicated to N/A-ASSERTED after tracing the design:
+
+- **`lens.idiom` @ C9 (was FAIL).** "Corrupt idioms.md is absorbed as an active 'legacy-notes'
+  idiom." Traced to `records_from_markdown`'s explicit **no-silent-drop contract**: a taught
+  idiom can never be regenerated, so unstructured idioms.md content is PRESERVED as a synthesized
+  `legacy-notes` record rather than dropped -- while suspicious/injection content is QUARANTINED
+  (verified: benign garbage -> preserved, injection -> quarantined on "ignore previous
+  instructions"). By design, not a defect; "fixing" it to delete garbage would risk deleting
+  legitimate hand-written notes (a GAP-003-class trap).
+- **`libcstdump.ast-recovery` @ C10 (was BLOCKED).** The `_recover_with_ast` path fires only when
+  libcst rejects syntax stdlib `ast` accepts. With libcst 1.8.6 on py3.13 no such input exists
+  (PEP 695 type-params, generic func/class, and PEP 701 nested f-strings all parse in both), so
+  the trigger is correctly unreachable -- the intended state. The recovery LOGIC is confirmed
+  sound by direct invocation (captures the import surface). Defensive code for a future Python
+  that outpaces the pinned libcst; not a coverage hole.
+
+**Integrity after the wave: all 10 repos intact** -- every core artifact present and valid JSON,
+0 damaged. The agents restored state correctly (idioms.md hashes unchanged per their reports);
+3 harmless nested `.chameleon/.chameleon` backup leftovers were removed. Independent corroboration
+of the wave's clean bill of health is recorded above (54/54 hook-robustness probes, MCP boundary
+clean/no-leak, 45 damaged-artifact probes with honest degradation + repair, statusline within
+budget, daemon fallback verified, idioms injection dropped).
 
 ### Independent deep-probe ground truth (my own probes, to validate agent claims)
 
