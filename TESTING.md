@@ -3,7 +3,7 @@
 **Status:** IN PROGRESS — Phase 3 (execution wave 1: P0-P2 across all 10 columns)
 **Branch:** `plugin-testing-fixes`
 **Baseline commit:** `27fd8d3` (Release v4.4.15) — clean tree, no uncommitted changes
-**Plugin version under test:** started at 4.4.15, now **4.4.28** (fourteen fixes shipped; v4.4.22 released to origin, CI green)
+**Plugin version under test:** started at 4.4.15, now **4.4.29** (fifteen fixes shipped; v4.4.22 released to origin, CI green)
 **Started:** 2026-07-18
 
 ### Resume pointer (read this first after any interruption)
@@ -33,6 +33,7 @@
 | GAP-008 | **HIGH** | empty call answers hid the instance-dispatch blind spot; skill told the model to trust them | 4.4.26 |
 | GAP-013 | HIGH | Python `services.py`/`selectors.py` unmapped, so the service layer clustered by app | 4.4.27 |
 | GAP-014 | **HIGH** | per-edit dedup deleted interior lines of taught idiom code examples | 4.4.28 |
+| GAP-015 | precision | duplication overlap counted CRUD verbs as reuse signal (agents' FP-rate unreproduced) | 4.4.29 |
 
 GAP-002 open. GAP-003 retracted (my error — the proposed fix would have been a security
 regression). OQ-001 resolved as not-a-defect.
@@ -1377,6 +1378,32 @@ line between ``` markers is delivered verbatim; an unterminated fence fails safe
 the example. Real helper output after the fix shows the example intact, all four lines present.
 The dedup's real job (dropping a redundant prose line) is unchanged and still tested.
 Regression: full suite `6207 passed, 3 skipped`; ruff clean.
+
+---
+
+### GAP-015 — CRUD verbs counted as reuse signal in duplication name-token overlap — **RESOLVED (v4.4.29); agents' FP-rate NOT reproduced**
+
+**Cells:** `mcp-tools`/duplication x C3, C6, C8, C9 (agents reported 66-89% FP)
+**Discipline note:** I could NOT reproduce the agents' 89% / 21-of-22 / 25-of-25 FP rates.
+Driving `get_duplication_candidates` standalone across the whole DRF repo gave **0 candidates**,
+and the semantic lens's `min_shared=2` gate filtered every single-token overlap I could drive to
+0. Per the campaign's own rule (agent findings are leads, not proven defects), I did NOT fix on
+their number.
+
+**What I DID find and fix (a narrower, verified issue).** Measuring which name-tokens are shared
+across distinct functions on the CRUD repos: `find` spanned 53 distinct names, and the
+generic-verb stopword set (`get set create build make handle process run`) had omitted the CRUD
+siblings `find update delete remove fetch load save add insert`. A duplication match resting on a
+shared CRUD verb is noise by the set's own documented rule. Added them; kept `filter`/`list`
+out (domain-bearing in DRF).
+
+**Green evidence — real DRF catalog:** a new `find_by_status` went from matching every `find_*`
+in the repo to **0 raw candidates**; `update_invoice` now rests only on the domain noun
+`invoice`. Regression: `6210 passed`; ruff clean.
+
+**Honest framing:** this completes a stopword set by its own principle and reduces candidate
+volume; it is not claimed to hit the agents' FP numbers, which I could not reproduce. The
+`min_shared=2` gate and the LLM refuter remain the precision backstops.
 
 ---
 
