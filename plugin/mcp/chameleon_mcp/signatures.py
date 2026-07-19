@@ -127,6 +127,29 @@ _PY_ROLE_NAMES: dict[str, str] = {
     "validators": "validator",
     "decorators": "decorator",
     "migrations": "migration",
+    # The service layer a real Django/DRF codebase adds on top of the built-in
+    # roles. Measured across five Python repos in the test matrix: `services.py`
+    # appears 13 times and `selectors.py` 13 times -- MORE often than
+    # `serializers.py`, `routes.py`, `permissions.py`, `forms.py` and
+    # `filters.py` (7 each), all of which were already mapped. Unmapped, they
+    # fell into a per-app cluster whose archetype name was the app (`billing`)
+    # rather than the role, so the model was told WHERE a file lives instead of
+    # WHAT it is.
+    #
+    # Deliberately excluded: `base.py`, `utils.py`, `helpers.py`, `constants.py`.
+    # Those are grab-bags rather than a layer, so grouping them across apps would
+    # merge unrelated code under one archetype and hand a reader a witness with
+    # nothing in common.
+    "services": "service",
+    "selectors": "selector",
+    "repositories": "repository",
+    "exceptions": "exception",
+    "mixins": "mixin",
+    "factories": "factory",
+    "policies": "policy",
+    "clients": "client",
+    "adapters": "adapter",
+    "handlers": "handler",
     # Flask / FastAPI web layer (freeform frameworks; the routes/routers/
     # endpoints dir is the role signal since route files have generic names).
     "routes": "route",

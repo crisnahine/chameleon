@@ -4,6 +4,42 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.27] - 2026-07-19
+
+### Fixed
+- The Python filename-role map covered Django's built-in roles but not the
+  service layer real codebases add on top, so those files clustered per-app and
+  the archetype name described WHERE a file lived rather than WHAT it is.
+  Measured across five Python repos: **`services.py` appears 13 times and
+  `selectors.py` 13 times** — more often than `serializers.py`, `routes.py`,
+  `permissions.py`, `forms.py` and `filters.py` (7 each), all of which were
+  already mapped.
+
+  Added `services` `selectors` `repositories` `exceptions` `mixins` `factories`
+  `policies` `clients` `adapters` `handlers`. Deliberately excluded: `base.py`,
+  `utils.py`, `helpers.py`, `constants.py` — grab-bags rather than a layer, so
+  grouping them across apps would merge unrelated code under one archetype and
+  hand the reader a witness with nothing in common.
+
+  Real-usage effect — every Python column now carries at most one unnamed
+  archetype, and the service layer clusters by ROLE across apps:
+
+  | repo | archetypes | unnamed | role archetypes gained |
+  |---|---:|---:|---|
+  | py-django | 13 | 1 | `service`, `selector` |
+  | py-drf | 14 | 1 | `service`, `selector` |
+  | py-flask | 8 | 1 | `service` |
+  | py-fastapi | 7 | 1 | `service` |
+  | py-plain | 4 | 0 | (structure differs; already clean) |
+
+  Note this deliberately trades archetype COUNT for coherence: py-django goes
+  from 16 archetypes (six of them per-app: `billing`, `carrier`, `customer`, ...)
+  to 13, and its populated convention sections from 55 to 47. Fewer, but each
+  remaining one is a real role — a `service` archetype spanning 13 sibling files
+  derives a far more meaningful contract than six 4-file per-app clusters that
+  share only a directory. This is the same fix shape as the NestJS suffix map in
+  4.4.25.
+
 ## [4.4.26] - 2026-07-19
 
 ### Fixed

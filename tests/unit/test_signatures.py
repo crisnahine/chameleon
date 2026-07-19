@@ -11,6 +11,7 @@ from chameleon_mcp.signatures import (
     content_signal_match_for,
     nestjs_role_for_path,
     path_pattern_bucket_for,
+    python_role_for_path,
 )
 
 
@@ -288,3 +289,57 @@ def test_non_role_typescript_is_still_directory_bucketed():
     assert nestjs_role_for_path("src/main.ts") is None
     # A spec is a test, not a role -- test detection owns it.
     assert nestjs_role_for_path("src/invoices/invoices.service.spec.ts") != "service"
+
+
+# --------------------------------------------------------------------------- #
+# The Python filename-role map had the same incompleteness the NestJS suffix map
+# had (GAP-009b): it covered Django's built-in roles but not the service-layer
+# names real Django/DRF codebases add. Measured across five Python columns:
+# services.py appears 13 times and selectors.py 13 times -- MORE often than
+# serializers.py, routes.py, permissions.py, forms.py and filters.py (7 each),
+# all of which were mapped. Unmapped, they fall into a per-app cluster whose
+# archetype name is the app rather than the role.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("meridian/billing/services.py", "service"),
+        ("meridian/billing/selectors.py", "selector"),
+        ("meridian/billing/exceptions.py", "exception"),
+        ("meridian/billing/repositories.py", "repository"),
+        ("meridian/billing/mixins.py", "mixin"),
+        ("meridian/billing/factories.py", "factory"),
+        ("meridian/billing/policies.py", "policy"),
+        ("meridian/billing/clients.py", "client"),
+    ],
+)
+def test_python_service_layer_roles_are_mapped(path, expected):
+    assert python_role_for_path(path) == expected
+
+
+def test_python_service_roles_group_across_apps():
+    # The point of the map: the same role in different apps buckets together.
+    a = python_role_for_path("meridian/billing/services.py")
+    b = python_role_for_path("meridian/carriers/services.py")
+    assert a == b == "service"
+
+
+def test_existing_python_roles_unchanged():
+    assert python_role_for_path("meridian/billing/models.py") == "model"
+    assert python_role_for_path("meridian/billing/views.py") == "view"
+    assert python_role_for_path("meridian/billing/serializers.py") == "serializer"
+
+
+def test_python_test_files_still_win_over_a_role_name():
+    # tests/services.py is a test, not a service.
+    assert python_role_for_path("tests/services.py") is None
+    assert python_role_for_path("meridian/billing/tests.py") is None
+
+
+def test_ambiguous_grabbag_filenames_are_not_roles():
+    # base/utils/helpers are grab-bags, not a layer: grouping them cross-app
+    # would merge unrelated code under one archetype.
+    for stem in ("base", "utils", "helpers", "constants"):
+        assert python_role_for_path(f"meridian/billing/{stem}.py") is None
