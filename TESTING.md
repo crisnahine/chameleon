@@ -906,11 +906,58 @@ witness-less still never surfaces the unsafe file, while preserving the archetyp
 siblings, and conventions, and denying the fallback its chance to substitute a validator.
 Flagged here per the campaign's rule before touching a deliberate design.
 
-**Status:** OPEN, with the fix design settled:
-1. **(higher value, do first)** emit a witness-less archetype instead of dropping the cluster,
-   so a scan-excluded cohort yields honest partial guidance rather than wrong-layer guidance.
-   This immunizes against *every* future scanner false positive, not just this pattern.
-2. narrow `raw_sql_concat` so interpolation of compile-time constants is not flagged.
+**Precedent: this exact failure mode was already fixed once, for Ruby only.** The Ruby arm of
+`raw_sql_concat` (`poisoning_scanner.py:43-49`) carries this comment:
+
+> The match requires a full statement shape (verb + its clause keyword: SELECT..FROM, INSERT
+> INTO, UPDATE..SET, DELETE FROM, DROP TABLE/...), not a bare verb, so SQL verbs occurring as
+> ordinary English words ("for update", "Selected") near an interpolation do not
+> false-positive — **which was poisoning canonical-witness selection on Rails repos.**
+
+So "a `raw_sql_concat` false positive silently destroys canonical-witness selection" is a known,
+previously-diagnosed failure. The Ruby and Python arms were hardened; the **TypeScript arm was
+not**. Same unfinished-fix shape as GAP-001, where `classify_security_surface` got
+word-boundary matching and the secret scanner's gate did not.
+
+Note the TS case needs a *different* narrowing than Ruby got: this repo's SQL does have a full
+statement shape (`SELECT ... FROM ...`), so the statement-shape requirement would not have
+helped. What distinguishes it is that every interpolation is a **compile-time constant**
+(`${COLUMNS}`, `${TABLE}`), not a user value.
+
+**REVISED fix order (I reversed my earlier call — recording why).** I first argued fix (2) —
+emit witness-less instead of dropping — should come first because it immunizes against every
+future scanner false positive. On reading the code I no longer think that is the right first
+move:
+
+- `canonical.py:519-527` shows two distinct outcomes: *no eligible candidate at all* lands in
+  `clusters_without_eligible_canonical` and **is** emitted witness-less, while *candidates
+  exist but all fail the scan* lands in `clusters_with_only_failing_canonicals` and is
+  **dropped**. `test_only_failing_canonical_cluster_is_dropped` asserts this deliberately.
+- That test's stated rationale ("so an unsafe witness is never surfaced") does **not** hold up —
+  a witness-less archetype surfaces no witness either. But there is a plausible *unstated* one
+  the test's own fixture hints at: its failing files contain prompt-injection prose, and
+  emitting the archetype would let conventions/key-exports derived from poisoned files reach
+  the model. That concern is real for injection/secret failures even though it does not apply
+  to a `raw_sql_concat` false positive on safe code.
+
+Changing a deliberate security behaviour on a rationale I have only partially reconstructed is
+exactly the mistake GAP-003 taught. So:
+
+1. **(do first)** narrow the TypeScript `raw_sql_concat` arm so interpolation of compile-time
+   constants is not flagged. Clearly correct — the flagged code is textbook parameterized SQL —
+   minimal, targeted, and it does not touch the security design. It alone restores the
+   repositories archetype, since a clean witness then exists.
+2. **(design question, needs an explicit decision)** whether `only_failing` clusters should be
+   emitted witness-less, and if so whether that should depend on *which* scan failed
+   (dangerous-pattern vs injection/secret). Worth splitting: a `raw_sql_concat` hit says
+   nothing about context poisoning, while an injection hit does.
+
+Proposed heuristic for (1), with its limits stated: treat an interpolation as constant when
+every `${...}` in the matched SQL is a SCREAMING_SNAKE_CASE identifier, the near-universal
+convention for a module constant. `${COLUMNS}`/`${TABLE}` are exempted; `${userId}`,
+`${filter.status}`, `${req.query.sort}` are not. The residual risk is a user-controlled value
+named in all-caps, which is both rare and against convention; the risk it removes is entire
+data-access archetypes being deleted.
 
 Both need the C2 (Next.js) reproduction re-checked afterwards, since it reported the same
 symptom in `lib/repositories`, and the regression rule requires re-running the item across all
