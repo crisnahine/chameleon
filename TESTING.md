@@ -1162,18 +1162,49 @@ are still stripped.
 ts-plain, ts-nextjs, ts-nestjs all bootstrap clean; ts-plain's override glob is now
 `[['tests/**/*.ts']]`. Full suite `6162 passed, 3 skipped`; ruff clean.
 
-### GAP-012 — derived conventions are computed and never delivered — OPEN (HIGH)
+### GAP-012 — derived conventions are computed and never delivered — **LARGELY REFUTED (my error)**
 
 **Cells:** `bootstrap`/conventions x C1 (two independent instances)
-1. `forbidden_upward_edges` is derived correctly (all 12 edges verified, zero counterexamples)
-   but `grep -rn forbidden_upward_edges` over the engine returns exactly two hits: the writer
-   (`import_graph.py:404`) and a presence check (`idiom_coverage.py:776`). Nothing injects it, no
-   lint rule reads it, `conventions.md` has no LAYERING section. Correct data, never delivered.
-2. The callable-signature consensus (`constructor(db: QueryClient)`, 7/7 — the strongest
-   convention in the repo) is mirrored into the canonical's `normative_shape` **only**
-   (`orchestrator.py:2758-2764`). A witnessless archetype therefore derives it and drops it. This
-   is the residual of GAP-007: v4.4.21 restored the archetype's identity, but its conventions
-   still do not reach the model because delivery is keyed to having a canonical.
+**Both halves failed direct verification. Recorded as a correction, not deleted.**
+
+**Claim 1 — `forbidden_upward_edges` is "correct data, never delivered". REFUTED.** The
+supporting grep was restricted to Python and missed the real consumer. Widening it finds the
+pr-review skill documenting a full cross-file layering pass over exactly this data:
+
+```
+plugin/skills/chameleon-pr-review/references/crossfile-passes.md:11
+  Load the `layering` section of .chameleon/conventions.json ... it carries
+  `forbidden_upward_edges` (each a {from, to, observed_direction} pair) ...
+:13  For each file the diff ADDS or changes an import in ... surface a
+     diff-introduced upward-edge violation as a FIX advisory ...
+```
+
+It is consumed, at PR-review time. The accurate residual is much narrower: the layering data is
+**not delivered per-edit** (absent from `conventions.md` and from the injected block), so it
+catches an inverted import at review rather than preventing it at write time. That is a
+reasonable design-improvement suggestion, not dead data.
+
+**Claim 2 — a witnessless archetype derives its callable-signature consensus and drops it.
+REFUTED.** Driving the real preflight hook on a new file in the witnessless `cluster-63d4a2fb`:
+
+```
+header: [chameleon: archetype=cluster-63d4a2fb, confidence=high, match_quality=exact, sub_buckets=1]
+   contains 'QueryClient'                      : True
+   contains 'constructor('                     : True
+   contains 'Already defined in this archetype': True
+   contains 'Canonical witness'                : False   <- correctly absent
+```
+
+The convention **is** delivered, in a 1958-char Tier-2 block, and the witnessless archetype
+behaves exactly as v4.4.21 intended: full guidance minus the witness. The original observation
+was of a **Tier-1** block — the deliberately short pointer emitted once an archetype has already
+been seen in the session, which by design does not restate signatures. A Tier-1 block is not
+evidence about what Tier 2 delivers.
+
+**Why this matters for the campaign's own reliability:** I logged GAP-012 from agent reports plus
+a grep, and rated it HIGH, without driving the hook. Both halves dissolved the moment I did. This
+is the third finding of mine to be corrected by direct verification (after GAP-003 and the
+`truncated` framing), and the reason every load-bearing claim gets re-run rather than relayed.
 
 ---
 
