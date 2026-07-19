@@ -3,7 +3,7 @@
 **Status:** IN PROGRESS — Phase 3 (execution wave 1: P0-P2 across all 10 columns)
 **Branch:** `plugin-testing-fixes`
 **Baseline commit:** `27fd8d3` (Release v4.4.15) — clean tree, no uncommitted changes
-**Plugin version under test:** started at 4.4.15, now **4.4.27** (thirteen fixes shipped; v4.4.22 released to origin, CI green)
+**Plugin version under test:** started at 4.4.15, now **4.4.28** (fourteen fixes shipped; v4.4.22 released to origin, CI green)
 **Started:** 2026-07-18
 
 ### Resume pointer (read this first after any interruption)
@@ -32,6 +32,7 @@
 | GAP-009b | **CRITICAL** | NestJS role map missed `.dto`/`.entity`/`.repository`; 54% of archetypes hashed | 4.4.25 |
 | GAP-008 | **HIGH** | empty call answers hid the instance-dispatch blind spot; skill told the model to trust them | 4.4.26 |
 | GAP-013 | HIGH | Python `services.py`/`selectors.py` unmapped, so the service layer clustered by app | 4.4.27 |
+| GAP-014 | **HIGH** | per-edit dedup deleted interior lines of taught idiom code examples | 4.4.28 |
 
 GAP-002 open. GAP-003 retracted (my error — the proposed fix would have been a security
 regression). OQ-001 resolved as not-a-defect.
@@ -1342,6 +1343,40 @@ those cross-app would merge unrelated code under one archetype.
 from 55 populated convention sections to 47, because six per-app clusters collapse into
 cross-app roles. Fewer sections, but each is coherent — one `service` archetype over 13 sibling
 files derives a far stronger contract than six 4-file clusters sharing only a directory.
+
+---
+
+### GAP-014 — per-edit witness-dedup corrupts taught idiom code examples — **RESOLVED (v4.4.28)**
+
+**Cells:** `hooks`/per-edit idiom rendering x C5, C6, C9, C10 (reported independently)
+**Severity:** HIGH — corrupts model input; worse than dropping the idiom.
+
+`_witness_dedup_idiom_lines` (`hook_helper.py:2059`) drops idiom lines that appear verbatim in
+the canonical witness, applied line-by-line with **no fence awareness**. Inside a taught
+Example/Counterexample fenced block, that deletes interior code lines. Since a good example
+resembles the canonical file by construction, the collision is near-certain.
+
+**Red evidence (real helper, reproduced):**
+
+```
+Example given:                          Example delivered to the model:
+```                                     ```
+def create(self, payload):                  self.repository.commit()
+    obj = Model(**payload)              ```
+    self.repository.commit()
+    return obj
+```
+```
+
+A 4-line function collapsed to one line, because the other three lines also appear in the
+witness. The model is told to imitate code that does not parse, and for the
+`commit-in-service-only` idiom the surviving line inverts the lesson.
+
+**FIXED (v4.4.28).** Dedup tracks fenced blocks and only considers prose outside a fence. Every
+line between ``` markers is delivered verbatim; an unterminated fence fails safe toward showing
+the example. Real helper output after the fix shows the example intact, all four lines present.
+The dedup's real job (dropping a redundant prose line) is unchanged and still tested.
+Regression: full suite `6207 passed, 3 skipped`; ruff clean.
 
 ---
 
