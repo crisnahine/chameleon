@@ -1411,7 +1411,16 @@ def _resolve_cluster_id(cluster, selection):
         if sel.witness_path in members:
             return cid, sel
     cid = _hash_cluster_key(cluster)
+    # Both witnessless categories resolve to an id with no witness: a cluster
+    # with no eligible candidate at all, and one whose candidates failed ONLY the
+    # dangerous-pattern scan. The latter used to be dropped, which did not mean
+    # "no guidance" -- the caller fell back and handed those files another
+    # cluster's witness (a repositories cohort got a validator). Secret and
+    # injection failures stay dropped: their content is unsafe to derive from.
     no_canonical_ids = {_hash_cluster_key(c) for c in selection.clusters_without_eligible_canonical}
+    no_canonical_ids |= {
+        _hash_cluster_key(c) for c in getattr(selection, "clusters_failing_poisoning_only", [])
+    }
     if cid in no_canonical_ids:
         return cid, None
     return None, None

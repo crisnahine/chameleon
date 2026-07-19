@@ -4,6 +4,42 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.21] - 2026-07-19
+
+### Fixed
+- A cohort excluded from canonical selection by a dangerous-pattern hit alone is
+  no longer deleted; it is emitted as a **witnessless archetype**. Dropping it
+  did not produce "no guidance" as intended — the resolver fell back and handed
+  those files a DIFFERENT cluster's witness. A repositories cohort tripping
+  `raw_sql_concat` on safe parameterized SQL lost its archetype entirely, and
+  editing a repository was answered with a VALIDATOR as the pattern to imitate:
+  the security scanner degrading exactly the layer where SQL-injection mistakes
+  happen.
+
+  The drop is split by WHICH scan failed, because the two mean different things.
+  A secret or prompt-injection hit says the file's content is unsafe to derive
+  from at all, so those clusters stay dropped (the existing behaviour and its
+  test are unchanged). A dangerous-pattern hit says the code has a smell and
+  carries nothing that could poison the model's context, so that cohort keeps its
+  archetype, siblings and conventions — while still never surfacing the flagged
+  file as a witness.
+
+  Measured on a real repository cohort, before and after:
+
+  | | before | after |
+  |---|---|---|
+  | archetypes derived | 6 | 7 |
+  | repository resolves to | another cluster | its own archetype |
+  | match quality | `fallback` (low) | `exact` |
+  | witness offered | a validator | none (witnessless) |
+
+  On a Next.js repo the same cohort recovers a fully named `lib-module-repositories`
+  archetype with an `ast` match and a same-layer witness. This is the durable half
+  of the fix: v4.4.20 narrowed the `raw_sql_concat` false positive but could not
+  resolve the archetype loss, because whether a locally-assembled clause is safe
+  is undecidable without data-flow analysis, so some legitimate cohort will always
+  fail the scan.
+
 ## [4.4.20] - 2026-07-19
 
 ### Fixed

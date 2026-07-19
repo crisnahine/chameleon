@@ -33,7 +33,7 @@ import os
 import re
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from chameleon_mcp._thresholds import threshold_float, threshold_int
@@ -111,6 +111,23 @@ class CanonicalSelectionResult:
     selections: dict[str, CanonicalSelection]
     clusters_without_eligible_canonical: list[Cluster]
     clusters_with_only_failing_canonicals: list[Cluster]
+    clusters_failing_poisoning_only: list[Cluster] = field(default_factory=list)
+    """Clusters whose every candidate failed ONLY the dangerous-pattern scan.
+
+    Split out from ``clusters_with_only_failing_canonicals`` because the two
+    failures mean different things. A secret or prompt-injection hit says the
+    file's CONTENT is unsafe to derive from at all, so the cluster stays dropped.
+    A dangerous-pattern hit (raw_sql_concat, eval) says the code has a smell --
+    it carries nothing that could poison the model's context, and the cohort's
+    shape is still legitimate.
+
+    Dropping the latter was actively harmful: it did not produce "no guidance",
+    it let the resolver fall back and hand those files a DIFFERENT cluster's
+    witness. A repositories cohort tripping raw_sql_concat on safe parameterized
+    SQL lost its archetype and its edits were pointed at a validator. These
+    clusters are therefore emitted WITNESSLESS -- the unsafe file is still never
+    surfaced as a witness, but the cohort keeps its identity, siblings and
+    conventions."""
 
 
 def _hash_cluster_key(cluster: Cluster) -> str:
@@ -346,6 +363,7 @@ def select_canonicals(
     selections: dict[str, CanonicalSelection] = {}
     no_eligible: list[Cluster] = []
     only_failing: list[Cluster] = []
+    poisoning_only: list[Cluster] = []
 
     # One git-log walk for the whole pass builds {rel_path: last_commit_epoch}.
     # When git is unavailable the pass falls back to mtime for every file
@@ -521,7 +539,15 @@ def select_canonicals(
             continue
 
         if not chosen.all_scans_passed:
-            only_failing.append(cluster)
+            # A dangerous-pattern hit alone (raw_sql_concat, eval) says the code
+            # has a smell, not that its content would poison derivation, so the
+            # cohort keeps its archetype witnessless rather than vanishing and
+            # having its files pointed at another cluster's witness. A secret or
+            # injection hit is the content-unsafe class and still drops.
+            if chosen.secret_scan_passed and chosen.injection_scan_passed:
+                poisoning_only.append(cluster)
+            else:
+                only_failing.append(cluster)
             continue
 
         selections[cluster_id] = chosen
@@ -530,4 +556,5 @@ def select_canonicals(
         selections=selections,
         clusters_without_eligible_canonical=no_eligible,
         clusters_with_only_failing_canonicals=only_failing,
+        clusters_failing_poisoning_only=poisoning_only,
     )

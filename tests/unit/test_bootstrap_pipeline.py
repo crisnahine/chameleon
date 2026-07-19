@@ -188,3 +188,47 @@ def test_schema_version_constants_agree():
     from chameleon_mcp.profile.schema import CURRENT_SCHEMA_VERSION
 
     assert PROFILE_SCHEMA_VERSION == CURRENT_SCHEMA_VERSION == MAX_SUPPORTED_SCHEMA_VERSION
+
+
+def test_poisoning_only_failure_is_emitted_witnessless(tmp_path):
+    """A cohort excluded ONLY by a dangerous-pattern hit must keep its archetype.
+
+    GAP-007: every file in a repositories cohort tripped raw_sql_concat, so the
+    cluster had no clean witness and was dropped entirely -- and the resolver
+    then handed those files a DIFFERENT cluster's witness (a validator). Dropping
+    did not produce "no guidance", it produced wrong-layer guidance.
+
+    A dangerous-pattern hit says the code has a smell; it says nothing about the
+    file poisoning the model's context. So the archetype is emitted witnessless:
+    the unsafe file is still never surfaced as a witness, but the cohort keeps
+    its identity, siblings and conventions. Secret/injection failures are a
+    different class and stay dropped -- see the test above, whose fixture is
+    injection prose and which must remain green.
+    """
+    from chameleon_mcp.bootstrap import orchestrator as o
+
+    repo = tmp_path / "repo"
+    pfs = []
+    for i in range(3):
+        # Textbook-safe parameterized SQL that nonetheless trips raw_sql_concat:
+        # a locally-assembled clause is undecidable without data-flow analysis.
+        p = _write(
+            repo,
+            f"app/services/repo_{i}.rb",
+            f"class Repo{i}\n"
+            f"  def list(filter)\n"
+            f"    where = build_where(filter)\n"
+            f'    db.query("SELECT * FROM widgets #{{where}}", filter.params)\n'
+            f"  end\n"
+            f"end\n",
+        )
+        pfs.append(_pf(p))
+    clustering = cluster_files(pfs, repo_root=repo)
+    sel = select_canonicals(clustering.dense_clusters, repo)
+
+    assert not sel.selections, "no clean witness should be selected"
+
+    cluster = clustering.dense_clusters[0]
+    cid, chosen = o._resolve_cluster_id(cluster, sel)
+    assert cid is not None, "a poisoning-only cohort must keep its archetype id"
+    assert chosen is None, "...but must carry no witness"
