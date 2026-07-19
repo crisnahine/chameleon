@@ -768,3 +768,49 @@ def test_ruby_flush_left_continuation_truncation_skipped():
         "    rows.map { |r| r.amount_cents }.sum\n  end\nend\n"
     )
     assert dict(E(ok, "ok.rb")).get("compute_total") is not None
+
+
+def _patch_catalog(monkeypatch, cat):
+    monkeypatch.setattr(hook_helper, "load_function_catalog", lambda r: cat, raising=False)
+    monkeypatch.setattr("chameleon_mcp.function_catalog.load_function_catalog", lambda r: cat)
+
+
+def test_editing_a_test_file_never_nudges(tmp_path, monkeypatch):
+    # Every observed false positive was test-on-test: a new test function paired
+    # with an existing one on the shared `test` prefix plus a common word. A test
+    # is authored to exercise one specific thing and is never an importable reuse
+    # target, so the name-based reuse nudge must not fire when editing a test.
+    # A pair that genuinely triggers the semantic pass: 3 shared tokens, same
+    # (zero) arity. Without the gate this fires "looks like the existing ...".
+    cat = _catalog([("test_validate_email_shape", "tests/unit/test_validators.py", 0)])
+    _patch_catalog(monkeypatch, cat)
+    content = "def test_validate_email_format():\n    assert True\n"
+    out = hook_helper._prewrite_dedup_section(
+        content, str(tmp_path / "tests/unit/test_function_catalog.py"), tmp_path
+    )
+    assert out == ""
+
+
+def test_test_functions_are_never_offered_as_candidates(tmp_path, monkeypatch):
+    # Editing PRODUCTION code must not be told to reuse a TEST function: a test
+    # is not importable-into-production reuse material.
+    cat = _catalog([("test_validate_email_format", "tests/unit/test_validators.py")])
+    _patch_catalog(monkeypatch, cat)
+    content = "def validate_email_format(addr):\n    return '@' in addr\n"
+    out = hook_helper._prewrite_dedup_section(
+        content, str(tmp_path / "src/validators.py"), tmp_path
+    )
+    assert "tests/unit/test_validators.py" not in out
+
+
+def test_production_reuse_still_fires_from_production_edit(tmp_path, monkeypatch):
+    # The real signal is unaffected: a production helper re-implemented in
+    # another production file still nudges.
+    cat = _catalog([("clean_url_slug", "app/helpers/url_helper.rb")])
+    _patch_catalog(monkeypatch, cat)
+    content = "class Account\n  def clean_url_slug(u)\n    u.strip\n  end\nend\n"
+    out = hook_helper._prewrite_dedup_section(
+        content, str(tmp_path / "app/models/account.rb"), tmp_path
+    )
+    assert "reuse-before-create" in out
+    assert "clean_url_slug" in out

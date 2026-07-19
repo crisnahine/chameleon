@@ -3024,6 +3024,18 @@ def _prewrite_dedup_section(
             edited_rel = str(Path(file_path).resolve().relative_to(Path(repo_root).resolve()))
         except (ValueError, OSError):
             edited_rel = file_path
+
+        from chameleon_mcp.autopass import _is_test_file
+
+        # A test function is authored to exercise one specific thing; it is never
+        # an importable reuse target, and two tests sharing tokens (they all share
+        # `test` plus a domain word or two) is not a reuse signal. Every observed
+        # false positive of this nudge was test-on-test. So: never nudge when
+        # editing a test file, and never offer a test function as a candidate on a
+        # production edit either. The body-dup pass below is unaffected (a
+        # verbatim class-method body is a genuine copy-paste signal regardless).
+        editing_test = _is_test_file(edited_rel)
+
         cap = threshold_int("PREWRITE_DEDUP_MAX_HITS")
         names = {n for n, _ in defined}
 
@@ -3049,6 +3061,10 @@ def _prewrite_dedup_section(
                 # A class-bound method is not an importable reuse target (see
                 # _CLASS_BOUND_METHOD_KINDS); only a free function qualifies.
                 and fn.kind not in _CLASS_BOUND_METHOD_KINDS
+                # A test function is never a reuse target; nor is anything when
+                # the edit itself is a test.
+                and not editing_test
+                and not _is_test_file(fn.file)
             ):
                 seen_names.add(fn.name)
                 exact.append((fn.name, fn.file))
@@ -3061,10 +3077,12 @@ def _prewrite_dedup_section(
             if len(name_tokens(n)) >= min_tokens
         ]
         semantic: list[tuple[str, str, str]] = []
-        if new_fns:
+        if new_fns and not editing_test:
             for entry in select_candidates(catalog, new_fns, exclude_file=edited_rel):
                 src = entry.get("function", {}).get("name", "")
                 for cand in entry.get("candidates", []):
+                    if _is_test_file(cand.get("file", "")):
+                        continue  # a test is not an importable reuse target
                     # Not gated by kind: select_candidates already skips exact-name
                     # matches, so this pass only ever surfaces a DIFFERENT-named
                     # near-duplicate (`distribute_remove_activity` vs the existing

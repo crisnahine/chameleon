@@ -4,6 +4,25 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.32] - 2026-07-19
+
+### Fixed
+- The pre-write `reuse-before-create` nudge no longer fires on test functions. A
+  test is authored to exercise one specific thing and is never an importable
+  reuse target, yet two test functions share the `test` prefix plus a domain word
+  or two, so the semantic name-token pass paired unrelated tests
+  (`test_validate_email_format` "looks like the existing
+  `test_validate_email_shape`"). Every observed false positive of this nudge over
+  a long test campaign was test-on-test.
+
+  The name-based passes (exact-name and semantic) now skip entirely when the
+  edited file is a test, and a test function is never offered as a candidate on a
+  production edit either. Production-to-production reuse detection — the real
+  signal — is unchanged, as is the body-identical class-method duplication pass
+  (a verbatim copied body is a genuine signal regardless of file). `_is_test_file`
+  already recognizes the test conventions of all three languages, so the gate is
+  language-agnostic.
+
 ## [4.4.31] - 2026-07-19
 
 ### Fixed
