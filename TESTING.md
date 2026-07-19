@@ -3,7 +3,7 @@
 **Status:** IN PROGRESS — Phase 3 (execution wave 1: P0-P2 across all 10 columns)
 **Branch:** `plugin-testing-fixes`
 **Baseline commit:** `27fd8d3` (Release v4.4.15) — clean tree, no uncommitted changes
-**Plugin version under test:** started at 4.4.15, now **4.4.21** (six fixes shipped by this campaign)
+**Plugin version under test:** started at 4.4.15, now **4.4.22** (eight fixes shipped by this campaign)
 **Started:** 2026-07-18
 
 ### Resume pointer (read this first after any interruption)
@@ -14,7 +14,7 @@
 | Inventory | `tests/matrix/inventory.jsonl` — 768 items with `file:line` anchors |
 | Deploy gate | `./scripts/qa-deploy.sh verify` **must pass before any cell is marked green** |
 | Test repos | `~/Documents/Projects/chameleon-fullmatrix-qa/` — 10 fresh repos, all committed |
-| Next action | Fix GAP-011 (isolated, small); then GAP-010 (threshold calibration); then GAP-008/009 (larger). 63 FAILs and 230 gap reports await triage. Waves 1, 2A, 2B folded. |
+| Next action | GAP-010 (threshold calibration, medium); then GAP-012 (undelivered conventions); then GAP-008/009 (largest). 63 FAILs and 230 gap reports await triage. Waves 1, 2A, 2B folded. |
 
 **Fixes shipped so far (each with red evidence, green evidence, and a regression run):**
 
@@ -26,6 +26,7 @@
 | GAP-006 | **HIGH** | bootstrap read tool config from `$HOME`, discarding the repo's own | 4.4.19 |
 | GAP-007a | precision | `raw_sql_concat` flagged constant-only interpolation (partial — did not fix the symptom) | 4.4.20 |
 | GAP-007b | **HIGH** | scan-excluded cohort deleted, so edits got a wrong-layer witness | 4.4.21 |
+| GAP-011 | **HIGH** | eslint globs silently corrupted; array elements merged | 4.4.22 |
 
 GAP-002 open. GAP-003 retracted (my error — the proposed fix would have been a security
 regression). OQ-001 resolved as not-a-defect.
@@ -1069,7 +1070,7 @@ cohort's size equals the app count, so four convention families are gated out. T
 calibrated above the typical unit of these codebases, making the product's core output
 near-empty on normal repos rather than toy ones.
 
-### GAP-011 — eslint JS config parsing silently corrupts globs — OPEN (HIGH)
+### GAP-011 — eslint JS config parsing silently corrupts globs — **RESOLVED (v4.4.22, `cbf90d9`)**
 
 **Cell:** `bootstrap`/tool-config x C1
 `_jsish_to_json` (`bootstrap/tool_config.py`) strips `/* */` block comments with **no
@@ -1086,6 +1087,27 @@ The second case silently **merges two array elements into one**. Isolated to thi
 corrupted one. No warning is emitted. Harmful rather than merely incomplete: the recorded
 override scope `tests*.ts` matches essentially nothing, so a consumer believes the test-only
 relaxations apply to a different file set.
+
+**FIXED (v4.4.22).** Comment stripping is now a single forward scan tracking the active string
+delimiter — quotes special only outside a comment, comment markers only outside a string,
+backslash escapes the next character. An unterminated comment consumes the remainder, so the
+payload stays unparseable and takes the documented parse-fail path rather than yielding a
+corrupted config.
+
+**Green evidence — the real config that was corrupted:**
+
+```
+overrides[0].files : ['tests/**/*.ts']          (was ["tests*.ts"])
+source line 26     : "files: ['tests/**/*.ts'],"   -- exact match
+```
+
+Also verified: `['**/*.d.ts', 'src/**/gen']` no longer merges into one element, and
+`'https://x.test/a/**/b'` and `'a/b//c'` survive intact, while genuine `/* */` and `//` comments
+are still stripped.
+
+**Regression across all three TypeScript columns** (the only ones with JS eslint configs):
+ts-plain, ts-nextjs, ts-nestjs all bootstrap clean; ts-plain's override glob is now
+`[['tests/**/*.ts']]`. Full suite `6162 passed, 3 skipped`; ruff clean.
 
 ### GAP-012 — derived conventions are computed and never delivered — OPEN (HIGH)
 
