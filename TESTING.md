@@ -3,7 +3,7 @@
 **Status:** IN PROGRESS — Phase 3 (execution wave 1: P0-P2 across all 10 columns)
 **Branch:** `plugin-testing-fixes`
 **Baseline commit:** `27fd8d3` (Release v4.4.15) — clean tree, no uncommitted changes
-**Plugin version under test:** started at 4.4.15, now **4.4.32** (eighteen fixes shipped; v4.4.22 released to origin, CI green)
+**Plugin version under test:** started at 4.4.15, now **4.4.32** (eighteen fixes shipped; **v4.4.32 released to origin** — all 18 fixes on main, tagged, CI/release running)
 **Started:** 2026-07-18
 
 ### Resume pointer (read this first after any interruption)
@@ -14,7 +14,7 @@
 | Inventory | `tests/matrix/inventory.jsonl` — 768 items with `file:line` anchors |
 | Deploy gate | `./scripts/qa-deploy.sh verify` **must pass before any cell is marked green** |
 | Test repos | `~/Documents/Projects/chameleon-fullmatrix-qa/` — 10 fresh repos, all committed |
-| Next action | 0 FAIL cells left. Remaining: ~2,000 pending cells across waves not yet run (deep-probe surfaces), GAP-002 (reuse-before-create precision), and the residual gap reports. Then final sign-off (step 7). |
+| Next action | Deep-probe wave RUNNING (damaged-artifact / malformed-payload / boundary / trust-state / daemon / merge-driver / schema-migration / MCP-stdio / statusline). Fold it, then final sign-off (step 7). |
 
 **Fixes shipped so far (each with red evidence, green evidence, and a regression run):**
 
