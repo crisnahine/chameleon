@@ -494,6 +494,26 @@ def path_pattern_bucket_for(
                 bucket = f"{bucket}:{ext}"
         return (bucket, "")
 
+    # RubyGems' standard layout is lib/<gem>/<layer>/, so for a .rb file the
+    # THIRD segment is the role -- the same position a monorepo workspace root
+    # occupies below. At the default bucket depth that segment fell into
+    # sub_bucket instead, collapsing every layer of a gem (services,
+    # repositories, serializers, validators, clients, handlers, models) into one
+    # lib/<gem> archetype; measured at 56 files in a single cluster, against
+    # whose inflated denominator no per-role convention could clear its
+    # dominance floor, so inheritance and class_contract both derived to {}.
+    # Scoped to Ruby deliberately: `lib/` in a JS/TS repo is a feature-layout
+    # root, and bucketing it at depth 3 would re-fragment those cohorts (the
+    # long-tail fragmentation the depth-2 default exists to prevent).
+    # (`lib` is distinct from the Nx-style `libs` workspace root handled below.)
+    if len(parts) >= 4 and parts[0] == "lib" and parts[-1].endswith(".rb"):
+        bucket = f"{parts[0]}/{parts[1]}/{parts[2]}"
+        if include_extension:
+            ext = _extension_of(parts[-1])
+            if ext:
+                bucket = f"{bucket}:{ext}"
+        return (bucket, "")
+
     sub_bucket = ""
     if len(parts) >= 4 and parts[0] in _MONOREPO_WORKSPACE_ROOTS:
         bucket = f"{parts[0]}/{parts[1]}/{parts[2]}"

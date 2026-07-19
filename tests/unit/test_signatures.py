@@ -60,6 +60,33 @@ class TestPathPatternBucketFor:
         assert bucket == "app/controllers"
         assert sub == "api/v1"
 
+    def test_ruby_gem_layer_buckets_by_role(self):
+        # RubyGems' standard layout is lib/<gem>/<layer>/. At the default
+        # bucket depth the layer segment fell into sub_bucket, so every layer of
+        # a gem (services, repositories, serializers, validators, clients, ...)
+        # collapsed into ONE lib/<gem> archetype -- 56 files in a single cluster
+        # on a real fixture -- and no per-role convention could clear its
+        # dominance floor against that inflated denominator.
+        bucket, sub = path_pattern_bucket_for("lib/freightline/services/rate_service.rb")
+        assert bucket == "lib/freightline/services"
+        assert sub == ""
+        other, _ = path_pattern_bucket_for("lib/freightline/repositories/order_repo.rb")
+        assert other == "lib/freightline/repositories"
+        assert other != bucket
+
+    def test_ruby_gem_layer_merges_deeper_nesting(self):
+        # A file nested below the layer still belongs to that layer's cohort.
+        bucket, sub = path_pattern_bucket_for("lib/freightline/services/billing/invoice.rb")
+        assert bucket == "lib/freightline/services"
+        assert sub == ""
+
+    def test_lib_layout_untouched_for_non_ruby(self):
+        # The gem-layout rule is a Ruby convention. A TS file under lib/ keeps
+        # the existing directory bucketing so feature layouts do not fragment.
+        bucket, sub = path_pattern_bucket_for("lib/features/auth/LoginForm.tsx")
+        assert bucket == "lib/features"
+        assert sub == "auth"
+
     def test_monorepo_workspace(self):
         bucket, sub = path_pattern_bucket_for("packages/excalidraw/components/Foo.tsx")
         assert bucket == "packages/excalidraw/components"

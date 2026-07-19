@@ -4,6 +4,38 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.39] - 2026-07-20
+
+### Fixed
+- A Ruby gem's layers all collapsed into one archetype, erasing every per-role
+  convention. RubyGems' standard layout is `lib/<gem>/<layer>/`, but at the
+  default `CLUSTER_PATH_BUCKET_DEPTH` of 2 the layer segment fell into
+  `sub_bucket` rather than the cluster key, so `services`, `repositories`,
+  `serializers`, `validators`, `clients`, `handlers` and `models` all bucketed to
+  a single `lib/<gem>` cluster -- 56 files on a real fixture. `sub_bucket` is
+  never split back out for directory roles (`_SPLIT_BY_SUB_BUCKET_SUFFIXES` is a
+  fixed 6-entry keyword set), so against that inflated denominator no per-role
+  base or contract could clear its dominance floor: `inheritance` and
+  `class_contract` both derived to `{}`. Rails escapes this because
+  `app/<role>/x.rb` is only 3 segments; Django/NestJS/Next.js escape via their
+  filename-role bucketers. There was no equivalent for a package-root layout.
+
+  `path_pattern_bucket_for` now buckets a `.rb` file under `lib/<gem>/<layer>/` at
+  the layer, with an empty sub_bucket (the same shape the monorepo-workspace
+  branch already used). Deliberately scoped to Ruby: `lib/` in a JS/TS repo is a
+  feature-layout root, and bucketing it at depth 3 would re-fragment those
+  cohorts -- the long-tail fragmentation the depth-2 default exists to prevent.
+  Globally raising the depth was tested during verification and did exactly that
+  (the spec cluster shattered into four), so it was rejected.
+
+  Measured on the fixture: 3 archetypes -> 10, and conventions went from nothing
+  to six inheritance archetypes (`BaseService` 89%, `BaseHandler` 86%,
+  `BaseRepository` 86%, `BaseSerializer` 86%, `BaseClient` 80%, `BaseValidator`
+  100%) plus five class contracts with required methods. Regression-checked by
+  real bootstraps across all six fixture languages: only rb-plain moves;
+  rb-rails, ts-plain, ts-nestjs and py-flask archetype counts are byte-identical,
+  isolated by re-running with the change stashed.
+
 ## [4.4.38] - 2026-07-20
 
 ### Fixed
