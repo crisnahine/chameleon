@@ -4,6 +4,36 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.26] - 2026-07-19
+
+### Fixed
+- An empty `get_callers` / `get_callees` answer now discloses the blind spot that
+  actually causes it. The calls index resolves bare calls, `self` calls, and
+  calls through a module/namespace import — but a call made through an INSTANCE
+  (`service.charge()`, `self.deps.repo.insert()`, `cls.build()`) needs type
+  inference to resolve and is not indexed. In object-oriented code that is the
+  dominant call form, so an empty answer there is routine rather than
+  exceptional.
+
+  The note previously blamed only "dynamic dispatch, reflection, and callers
+  added since the last refresh". None of those applies to an ordinary
+  statically-written `service.charge()` in a freshly refreshed profile, so it
+  read as "rare edge cases may be missing" and invited the reader to trust a
+  zero. Measured across the test matrix: reported independently in 7 of 10
+  language/framework columns, and verified directly on a Flask service method
+  with **four grep-confirmed call sites** that returned `found: true, total: 0,
+  truncated: false` — the shape of a confident, complete answer.
+
+  This matters because chameleon's own guidance tells the model to check blast
+  radius BEFORE a rename, so a trusted zero is actively dangerous. Both notes now
+  name instance dispatch first and end with the cheap corrective ("confirm with a
+  grep before renaming"), and `using-chameleon` carries the same warning: a
+  `found: true` answer of ZERO callers is the one case to distrust.
+
+  The indexing limitation itself is unchanged and is a capability boundary, not a
+  regression: resolving instance dispatch requires type inference. This release
+  fixes the disclosure, not the coverage.
+
 ## [4.4.25] - 2026-07-19
 
 ### Fixed

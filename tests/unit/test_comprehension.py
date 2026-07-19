@@ -435,3 +435,40 @@ def test_bootstrap_repo_dispatcher_forwards_production_ref(monkeypatch):
         action="bootstrap_repo", params={"path": "/x", "production_ref": "release-1"}
     )
     assert captured["production_ref"] == "release-1"
+
+
+# --------------------------------------------------------------------------- #
+# GAP-008: `get_callers` answers total=0 for a method with real callers, because
+# instance dispatch (`service.method()`) is only resolvable with type inference
+# and the index therefore never carries those edges. That boundary is legitimate
+# -- the DISCLOSURE was not. The note blamed "dynamic dispatch, reflection, and
+# callers added since the last refresh", none of which applies to an ordinary
+# statically-written `service.list_compliance_alerts(...)` in a freshly
+# refreshed profile. A user calibrating on that wording trusts the zero, and the
+# plugin's own digest tells the model to check blast radius BEFORE a rename.
+# --------------------------------------------------------------------------- #
+
+
+def test_empty_callers_note_names_method_dispatch():
+    from chameleon_mcp.tools import EMPTY_CALLERS_NOTE
+
+    low = EMPTY_CALLERS_NOTE.lower()
+    assert "method" in low and "dispatch" in low, (
+        "the note must name method/instance dispatch as a known blind spot, not "
+        "imply the gap is only dynamic dispatch or staleness"
+    )
+
+
+def test_empty_callees_note_names_method_dispatch():
+    from chameleon_mcp.tools import EMPTY_CALLEES_NOTE
+
+    low = EMPTY_CALLEES_NOTE.lower()
+    assert "method" in low and "dispatch" in low
+
+
+def test_empty_notes_still_steer_to_refresh_and_refuse_dead_code():
+    from chameleon_mcp.tools import EMPTY_CALLEES_NOTE, EMPTY_CALLERS_NOTE
+
+    for note in (EMPTY_CALLERS_NOTE, EMPTY_CALLEES_NOTE):
+        assert "refresh" in note.lower()
+        assert "not" in note.lower()

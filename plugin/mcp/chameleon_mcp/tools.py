@@ -3854,17 +3854,39 @@ def _reroot_rel(rel_path, answering_root: Path, arg_root) -> object:
         return rel_path
 
 
+# These notes carry the whole honesty burden of an empty answer, so they must
+# name the LARGEST blind spot first. The index resolves a call whose receiver is
+# a module or namespace import (`from pkg import mod; mod.f()`), plus bare and
+# `self` calls -- but a call through an INSTANCE (`service.charge()`, where
+# `service` is a constructor result, a parameter, or an injected attribute)
+# needs type inference to resolve, which a static snapshot does not do. In
+# object-oriented code that is the dominant call form, so an empty answer there
+# is routine rather than exceptional.
+#
+# The earlier wording blamed only "dynamic dispatch, reflection, and callers
+# added since the last refresh". None of those applies to an ordinary
+# statically-written `service.charge()` in a freshly refreshed profile, so it
+# read as "rare edge cases may be missing" and invited the reader to trust a
+# zero. Measured on a Flask column: a service method with four grep-verified
+# call sites returned total=0. The plugin's own digest tells the model to check
+# blast radius BEFORE a rename, which makes a trusted zero actively dangerous.
 EMPTY_CALLERS_NOTE = (
     "No caller in the committed calls snapshot. Absence is NOT evidence of dead "
-    "code: dynamic dispatch, reflection, and callers added since the last refresh "
-    "are invisible. Run /chameleon-refresh to update the snapshot before treating "
-    "this as unused."
+    "code, and on object-oriented code it is expected: a call made through an "
+    "instance (obj.method(), self.dep.method()) needs type inference to resolve "
+    "and is NOT indexed, so whole call classes are invisible here. Dynamic "
+    "dispatch, reflection, and callers added since the last refresh are invisible "
+    "too. Before renaming, deleting, or changing this signature, confirm with a "
+    "grep; run /chameleon-refresh if the snapshot may be stale."
 )
 
 EMPTY_CALLEES_NOTE = (
     "No callee in the committed calls snapshot. Absence is NOT evidence that this "
-    "function calls nothing: dynamic dispatch, reflection, and edges added since "
-    "the last refresh are invisible. Run /chameleon-refresh to update the snapshot."
+    "function calls nothing, and on object-oriented code it is expected: a call "
+    "made through an instance (obj.method(), self.dep.method()) needs type "
+    "inference to resolve and is NOT indexed. Dynamic dispatch, reflection, and "
+    "edges added since the last refresh are invisible too. Confirm with a grep "
+    "before relying on this; run /chameleon-refresh if the snapshot may be stale."
 )
 
 

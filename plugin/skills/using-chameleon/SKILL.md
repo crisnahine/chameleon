@@ -82,6 +82,8 @@ The `chameleon-mcp` server also answers codebase questions from prebuilt, trust-
 
 Honesty: these read committed indexes, not live parses. When a tool reports it could not look (`reason` of `index-unavailable` or `no-calls-index` - the backing index is damaged or missing), suggest `/chameleon-refresh` and do NOT treat the empty result as "no callers". `unsupported-language` means the language has no such index by design (e.g. no reverse import index for Ruby) - use grep instead. Only a `found: true` result is a real answer.
 
+**A `found: true` answer of ZERO callers is the one case to distrust.** The calls index resolves bare calls, `self` calls, and calls through a module/namespace import - but a call made through an INSTANCE (`service.charge()`, `self.deps.repo.insert()`, `cls.build()`) needs type inference to resolve and is not indexed. In object-oriented code that is the dominant call form, so an empty caller list there is routine, not a finding. Read the tool's `note`: it says so explicitly. **Before renaming, deleting, or changing a signature, confirm an empty result with a grep** - the cheap check that turns "the index has no edge" into "nothing actually calls this".
+
 ## Coordination with other skills
 
 Chameleon is an output-layer advisory: archetype + canonical + rules shape the code you write. Process-gating skills (brainstorming, planning, TDD) run first if both fire on the same edit. Finish the process gate, then follow chameleon's pattern context for the actual write.
