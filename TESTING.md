@@ -1709,6 +1709,13 @@ Each fix is a minimal targeted diff with red-first tests. No history dropped on 
 the audit (`language-support-matrix.md` NestJS/Python role sets; `dependency-review.md` gemspec).
 README carries no claim contradicted by a fix.
 
+**Doc audit conclusion (no NEW inconsistency introduced):** the 18 fixes' behavior changes are
+recorded in the CHANGELOG (the authoritative record). Two genuinely stale docs were found and
+fixed during the audit (`language-support-matrix.md` role sets, `dependency-review.md` gemspec).
+`CHAMELEON_MIN_SAMPLE_SIZE` (default changed 10 -> 5 in v4.4.23) is a `conventions.py` constant,
+not a `_thresholds.py` entry, and was absent from the env-var reference BEFORE this campaign too
+-- a pre-existing gap, out of scope for a minimal fix; the CHANGELOG documents the default.
+
 **Fresh-repo re-verification:** RUNNING -- 3 brand-new repos in domains the fixes were never
 developed against (NestJS telemedicine, Django+DRF LMS, Ruby caching gem), each re-verifying the
 shipped fixes hold on unfamiliar structure. This is the independent skeptical test the step
