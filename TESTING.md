@@ -3,7 +3,7 @@
 **Status:** IN PROGRESS — Phase 3 (execution wave 1: P0-P2 across all 10 columns)
 **Branch:** `plugin-testing-fixes`
 **Baseline commit:** `27fd8d3` (Release v4.4.15) — clean tree, no uncommitted changes
-**Plugin version under test:** started at 4.4.15, now **4.4.31** (seventeen fixes shipped; v4.4.22 released to origin, CI green)
+**Plugin version under test:** started at 4.4.15, now **4.4.32** (eighteen fixes shipped; v4.4.22 released to origin, CI green)
 **Started:** 2026-07-18
 
 ### Resume pointer (read this first after any interruption)
@@ -1461,7 +1461,36 @@ evidence.
 
 ---
 
-### GAP-002 — `reuse-before-create` suggested 4 unrelated tests, 4/4 wrong — OPEN
+### GAP-002 — `reuse-before-create` nudges on test functions (0% intent match) — **RESOLVED (v4.4.32)**
+
+This nudge misfired **~14 times over the campaign**, and every single instance was
+test-on-test: a new test function paired with an existing one on the shared `test` prefix plus
+a domain word or two (`test_validate_email_format` "looks like `test_validate_email_shape`").
+A test is authored to exercise one specific thing and is never an importable reuse target, and
+two tests sharing tokens is not a reuse signal.
+
+**FIXED (v4.4.32).** The exact-name and semantic passes skip when the edited file is a test,
+and a test function is never offered as a candidate on a production edit either. The
+verbatim body-dup pass (a genuine copy-paste signal) is unchanged.
+
+**Green evidence — real hook A/B on a test edit + a scope check:**
+
+```
+v4.4.31 (old): reuse-before-create present: True    <- fires on the test edit
+v4.4.32 (new): reuse-before-create present: False   <- correctly silent
+
+scope check (v4.4.32, PRODUCTION edit re-defining secret_value_is_placeholder):
+  reuse-before-create present: True
+  "secret_value_is_placeholder already exists in .../secret_placeholder — import and reuse it"
+```
+
+The false positive is gone; the real production-reuse signal still fires. `_is_test_file`
+covers all three languages, so the gate is language-agnostic. Regression: `6221 passed`.
+
+This one is special: it is the only bug the campaign could verify LIVE, because chameleon's own
+test suite triggered it on nearly every test edit this session made. The reuse-suggestion
+context that appeared beside dozens of my own edits — 14+ observed, 0 with matching intent —
+was the reproduction.
 
 **Cell:** `reuse-before-create` x Python (found on the chameleon repo itself)
 **Severity:** advisory-noise
