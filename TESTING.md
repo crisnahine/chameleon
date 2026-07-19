@@ -3,7 +3,7 @@
 **Status:** IN PROGRESS — Phase 3 (execution wave 1: P0-P2 across all 10 columns)
 **Branch:** `plugin-testing-fixes`
 **Baseline commit:** `27fd8d3` (Release v4.4.15) — clean tree, no uncommitted changes
-**Plugin version under test:** started at 4.4.15, now **4.4.25** (eleven fixes shipped; v4.4.22 released to origin, CI green)
+**Plugin version under test:** started at 4.4.15, now **4.4.26** (twelve fixes shipped; v4.4.22 released to origin, CI green)
 **Started:** 2026-07-18
 
 ### Resume pointer (read this first after any interruption)
@@ -14,7 +14,7 @@
 | Inventory | `tests/matrix/inventory.jsonl` — 768 items with `file:line` anchors |
 | Deploy gate | `./scripts/qa-deploy.sh verify` **must pass before any cell is marked green** |
 | Test repos | `~/Documents/Projects/chameleon-fullmatrix-qa/` — 10 fresh repos, all committed |
-| Next action | GAP-008 (call-graph method dispatch, 7 columns); then the Python `services.py`/`selectors.py` role gap; then 63 FAILs and 230 gap reports. |
+| Next action | Python `services.py`/`selectors.py` role gap (same class as GAP-009b); then fold wave 3; then 63 FAILs and 230 gap reports. |
 
 **Fixes shipped so far (each with red evidence, green evidence, and a regression run):**
 
@@ -30,6 +30,7 @@
 | GAP-010 | **CRITICAL** | derivation floor above natural cohort size; conventions empty on ordinary repos | 4.4.23 |
 | GAP-009a | **CRITICAL** | archetypes named `cluster-<hash>` when the layer dir is outside a 19-token allow-list | 4.4.24 |
 | GAP-009b | **CRITICAL** | NestJS role map missed `.dto`/`.entity`/`.repository`; 54% of archetypes hashed | 4.4.25 |
+| GAP-008 | **HIGH** | empty call answers hid the instance-dispatch blind spot; skill told the model to trust them | 4.4.26 |
 
 GAP-002 open. GAP-003 retracted (my error — the proposed fix would have been a security
 regression). OQ-001 resolved as not-a-defect.
@@ -974,7 +975,7 @@ symptom in `lib/repositories`, and the regression rule requires re-running the i
 
 ---
 
-### GAP-008 — the call graph is blind to method dispatch, so `get_callers` answers 0 for live code — OPEN (HIGH)
+### GAP-008 — the call graph is blind to method dispatch, so `get_callers` answers 0 for live code — **DISCLOSURE FIXED (v4.4.26); coverage is a documented boundary**
 
 **Cells:** `mcp-tools`/call-graph x **C2, C4, C5, C6, C8, C9, C10** (7 of 10 columns, independently)
 **Severity:** HIGH — the comprehension layer's headline use case returns a confidently wrong answer
@@ -1024,10 +1025,40 @@ is an ordinary statically-resolvable call in a freshly-refreshed profile. The no
 reads as "rare edge cases may be missing" when the truth is "the dominant call form in
 object-oriented code is never indexed". A user calibrating on that note will trust the zero.
 
-**Status:** OPEN, not yet fixed. This is a capability gap in the indexer rather than a
-regression, and the fix (resolving attribute/`self`/`cls` receivers to their defining class) is
-a substantially larger change than anything shipped in this campaign. Two things should be
-separated when it is picked up:
+**Root cause traced end to end (this reframes the finding).** The extractor is NOT dropping
+these calls: `libcst_dump._call_site_of` classifies `service.method()` as
+`{"kind": "member", "receiver": "service"}` and hands it on. The loss is in the index JOIN
+(`calls_index.py:451-513`), which resolves a `member` site only when the receiver names a
+**module or namespace import** (`import a.b as x; x.f()`, `from pkg import mod; mod.f()`).
+A receiver that is an INSTANCE — a constructor result, a parameter, an injected attribute —
+cannot be resolved without type inference, which a static snapshot does not perform.
+
+So this is a **capability boundary, not discarded data**, and "the index should just resolve it"
+is not a small fix — it is type inference. What was genuinely defective was the DISCLOSURE.
+
+**FIXED (v4.4.26) — the disclosure.** Both empty-answer notes now name instance dispatch first
+and end with the cheap corrective. Real output for the same query that misled before:
+
+```
+found: True  total: 0  truncated: False
+note: No caller in the committed calls snapshot. Absence is NOT evidence of dead code, and on
+      object-oriented code it is expected: a call made through an instance (obj.method(),
+      self.dep.method()) needs type inference to resolve and is NOT indexed, so whole call
+      classes are invisible here. ... Before renaming, deleting, or changing this signature,
+      confirm with a grep; run /chameleon-refresh if the snapshot may be stale.
+```
+
+`using-chameleon` was updated in the same cycle, because it was the more dangerous half: it told
+the model to *"prefer them over grep when a profile exists"* and that *"only a `found: true`
+result is a real answer"* — advice that turns this blind spot into a wrong rename. It now states
+that a `found: true` answer of ZERO callers is the one case to distrust, and to confirm with a
+grep before renaming.
+
+**Coverage remains open as a roadmap item, not a bug.** Resolving instance dispatch needs type
+inference. A cheaper partial (resolve a method name defined in exactly one class repo-wide) would
+help but risks false edges on common names (`get`, `save`, `run`) and is not attempted here.
+
+**Status of the two halves originally proposed:**
 1. **Indexer coverage** — resolve method dispatch so the answers are right.
 2. **Honesty of the interim answer** — until (1) lands, the note should name the real
    limitation rather than implying the gap is only dynamic dispatch / staleness. Small,
