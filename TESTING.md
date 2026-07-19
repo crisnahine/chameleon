@@ -1697,6 +1697,23 @@ review process.
 
 ---
 
+## 6. Step-7 sign-off audit (in progress)
+
+**Git history:** 70 campaign commits on `main` since baseline `27fd8d3`; 17 touch `plugin/mcp`
+source (the fixes), the rest are docs/ledger/records. Working tree clean, every change committed.
+Each fix is a minimal targeted diff with red-first tests. No history dropped on any push
+(verified `git merge-base --is-ancestor` before each).
+
+**Docs:** CHANGELOG complete and contiguous (4.4.16 -> 4.4.32, no gaps), top entry matches
+`plugin.json` (4.4.32), all six manifests version-synced. Two stale docs found and fixed during
+the audit (`language-support-matrix.md` NestJS/Python role sets; `dependency-review.md` gemspec).
+README carries no claim contradicted by a fix.
+
+**Fresh-repo re-verification:** RUNNING -- 3 brand-new repos in domains the fixes were never
+developed against (NestJS telemedicine, Django+DRF LMS, Ruby caching gem), each re-verifying the
+shipped fixes hold on unfamiliar structure. This is the independent skeptical test the step
+requires.
+
 ## 5. Fix Log
 
 _(one entry per fix cycle: issue, cell, root cause, red evidence, green evidence, commit)_
