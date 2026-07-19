@@ -40,6 +40,7 @@
 | GAP-019 | **HIGH** | generic base classes fragmented inheritance/class-contract dominance counts | 4.4.36 |
 | GAP-020 | **HIGH** | libcst dropped subscripted generic bases entirely (root cause of GAP-019's Python half; also made the WRONG base first) | 4.4.37 |
 | GAP-021 | **HIGH** | Ruby DSL conventions dropped for module-nested classes (Rails API layout); `^  ` two-space anchor | 4.4.38 |
+| GAP-022 | **HIGH** | RubyGems `lib/<gem>/<layer>/` layers collapsed into one 56-file archetype; all per-role conventions erased | 4.4.39 |
 | GAP-009b-ii | **HIGH** | naming table listed 6 of 15 NestJS role suffixes; feature-co-located `*.repository.ts` hashed | 4.4.34 |
 | GAP-017-ii | precision | root E501 opt-out overridden by an enforcing sibling app's `line_length` (mixed per-app config) | 4.4.34 |
 
@@ -60,12 +61,21 @@ through a refute-by-default verification pass; only the ones that survived were 
   rule is Ruby-only, `lint_engine.py:2297`), but the framing is wrong: TypeScript is equally
   uncovered, so this is a documented Ruby-exclusive rule, not a Python hole. Writing a Python
   raw-SQL rule would have been a new capability with its own precision risk, not a fix.
-- *Ruby archetype granularity* — **CONFIRMED, real, deferred.** `CLUSTER_PATH_BUCKET_DEPTH=2`
-  pushes the role segment into `sub_bucket` for `lib/<pkg>/<role>/` layouts, collapsing distinct
-  roles into one archetype so no per-role convention clears its floor
-  (`signatures.py:501-508`). Fails safe (empty, never wrong). The naive fix (depth=3) was tested
-  during verification and re-fragments the spec cluster, so this needs its own cycle via the
-  existing split-by-sub-bucket pass rather than a global threshold flip. **Open.**
+- *Ruby archetype granularity* — **CONFIRMED, fixed as GAP-022 (v4.4.39).**
+  `CLUSTER_PATH_BUCKET_DEPTH=2` pushed the role segment into `sub_bucket` for the RubyGems
+  `lib/<gem>/<layer>/` layout, collapsing every layer into one 56-file archetype so no per-role
+  convention cleared its floor (`signatures.py:501-508`). Fixed by bucketing a `.rb` file under
+  `lib/<gem>/<layer>/` at the layer, scoped to Ruby — the naive global depth=3 flip was tested
+  during verification and shattered the spec cluster into four, so it was rejected. Result:
+  3 archetypes → 10, and `inheritance`/`class_contract` went from `{}` to six bases and five
+  contracts. Regression-isolated by re-bootstrapping all six fixture languages with the change
+  stashed: only rb-plain moves.
+
+  *Follow-up observation (not a defect, quality nit):* some of the newly-split Ruby cohorts name
+  as `class-handlers` / `class-repositories` rather than `handler` / `repository`, because
+  `_base_name_for` returns `class-<suffix>` for a class-default cluster before reaching the
+  `_dominant_layer_name` singularizing fallback. The names are informative (a large improvement
+  over the previous single mega-archetype), so this was left alone rather than widening the diff.
 
 **Open, awaiting their own cycle:** rb-plain derives 3 archetypes for 8 distinct roles
 (clustering granularity, C4); 25 wave-1 FAILs untriaged; 94 wave-1 gap reports to work through.
