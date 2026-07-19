@@ -91,6 +91,44 @@ def _has_security_context(
     return bool(_SECURITY_KEYWORDS.search(content[start:end]))
 
 
+# An interpolation slot holding a SCREAMING_SNAKE_CASE identifier: the
+# near-universal convention for a module constant. Digits and underscores are
+# allowed after the first letter (COLUMNS, TABLE_V2, ORDER_BY_CLAUSE).
+_CONSTANT_SLOT = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+# Every interpolation slot shape the three raw_sql_concat arms can match:
+# TypeScript `${...}`, Ruby `#{...}`, Python f-string `{...}`.
+_INTERPOLATION_SLOT = re.compile(r"\$\{([^}]*)\}|#\{([^}]*)\}|\{([^{}]*)\}")
+
+
+def _interpolates_only_constants(matched_sql: str) -> bool:
+    """True when every interpolation in the matched SQL is a module constant.
+
+    Composing a query from a `const TABLE` / `const COLUMNS` while user values go
+    through $1/$2 placeholders is the standard, safe data-access shape, not
+    injection. Flagging it excluded every file in a repositories cohort from
+    canonical-witness selection, which dropped the whole archetype and left edits
+    there imitating a validator -- the security scanner degrading exactly the
+    layer where SQL-injection mistakes happen.
+
+    Deliberately conservative: this is a NAMING-convention judgement, not a data-
+    flow analysis, so a single non-constant slot (`${userId}`, `${req.query.x}`,
+    `${getId()}`, or a lower-case `${table}`) keeps the whole statement flagged --
+    one safe constant never launders an unsafe sibling. A value that is both
+    user-controlled AND named in SCREAMING_SNAKE_CASE would be missed; that is
+    rare, against convention, and the trade for not deleting real archetypes.
+    A match with no interpolation at all is not exempted (it cannot reach here --
+    every arm requires a slot).
+    """
+    slots = [
+        next(g for g in groups if g is not None)
+        for groups in _INTERPOLATION_SLOT.findall(matched_sql)
+    ]
+    if not slots:
+        return False
+    return all(_CONSTANT_SLOT.match(s.strip()) for s in slots)
+
+
 def scan_for_dangerous_patterns(content: str) -> list[dict]:
     """Return list of detected dangerous patterns.
 
@@ -103,6 +141,8 @@ def scan_for_dangerous_patterns(content: str) -> list[dict]:
             if requires_security_context and not _has_security_context(
                 content, match.start(), match.end()
             ):
+                continue
+            if kind == "raw_sql_concat" and _interpolates_only_constants(match.group(0)):
                 continue
             hits.append(
                 {

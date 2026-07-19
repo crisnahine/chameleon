@@ -4,6 +4,36 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.20] - 2026-07-19
+
+### Fixed
+- `raw_sql_concat` no longer flags a SQL template whose every interpolation is a
+  compile-time constant. Composing a query from a module `const TABLE` /
+  `const COLUMNS` while user values go through `$1`/`$2` placeholders is the
+  standard data-access shape, not injection — but the TypeScript arm matched any
+  `${...}` inside a SQL-ish template literal, so every file in a repositories
+  cohort failed the canonical safety scan. The Ruby arm had already been hardened
+  against its own version of this ("which was poisoning canonical-witness
+  selection on Rails repos"); the TypeScript arm never was.
+
+  The exemption is a naming-convention judgement, not data-flow analysis: a slot
+  counts as constant only when it is a SCREAMING_SNAKE_CASE identifier, and a
+  single non-constant slot (`${userId}`, `${req.query.x}`, `${getId()}`, a
+  lower-case `${table}`) keeps the whole statement flagged — one safe constant
+  never launders an unsafe sibling. Measured on a real repository cohort: hits
+  per file drop from 7 to 2.
+
+  **This narrows the false positive but does NOT resolve the archetype loss it
+  causes.** The surviving hits interpolate a locally-assembled `${where}` clause
+  that is provably safe (built only from literal fragments carrying `$N`
+  placeholders, with user values passed separately as params) yet
+  indistinguishable from an unsafe one without data-flow analysis. The cohort is
+  therefore still excluded from canonical selection, the cluster still loses its
+  witness, and the archetype is still dropped. Tracked as the open half of
+  GAP-007 in TESTING.md: no regex-level precision fix can be sufficient here, so
+  the durable repair is for a cohort with no clean witness to yield a
+  witness-less archetype rather than be deleted.
+
 ## [4.4.19] - 2026-07-18
 
 ### Fixed

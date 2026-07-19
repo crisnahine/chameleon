@@ -424,3 +424,52 @@ def test_python_benign_fstring_with_sql_word_not_flagged():
 
 def test_python_real_fstring_sql_still_flagged():
     assert "raw_sql_concat" in _kinds('cur.execute(f"SELECT * FROM users WHERE id = {uid}")')
+
+
+# --------------------------------------------------------------------------- #
+# Constant interpolation (GAP-007): a module `const TABLE` / `const COLUMNS`
+# composed into a query is the standard data-access shape, not injection. Every
+# file in a repositories cohort tripping this cost the cluster its canonical
+# witness, dropped the archetype, and left edits there imitating a VALIDATOR.
+# The Ruby arm was already hardened against its own version of this; the
+# TypeScript arm was not.
+# --------------------------------------------------------------------------- #
+
+
+def test_ts_constant_table_and_columns_not_flagged():
+    # The exact shape that deleted the ts-plain repositories archetype.
+    content = "const sql = `SELECT ${COLUMNS} FROM ${TABLE} WHERE id = $1`;"
+    assert "raw_sql_concat" not in _kinds(content)
+
+
+def test_ts_constant_count_query_not_flagged():
+    content = "await db.query(`SELECT COUNT(*)::int AS total FROM ${TABLE} WHERE status = $1`, [s])"
+    assert "raw_sql_concat" not in _kinds(content)
+
+
+def test_ts_constant_write_statements_not_flagged():
+    assert "raw_sql_concat" not in _kinds("`INSERT INTO ${TABLE} (${COLUMNS}) VALUES ($1, $2)`")
+    assert "raw_sql_concat" not in _kinds("`UPDATE ${TABLE} SET name = $1 WHERE id = $2`")
+    assert "raw_sql_concat" not in _kinds("`DELETE FROM ${TABLE} WHERE id = $1`")
+
+
+def test_ts_value_interpolation_still_flagged():
+    assert "raw_sql_concat" in _kinds("`SELECT * FROM users WHERE id = ${userId}`")
+
+
+def test_ts_dotted_expression_still_flagged():
+    assert "raw_sql_concat" in _kinds("`SELECT * FROM orders WHERE status = ${req.query.status}`")
+
+
+def test_ts_mixed_constant_and_value_still_flagged():
+    # One safe constant must not launder an unsafe sibling on the same statement.
+    assert "raw_sql_concat" in _kinds("`SELECT ${COLUMNS} FROM ${TABLE} WHERE name = ${name}`")
+
+
+def test_ts_call_expression_interpolation_still_flagged():
+    assert "raw_sql_concat" in _kinds("`SELECT * FROM t WHERE id = ${getId()}`")
+
+
+def test_ts_lowercase_identifier_still_flagged():
+    # A lower-case identifier is a variable, not a module constant.
+    assert "raw_sql_concat" in _kinds("`SELECT * FROM ${table}`")
