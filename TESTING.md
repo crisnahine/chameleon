@@ -1453,6 +1453,15 @@ Run directly against v4.4.32 before folding the deep-probe wave, so agent claims
   Recorded because catching my own harness bug before reporting it as a plugin bug is the
   discipline this campaign runs on.
 
+- **Damaged-artifact contract: fully holds (isolated scratch copy, no collision with the wave).**
+  (a) 45 probes -- 5 artifacts (archetypes/canonicals/rules/conventions/profile) x 3 corruptions
+  (truncated/empty/garbage) x 3 read tools -- **0 crashes**, fail-open holds. (b) Degradation is
+  HONEST: a corrupt `profile.json` yields `profile_status: profile_corrupted` (distinct from
+  `no_profile` and `profile_present`) and `describe_codebase found:false`, never a silent
+  false-clean. (c) `refresh_repo` REPAIRS a corrupt `archetypes.json` (rebuilt to 7 valid
+  archetypes), not noop-preserve, and the user-authored `idioms.md` survives the repair
+  byte-identical.
+
 ### GAP-017 — ruff `line-length` enforced despite `ignore = ["E501"]` — **RESOLVED (v4.4.31)**
 
 **Cells:** `enforcement`/style-rule-violation x C6 (py-plain)
