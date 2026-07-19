@@ -3,7 +3,7 @@
 **Status:** IN PROGRESS — Phase 3 (execution wave 1: P0-P2 across all 10 columns)
 **Branch:** `plugin-testing-fixes`
 **Baseline commit:** `27fd8d3` (Release v4.4.15) — clean tree, no uncommitted changes
-**Plugin version under test:** started at 4.4.15, now **4.4.23** (nine fixes shipped; v4.4.22 released to origin)
+**Plugin version under test:** started at 4.4.15, now **4.4.24** (ten fixes shipped; v4.4.22 released to origin, CI green)
 **Started:** 2026-07-18
 
 ### Resume pointer (read this first after any interruption)
@@ -14,7 +14,7 @@
 | Inventory | `tests/matrix/inventory.jsonl` — 768 items with `file:line` anchors |
 | Deploy gate | `./scripts/qa-deploy.sh verify` **must pass before any cell is marked green** |
 | Test repos | `~/Documents/Projects/chameleon-fullmatrix-qa/` — 10 fresh repos, all committed |
-| Next action | GAP-012 (undelivered conventions); then GAP-009 (archetype naming); then GAP-008 (call-graph method dispatch, largest). 63 FAILs and 230 gap reports await triage. |
+| Next action | GAP-009b (clustering granularity: 4 NestJS layers merged into one cluster); then GAP-008 (call-graph method dispatch). 63 FAILs and 230 gap reports await triage. |
 
 **Fixes shipped so far (each with red evidence, green evidence, and a regression run):**
 
@@ -28,6 +28,7 @@
 | GAP-007b | **HIGH** | scan-excluded cohort deleted, so edits got a wrong-layer witness | 4.4.21 |
 | GAP-011 | **HIGH** | eslint globs silently corrupted; array elements merged | 4.4.22 |
 | GAP-010 | **CRITICAL** | derivation floor above natural cohort size; conventions empty on ordinary repos | 4.4.23 |
+| GAP-009a | **CRITICAL** | archetypes named `cluster-<hash>` when the layer dir is outside a 19-token allow-list | 4.4.24 |
 
 GAP-002 open. GAP-003 retracted (my error — the proposed fix would have been a security
 regression). OQ-001 resolved as not-a-defect.
@@ -1045,7 +1046,7 @@ because an imprecise finding is how a future fix gets aimed at the wrong line.
 
 ---
 
-### GAP-009 — archetype naming/granularity collapses real layers into raw hash clusters — OPEN (CRITICAL)
+### GAP-009 — archetype naming/granularity collapses real layers into raw hash clusters — **NAMING HALF RESOLVED (v4.4.24); granularity half OPEN**
 
 **Cells:** `bootstrap`/clustering+naming x **C1, C3, C4, C6, C7** (5 columns)
 **Severity:** CRITICAL per the C3 verifier; the archetype name is the primary thing the model is
@@ -1061,6 +1062,44 @@ two hash clusters.
 A hash name conveys nothing and cannot be reasoned from, and the collapse makes the canonical
 witness structurally unrepresentative — C3's feature modules are told at **exact/high confidence,
 with no hedge**, to "mirror closely" the root `AppModule`, which is 1 of 8 and the outlier.
+
+**Root cause of the NAMING half (found by reading the ladder):** `_base_name_for` recognises a
+hardcoded allow-list of 19 directory tokens — `components config controllers hooks initializers
+jobs mailers migrate migrations models mutations policies queries serializers services types util
+utils workers`. `repositories` is not among them. Neither are `validators`, `selectors`, `dto`,
+`entities`, `guards`, `adapters`, `handlers`, `gateways`. Any repo whose layers are named outside
+that list gets a hash.
+
+**FIXED (v4.4.24).** A cohort that overwhelmingly shares one meaningful directory now takes its
+name from it, singularised. Conservative by construction: runs only after every specific rule
+(known tokens and the richer `class-<dir>` AST form still win), needs 80% agreement, needs 3+
+members, and ignores structural directories.
+
+**Green evidence — share of archetypes left unnamed, real re-derivation:**
+
+| repo | before | after | names now derived |
+|---|---:|---:|---|
+| ts-plain | 2 of 7 | **0** | `repository`, `validator` (the two that were hashes) |
+| py-django | collapsed | **1 of 16** | `admin`, `form`, `urls`, `view` + per-app |
+| py-plain | 1 of 4 | **0** | `schema` |
+| rb-plain | 0 of 3 | 0 of 3 | unchanged |
+
+ts-plain now derives a fully named set: `model, repository, serializer, service, test, util,
+validator`.
+
+**Three tests failed and each was diagnosed, not retuned.** Two used single-file fixtures
+(`weird/place/x.go` -> "place"), which showed the rule needed a member floor — a directory with
+one file in it is a location, not a layer. The third expected the richer `class-<dir>` form,
+which revealed I had placed the rule BEFORE the specific rules despite its own comment claiming
+it ran after; moving it to just before the give-up fixed the test and honoured the design.
+
+**GRANULARITY HALF STILL OPEN.** NestJS is unchanged at 54% hashed. Its clusters span several
+feature directories at once (`src/orders/`, `src/billing/`, ...), so there is no dominant
+directory and no honest name to derive — correctly, the rule declines. That is a clustering
+problem: 4 distinct NestJS layers are being merged into one cluster. Naming cannot fix a cluster
+that should not exist. Also unresolved: where a cohort's directory names a DOMAIN rather than a
+role (a Django app's unrecognised service/selector layer becoming `billing`), the name says where
+the code lives rather than what it is — better than a hash, weaker than a role name.
 
 ### GAP-010 — `min_sample_size=10` zeroes out most convention families on ordinary repos — **RESOLVED (v4.4.23, `37ffb73`)**
 
