@@ -1500,6 +1500,15 @@ Run directly against v4.4.32 before folding the deep-probe wave, so agent claims
   security leak (injection/secret content is dropped, verified above). A JSON-RPC nit (unknown
   method returns -32602 not -32601) is FastMCP transport behavior, not chameleon's to fix.
 
+- **Daemon: 25 PASS / 2 N/A-ASSERTED, 2 LOW gaps, both mitigated.** The "single-threaded accept
+  loop could freeze the fast path" concern is mitigated by design: `daemon_client.request`
+  returns `None` on ANY failure -- connection, oversize, PARSE error, per-call TIMEOUT, or any
+  exception -- and the hook takes `None` as the signal to fall back to the in-process lint path
+  (`daemon_client.py:15-16,44-65`). A stalled daemon therefore times out per call and degrades
+  to in-process; it cannot permanently freeze the fast path. The orphan-socket sweep gap is just
+  "not runtime-exercised in this probe", not a defect. Infra bill of health: daemon, merge
+  driver, MCP stdio, and schema migration all robust, LOW/info only.
+
 ### GAP-017 — ruff `line-length` enforced despite `ignore = ["E501"]` — **RESOLVED (v4.4.31)**
 
 **Cells:** `enforcement`/style-rule-violation x C6 (py-plain)
