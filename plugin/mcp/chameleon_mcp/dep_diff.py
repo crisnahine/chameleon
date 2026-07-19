@@ -23,7 +23,9 @@ never a crash and never a fabricated finding.
 Coverage boundary (deliberate): the parsed ecosystems are npm (``package.json``,
 ``package-lock.json``, ``npm-shrinkwrap.json``), yarn (``yarn.lock`` classic and
 berry ``resolution:`` lines), pnpm (``pnpm-lock.yaml``), and Bundler
-(``Gemfile``, ``Gemfile.lock``). Dependency manifests of other ecosystems --
+(``Gemfile``, ``Gemfile.lock``, and ``*.gemspec`` -- a gem declares its own
+dependencies via ``add_dependency`` in the gemspec, not a Gemfile).
+Dependency manifests of other ecosystems --
 Python (``requirements*.txt``, ``pyproject.toml``, ``Pipfile``, ``setup.py``),
 Go, Rust, PHP -- are NOT parsed. Rather than let a change to one read as
 "reviewed clean" (empty findings), ``is_uncovered_manifest`` names them and
@@ -169,9 +171,19 @@ _DEFAULT_GEM_HOSTS = frozenset({"rubygems.org"})
 _RESOLUTION_KEYWORD_RE = re.compile(r"\b(?:resolved|tarball|remote|resolution)\b")
 _URL_HOST_RE = re.compile(r"https?://([^/\s\"',]+)")
 
-# A Gemfile `gem` line carrying a non-registry source option (`git:`, `github:`,
-# `path:`, or their hash-rocket forms). `gem "name"` opens the line.
-_GEM_LINE_RE = re.compile(r'^\s*gem\s+["\']([^"\']+)["\']')
+# A dependency line naming a gem. Two syntaxes, both matched:
+#   Gemfile:  `gem "name"`
+#   .gemspec: `spec.add_dependency "name"` / `s.add_runtime_dependency "name"` /
+#             `spec.add_development_dependency "name"`
+# A gem declares its dependencies in its .gemspec, not a Gemfile, so a
+# gemspec-only project (the common case for a library/gem) was invisible to the
+# supply-chain scan until this line covered the add_dependency family. All three
+# forms are matched, mirroring the Gemfile scanner, which flags every `gem` line
+# regardless of its `group` (a dev/test dependency still executes in CI, a real
+# supply-chain vector).
+_GEM_LINE_RE = re.compile(
+    r'^\s*(?:gem\s+|[A-Za-z_][\w]*\.add(?:_runtime|_development)?_dependency\s+)["\']([^"\']+)["\']'
+)
 _GEM_SOURCE_RE = re.compile(
     r"(?:\b(?:git|github|gitlab|bitbucket|path)\s*:)|(?::(?:git|github|gitlab|bitbucket|path)\s*=>)"
 )
@@ -627,7 +639,7 @@ def scan_dependency_diff(files: dict[str, str]) -> list[DepFinding]:
                 out.extend(_scan_nonregistry_source_npm(path, diff_text))
                 out.extend(_scan_new_dependencies_npm(path, diff_text))
                 out.extend(_scan_minified_manifest(path, diff_text))
-            elif base == "Gemfile":
+            elif base == "Gemfile" or base.endswith(".gemspec"):
                 out.extend(_scan_nonregistry_source_gem(path, diff_text))
                 out.extend(_scan_new_dependencies_gem(path, diff_text))
             elif base in (
@@ -650,16 +662,18 @@ def collect_dependency_findings(
     """Route changed paths to the parser, fetching each manifest/lockfile's diff.
 
     ``changed_paths`` is the repo-relative file list of a change set; only those
-    whose basename is in :data:`MANIFEST_LOCKFILE_BASENAMES` are fetched, so a
-    non-manifest edit never triggers a git call. ``diff_fetcher`` returns the
-    unified diff text for one path (the caller supplies the no-network git read).
-    Fails open: a fetcher that raises or returns None contributes nothing.
+    whose basename is in :data:`MANIFEST_LOCKFILE_BASENAMES` (or a ``*.gemspec``,
+    whose name varies) are fetched, so a non-manifest edit never triggers a git
+    call. ``diff_fetcher`` returns the unified diff text for one path (the caller
+    supplies the no-network git read). Fails open: a fetcher that raises or
+    returns None contributes nothing.
     """
     files: dict[str, str] = {}
     for path in changed_paths or ():
         if not isinstance(path, str):
             continue
-        if path.rsplit("/", 1)[-1] not in MANIFEST_LOCKFILE_BASENAMES:
+        base = path.rsplit("/", 1)[-1]
+        if base not in MANIFEST_LOCKFILE_BASENAMES and not base.endswith(".gemspec"):
             continue
         try:
             diff_text = diff_fetcher(path)

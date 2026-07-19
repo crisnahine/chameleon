@@ -541,3 +541,60 @@ def test_install_key_with_real_version_value_stays_a_dependency(version):
     diff = {"package.json": '+    "install": "' + version + '",\n'}
     checks = {f.check for f in scan_dependency_diff(diff)}
     assert "install-script" not in checks
+
+
+# ---------------------------------------------------------------------------
+# .gemspec — a Ruby gem declares its RUNTIME dependencies here, not in a
+# Gemfile. The Gemfile-only routing left a gemspec change neither parsed nor
+# flagged as uncovered: completely silent. For a gem (the whole rb-plain
+# column), that is total dependency-review blindness on its primary manifest.
+# ---------------------------------------------------------------------------
+
+
+def test_gemspec_new_dependency_is_flagged():
+    diff = (
+        "--- a/freightline.gemspec\n"
+        "+++ b/freightline.gemspec\n"
+        "@@ -8,1 +8,2 @@\n"
+        '+  spec.add_dependency "nokogiri", "~> 1.15"\n'
+    )
+    findings = scan_dependency_diff({"freightline.gemspec": diff})
+    assert len(_findings_by_check(findings, "new-dependency")) == 1
+
+
+def test_gemspec_runtime_dependency_alias_is_flagged():
+    diff = (
+        "--- a/foo.gemspec\n+++ b/foo.gemspec\n@@ -8,1 +8,2 @@\n"
+        '+  s.add_runtime_dependency "rails", ">= 7.0"\n'
+    )
+    findings = scan_dependency_diff({"foo.gemspec": diff})
+    assert len(_findings_by_check(findings, "new-dependency")) == 1
+
+
+def test_gemspec_git_source_is_flagged():
+    diff = (
+        "--- a/foo.gemspec\n+++ b/foo.gemspec\n@@ -8,1 +8,2 @@\n"
+        '+  spec.add_dependency "rails", git: "https://github.com/evil/rails.git"\n'
+    )
+    findings = scan_dependency_diff({"foo.gemspec": diff})
+    assert len(_findings_by_check(findings, "non-registry-source")) == 1
+
+
+def test_gemspec_is_a_covered_manifest_not_uncovered():
+    # Ruby is a covered ecosystem, so a gemspec must route to the gem scanners,
+    # NOT be reported as an unparsed uncovered manifest.
+    assert is_uncovered_manifest("freightline.gemspec") is False
+    assert is_uncovered_manifest("lib/foo.gemspec") is False
+
+
+def test_gemspec_is_collected_for_scanning():
+    from chameleon_mcp.dep_diff import collect_dependency_findings
+
+    def _diff(_path):
+        return (
+            "--- a/foo.gemspec\n+++ b/foo.gemspec\n@@ -8,1 +8,2 @@\n"
+            '+  spec.add_dependency "evilpkg"\n'
+        )
+
+    findings = collect_dependency_findings(["foo.gemspec"], _diff)
+    assert len(_findings_by_check(findings, "new-dependency")) == 1

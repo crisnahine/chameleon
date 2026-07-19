@@ -4,6 +4,27 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.30] - 2026-07-19
+
+### Fixed
+- Dependency-change review now covers `*.gemspec`. A Ruby gem declares its
+  runtime dependencies in its gemspec via `add_dependency` / `add_runtime_dependency`,
+  not in a Gemfile — but the supply-chain scanner routed only exact-basename
+  `Gemfile`, so a gemspec change was neither parsed NOR flagged as an uncovered
+  manifest. It was completely silent: for a library/gem (whose gemspec is its
+  primary and often only dependency manifest), dependency review saw nothing and
+  said nothing. Verified on a real gem's gemspec, adding `concurrent-ruby` and a
+  `github:`-sourced dependency both went unreported before this fix.
+
+  The gem-line regex now matches the `add_dependency` family alongside
+  `gem "name"`, `.gemspec` files route to the same two gem scanners
+  (new-dependency + non-registry-source), and the collect gate admits them by
+  suffix (their name varies). After the fix the same gemspec change flags
+  `new-dependency` for a plain add and both `new-dependency` and
+  `non-registry-source` for a `github:` source. All three `add_*_dependency`
+  forms are matched, mirroring the Gemfile scanner, which flags every `gem` line
+  regardless of group.
+
 ## [4.4.29] - 2026-07-19
 
 ### Changed
