@@ -3,7 +3,7 @@
 **Status:** IN PROGRESS — Phase 3 (execution wave 1: P0-P2 across all 10 columns)
 **Branch:** `plugin-testing-fixes`
 **Baseline commit:** `27fd8d3` (Release v4.4.15) — clean tree, no uncommitted changes
-**Plugin version under test:** started at 4.4.15, now **4.4.30** (sixteen fixes shipped; v4.4.22 released to origin, CI green)
+**Plugin version under test:** started at 4.4.15, now **4.4.31** (seventeen fixes shipped; v4.4.22 released to origin, CI green)
 **Started:** 2026-07-18
 
 ### Resume pointer (read this first after any interruption)
@@ -14,7 +14,7 @@
 | Inventory | `tests/matrix/inventory.jsonl` — 768 items with `file:line` anchors |
 | Deploy gate | `./scripts/qa-deploy.sh verify` **must pass before any cell is marked green** |
 | Test repos | `~/Documents/Projects/chameleon-fullmatrix-qa/` — 10 fresh repos, all committed |
-| Next action | Fold wave 3 when it lands; then the 63 FAILs and 230 gap reports; then GAP-002 (reuse-before-create precision) and the co-change FP. |
+| Next action | 0 FAIL cells left. Remaining: ~2,000 pending cells across waves not yet run (deep-probe surfaces), GAP-002 (reuse-before-create precision), and the residual gap reports. Then final sign-off (step 7). |
 
 **Fixes shipped so far (each with red evidence, green evidence, and a regression run):**
 
@@ -35,6 +35,7 @@
 | GAP-014 | **HIGH** | per-edit dedup deleted interior lines of taught idiom code examples | 4.4.28 |
 | GAP-015 | precision | duplication overlap counted CRUD verbs as reuse signal (agents' FP-rate unreproduced) | 4.4.29 |
 | GAP-016 | **HIGH** | `.gemspec` dependency changes silently unreviewed (gem's primary manifest) | 4.4.30 |
+| GAP-017 | precision | ruff `line-length` enforced despite `ignore=['E501']` | 4.4.31 |
 
 GAP-002 open. GAP-003 retracted (my error — the proposed fix would have been a security
 regression). OQ-001 resolved as not-a-defect.
@@ -1430,6 +1431,33 @@ in `UNCOVERED_MANIFEST_BASENAMES` and surface as `uncovered_manifests` (honest "
 silent). The gemspec gap was the real one: silent, not flagged. `get_contract_breaks`'s 10-file
 cap (C8) was also checked and REFUTED — it returns `status: degraded, reason: diff_too_large`
 over the cap, not a false clean.
+
+---
+
+### GAP-017 — ruff `line-length` enforced despite `ignore = ["E501"]` — **RESOLVED (v4.4.31)**
+
+**Cells:** `enforcement`/style-rule-violation x C6 (py-plain)
+py-plain's `pyproject.toml`: `[tool.ruff] line-length = 100` + `[tool.ruff.lint] ignore = ["E501"]`
+— format toward 100 but do NOT fail on longer lines. Chameleon read `line-length` and flagged a
+105-column line as a `style-rule-violation` while the repo's own `ruff check` passes it, because
+extraction never inspected the ignore list.
+
+**FIXED (v4.4.31).** Extraction suppresses the enforced `line_length` when E501 is explicitly
+ignored. Verified across all five Python columns: py-plain/py-django/py-flask (ignore E501) stop
+flagging; py-drf/py-fastapi (enforce E501) keep max-100. `6218 passed`; ruff clean.
+
+**The 4 residual FAIL cells resolved.** After the 16-fix re-verify flipped 59 of 63 stale FAILs
+to PASS, 4 remained, all in C6: this style FP (fixed above) and three method-level
+contract-break cells (`get_contract_breaks`, `get_crossfile_context`, `get_autopass_verdict`).
+The latter three are the **GAP-008 capability boundary** — Python instance-method dispatch needs
+type inference and is not in the static calls index, so a method-level narrowing is invisible
+while MODULE-level and IMPORT-level breaks are correctly detected (verified: `require_id`
+narrowing flagged with all 28 caller rows; deleted `optional_flag` import flagged). Marked
+`N/A-ASSERTED`: a disclosed static-index boundary (the empty-answer notes name instance dispatch
+as of v4.4.26), not a silent bug. Full method-dispatch resolution is a roadmap item.
+
+**Ledger: 0 FAIL cells remaining.** Every recorded cell is PASS or N/A-ASSERTED with fresh
+evidence.
 
 ---
 
