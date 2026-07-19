@@ -3,7 +3,7 @@
 **Status:** IN PROGRESS — Phase 3 (execution wave 1: P0-P2 across all 10 columns)
 **Branch:** `plugin-testing-fixes`
 **Baseline commit:** `27fd8d3` (Release v4.4.15) — clean tree, no uncommitted changes
-**Plugin version under test:** started at 4.4.15, now **4.4.26** (twelve fixes shipped; v4.4.22 released to origin, CI green)
+**Plugin version under test:** started at 4.4.15, now **4.4.27** (thirteen fixes shipped; v4.4.22 released to origin, CI green)
 **Started:** 2026-07-18
 
 ### Resume pointer (read this first after any interruption)
@@ -14,7 +14,7 @@
 | Inventory | `tests/matrix/inventory.jsonl` — 768 items with `file:line` anchors |
 | Deploy gate | `./scripts/qa-deploy.sh verify` **must pass before any cell is marked green** |
 | Test repos | `~/Documents/Projects/chameleon-fullmatrix-qa/` — 10 fresh repos, all committed |
-| Next action | Python `services.py`/`selectors.py` role gap (same class as GAP-009b); then fold wave 3; then 63 FAILs and 230 gap reports. |
+| Next action | Fold wave 3 when it lands; then the 63 FAILs and 230 gap reports; then GAP-002 (reuse-before-create precision) and the co-change FP. |
 
 **Fixes shipped so far (each with red evidence, green evidence, and a regression run):**
 
@@ -31,6 +31,7 @@
 | GAP-009a | **CRITICAL** | archetypes named `cluster-<hash>` when the layer dir is outside a 19-token allow-list | 4.4.24 |
 | GAP-009b | **CRITICAL** | NestJS role map missed `.dto`/`.entity`/`.repository`; 54% of archetypes hashed | 4.4.25 |
 | GAP-008 | **HIGH** | empty call answers hid the instance-dispatch blind spot; skill told the model to trust them | 4.4.26 |
+| GAP-013 | HIGH | Python `services.py`/`selectors.py` unmapped, so the service layer clustered by app | 4.4.27 |
 
 GAP-002 open. GAP-003 retracted (my error — the proposed fix would have been a security
 regression). OQ-001 resolved as not-a-defect.
@@ -1304,6 +1305,43 @@ evidence about what Tier 2 delivers.
 a grep, and rated it HIGH, without driving the hook. Both halves dissolved the moment I did. This
 is the third finding of mine to be corrected by direct verification (after GAP-003 and the
 `truncated` framing), and the reason every load-bearing claim gets re-run rather than relayed.
+
+---
+
+### GAP-013 — Python service-layer files have no role, so they cluster by app — **RESOLVED (v4.4.27)**
+
+**Cells:** `bootstrap`/naming x C6, C7, C8, C9, C10
+**Found by:** me, while fixing GAP-009b — the identical incompleteness one language over.
+
+`_PY_ROLE_NAMES` mapped Django's built-in roles but not the service layer real codebases add.
+Measured across the five Python columns:
+
+```
+14 views.py (mapped)     14 urls.py (mapped)    14 models.py (mapped)
+13 services.py  <- UNMAPPED    13 selectors.py <- UNMAPPED
+ 7 serializers.py (mapped)   7 routes.py (mapped)   7 permissions.py (mapped)
+```
+
+`services.py` and `selectors.py` are the 6th and 7th most common role files — **more common than
+five filenames that were already mapped**. Unmapped, they clustered per-app, so the archetype
+name was `billing` / `carrier` (where the file lives) instead of `service` (what it is).
+
+**FIXED.** Added `services selectors repositories exceptions mixins factories policies clients
+adapters handlers`. Excluded `base` / `utils` / `helpers` / `constants` as grab-bags: grouping
+those cross-app would merge unrelated code under one archetype.
+
+| repo | archetypes | unnamed | role archetypes gained |
+|---|---:|---:|---|
+| py-django | 13 | 1 | `service`, `selector` |
+| py-drf | 14 | 1 | `service`, `selector` |
+| py-flask | 8 | 1 | `service` |
+| py-fastapi | 7 | 1 | `service` |
+| py-plain | 4 | 0 | already clean |
+
+**Deliberate trade, recorded rather than hidden:** py-django drops from 16 archetypes to 13 and
+from 55 populated convention sections to 47, because six per-app clusters collapse into
+cross-app roles. Fewer sections, but each is coherent — one `service` archetype over 13 sibling
+files derives a far stronger contract than six 4-file clusters sharing only a directory.
 
 ---
 
