@@ -1025,10 +1025,21 @@ regression, and the fix (resolving attribute/`self`/`cls` receivers to their def
 a substantially larger change than anything shipped in this campaign. Two things should be
 separated when it is picked up:
 1. **Indexer coverage** — resolve method dispatch so the answers are right.
-2. **Honesty of the interim answer** — until (1) lands, an answer that omits an entire call
-   class should not present as `truncated: false`, and the note should name the real limitation
-   rather than implying it is only dynamic dispatch. (2) is small, independently shippable, and
-   removes the dangerous part of the failure even before (1).
+2. **Honesty of the interim answer** — until (1) lands, the note should name the real
+   limitation rather than implying the gap is only dynamic dispatch / staleness. Small,
+   independently shippable, and it removes the dangerous part of the failure before (1) lands.
+
+**Correction to my own first framing of (2).** I initially wrote that such an answer "should not
+present as `truncated: false`". I checked the semantics before leaving that in the record, and it
+is wrong: `truncated` is set by `calls_index.py:574` as `len(keep) < total` — it means *the
+caller list was capped relative to what the index holds*, not *the index is complete*. So
+`truncated: false` is accurate here and changing it would be the wrong repair.
+
+The precise defect is that the response carries **no field on the other axis** — nothing
+distinguishes "this symbol genuinely has no callers" from "an entire call class was never
+indexed for this language". `truncated` answers a different question. A correct fix therefore
+ADDS a coverage signal (or narrows the note), rather than overloading `truncated`. Recorded
+because an imprecise finding is how a future fix gets aimed at the wrong line.
 
 ---
 
