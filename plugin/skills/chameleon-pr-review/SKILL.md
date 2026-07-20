@@ -66,7 +66,9 @@ would beat it. RECALL exists so a second manual round finds nothing new.
 
 Follow these steps in order. Do not skip steps.
 
-**Read-only review.** This review never mutates the repo: do not edit the working tree, stage changes, move HEAD, or switch/reset/create branches. Inspect with `git diff` / `git show` / `git log` (and `gh` / `bbcurl` for a PR) only. If you must inspect another revision, use `git worktree add` into a temp dir, never `git checkout` / `git reset` on this checkout. (You also do NOT auto-fix code, per the Important section.)
+**Read-only review.** This review never mutates the repo: do not edit the working tree, stage changes, move HEAD, or switch/reset/create branches. Inspect with `git diff` / `git show` / `git log` (and `gh` / `bbcurl` for a PR) only. If you must inspect another revision, use `git worktree add --detach <tmp-dir> <sha>` into a temp dir — ALWAYS `--detach` with a resolved sha, never a branch name and never `git checkout` / `git reset` on this checkout. Detach is interrupt-safety, not style: a review session can be killed at any moment (timeout, user abort), and a worktree that bound a branch leaves that branch checked-out-elsewhere state behind for the user to untangle, while a killed detached worktree is just a disposable directory. Remove the worktree (`git worktree remove`) when done. (You also do NOT auto-fix code, per the Important section.)
+
+**Runtime budget.** A full review runs three rounds plus an independent refuter; even a one-file diff commonly takes 8-10 minutes of wall time. When invoked non-interactively (`claude -p`), give it a timeout of at least 600 seconds — a kill mid-review loses the entire buffered report.
 
 ### Step 1: Parse input
 
