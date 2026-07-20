@@ -6,16 +6,19 @@ set -euo pipefail
 # Bound the stdin read so a pathological payload cannot blow the <100ms render
 # budget. Real Claude Code payloads are tiny JSON; 256 KB is far above any of them.
 input=$(head -c 262144 2>/dev/null || true)
+# `current_dir` is the documented fallback when `project_dir` is absent from
+# the payload (older clients, hand-rolled callers): both name a directory
+# inside the workspace, and either beats silently rendering $PWD's repo.
 project_dir=""
 if command -v jq &>/dev/null; then
-  project_dir=$(printf '%s' "$input" | jq -r '.workspace.project_dir // empty' 2>/dev/null || true)
+  project_dir=$(printf '%s' "$input" | jq -r '.workspace.project_dir // .workspace.current_dir // empty' 2>/dev/null || true)
 fi
 if [[ -z "$project_dir" ]]; then
   # Deliberately bare python3, unlike the hooks' _resolve-python.sh ladder: every
   # python call in this script is stdlib-only JSON that runs fine on 3.9 (the
   # macOS system python), each call is fail-silent, and the ladder's version
   # probe alone would blow the <100ms render budget.
-  project_dir=$(printf '%s' "$input" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('workspace',{}).get('project_dir') or '')" 2>/dev/null || true)
+  project_dir=$(printf '%s' "$input" | python3 -c "import json,sys; d=json.load(sys.stdin); w=d.get('workspace',{}); print(w.get('project_dir') or w.get('current_dir') or '')" 2>/dev/null || true)
 fi
 [[ -z "$project_dir" ]] && project_dir="${CLAUDE_PROJECT_DIR:-$PWD}"
 
