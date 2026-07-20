@@ -82,4 +82,4 @@ esac
 PYTHONPATH="${MCP_DIR}" \
     ${TIMEOUT_BIN:+"${TIMEOUT_BIN}" 3} "${CHAMELEON_PY[@]}" -m chameleon_mcp.hook_helper posttool-verify \
     2>>"${LOG_FILE}" \
-    || { printf '{}\n'; echo "[$(date -u +%FT%TZ)] posttool-verify failed (python=${CHAMELEON_PY[*]})" >>"${LOG_FILE}" 2>/dev/null || true; }
+    || { rc=$?; printf '{}\n'; echo "[$(date -u +%FT%TZ)] posttool-verify failed (rc=${rc}, python=${CHAMELEON_PY[*]})" >>"${LOG_FILE}" 2>/dev/null || true; }
