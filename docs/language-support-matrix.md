@@ -176,7 +176,7 @@ identically regardless of language.
 | top-level-node-kinds-mismatch | ✅ | ✅ | ✅ | Ruby has the richest kind vocabulary (superclass-tagged ClassNode, IncludeCall, DSL-category DslCall via _DSL_CATEGORY lint_engine.py:833-850, normalized in _normalize_kind lint_engine.py:853-874). TS folds FunctionDeclaration/FirstStateme... |
 | named-export-count-bucket-mismatch | ✅ | ✅ | ✅ | Semantics differ by language (TS = real named exports; Ruby = top-level class/module/def; Python = top-level class+func), but each is the sensible analogue and the bucketing is shared, so all three are functionally complete. Severity is in... |
 | jsx-presence-mismatch | ✅ | - | - | _exclusive: typescript/jsx_ |
-| content-signal-mismatch | ✅ | ⚠️ | ⚠️ | Of the four recognized signals, three (use_client, use_server, ts_pragma) are TS/JS-only; only shebang (#!) is language-universal. So for Ruby the rule can only ever fire on a #! line and never recognizes `# frozen_string_literal: true`, a... |
+| content-signal-mismatch | ✅ | ✅ | ⚠️ | Five recognized signals: use_client / use_server / ts_pragma (TS/JS), `# frozen_string_literal: true` (Ruby, shebang-tolerant, both derivation and lint through one detector), and shebang (universal). Python still has only the universal shebang signal. |
 | Async/Del/Try kind normalization (extractor-vs-bootstrap agreement) | - | - | ✅ | _exclusive: python_ |
 | ast_query recalibration (witness regex-vs-regex) | ✅ | ✅ | ✅ | For Python the witness snapshot comes from stdlib ast and the candidate from stdlib ast, so they agree exactly; for TS/Ruby it is regex-vs-regex. The mechanism is language-uniform. The core-only env fallback drops default_export_kind/jsx_p... |
 

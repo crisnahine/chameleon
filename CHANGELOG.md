@@ -4,6 +4,73 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.0] - 2026-07-20
+
+### Added
+
+- **Plain-JavaScript repos are first-class.** A pure-JS ESM service (root package.json, .js/.mjs
+  sources, no tsconfig, no TS deps, no .ts files) failed bootstrap as unsupported_language — which
+  also meant zero credential/eval protection for the whole repo, while the parse pipeline has
+  handled the .js family all along. Detection now accepts a root package.json plus shallow
+  .js-family sources, gated on the absence of a competing backend manifest (Gemfile/gemspec,
+  manage.py, pyproject/setup/Pipfile) so a Rails or Django app's asset bundle never flips its
+  repo to JS.
+- **Ruby gem layouts get their cross-file graph.** A bare constant referenced inside
+  `module A; module B` resolves lexically outward (`A::B::Name`, `A::Name`, `Name`) against the
+  recorded fully-qualified definitions with exactly-one-file semantics. Standard gem layouts
+  previously produced disjoint constant-index entries that never unified — zero
+  `constant_receiver` edges, so `get_callers`, `get_blast_radius` and `query_symbol_importers`
+  were all empty on every `module Foo; class Bar` codebase.
+- **Two-level Python package roots resolve** (`plugin/mcp/chameleon_mcp`, `services/billing/billing`):
+  the absolute-import source-root probe descends one bounded extra level, restoring cross-file
+  edges to both the calls index and the reverse import index on such layouts.
+- **Framework role clusters are dense at two members.** A two-app Django project's cross-app
+  `views.py`/`models.py` role clusters land at exactly two members — below the adaptive sparse
+  floor — so the framework's core roles bootstrapped unarchetyped and unguided. A role bucket is
+  a deliberate semantic grouping; it is dense at two, one member stays sparse.
+- **Subpackage-spanning cohorts are named after their deepest shared directory** instead of
+  `cluster-<hash>` (the repo's own 108-file core package read as `cluster-b1a3d224` in every
+  per-edit header).
+- **Exported const bindings are searchable** (`export const jsonParser: LineParser = {...}` — the
+  public surface of many TS libraries — now lands in the symbol index as an additive `values`
+  section, kind `const`); **barrel re-export lines are importer sites** (`export { x } from ...`
+  breaks on a rename exactly like an import and is now recorded, kind `reexport`); and the
+  **poisoning scanner no longer flags `RegExp.prototype.exec`**, restoring canonical witnesses to
+  regex-using clusters — with an honest `witnessless_reason` naming the actual cause whenever a
+  witness IS withheld.
+- **`# frozen_string_literal: true` is a content signal** (shebang-tolerant, detected by the one
+  function both derivation and lint call, advisory severity), and **eval of request input is
+  denied in Ruby**: `instance_eval(params[:code])` fires the existing block-eligible `eval-call`
+  rule while `instance_eval(&block)` and plain-variable metaprogramming keep their exemption.
+- **`manage.py test` / `django-admin test` count as test runs** for the turn-end advisory —
+  Django was the one first-class framework whose canonical runner never satisfied it.
+- **Dump-capped files are surfaced.** The per-file call-site cap moves from 2,000 to 10,000
+  (real hub modules carry 2-4k sites; the plugin's own two biggest files were silently losing
+  their tails), is operator-tunable via `CHAMELEON_MAX_CALL_SITES` with strict-decimal parity in
+  all three dumpers, and files that still exceed it are persisted in the artifact and named in
+  `get_callers` / `get_blast_radius` / `get_callees` answers so an empty caller list is never a
+  confident zero.
+
+### Fixed
+
+- **The statusline's no-pause render is O(1)** via a machine-wide `.pause_active` sentinel
+  `write_pause` touches; a data-dir walk whose cost grew with every profiled repo is gone, and an
+  orphaned expired pause marker (a repo no session ever queries again) can no longer hold the
+  python fallback open on every render machine-wide. The sweep never deletes marker files — a
+  render-side read-then-rm could race a concurrent re-pause published via os.replace and
+  silently drop a just-requested, enforcement-affecting pause — and the sentinel removal is
+  mtime-guarded. The statusline also accepts `workspace.current_dir` when `project_dir` is
+  absent.
+- Hook wrapper failure log lines carry the exit code, so a 3-second-timeout kill (rc=124) is
+  distinguishable from a helper crash when reading the error log or doctor's
+  `recent_hook_errors`.
+- Prose-injection drop warnings name the repo whose artifact was dropped; doctor aggregates
+  these installation-wide and previously gave the user nothing to act on.
+- The merge driver's decline for a non-JSON artifact (`conventions.md`, `.view_digest`) states
+  the documented decline contract instead of reading like a JSON parser bug.
+- The verify cooldown points at "previous feedback" only when the prior verify actually said
+  something; after a silent pass it now says "no new findings".
+
 ## [4.4.55] - 2026-07-20
 
 ### Fixed
