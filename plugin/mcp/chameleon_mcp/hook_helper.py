@@ -6441,9 +6441,15 @@ def posttool_verify() -> int:
                 reason="cooldown",
                 file_rel=_repo_rel(repo_root, file_path),
             )
+            # "review previous feedback" only when the last verify actually
+            # said something (L1+); after a silent pass there is nothing to
+            # review and the pointer reads as a phantom warning.
+            had_feedback = file_state is not None and file_state.level >= 1
             _emit_posttool_context(
                 "<chameleon-context>\n"
-                "[🦎 chameleon: already verified this file — review previous feedback]\n"
+                "[🦎 chameleon: already verified this file"
+                + (" — review previous feedback" if had_feedback else " — no new findings")
+                + "]\n"
                 "</chameleon-context>"
             )
             return 0
