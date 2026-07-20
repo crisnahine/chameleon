@@ -29,13 +29,39 @@ fi
 pause_suffix=""
 if [[ "${CHAMELEON_STATUSLINE_PAUSE:-}" != "0" ]]; then
   plugin_data_dir="${CHAMELEON_PLUGIN_DATA:-$HOME/.local/share/chameleon}"
-  # A depth-capped `find` is a handful of stat() calls and lets the
-  # overwhelmingly common no-pause render skip repo_id derivation entirely --
-  # `_compute_repo_id` may shell out to `git config`, too costly to pay on
-  # every render when no pause exists anywhere on the machine. A pause is
-  # deliberately short-lived (<=240 minutes), so the heavier path below only
-  # runs during that bounded window.
-  if [[ -n "$(find "$plugin_data_dir" -maxdepth 2 -name '.pause_until' -print -quit 2>/dev/null)" ]]; then
+  # The common no-pause render must stay O(1): a single stat on the
+  # machine-wide `.pause_active` sentinel `write_pause` touches, instead of a
+  # data-dir walk whose cost grows with every profiled repo. Only while the
+  # sentinel exists does the marker sweep below run. A pause is deliberately
+  # short-lived (<=240 minutes); once every marker has expired the sweep
+  # removes the sentinel itself, closing the gate again. A marker left by a
+  # repo no other session ever queries again would otherwise hold the gate
+  # open forever (the per-repo read path that unlinks expired markers never
+  # runs for a dead repo), so a well-formed marker whose second-precision Z
+  # timestamp is already past is removed here -- the same unlink the read
+  # path performs. Lexicographic comparison is sound because the writer emits
+  # exactly %Y-%m-%dT%H:%M:%SZ; anything unreadable or oddly formatted keeps
+  # the gate open and lets the python path decide, never a silent drop of a
+  # live pause.
+  pause_gate=""
+  if [[ -f "$plugin_data_dir/.pause_active" ]]; then
+    now_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    while IFS= read -r pause_marker; do
+      [[ -n "$pause_marker" ]] || continue
+      pause_expiry=""
+      IFS= read -r pause_expiry < "$pause_marker" 2>/dev/null || true
+      if [[ "$pause_expiry" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+        && [[ ! "$pause_expiry" > "$now_utc" ]]; then
+        rm -f -- "$pause_marker" 2>/dev/null || pause_gate=1
+      else
+        pause_gate=1
+      fi
+    done < <(find "$plugin_data_dir" -maxdepth 2 -name '.pause_until' 2>/dev/null)
+    if [[ -z "$pause_gate" ]]; then
+      rm -f -- "$plugin_data_dir/.pause_active" 2>/dev/null || true
+    fi
+  fi
+  if [[ -n "$pause_gate" ]]; then
     pause_root="$project_dir"
     while true; do
       [[ -f "$pause_root/.chameleon/profile.json" ]] && break

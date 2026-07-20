@@ -145,3 +145,43 @@ def test_within_time_budget_when_paused(tmp_path, monkeypatch):
     # Generous bound for CI cold-start jitter; the repo_id derivation only runs
     # during the bounded pause window, not on every render.
     assert elapsed_ms < 3000, f"status line took {elapsed_ms:.0f}ms while paused"
+
+
+def test_write_pause_touches_machine_wide_sentinel(tmp_path, monkeypatch):
+    # The statusline's O(1) fast path stats only `.pause_active`; a pause that
+    # fails to touch it would render unpaused, so the writer contract is pinned.
+    repo = _repo_with_profile(tmp_path)
+    plugin_data = tmp_path / "data"
+    _write_pause(monkeypatch, plugin_data, repo, 15)
+    assert (plugin_data / ".pause_active").is_file()
+
+
+def test_orphaned_expired_marker_is_swept_and_sentinel_removed(tmp_path, monkeypatch):
+    # A dead repo's expired marker has no per-repo read path left to unlink it;
+    # the render must remove it AND the sentinel, or the python fallback would
+    # be paid on every render machine-wide forever.
+    repo = _repo_with_profile(tmp_path)
+    plugin_data = tmp_path / "data"
+    _write_pause(monkeypatch, plugin_data, repo, -5)
+    marker = plugin_data / _compute_repo_id(repo) / ".pause_until"
+    assert marker.is_file()
+    proc = _run(repo, plugin_data)
+    assert proc.returncode == 0
+    assert "paused" not in proc.stdout
+    assert not marker.exists()
+    assert not (plugin_data / ".pause_active").exists()
+
+
+def test_malformed_marker_keeps_gate_open_and_is_not_deleted(tmp_path, monkeypatch):
+    # An unreadable first line must never be swept from bash: the python path
+    # owns the decision, and a live pause must never be silently dropped.
+    repo = _repo_with_profile(tmp_path)
+    plugin_data = tmp_path / "data"
+    marker_dir = plugin_data / _compute_repo_id(repo)
+    marker_dir.mkdir(parents=True)
+    (marker_dir / ".pause_until").write_text("not-a-timestamp\n", encoding="utf-8")
+    (plugin_data / ".pause_active").write_text("", encoding="utf-8")
+    proc = _run(repo, plugin_data)
+    assert proc.returncode == 0
+    assert (marker_dir / ".pause_until").is_file()
+    assert (plugin_data / ".pause_active").is_file()

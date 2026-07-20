@@ -270,6 +270,17 @@ def write_pause(repo_id: str, minutes: int = 15) -> str:
     finally:
         os.close(fd)
     os.replace(str(tmp), str(pause_path))
+    # Machine-wide hint for the statusline's O(1) no-pause fast path: it stats
+    # only this sentinel and walks the per-repo markers just while it exists
+    # (removing it again once every marker has expired). Best-effort -- a
+    # failed touch only costs the statusline its fast path, never the pause.
+    try:
+        sentinel = repo_data_dir(repo_id).parent / ".pause_active"
+        fd = os.open(str(sentinel), os.O_WRONLY | os.O_CREAT, 0o600)
+        os.close(fd)
+        os.utime(sentinel)
+    except OSError:
+        pass
     return expiry_iso
 
 
