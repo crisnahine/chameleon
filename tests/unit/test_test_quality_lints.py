@@ -304,6 +304,24 @@ class TestUnfrozenClock:
         )
         assert "unfrozen-clock" not in _rules(v)
 
+    def test_django_timezone_now_is_a_clock_read(self):
+        # django.utils.timezone.now() is what Django mandates over datetime.now()
+        # in a timezone-aware project, so on a Django/DRF repo it IS the wall-clock
+        # read -- the rule was blind to the framework's own canonical idiom, which
+        # is exactly where it needed to see.
+        witness = (
+            "@freeze_time('2020-01-01')\ndef test_w():\n    n = timezone.now()\n    assert n\n"
+        )
+        candidate = "def test_x():\n    n = timezone.now()\n    assert n is not None\n"
+        v = lint_conventions(
+            candidate,
+            _CONV,
+            language="python",
+            archetype_name="test",
+            witness_content=witness,
+        )
+        assert "unfrozen-clock" in _rules(v)
+
 
 class TestIgnoreDirective:
     def test_chameleon_ignore_suppresses_test_quality(self):

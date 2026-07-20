@@ -3182,6 +3182,10 @@ _CLOCK_FREEZE_TOKENS = (
     # Python: freezegun (freeze_time, already above) + time-machine.
     "freezegun",
     "time_machine",
+    # pytest-freezegun exposes the same library through a `freezer` fixture
+    # rather than the decorator, so a suite that freezes exclusively that way
+    # looked like a suite that never freezes.
+    "freezer.move_to",
 )
 # Tokens that mark a test as stubbing the network. Same whole-file rationale.
 _NETWORK_STUB_TOKENS = (
@@ -3237,12 +3241,17 @@ _CLOCK_READ_TOKENS = (
     "Time.current",
     "Date.today",
     "DateTime.now",
-    # Python real-clock reads.
+    # Python real-clock reads. django.utils.timezone.now/localtime are listed
+    # because Django mandates them over datetime.now() in a timezone-aware
+    # project -- on a Django/DRF repo they ARE the wall-clock read, so omitting
+    # them left the rule blind to the framework's own canonical idiom.
     "datetime.now",
     "datetime.utcnow",
     "datetime.today",
     "date.today",
     "time.time",
+    "timezone.now",
+    "timezone.localtime",
 )
 
 # Assertion tokens. Presence of any of these in a test block means the block

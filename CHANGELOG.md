@@ -4,6 +4,21 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.42] - 2026-07-20
+
+### Fixed
+- `unfrozen-clock` was blind to Django's own canonical wall-clock read.
+  `django.utils.timezone.now()` / `.localtime()` are what Django mandates over
+  `datetime.now()` in a timezone-aware project, so on a Django/DRF repo they ARE
+  the clock read -- but neither was in `_CLOCK_READ_TOKENS`, so the rule could
+  not see the one idiom the framework tells everyone to use. Both fixtures in the
+  test matrix call `timezone.now()` in real service code. Added both tokens.
+- pytest-freezegun's `freezer` fixture is now recognized as a clock freeze.
+  freezegun's decorator (`freeze_time`) was a known token but the fixture form
+  (`freezer.move_to(...)`) was not, so a suite that freezes exclusively that way
+  read as a suite that never freezes -- which silently disarmed the
+  witness-gated rule. Found while testing the token fix above.
+
 ## [4.4.41] - 2026-07-20
 
 ### Fixed
