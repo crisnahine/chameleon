@@ -327,6 +327,48 @@ invocations is a multi-session exercise. What I re-drove is the load-bearing sub
 bootstrap and classification path in all 10 columns on fresh repos, hook robustness across all six
 hooks, the per-edit injection path, and 33 of 37 claimed fixes adversarially.
 
+### Slash commands driven for real — C3 (NestJS) complete
+
+The single largest evidence gap in the original campaign (M-4). All 14 commands driven as real
+headless `claude -p` sessions against a brand-new NestJS fixture: **12 PASS, 1 PARTIAL, 1 FAIL**,
+all 14 genuinely driven. The remaining nine columns were re-launched after a session limit.
+
+The output quality is high and, notably, *honest*. `/chameleon-init` volunteered a 23-file coverage
+gap and a bimodal cluster unprompted rather than claiming full coverage. `/chameleon-status` led
+with "untrusted means the gates don't fire … armed on paper only" instead of burying it.
+`/chameleon-doctor` explicitly separated two vacuously-green checks from genuinely exercised ones.
+`/chameleon-teach` did not transcribe what it was told — it verified the claim against the code,
+found a real counterexample the author had missed (`health.controller.ts` injects `DatabaseService`
+directly), and recorded the exception instead of writing a false absolute.
+
+**The one FAIL is a real defect, fixed here.** `/chameleon-journey` documented its cost (~$38,
+~65 min, $40 cap) but its Run section went straight to the spawning command with no step putting
+the decision to the user — so a bare `/chameleon-journey` could start an hour-long billed run
+unprompted. This contradicts the project's own testing policy, which says of this exact harness:
+*"Run before a release, not on every `/qa`. **Ask before spending.**"* Fixed in **v4.4.53**: a free
+`--dry-run` preflight, a stated projection, and an affirmative confirmation are now required;
+`--dry-run` and `--list` stay ungated.
+
+### A claimed regression I could not reproduce as user harm
+
+The GAP-024 re-audit reported a **regression**: that v4.4.41 lets a test file become the canonical
+witness of a *source* archetype in colocated layouts, so editing a source file injects a `.test.ts`
+under *"mirror the canonical witness below closely"*.
+
+**The artifact-level leak is real.** I built a colocated repro (6 services + 6 sibling `.test.ts`)
+and A/B'd it: on v4.4.40 the `service` archetype carries one canonical witness; on v4.4.52 it
+carries two, and the second is `src/services/billing-service.test.ts`.
+
+**The user-visible harm is not.** Across four real `preflight-and-advise` fires — a new file, an
+edit to an existing service, a Write, and an unrelated module — the witness delivered to the model
+was the **source** file every time. Selection scores the candidates rather than taking the list
+head, and the source witness wins.
+
+So this is a latent artifact-level issue worth cleaning up, not an active regression harming users.
+Recording the distinction because "a test file is injected as the canonical witness" and "a test
+file is stored as a secondary canonical that never gets served" have very different severities, and
+only the second is supported by evidence.
+
 ---
 
 ## 5. Mismatches between `TESTING.md` and observed reality
