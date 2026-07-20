@@ -4,6 +4,20 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.47] - 2026-07-20
+
+### Fixed
+- The "One action, one job" API-shape principle never fired on Flask/FastAPI
+  repos. The gate matched the archetype paths_pattern against `controller` or the
+  PLURAL `routes`, but a Flask/FastAPI routing layer clusters as a `route:py` /
+  `router:py` archetype (singularized), so `"routes" in "route:py"` was False and
+  the principle was withheld from exactly the repos whose HTTP layer it targets.
+  The gate now matches the singular `route` (which subsumes route/routes/router)
+  plus Flask's `blueprint`. Verified across all ten fixtures that only genuine
+  HTTP-layer archetypes trigger it (NestJS controller, Rails controllers, Flask
+  blueprint+route, FastAPI route) -- no false positives; `view` was deliberately
+  NOT added (it would match `review`/`preview`).
+
 ## [4.4.46] - 2026-07-20
 
 ### Fixed

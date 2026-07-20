@@ -49,6 +49,7 @@
 | GAP-028 | precision | TEST_PAIRING_MIN_SAMPLE=10 sat above real cohort size; pairing derived for almost nothing | 4.4.45 |
 | GAP-029 | **HIGH/security** | dep_audit reported false all-clear (status ok, total 0) when the auditor never ran (npm error body; bundler missing lockfile) | 4.4.46 |
 | GAP-030 | precision | python_format rules stanza silently dropped its parse_warning (only stanza missing it) | 4.4.46 |
+| GAP-031 | **HIGH** | API-shape principle gate missed singular route/router/blueprint, so it never fired on Flask/FastAPI | 4.4.47 |
 | GAP-009b-ii | **HIGH** | naming table listed 6 of 15 NestJS role suffixes; feature-co-located `*.repository.ts` hashed | 4.4.34 |
 | GAP-017-ii | precision | root E501 opt-out overridden by an enforcing sibling app's `line_length` (mixed per-app config) | 4.4.34 |
 

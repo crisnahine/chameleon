@@ -131,9 +131,14 @@ def generate_principles(
     if has_test_archs:
         principles.append("Match sibling test shape; skip tests where siblings have none.")
 
+    # "route" (singular) not "routes": a Flask/FastAPI routing layer clusters as a
+    # `route:py` / `router:py` archetype (singularized), which the plural-only
+    # match missed, so the API-shape principle never fired on those repos. Singular
+    # subsumes the plural and the router form; `blueprint` is Flask's other HTTP
+    # layer. All are endpoint layers the principle is written for.
+    _api_tokens = ("controller", "route", "blueprint")
     has_api = any(
-        "controller" in (body.get("paths_pattern") or "")
-        or "routes" in (body.get("paths_pattern") or "")
+        any(tok in (body.get("paths_pattern") or "") for tok in _api_tokens)
         for body in arch_data.values()
     )
     if has_api:

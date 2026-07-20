@@ -114,3 +114,32 @@ def test_doc_stays_bounded_when_fully_loaded():
     }
     out = generate_principles(language="ruby", framework="rails", conventions=conv, archetypes=arch)
     assert len(out) < 2600, f"principles doc too large: {len(out)} chars"
+
+
+def test_api_shape_principle_fires_on_singular_route_archetype():
+    # The Flask HTTP layer clusters as a `route:py` archetype (singular), but the
+    # gate only matched the plural `routes`, so the "One action, one job" API-shape
+    # principle never fired on Flask/FastAPI repos whose routing archetype
+    # singularizes to `route`/`router`.
+    arch = {"archetypes": {"route": {"paths_pattern": "route:py"}}}
+    out = generate_principles(language="python", framework="flask", conventions={}, archetypes=arch)
+    assert "One action, one job" in out
+
+
+def test_api_shape_principle_fires_on_controller():
+    # Regression guard: the plural/controller cases the gate already matched must
+    # keep firing.
+    arch = {"archetypes": {"controller": {"paths_pattern": "app/controllers"}}}
+    out = generate_principles(language="ruby", framework="rails", conventions={}, archetypes=arch)
+    assert "One action, one job" in out
+
+    arch2 = {"archetypes": {"routes": {"paths_pattern": "src/routes:ts"}}}
+    out2 = generate_principles(
+        language="typescript", framework="nextjs", conventions={}, archetypes=arch2
+    )
+    assert "One action, one job" in out2
+
+    # And a non-HTTP archetype must NOT trigger it.
+    arch3 = {"archetypes": {"model": {"paths_pattern": "app/models"}}}
+    out3 = generate_principles(language="ruby", framework="rails", conventions={}, archetypes=arch3)
+    assert "One action, one job" not in out3
