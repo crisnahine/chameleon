@@ -349,6 +349,14 @@ unprompted. This contradicts the project's own testing policy, which says of thi
 `--dry-run` preflight, a stated projection, and an affirmative confirmation are now required;
 `--dry-run` and `--list` stay ungated.
 
+**A second C3 claim I narrowed.** The auditor reported that the `test` archetype covers only 3 of
+14 spec files, so *"11 domain spec files get no archetype guidance."* The cluster count is right
+(`cluster_size: 3`, pattern `src/common:ts`), but the conclusion is not: driving the real hook on
+`src/customers/customers.service.spec.ts` returns `archetype=test, confidence=low,
+match_quality=fallback`. Domain specs do get the test archetype — flagged honestly as a fallback
+match, exactly as the design intends. The real (milder) issue is witness representativeness: the
+canonical comes from `src/common/`, which may not model a domain service spec well.
+
 ### A claimed regression I could not reproduce as user harm
 
 The GAP-024 re-audit reported a **regression**: that v4.4.41 lets a test file become the canonical
