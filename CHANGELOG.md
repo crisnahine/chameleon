@@ -4,6 +4,31 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.44] - 2026-07-20
+
+### Fixed
+- Python src-layout packages collapsed every layer into one archetype, the same
+  defect v4.4.39 fixed for RubyGems. PyPA's `src/<pkg>/<layer>/` is the Python
+  twin of `lib/<gem>/<layer>/`: `src/` is the source root, `<pkg>` is the
+  distribution package, and its subdirectories are the layers. At the default
+  bucket depth the layer fell into `sub_bucket`, so `handlers`, `clients`,
+  `repositories` and `workers` all bucketed to a single `src/<pkg>` cluster and
+  no per-role convention could clear its dominance floor -- `inheritance` derived
+  to `{}` on a repo where 7/7 files in a layer share a base class, which in turn
+  left `inheritance-convention-violation` unable to fire there at all.
+
+  The package-root rule is now keyed by (root, extension) -- `lib/` + `.rb` and
+  `src/` + `.py` -- rather than hardcoding Ruby. Still scoped by extension
+  deliberately: `src/` in a JS/TS repo is a feature-layout root, and bucketing
+  those at depth 3 would re-fragment their cohorts.
+
+  Measured on the fixture: 4 archetypes -> 9, `inheritance` from `{}` to four
+  derived bases (`BaseRepository`, `Handler`, `BaseClient`, `BaseWorker`) and
+  `class_contract` from 1 archetype to 5. Regression-isolated by re-bootstrapping
+  all TEN fixture repos with the change stashed: only py-plain moves; the other
+  nine (py-django, py-flask, py-fastapi, py-drf, rb-plain, rb-rails, ts-plain,
+  ts-nestjs, ts-nextjs) are byte-identical.
+
 ## [4.4.43] - 2026-07-20
 
 ### Fixed

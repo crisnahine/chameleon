@@ -87,6 +87,28 @@ class TestPathPatternBucketFor:
         assert bucket == "lib/features"
         assert sub == "auth"
 
+    def test_python_src_layout_buckets_by_layer(self):
+        # PyPA src-layout (src/<pkg>/<layer>/) is the Python twin of RubyGems'
+        # lib/<gem>/<layer>/: src/ is the source root, <pkg> is the distribution
+        # package, and its subdirectories are the layers. At the default bucket
+        # depth the layer fell into sub_bucket, collapsing handlers, clients and
+        # repositories into one src/<pkg> archetype so no per-role convention
+        # could clear its dominance floor -- inheritance derived to {} on a repo
+        # where 7/7 files in a layer share a base class.
+        bucket, sub = path_pattern_bucket_for("src/coldchain/handlers/api_handler.py")
+        assert bucket == "src/coldchain/handlers"
+        assert sub == ""
+        other, _ = path_pattern_bucket_for("src/coldchain/repositories/shipment_repository.py")
+        assert other == "src/coldchain/repositories"
+        assert other != bucket
+
+    def test_src_layout_untouched_for_typescript(self):
+        # Scoped to Python: src/ in a TS repo is a feature-layout root, and
+        # bucketing it at depth 3 would re-fragment those cohorts.
+        bucket, sub = path_pattern_bucket_for("src/features/auth/LoginForm.tsx")
+        assert bucket == "src/features"
+        assert sub == "auth"
+
     def test_monorepo_workspace(self):
         bucket, sub = path_pattern_bucket_for("packages/excalidraw/components/Foo.tsx")
         assert bucket == "packages/excalidraw/components"
