@@ -449,9 +449,14 @@ class TestEslintNodeEvalGate:
         assert res.eslint is None
         assert res.sources["eslint"] == "eslint.config.js"
         assert res.has_eslint_js_plugins is True
-        assert res.parse_warnings["eslint"] == (
-            "eslint.config.js: no top-level module.exports assignment found"
-        )
+        # The warning must name the REAL cause. A flat config uses
+        # `export default [...]`, so reporting a missing `module.exports` sent
+        # readers hunting for a CommonJS export the file never claimed to have,
+        # and named no way forward.
+        warning = res.parse_warnings["eslint"]
+        assert "flat config exports an array" in warning
+        assert "CHAMELEON_ALLOW_ESLINT_EVAL=1" in warning
+        assert "module.exports" not in warning
 
     def test_flag_off_static_parser_still_reads_simple_object(self, monkeypatch, tmp_path):
         """Default-OFF must still read a simple object literal via the static

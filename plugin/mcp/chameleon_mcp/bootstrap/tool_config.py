@@ -968,6 +968,15 @@ _EXPORTS_RE = re.compile(
     re.DOTALL,
 )
 
+# The same export forms opening an ARRAY, or a helper call that wraps one
+# (`defineConfig([...])`, `tseslint.config(...)`). Used only to tell an
+# unreadable-but-valid flat config apart from a file with no recognizable export
+# at all, so each gets a warning that names its real cause.
+_FLAT_EXPORT_RE = re.compile(
+    r"(?:module\.exports|exports\.default|export\s+default)\s*=?\s*(?:\[|\w[\w.]*\s*\()",
+    re.DOTALL,
+)
+
 
 def _parse_eslint_js_via_node(path: Path) -> tuple[dict | None, str | None]:
     """Evaluate an ESLint config via Node and return its exported object.
@@ -1102,6 +1111,21 @@ def _parse_eslint_js(path: Path) -> tuple[dict | None, str | None]:
 
     match = _EXPORTS_RE.search(text)
     if not match:
+        # A flat config exports an ARRAY of config blocks -- the canonical shape
+        # in ESLint's own docs, usually built by `defineConfig([...])` or
+        # `tseslint.config(...)`, and the default since ESLint 9. The static
+        # parser cannot read it: resolving spreads, imports, and helper calls
+        # means executing the config, which stays behind the opt-in eval flag so
+        # an untrusted repo's code never runs during bootstrap. Say that, rather
+        # than reporting a missing `module.exports` the file does not claim to
+        # have -- the old text sent readers hunting for a CommonJS export in a
+        # file that correctly uses `export default`, and named no way forward.
+        if _FLAT_EXPORT_RE.search(text):
+            return None, (
+                f"{path.name}: flat config exports an array, which the static parser "
+                f"cannot read without executing it; set CHAMELEON_ALLOW_ESLINT_EVAL=1 "
+                f"to evaluate this repo's config with Node"
+            )
         return None, f"{path.name}: no top-level module.exports assignment found"
 
     start = match.end() - 1
