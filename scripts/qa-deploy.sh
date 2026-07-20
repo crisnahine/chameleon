@@ -27,6 +27,7 @@ set -euo pipefail
 DEV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MARKET="${HOME}/.claude/plugins/marketplaces/chameleon"
 CACHE_BASE="${HOME}/.claude/plugins/cache/chameleon/chameleon"
+REGISTRY="${HOME}/.claude/plugins/installed_plugins.json"
 
 version() {
     # The single source of truth the cache directory is keyed by.
@@ -75,6 +76,30 @@ cmd_deploy() {
         "${MARKET}/plugin/" "${cache_dir}/"
     echo "    version-keyed cache -> ${cache_dir}"
 
+    # Hop 4: the installed-plugin registry. Materializing the cache dir is not
+    # enough -- Claude Code resolves which copy to load from this file, so a
+    # session started after a deploy that skipped it still loads the PREVIOUS
+    # version. That is invisible to a content diff of the cache dir (which is
+    # byte-perfect), so a fix could be verified green against a plugin that was
+    # never actually running.
+    python3 - "${REGISTRY}" "${ver}" "${cache_dir}" <<'PY'
+import json, shutil, sys
+from pathlib import Path
+
+registry, version, install_path = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+data = json.loads(registry.read_text())
+records = data.get("plugins", {}).get("chameleon@chameleon") or []
+if not records:
+    print("    WARNING: chameleon not in the installed-plugin registry; skipping")
+    raise SystemExit
+shutil.copy2(registry, registry.with_suffix(".json.bak.qa-deploy"))
+before = records[0].get("version")
+records[0]["version"] = version
+records[0]["installPath"] = install_path
+registry.write_text(json.dumps(data, indent=2))
+print(f"    installed-plugin registry -> {version} (was {before})")
+PY
+
     cmd_verify
 }
 
@@ -114,6 +139,28 @@ cmd_verify() {
         rc=1
     else
         echo "    OK: hooks and skills run the dev tree byte-for-byte"
+    fi
+
+    # A byte-perfect cache dir proves nothing if no session loads it. The
+    # registry is what Claude Code reads to pick a version, so a stale pin here
+    # means every new session runs an older plugin while this script reports OK.
+    local pinned
+    pinned="$(python3 -c '
+import json, sys
+from pathlib import Path
+try:
+    data = json.loads(Path(sys.argv[1]).read_text())
+    print(data["plugins"]["chameleon@chameleon"][0].get("version", "?"))
+except Exception:
+    print("unreadable")
+' "${REGISTRY}" 2>/dev/null)"
+    if [ "${pinned}" = "${ver}" ]; then
+        echo "    OK: new sessions load v${ver} (installed-plugin registry agrees)"
+    else
+        echo "    FAIL: registry pins v${pinned}, not v${ver}. A new session would load" >&2
+        echo "          the OLD plugin, so any cell re-run against it is a false green." >&2
+        echo "          Run 'qa-deploy.sh deploy'." >&2
+        rc=1
     fi
 
     # The MCP server is a long-lived process started from the cache dir at

@@ -23,6 +23,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `scripts/qa-deploy.sh` now updates and verifies the installed-plugin registry
+  (`~/.claude/plugins/installed_plugins.json`), a fourth hop the deploy protocol was missing.
+  Materializing the version-keyed cache dir is not enough: Claude Code resolves which copy to
+  load from that registry, so a session started after a deploy that skipped it still loaded the
+  PREVIOUS version. A content diff of the cache dir cannot see this (the directory is
+  byte-perfect), so `verify` could report OK while every new session ran an older plugin and any
+  cell re-run against it was a false green. `verify` now fails when the pin disagrees with the
+  version under test.
 - `scripts/qa-mcp-call.py` (dev tooling): calls an MCP tool over the real stdio transport,
   launching the server exactly the way `.mcp.json` does, so a verification run exercises the
   wire rather than an in-process import.
