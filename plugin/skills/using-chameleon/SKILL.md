@@ -2,7 +2,7 @@
 name: using-chameleon
 user-invocable: false
 disable-model-invocation: true
-description: "Active when .chameleon/ profile directory exists. Explains hook-injected pattern context and violation feedback for TypeScript/JavaScript, Ruby, and Python as first-class languages — framework-agnostic by default (it learns your repo's own conventions), with deeper awareness where conventions are strong: Rails for Ruby, and Django/DRF/Flask/FastAPI for Python."
+description: "Active when .chameleon/ profile directory exists. Explains hook-injected pattern context and violation feedback for TypeScript/JavaScript, Ruby, and Python as first-class languages — framework-agnostic by default (it learns your repo's own conventions), with deeper awareness where conventions are strong: Rails for Ruby, Django/DRF/Flask/FastAPI for Python, and Next.js/NestJS for TypeScript/JavaScript."
 ---
 
 <SUBAGENT-STOP>

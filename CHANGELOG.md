@@ -4,6 +4,19 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.48] - 2026-07-20
+
+### Fixed
+- The auto-loaded `using-chameleon` skill description understated framework
+  support. Its `description` named only Rails (Ruby) and Django/DRF/Flask/FastAPI
+  (Python), omitting Next.js and NestJS, while the code genuinely supports them
+  (`nextjs_role_for_path`, `nestjs_role_for_path`, `_classify_framework`) and the
+  authoritative CLAUDE.md, `/chameleon-init`, and status copy all list them. This
+  is the description Claude Code loads to decide when the skill applies, so it
+  under-advertised chameleon's TypeScript framework awareness. Aligned it with the
+  authoritative list. Docs-only; surfaced by the full-matrix skill-copy checks on
+  the TypeScript columns.
+
 ## [4.4.47] - 2026-07-20
 
 ### Fixed
