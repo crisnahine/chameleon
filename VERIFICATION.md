@@ -284,6 +284,24 @@ thing on a path that matches no cohort: it fell back and **said so** via `confid
 match_quality=fallback` rather than asserting a confident wrong answer. That honesty signal is
 load-bearing, and it worked.
 
+### Enforcement — driven in all three languages, all four contracts hold
+
+| Probe | Result |
+|---|---|
+| `eval()` / dynamic exec — Python, Ruby, TypeScript | **DENY** in all three, citing the exact line |
+| Real-shaped AWS key (`AKIA2X7QFJ4NPLZW8VRT`) | **DENY** — "hardcoded credential in the proposed content" |
+| AWS *documentation* example key (`AKIAIOSFODNN7EXAMPLE`) | **ALLOW** — correctly treated as a known placeholder |
+| Bare `# chameleon-ignore` over an `eval` | **DENY** — a blanket-immune rule is not suppressed |
+| Named `# chameleon-ignore eval-call`, on or above the line | **ALLOW** — the escape hatch works |
+
+**Two false alarms I raised and then disproved.** My first pass reported "credential deny never
+fires in any language" and "the named ignore does not work" — both were my own test errors. The key
+I used was AWS's published documentation example, which the scanner is *supposed* to allow; and I
+had placed the ignore comment at the top of the file rather than on or above the violating line.
+Re-probed correctly, both behave exactly as documented. Recording this because an audit that reports
+its first failing probe as a finding produces false criticism, and two of my five apparent findings
+in this section did not survive a second look.
+
 ### Hook robustness — confirmed, no exceptions
 
 21 hostile payloads × all 6 hooks: empty stdin, 300 random bytes, null fields, missing keys,
