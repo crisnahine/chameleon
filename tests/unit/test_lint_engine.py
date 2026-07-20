@@ -217,13 +217,13 @@ class TestExtractRubyTopLevel:
     def test_receiver_call_block_matches_the_require_form(self):
         # The two spellings of the same file must not produce different
         # signatures; only a `require` line separated them before.
-        bare = _extract_ruby('RSpec.describe Foo do\nend\n')
+        bare = _extract_ruby("RSpec.describe Foo do\nend\n")
         with_require = _extract_ruby('require "spec_helper"\n\nRSpec.describe Foo do\nend\n')
         assert "CallNode" in bare.top_level_node_kinds
         assert "CallNode" in with_require.top_level_node_kinds
 
     def test_indented_receiver_call_not_top_level(self):
-        code = '  RSpec.describe Foo do\n  end\n'
+        code = "  RSpec.describe Foo do\n  end\n"
         snap = _extract_ruby(code)
         assert "CallNode" not in snap.top_level_node_kinds
 
