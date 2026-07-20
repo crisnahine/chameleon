@@ -1,20 +1,29 @@
 # Chameleon — Full-Matrix Real-Usage Test Campaign
 
-**Status:** IN PROGRESS — Phase 3 (execution wave 1: P0-P2 across all 10 columns)
-**Branch:** `plugin-testing-fixes`
+**Status:** MATRIX COMPLETE — all 7,680 cells terminal, 0 FAIL. Step 7 (clean-room sign-off) in progress.
+**Branch:** `plugin-testing-fixes` (merged to `main`, pushed, CI green)
 **Baseline commit:** `27fd8d3` (Release v4.4.15) — clean tree, no uncommitted changes
-**Plugin version under test:** started at 4.4.15, now **4.4.32** (eighteen fixes shipped and **released to origin**, CI green). Deep-probe wave complete.
-**Started:** 2026-07-18
+**Plugin version under test:** started at 4.4.15, now **4.4.49** (thirty-plus fixes shipped and **released to origin**, all tagged, CI green).
+**Started:** 2026-07-18 · **Matrix reached 0 PENDING:** 2026-07-20
+
+### Final ledger (7,680 cells)
+
+| Status | Count | Meaning |
+|---|---|---|
+| PASS | 6184 | driven with real evidence, correct AND effective |
+| NA-ASSERTED | 1422 | correct language/framework non-application, verified inert with evidence |
+| BLOCKED | 74 | Windows-only `run-hook.cmd` cmd.exe paths, unreachable on this macOS host |
+| **FAIL** | **0** | — |
 
 ### Resume pointer (read this first after any interruption)
 
 | | |
 |---|---|
-| Cell ledger | `tests/matrix/cells.jsonl` — 7,680 cells; `python3 scripts/qa-matrix.py status` |
+| Cell ledger | `tests/matrix/cells.jsonl` — 7,680 cells, 0 PENDING; `python3 scripts/qa-matrix.py status` |
 | Inventory | `tests/matrix/inventory.jsonl` — 768 items with `file:line` anchors |
 | Deploy gate | `./scripts/qa-deploy.sh verify` **must pass before any cell is marked green** |
-| Test repos | `~/Documents/Projects/chameleon-fullmatrix-qa/` — 10 fresh repos, all committed |
-| Next action | Deep-probe wave FOLDED (861 cell-writes, 0 dropped, ZERO high/critical). Ledger 1,658 done / 0 FAIL / 0 BLOCKED. Remaining: final skeptical-reviewer sign-off (step 7). |
+| Test repos | `~/Documents/Projects/chameleon-fullmatrix-qa/` — 10 bootstrapped repos |
+| Next action | Step 7 clean-room sign-off: 6 BRAND-NEW fresh fixtures (new domains) re-verify every fix GAP-018..033 holds + adversarial break attempts + git/docs audit. Final report written only if it passes 100%. |
 
 **Fixes shipped so far (each with red evidence, green evidence, and a regression run):**
 
