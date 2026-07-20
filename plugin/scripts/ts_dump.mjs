@@ -30,7 +30,12 @@ const MAX_CALLABLE_SIGNATURES = 200;
 // hub module can legitimately carry several thousand sites, so the default
 // leaves headroom; CHAMELEON_MAX_CALL_SITES overrides it (same variable and
 // default in libcst_dump.py / prism_dump.rb — keep the three in sync).
-const _envCallSiteCap = Number.parseInt(process.env.CHAMELEON_MAX_CALL_SITES || "", 10);
+// Strict full-integer parse to match libcst_dump's int(): trailing garbage
+// ("5abc") falls back to the default in all three dumpers alike.
+const _envCallSiteCapRaw = process.env.CHAMELEON_MAX_CALL_SITES || "";
+const _envCallSiteCap = /^[0-9]+$/.test(_envCallSiteCapRaw)
+  ? Number.parseInt(_envCallSiteCapRaw, 10)
+  : NaN;
 const MAX_CALL_SITES =
   Number.isFinite(_envCallSiteCap) && _envCallSiteCap > 0 ? _envCallSiteCap : 10000;
 

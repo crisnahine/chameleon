@@ -16,7 +16,9 @@ MAX_CALLABLE_SIGNATURES = 200
 # hub module can legitimately carry several thousand sites, so the default
 # leaves headroom; CHAMELEON_MAX_CALL_SITES overrides it (same variable and
 # default in libcst_dump.py / ts_dump.mjs -- keep the three in sync).
-_env_call_site_cap = ENV['CHAMELEON_MAX_CALL_SITES'].to_i
+# Strict full-integer parse to match libcst_dump's int(): trailing garbage
+# ("5abc") falls back to the default in all three dumpers alike.
+_env_call_site_cap = Integer(ENV['CHAMELEON_MAX_CALL_SITES'] || '', 10, exception: false) || 0
 MAX_CALL_SITES = _env_call_site_cap.positive? ? _env_call_site_cap : 10_000
 
 def kind_name(node)

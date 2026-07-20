@@ -3890,9 +3890,9 @@ EMPTY_CALLEES_NOTE = (
 )
 
 DUMP_CAPPED_NOTE = (
-    " Additionally, some files in this repo had more call sites than the per-file "
-    "derivation cap records (see dump_capped_files); an edge inside those files "
-    "may be missing from this answer even though the file was analyzed."
+    " Some files in this repo had more call sites than the per-file derivation "
+    "cap records (see dump_capped_files); an edge inside those files may be "
+    "missing from this answer even though the file was analyzed."
 )
 
 
@@ -4752,7 +4752,7 @@ def get_callees(repo: str, file_path: str, function_name: str) -> dict:
     # outbound calls never reached the index -- say so instead of letting the
     # answer read as the file's complete forward edge set.
     if rel in getattr(_callees_index, "capped_files", frozenset()):
-        result["note"] = result.get("note", "") + DUMP_CAPPED_NOTE
+        result["note"] = (result.get("note", "") + DUMP_CAPPED_NOTE).strip()
         result["dump_capped_files"] = _dump_capped_payload(
             _callees_index, repo_root, _arg_root, _ss
         )
