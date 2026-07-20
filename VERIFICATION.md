@@ -133,6 +133,15 @@ The campaign's *own* ten fixtures still carried these hash names at sign-off (`p
 [🦎 chameleon: archetype=cluster-b2ee7e53, confidence=high, match_quality=exact, sub_buckets=1]
 ```
 
+**Severity nuance, found by driving the real user path afterwards.** `/chameleon-init` runs a
+rename pass that clears a hash when it can: on a fresh `py-fastapi` bootstrap it reported
+*"Renames applied: 2 — `class-repositories` → `repositories`, `cluster-9aed0445` → `app-py`"*,
+leaving zero hashed archetypes. So a user who onboards through the slash command is better off than
+the raw bootstrap suggests. The defect is still real and worth fixing — the campaign's own ten
+fixtures, bootstrapped through the MCP tool directly, carried the hash names into their committed
+profiles, and every consumer that reads `archetypes.json` without going through `init` sees them —
+but the user-visible blast radius is smaller than the raw derivation numbers imply.
+
 **Root cause.** `core`, `common` and `shared` sat in `_STRUCTURAL_DIRS` next to the source roots, so
 `_dominant_layer_name` refused to name the cohort and it fell through to a hash. The rationale ("a
 location, not a purpose") is right for `src`/`app` and wrong for these three: they are the utility
