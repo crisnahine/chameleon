@@ -73,7 +73,12 @@ posture is proactive: whenever the list holds two or more independent
 unknowns - different subsystems, different files, an internal question next
 to an external one - hire expert subagents, one owned question each,
 dispatch the batch concurrently, and work the remaining unknown yourself
-while they run. Three kinds of expert, matched to the work:
+while they run. This is a default with a stated exception, not a
+judgment call to quietly wave off: on a repo over ~100 source files with 2+
+independent unknowns, dispatch; declining to dispatch is legitimate only at
+fixture scale or when every unknown is genuinely sequential, and the brief
+then says so in one line ("experts: none - <reason>"). Three kinds of
+expert, matched to the work:
 
 - **Code scouts** (read-only): "map every call path into the gateway
   wrapper", "find how this repo does soft-deletion everywhere", "list every
@@ -119,7 +124,14 @@ thoroughness.
 
 Ground the plan in the repo as it actually is, not as it is remembered. The
 ladder, cheapest first - stop at any rung only when the remaining unknowns for
-the files you will touch are zero:
+the files you will touch are zero. On a TRUSTED profile, rungs 1-4 are not
+optional garnish before rung 5: skipping straight to raw reads forfeits the
+derived call graph and archetype data this plugin exists to provide, and what
+feels fine on a 30-file fixture silently degrades on a 3,000-file repo. Climb
+in order; the only sanctioned shortcut is a repo small enough to read WHOLE
+(under ~40 source files), and taking it must be said in the brief ("dig:
+read all N files directly; comprehension rungs skipped as the repo is
+smaller than the ladder").
 
 1. `describe_codebase(repo=<repo_id>)` - language, framework, archetypes,
    scale. `detect_repo` first if the repo id is not yet known.
@@ -216,8 +228,12 @@ The gate between digging and building. Every box checked, or back to Steps
 - [ ] Risks named, with the rollback (the worktree makes rollback trivial;
       say what else, if anything, is hard to undo)
 
-Present the brief to the user, compact. Then PROCEED - do not end the turn
-with "shall I continue?". The contract forbids question-stalling, the
+Present the brief to the user, compact. The RENDERED brief must visibly carry
+(1) the ordered step plan with each step's verification, (2) the
+re-enumeration line ("unknowns re-audit: 0 new" or the leftovers), and (3)
+file:line for every evidence claim - a bare filename is a pointer, not
+evidence; a checked box that does not appear in the rendered brief was not
+checked. Then PROCEED - do not end the turn with "shall I continue?". The contract forbids question-stalling, the
 worktree makes every implementation step reversible, and the user interrupts
 if the direction is wrong. The one thing that pauses the skill is a hard
 dependency (contract rule 2c), stated in one line.
@@ -320,9 +336,12 @@ dependency (contract rule 2c), stated in one line.
   the in-progress revert state), confirming `git status --porcelain` is clean;
   the stash path with `git stash pop`, confirming the source edits are back
   and `git stash list` no longer holds them (porcelain is NOT clean here - the
-  restored uncommitted work is the modifications). Use git for the flip, never
-  the editor: the live deny gates watch edits, and re-introducing pre-fix code
-  by hand can be blocked halfway. When the test and the code it guards
+  restored uncommitted work is the modifications). Prefer git for the flip:
+  the live deny gates watch edits, and re-introducing pre-fix code by hand can
+  be blocked halfway. An editor flip is acceptable ONLY when a git flip cannot
+  isolate the behavior (a brand-new file the test imports: reverting the file
+  fails the test on import, proving nothing) - and then the flip's named
+  reason goes in the report's guard-check line, not just the transcript. When the test and the code it guards
   genuinely cannot be separated (they live in the same file), skip the check
   with that named reason in the report. Scale to risk: a task
   touching authorization, money, or data deletion hires adversarial experts
@@ -359,7 +378,15 @@ dependency (contract rule 2c), stated in one line.
   `accepted`, a runtime-state one converted to a check is `converted`. Call
   `chameleon_review(action="record_finding_fate", params={"repo": <repo_id>, "fate": <accepted | declined | converted>, "message": <the finding's one-line gist>, "file": <file>, "line": <line>, "lens": <the finding's defect class>, "surface": "deep-work"})`
   once per finding. Only a digest of the text is stored, never the prose;
-  best-effort, never blocks - on any failure, skip it.
+  best-effort, never blocks - on any failure, skip it. This is not optional
+  bookkeeping to shed under time pressure: the Step 7 report carries one
+  mandatory line - "Finding fates recorded: N accepted / M declined / K
+  converted" (or "fate recording failed: <reason>") - and a report without it
+  is incomplete, exactly like a missing evidence-table row. Likewise every
+  DECLINED finding gets its own recorded one-line reason (the
+  declined-findings log rows the next round's reviewer receives); "the others
+  are non-issues" covering several findings at once records nothing and
+  starves both the next round and the ledger.
 - **Read the ledger back (calibration, advisory).** Before the convergence
   loop's first `refute_finding` send, call
   `chameleon_telemetry(action="get_finding_fate_stats", params={"repo": <repo_id>})`

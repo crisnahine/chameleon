@@ -4,6 +4,20 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.3] - 2026-07-21
+
+### Changed
+
+- **deep-work hardened for weaker driver models**, from a graded real `--model sonnet` run
+  (10/10 on a pre-registered rubric, but with adherence slips that only fixture scale forgave):
+  the comprehension ladder is now explicitly mandatory on trusted profiles (raw-reads-only is
+  sanctioned solely for repos small enough to read whole, said in the brief); expert dispatch is
+  a default with a stated exception rather than a silent judgment call; the rendered brief must
+  visibly carry the ordered step plan, the unknowns re-audit line, and file:line evidence;
+  editor-based guard flips are permitted only where a git flip cannot isolate the behavior, with
+  the reason in the report; and finding-fate recording gets a mandatory report line plus
+  per-finding decline reasons, so the precision ledger is fed instead of starved.
+
 ## [4.5.2] - 2026-07-20
 
 ### Fixed
