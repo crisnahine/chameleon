@@ -266,7 +266,15 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # Minimum non-test source files an archetype must contribute before a
     # test-pairing rate is trustworthy. A pairing fraction drawn from three files
     # swings wildly on one missing test.
-    "TEST_PAIRING_MIN_SAMPLE": 10,
+    #
+    # 5, matching conventions.MIN_SAMPLE_SIZE: the two answer the same question --
+    # how many siblings make a convention trustworthy -- so they must not
+    # disagree. This one was left at 10 when MIN_SAMPLE_SIZE was measured down to
+    # 5, and 10 sits ABOVE the natural cohort size of a real repo: across the
+    # fixture matrix only 1 of 7 archetypes (ts-plain), 1 of 12 (py-django) and 1
+    # of 10 (rb-plain) clear it, so pairing derived for almost nothing and the
+    # stale-test advisory riding on it stayed silent even on fully-paired repos.
+    "TEST_PAIRING_MIN_SAMPLE": 5,
     # Minimum public declarations an archetype must contribute before a doc-
     # coverage fraction is trustworthy. A coverage figure drawn from three
     # declarations swings wildly on one undocumented addition.

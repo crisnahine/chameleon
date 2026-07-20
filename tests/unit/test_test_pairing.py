@@ -170,9 +170,14 @@ class TestExtractTestPairingTypeScript:
         assert conv == {}
 
     def test_below_sample_floor_returns_empty(self, tmp_path):
-        # Fully paired but too few source files to trust the figure.
+        # Fully paired but too few source files to trust the figure. Sized off
+        # the floor itself rather than a literal, so lowering the floor cannot
+        # silently turn this into an above-floor cohort (it was written as 9 when
+        # the floor was 10, and stopped testing anything when it became 5).
+        from chameleon_mcp.conventions import MIN_SAMPLE_SIZE
+
         files = []
-        for i in range(9):
+        for i in range(MIN_SAMPLE_SIZE - 1):
             files.append(_FakeFile(_touch(tmp_path, f"src/svc{i}.ts")))
             _touch(tmp_path, f"src/svc{i}.test.ts")
         conv = extract_test_pairing_conventions(files, language="typescript", repo_root=tmp_path)
@@ -264,6 +269,23 @@ class TestThresholdOverride:
         monkeypatch.setenv("CHAMELEON_TEST_PAIRING_FREQUENCY", "0.25")
         conv = extract_test_pairing_conventions(files, language="typescript", repo_root=tmp_path)
         assert conv["frequency"] == 0.3
+
+    def test_default_floor_matches_the_other_convention_floors(self, tmp_path):
+        # TEST_PAIRING_MIN_SAMPLE answers the same question as MIN_SAMPLE_SIZE --
+        # how many siblings make a convention trustworthy -- so the two must not
+        # disagree. It was left at the old 10 when MIN_SAMPLE_SIZE was measured
+        # down to 5, and 10 sits ABOVE the natural cohort size of a real repo:
+        # only 1 of 7 archetypes in the TS fixture and 1 of 12 in the Django one
+        # clear it, so pairing derived for almost nothing.
+        from chameleon_mcp.conventions import MIN_SAMPLE_SIZE
+
+        files = []
+        for i in range(MIN_SAMPLE_SIZE):
+            files.append(_FakeFile(_touch(tmp_path, f"src/svc{i}.ts")))
+            _touch(tmp_path, f"tests/svc{i}.test.ts")
+        conv = extract_test_pairing_conventions(files, language="typescript", repo_root=tmp_path)
+        assert conv, f"a {MIN_SAMPLE_SIZE}-file cohort must derive a pairing convention"
+        assert conv["frequency"] == 1.0
 
     def test_env_raises_sample_floor(self, tmp_path, monkeypatch):
         files = []

@@ -4,6 +4,24 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.45] - 2026-07-20
+
+### Fixed
+- `TEST_PAIRING_MIN_SAMPLE` was left at 10 when the sibling convention floors
+  were measured down to 5 (v4.4.23), so test-pairing derived for almost nothing
+  even after v4.4.43 taught it the flat `tests/` layout. The two thresholds
+  answer the same question -- how many siblings make a convention trustworthy --
+  and `conventions.py` says outright that they "should not disagree". 10 sits
+  ABOVE the natural cohort size of a real repo: across the fixture matrix only
+  1 of 7 archetypes (ts-plain), 1 of 12 (py-django) and 1 of 10 (rb-plain) clear
+  it, so a fully-paired repo still produced `test_pairing: {}` and the stale-test
+  advisory riding on it stayed silent. Lowered to 5 to match `MIN_SAMPLE_SIZE`.
+
+  `test_below_sample_floor_returns_empty` was sized at a literal 9 (chosen when
+  the floor was 10) and would have silently stopped testing anything; it now
+  sizes off `MIN_SAMPLE_SIZE` itself so the floor and its guard cannot drift
+  apart again.
+
 ## [4.4.44] - 2026-07-20
 
 ### Fixed
