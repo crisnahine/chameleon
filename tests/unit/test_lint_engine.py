@@ -204,6 +204,29 @@ class TestExtractRubyTopLevel:
         snap = _extract_ruby(code)
         assert "ModuleNode" in snap.top_level_node_kinds
 
+    def test_receiver_call_block_at_column_zero(self):
+        # `RSpec.describe ... do` is the ONLY top-level node in an idiomatic spec:
+        # `rspec --init` writes `.rspec` with `--require spec_helper`, so the file
+        # carries no top-level require. Reporting no top-level node at all made
+        # canonical selection score every such spec `trivial`, so the whole test
+        # archetype shipped witnessless and per-edit guidance lost its exemplar.
+        code = 'RSpec.describe Billing::Client do\n  it "works" do\n  end\nend\n'
+        snap = _extract_ruby(code)
+        assert "CallNode" in snap.top_level_node_kinds
+
+    def test_receiver_call_block_matches_the_require_form(self):
+        # The two spellings of the same file must not produce different
+        # signatures; only a `require` line separated them before.
+        bare = _extract_ruby('RSpec.describe Foo do\nend\n')
+        with_require = _extract_ruby('require "spec_helper"\n\nRSpec.describe Foo do\nend\n')
+        assert "CallNode" in bare.top_level_node_kinds
+        assert "CallNode" in with_require.top_level_node_kinds
+
+    def test_indented_receiver_call_not_top_level(self):
+        code = '  RSpec.describe Foo do\n  end\n'
+        snap = _extract_ruby(code)
+        assert "CallNode" not in snap.top_level_node_kinds
+
     def test_indented_class_not_top_level(self):
         code = "  class Nested\n  end\n"
         snap = _extract_ruby(code)

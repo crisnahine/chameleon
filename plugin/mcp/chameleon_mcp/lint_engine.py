@@ -628,6 +628,16 @@ _RUBY_TOP_LEVEL_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"^def\s+\w", re.MULTILINE), "DefNode"),
     (re.compile(r"^require\b", re.MULTILINE), "CallNode"),
     (re.compile(r"^require_relative\b", re.MULTILINE), "CallNode"),
+    # A receiver call opening a block at column 0 -- `RSpec.describe … do`,
+    # `Rails.application.routes.draw do`. This is the ONLY top-level node in an
+    # idiomatic RSpec spec, because `rspec --init` writes `.rspec` with
+    # `--require spec_helper` and the file then carries no top-level require.
+    # Reporting no top-level node made canonical selection score every such spec
+    # `trivial`, so the test archetype shipped witnessless and per-edit guidance
+    # lost its exemplar -- measured on a paired A/B whose only difference was one
+    # `require` line. Requires the block opener so an ordinary top-level
+    # statement (`puts x`, `Foo.bar`) does not read as a declaration.
+    (re.compile(r"^\w[\w:]*\.\w+.*\bdo\b|^\w[\w:]*\.\w+\s*\{", re.MULTILINE), "CallNode"),
 )
 
 _RUBY_SUPERCLASS_RE = re.compile(r"^class\s+\w[\w:]*\s*<\s*([\w:]+)", re.MULTILINE)
