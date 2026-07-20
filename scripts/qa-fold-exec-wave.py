@@ -80,10 +80,17 @@ def _redact_secrets(text: str) -> str:
     return out
 
 
-def _resolve(index: dict, item_id: str, col: str) -> str | None:
+def _resolve(index: dict, item_id: str, col: str) -> list[str]:
+    """Every ledger cell_id an item maps to for this column.
+
+    An item can be inventoried under more than one surface (e.g. the agents are
+    listed under both `skills/` and `aux/`), so a single returned item_id
+    corresponds to multiple cells. Returning ALL of them keeps duplicate cells
+    in sync -- first-match-wins left the second surface's copy PENDING forever.
+    """
     iid = (item_id or "").strip()
     cands = ([f"{iid}@{col}"] if "/" in iid else []) + [f"{s}/{iid}@{col}" for s in SURFACES]
-    return next((x for x in cands if x in index), None)
+    return [x for x in cands if x in index]
 
 
 def main() -> int:
@@ -111,19 +118,20 @@ def main() -> int:
             if status in EVIDENCE_REQUIRED and not ev:
                 skipped_noevidence += 1
                 continue
-            cid = _resolve(index, c.get("item_id", ""), col)
-            if not cid:
+            cids = _resolve(index, c.get("item_id", ""), col)
+            if not cids:
                 dropped += 1
                 continue
-            row = index[cid]
-            row["status"] = status
-            row["evidence"] = f"[exec-wave] {ev}"[:4000]
-            row["correctness"] = _redact_secrets(_scrub_paths(c.get("correctness", "") or ""))[:1500]
-            row["effectiveness"] = _redact_secrets(
-                _scrub_paths(c.get("effectiveness", "") or "")
-            )[:1500]
-            applied += 1
-            st[status] += 1
+            correctness = _redact_secrets(_scrub_paths(c.get("correctness", "") or ""))[:1500]
+            effectiveness = _redact_secrets(_scrub_paths(c.get("effectiveness", "") or ""))[:1500]
+            for cid in cids:
+                row = index[cid]
+                row["status"] = status
+                row["evidence"] = f"[exec-wave] {ev}"[:4000]
+                row["correctness"] = correctness
+                row["effectiveness"] = effectiveness
+                applied += 1
+                st[status] += 1
 
     LEDGER.write_text("".join(json.dumps(r) + "\n" for r in rows))
     print(f"folded: {applied}  dropped-ids: {dropped}  skipped-no-evidence: {skipped_noevidence}")
