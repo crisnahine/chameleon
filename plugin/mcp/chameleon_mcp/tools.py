@@ -10638,10 +10638,17 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
         ours_data = json.loads(ours_text)
         theirs_data = json.loads(theirs_text)
     except json.JSONDecodeError as e:
+        # Non-JSON profile artifacts (conventions.md, .view_digest) reach the
+        # driver whenever .gitattributes routes the whole .chameleon dir at
+        # it; declining is the documented contract, so say that instead of
+        # reading like a parse bug in the driver itself.
         return _envelope(
             {
                 "status": "failed",
-                "error": f"profile JSON parse error: {e}",
+                "error": (
+                    "not a JSON profile artifact; declining the merge so git keeps "
+                    f"the conflict for manual resolution ({e})"
+                ),
                 "merged_profile_path": None,
             }
         )
