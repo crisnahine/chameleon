@@ -34,32 +34,38 @@ if [[ "${CHAMELEON_STATUSLINE_PAUSE:-}" != "0" ]]; then
   # data-dir walk whose cost grows with every profiled repo. Only while the
   # sentinel exists does the marker sweep below run. A pause is deliberately
   # short-lived (<=240 minutes); once every marker has expired the sweep
-  # removes the sentinel itself, closing the gate again. A marker left by a
-  # repo no other session ever queries again would otherwise hold the gate
-  # open forever (the per-repo read path that unlinks expired markers never
-  # runs for a dead repo), so a well-formed marker whose second-precision Z
-  # timestamp is already past is removed here -- the same unlink the read
-  # path performs. Lexicographic comparison is sound because the writer emits
-  # exactly %Y-%m-%dT%H:%M:%SZ; anything unreadable or oddly formatted keeps
-  # the gate open and lets the python path decide, never a silent drop of a
-  # live pause.
+  # removes the sentinel itself, closing the gate again -- so an expired
+  # marker left by a repo no session ever queries again cannot hold the
+  # python fallback open on every render machine-wide. The sweep never
+  # deletes a marker file: `write_pause` publishes via os.replace, so a
+  # read-then-rm here could delete a live marker republished in between (the
+  # per-repo python read path keeps owning marker cleanup). An expired marker
+  # simply does not open the gate. Lexicographic comparison is sound because
+  # the writer emits exactly %Y-%m-%dT%H:%M:%SZ; anything unreadable or oddly
+  # formatted keeps the gate open and lets the python path decide, never a
+  # silent drop of a live pause. The sentinel is removed only when it is not
+  # newer than the sweep's own start, so a pause touched mid-sweep survives.
   pause_gate=""
   if [[ -f "$plugin_data_dir/.pause_active" ]]; then
     now_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    sweep_ref="$(mktemp "${TMPDIR:-/tmp}/chameleon-sl-ref.XXXXXX" 2>/dev/null || true)"
     while IFS= read -r pause_marker; do
       [[ -n "$pause_marker" ]] || continue
       pause_expiry=""
-      IFS= read -r pause_expiry < "$pause_marker" 2>/dev/null || true
+      { IFS= read -r pause_expiry < "$pause_marker"; } 2>/dev/null || true
       if [[ "$pause_expiry" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
         && [[ ! "$pause_expiry" > "$now_utc" ]]; then
-        rm -f -- "$pause_marker" 2>/dev/null || pause_gate=1
+        : # expired: leave the file to the python read path; gate stays closed
       else
         pause_gate=1
       fi
     done < <(find "$plugin_data_dir" -maxdepth 2 -name '.pause_until' 2>/dev/null)
     if [[ -z "$pause_gate" ]]; then
-      rm -f -- "$plugin_data_dir/.pause_active" 2>/dev/null || true
+      if [[ -z "$sweep_ref" || ! "$plugin_data_dir/.pause_active" -nt "$sweep_ref" ]]; then
+        rm -f -- "$plugin_data_dir/.pause_active" 2>/dev/null || true
+      fi
     fi
+    [[ -n "$sweep_ref" ]] && rm -f -- "$sweep_ref" 2>/dev/null || true
   fi
   if [[ -n "$pause_gate" ]]; then
     pause_root="$project_dir"

@@ -156,10 +156,12 @@ def test_write_pause_touches_machine_wide_sentinel(tmp_path, monkeypatch):
     assert (plugin_data / ".pause_active").is_file()
 
 
-def test_orphaned_expired_marker_is_swept_and_sentinel_removed(tmp_path, monkeypatch):
-    # A dead repo's expired marker has no per-repo read path left to unlink it;
-    # the render must remove it AND the sentinel, or the python fallback would
-    # be paid on every render machine-wide forever.
+def test_orphaned_expired_marker_closes_gate_and_removes_sentinel(tmp_path, monkeypatch):
+    # A dead repo's expired marker must not hold the python fallback open on
+    # every render machine-wide: the render removes the SENTINEL (closing the
+    # gate) but never the marker itself -- write_pause republishes via
+    # os.replace, so a render-side read-then-rm could delete a live marker
+    # republished in between. Marker cleanup stays with the per-repo read path.
     repo = _repo_with_profile(tmp_path)
     plugin_data = tmp_path / "data"
     _write_pause(monkeypatch, plugin_data, repo, -5)
@@ -168,7 +170,7 @@ def test_orphaned_expired_marker_is_swept_and_sentinel_removed(tmp_path, monkeyp
     proc = _run(repo, plugin_data)
     assert proc.returncode == 0
     assert "paused" not in proc.stdout
-    assert not marker.exists()
+    assert marker.is_file()
     assert not (plugin_data / ".pause_active").exists()
 
 
