@@ -451,8 +451,8 @@ def safe_prose_text(path: Path) -> str:
         import sys as _sys
 
         print(
-            f"chameleon: {path.name} dropped from context: contains a prompt-injection "
-            "pattern (re-derive or re-teach with safe prose)",
+            f"chameleon: {path.name} ({path.parent.parent}) dropped from context: "
+            "contains a prompt-injection pattern (re-derive or re-teach with safe prose)",
             file=_sys.stderr,
         )
         return ""
@@ -574,8 +574,9 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
         import sys as _sys
 
         print(
-            "chameleon: idioms.md dropped from context: contains a prompt-injection, "
-            "secret, or dangerous pattern (re-run /chameleon-teach with safe prose)",
+            f"chameleon: idioms.md ({idioms_path.parent.parent}) dropped from context: "
+            "contains a prompt-injection, secret, or dangerous pattern "
+            "(re-run /chameleon-teach with safe prose)",
             file=_sys.stderr,
         )
         idioms_text = ""
