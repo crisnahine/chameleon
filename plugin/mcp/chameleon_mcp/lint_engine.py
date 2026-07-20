@@ -1099,6 +1099,8 @@ def lint(
       a stub.
     - `content-signal-mismatch`: warning. `'use client'` etc. are
       semantically significant in modern frameworks but not always required.
+      Ruby's `# frozen_string_literal: true` magic comment rides the same
+      check: advisory only, never block-eligible.
     """
     if not ast_query:
         return []
@@ -1237,16 +1239,27 @@ def lint(
     if expected_signal is not None:
         actual_signal = snapshot.content_signal
         if actual_signal != expected_signal:
+            if expected_signal == "frozen_string_literal":
+                # Name the exact line to add: "a 'frozen_string_literal'
+                # directive" alone does not tell the model the magic-comment
+                # syntax the archetype's files actually open with.
+                message = (
+                    "this archetype's files start with `# frozen_string_literal: "
+                    f"true`; got '{actual_signal or 'none'}'. Add the magic "
+                    "comment as the file's first line (below the shebang, if any)."
+                )
+            else:
+                message = (
+                    f"archetype expects a '{expected_signal}' directive at the "
+                    f"top of the file; got '{actual_signal or 'none'}'"
+                )
             violations.append(
                 Violation(
                     rule="content-signal-mismatch",
                     expected=str(expected_signal),
                     actual=str(actual_signal) if actual_signal else "none",
                     severity="warning",
-                    message=(
-                        f"archetype expects a '{expected_signal}' directive at the "
-                        f"top of the file; got '{actual_signal or 'none'}'"
-                    ),
+                    message=message,
                 )
             )
 
@@ -1808,12 +1821,30 @@ _EVAL_CALL_RE = re.compile(r"(?<![.\w])eval\s*\(")
 # `class_eval do ... end`) are the legitimate DSL pattern; only the STRING
 # argument forms execute arbitrary code. The argument shape is checked against
 # the ORIGINAL content at the matched offset (the stripper blanks string
-# literals but preserves length), so only a literal string / heredoc argument
-# fires — a variable argument stays unflagged to keep legitimate
-# metaprogramming out of an error-severity rule. `send(:eval, ...)` and the
+# literals but preserves length), so a literal string / heredoc argument
+# fires — a plain variable argument stays unflagged to keep legitimate
+# metaprogramming out of an error-severity rule, EXCEPT when the argument
+# expression itself carries request input (`instance_eval(params[:x])`), which
+# is the injection the exemption must not shield. `send(:eval, ...)` and the
 # string form are dynamic dispatch to the same sink.
 _RUBY_EVAL_VARIANT_RE = re.compile(r"(?<![:\w])(instance_eval|class_eval|module_eval)\b")
 _RUBY_EVAL_STRING_ARG_RE = re.compile(r"\A\s*\(?\s*(?:\"|'|<<[~-]?[A-Z'\"])")
+# Request input reaching a *_eval argument. The variable-argument exemption
+# below spares legitimate metaprogramming, but an argument expression that
+# syntactically carries request input (`params[...]` / `request. ...`) is the
+# injection this rule exists for, so it fires — at error severity. Matched on
+# the stripped scan (a mention inside a comment or a string literal is blanked
+# there); horizontal whitespace only ([ \t], never \s) so the match stays on
+# the call's own line, and the argument walk stops at `{`, `&`, `)` and `;` so
+# a block form (`instance_eval { params[:x] }` and the `do` form), a
+# block-pass (`&blk`), or a later statement on the same line never matches.
+# The lookbehind keeps it word-boundary safe: `my_params[` / `request_id.` do
+# not fire. The leading whitespace quantifiers are possessive (*+) so the
+# `do` lookahead cannot be bypassed by backtracking into them (a single-line
+# `instance_eval do params[:x] end` block must stay exempt).
+_RUBY_EVAL_REQUEST_INPUT_ARG_RE = re.compile(
+    r"\A[ \t]*+\(?[ \t]*+(?!do\b)[^\n{&);]*?(?<![A-Za-z0-9_])(?:params[ \t]*\[|request[ \t]*\.)"
+)
 _RUBY_SEND_EVAL_RE = re.compile(r"\b((?:public_)?send)\s*\(\s*(?::eval\b|[\"']eval[\"'])")
 # Paren-less Kernel#eval: `eval "..."`, `eval s`, `eval %(...)`. _EVAL_CALL_RE
 # only catches the `eval(` form, so the paren-less call (idiomatic Ruby) slipped
@@ -2123,10 +2154,39 @@ def scan_dangerous_sinks(content: str, *, language: str | None) -> list[Violatio
         # because the stripper blanks the very string literal that makes the
         # call dangerous. Block/variable arguments do not fire.
         for m in _RUBY_EVAL_VARIANT_RE.finditer(scan):
-            if not _RUBY_EVAL_STRING_ARG_RE.match(content[m.end() : m.end() + 40]):
+            arg_is_literal = bool(_RUBY_EVAL_STRING_ARG_RE.match(content[m.end() : m.end() + 40]))
+            # A non-literal argument that carries request input is checked on
+            # the STRIPPED scan, not the original content: a `params[` in a
+            # trailing comment or inside a string literal is blanked there,
+            # while a real code-level argument survives at the same offsets.
+            arg_has_request_input = not arg_is_literal and bool(
+                _RUBY_EVAL_REQUEST_INPUT_ARG_RE.match(scan[m.end() : m.end() + 200])
+            )
+            if not arg_is_literal and not arg_has_request_input:
                 continue
             line = _position_to_line(scan, m.start())
             method = m.group(1)
+            if arg_has_request_input:
+                violations.append(
+                    Violation(
+                        rule="eval-call",
+                        expected="<no dynamic eval>",
+                        actual=f"{method}( at line {line}",
+                        # Error severity, unlike the string-literal form below:
+                        # params/request data in the argument is user input
+                        # reaching an eval sink — the injection itself, not an
+                        # established metaprogramming idiom. is_hard_class
+                        # gates eval-call hardness on this severity.
+                        severity="error",
+                        message=(
+                            f"dynamic {method} receiving request input at line "
+                            f"{line} executes user-controlled code — remote code "
+                            "execution. Never pass params/request data to an eval "
+                            "sink; use an explicit allowlist or dispatch table."
+                        ),
+                    )
+                )
+                continue
             violations.append(
                 Violation(
                     rule="eval-call",

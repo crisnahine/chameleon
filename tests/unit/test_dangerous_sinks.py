@@ -538,3 +538,68 @@ def test_node_crypto_api_weak_hash_flagged():
         )
         == []
     )
+
+
+# --- eval-family with request-input arguments ------------------------------
+
+
+def test_instance_eval_with_params_arg_flagged_error():
+    from chameleon_mcp.violation_class import is_hard_class
+
+    violations = scan_dangerous_sinks("obj.instance_eval(params[:code])", language="ruby")
+    assert _rules(violations) == ["eval-call"]
+    assert violations[0].severity == "error"
+    assert is_hard_class(violations[0].to_dict()) is True
+
+
+def test_class_eval_with_request_arg_flagged_error():
+    violations = scan_dangerous_sinks("k.class_eval(request.params[:m])", language="ruby")
+    assert _rules(violations) == ["eval-call"]
+    assert violations[0].severity == "error"
+
+
+def test_parenless_instance_eval_params_flagged():
+    violations = scan_dangerous_sinks("obj.instance_eval params[:code]", language="ruby")
+    assert "eval-call" in _rules(violations)
+    assert violations[0].severity == "error"
+
+
+def test_module_eval_with_params_in_second_arg_flagged():
+    violations = scan_dangerous_sinks("M.module_eval(code, params[:file])", language="ruby")
+    assert "eval-call" in _rules(violations)
+
+
+def test_eval_variants_without_request_input_stay_exempt():
+    for src in (
+        "obj.instance_eval(&blk)",
+        "obj.instance_eval(code_var)",
+        "obj.instance_eval { self.name = params[:name] }",
+        "obj.instance_eval do\n  params[:x]\nend\n",
+        "obj.instance_eval do params[:x] end",
+        "obj.instance_eval(my_params[:x])",
+        "obj.instance_eval(request_id)",
+    ):
+        assert "eval-call" not in _rules(scan_dangerous_sinks(src, language="ruby")), src
+
+
+def test_eval_string_literal_still_fires():
+    violations = scan_dangerous_sinks('eval("puts 1")', language="ruby")
+    assert "eval-call" in _rules(violations)
+
+
+def test_params_in_trailing_comment_not_flagged():
+    src = "obj.instance_eval(&blk) # params[:x] cleanup later\n"
+    assert "eval-call" not in _rules(scan_dangerous_sinks(src, language="ruby"))
+
+
+def test_params_on_next_line_not_flagged():
+    src = "obj.instance_eval(&blk)\nparams[:x] = 1\n"
+    assert "eval-call" not in _rules(scan_dangerous_sinks(src, language="ruby"))
+
+
+def test_string_literal_arg_keeps_warning_severity():
+    # The request-input escalation must not reclassify the established
+    # string-literal metaprogramming form.
+    violations = scan_dangerous_sinks('k.class_eval("def x; end")', language="ruby")
+    assert _rules(violations) == ["eval-call"]
+    assert violations[0].severity == "warning"

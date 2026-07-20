@@ -392,3 +392,82 @@ def test_ambiguous_grabbag_filenames_are_not_roles():
     # would merge unrelated code under one archetype.
     for stem in ("base", "utils", "helpers", "constants"):
         assert python_role_for_path(f"meridian/billing/{stem}.py") is None
+
+
+class TestFrozenStringLiteralSignal:
+    def test_directive_on_first_line(self):
+        head = "# frozen_string_literal: true\n\nclass User\nend\n"
+        assert content_signal_match_for(head) == "frozen_string_literal"
+
+    def test_directive_below_shebang(self):
+        head = "#!/usr/bin/env ruby\n# frozen_string_literal: true\nputs 1\n"
+        assert content_signal_match_for(head) == "frozen_string_literal"
+
+    def test_directive_below_encoding_comment(self):
+        head = "# encoding: utf-8\n# frozen_string_literal: true\nmodule M\nend\n"
+        assert content_signal_match_for(head) == "frozen_string_literal"
+
+    def test_no_space_after_hash(self):
+        assert content_signal_match_for("#frozen_string_literal: true\nx = 1\n") == (
+            "frozen_string_literal"
+        )
+
+    def test_shebang_without_directive_stays_shebang(self):
+        assert content_signal_match_for("#!/usr/bin/env ruby\nputs 1\n") == "shebang"
+
+    def test_false_value_is_not_a_signal(self):
+        head = "# frozen_string_literal: false\nclass User\nend\n"
+        assert content_signal_match_for(head) == "none"
+
+    def test_directive_after_code_is_not_a_signal(self):
+        head = "class User\nend\n# frozen_string_literal: true\n"
+        assert content_signal_match_for(head) == "none"
+
+    def test_plain_leading_comment_is_none(self):
+        assert content_signal_match_for("# just a comment\nclass User\nend\n") == "none"
+
+    def test_signature_records_signal_for_rb_corpus(self):
+        # Derivation side: siblings carrying the magic comment share one
+        # cluster key whose content_signal_match is the new signal.
+        keys = [
+            compute_signature(
+                file_path=f"app/models/{name}.rb",
+                content_first_200_bytes="# frozen_string_literal: true\n\nclass X\nend\n",
+                top_level_node_kinds=["ClassNode"],
+                default_export_kind="ClassNode",
+                named_export_count=1,
+                import_specifiers=[],
+                has_jsx=False,
+            )
+            for name in ("user", "order", "invoice")
+        ]
+        assert all(k.content_signal_match == "frozen_string_literal" for k in keys)
+        assert len(set(keys)) == 1
+
+    def test_derive_ast_query_persists_signal(self):
+        from chameleon_mcp.bootstrap.canonical import derive_ast_query
+
+        key = compute_signature(
+            file_path="app/models/user.rb",
+            content_first_200_bytes="# frozen_string_literal: true\n\nclass User\nend\n",
+            top_level_node_kinds=["ClassNode"],
+            default_export_kind="ClassNode",
+            named_export_count=1,
+            import_specifiers=[],
+            has_jsx=False,
+        )
+        assert derive_ast_query(key)["content_signal"] == "frozen_string_literal"
+
+    def test_derive_ast_query_none_when_directive_absent(self):
+        from chameleon_mcp.bootstrap.canonical import derive_ast_query
+
+        key = compute_signature(
+            file_path="app/models/user.rb",
+            content_first_200_bytes="class User\nend\n",
+            top_level_node_kinds=["ClassNode"],
+            default_export_kind="ClassNode",
+            named_export_count=1,
+            import_specifiers=[],
+            has_jsx=False,
+        )
+        assert derive_ast_query(key)["content_signal"] is None

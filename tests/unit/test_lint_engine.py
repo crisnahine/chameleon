@@ -1568,3 +1568,32 @@ class TestTsAmbientInterfaceNaming:
         )
         actuals = {v.actual for v in lint_conventions(content, self.CONV, language="typescript")}
         assert "BadName" in actuals
+
+
+class TestFrozenStringLiteralLint:
+    """Enforcement side of the frozen_string_literal content signal."""
+
+    def test_missing_directive_flagged_advisory(self):
+        snap = _extract_ruby("class User\nend\n")
+        violations = lint(snap, {"content_signal": "frozen_string_literal"}, language="ruby")
+        hits = [v for v in violations if v.rule == "content-signal-mismatch"]
+        assert len(hits) == 1
+        assert hits[0].severity == "warning"
+        assert "# frozen_string_literal: true" in hits[0].message
+
+    def test_present_directive_is_clean(self):
+        snap = _extract_ruby("# frozen_string_literal: true\n\nclass User\nend\n")
+        violations = lint(snap, {"content_signal": "frozen_string_literal"}, language="ruby")
+        assert [v for v in violations if v.rule == "content-signal-mismatch"] == []
+
+    def test_null_signal_never_flags(self):
+        # A repo where the directive is not dominant records content_signal
+        # null; a file without the magic comment must not flag.
+        snap = _extract_ruby("class User\nend\n")
+        violations = lint(snap, {"content_signal": None}, language="ruby")
+        assert [v for v in violations if v.rule == "content-signal-mismatch"] == []
+
+    def test_rule_is_not_block_eligible(self):
+        from chameleon_mcp.violation_class import BLOCK_ELIGIBLE_RULES
+
+        assert "content-signal-mismatch" not in BLOCK_ELIGIBLE_RULES

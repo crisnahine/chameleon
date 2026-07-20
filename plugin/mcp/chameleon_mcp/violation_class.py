@@ -260,8 +260,9 @@ BLOCK_RULE_LANGUAGES: dict[str, frozenset[str] | None] = {
 # dangerous sink for the same reason -- an RCE is an RCE regardless of archetype,
 # and a brand-new or unarchetyped file (where no archetype resolves) is exactly
 # where it must still block. is_hard_class severity-gates eval-call to the
-# error-severity direct form, so the warning-severity *_eval metaprogramming
-# variants stay advisory and never hard-block here.
+# error-severity forms (the direct call, send-dispatch, and a *_eval whose
+# argument carries request input), so the warning-severity string-argument
+# *_eval metaprogramming variants stay advisory and never hard-block here.
 _ARCHETYPE_INDEPENDENT: frozenset[str] = frozenset(
     {"phantom-import", "secret-detected-in-content", "eval-call"}
 )
@@ -404,12 +405,14 @@ def is_hard_class(violation: dict) -> bool:
         return False
     if rule == "jsx-presence-mismatch":
         return violation.get("severity") == "error"
-    # eval-call is severity-gated like jsx: the direct `eval(` form and
-    # send-dispatch to eval are emitted at ``error`` and may block, while the
-    # string-argument `*_eval` variants are emitted at ``warning`` and stay
-    # advisory — `class_eval <<~RUBY` is an established (if sharp) Rails
-    # metaprogramming idiom that calibration never measures (content scans are
-    # not calibrated), so blocking it would FP on legitimate committed code.
+    # eval-call is severity-gated like jsx: the direct `eval(` form,
+    # send-dispatch to eval, and a `*_eval` whose argument carries request
+    # input (`instance_eval(params[:x])`) are emitted at ``error`` and may
+    # block, while the string-argument `*_eval` variants are emitted at
+    # ``warning`` and stay advisory — `class_eval <<~RUBY` is an established
+    # (if sharp) Rails metaprogramming idiom that calibration never measures
+    # (content scans are not calibrated), so blocking it would FP on
+    # legitimate committed code.
     if rule == "eval-call":
         return violation.get("severity") == "error"
     if rule == "secret-detected-in-content":

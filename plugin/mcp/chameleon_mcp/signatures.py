@@ -32,6 +32,7 @@ so future contributors aren't misled.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -561,6 +562,37 @@ def _extension_of(filename: str) -> str:
     return filename[dot + 1 :]
 
 
+# Ruby's frozen-string magic comment, matched against one stripped leading
+# comment line. `true` only: `frozen_string_literal: false` is an explicit
+# opt-out, not a directive worth clustering on.
+_FROZEN_STRING_LITERAL_RE = re.compile(r"\A#\s*frozen_string_literal:\s*true\b")
+
+# How many leading lines may precede the magic comment. Ruby only honors it in
+# the file's leading comment block (shebang plus encoding comments are the
+# realistic prelude), so a longer scan would only admit false positives.
+_FROZEN_SCAN_MAX_LINES = 5
+
+
+def _has_frozen_string_literal_directive(head: str) -> bool:
+    """True when a ``# frozen_string_literal: true`` magic comment leads the file.
+
+    Ruby accepts the magic comment on the first line or below a shebang and
+    other leading comments (``# encoding: ...``); the first code line ends the
+    scan, so a mention further down the file never counts.
+    """
+    for line_no, line in enumerate(head.splitlines()[:_FROZEN_SCAN_MAX_LINES]):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if line_no == 0 and stripped.startswith("#!"):
+            continue
+        if not stripped.startswith("#"):
+            return False
+        if _FROZEN_STRING_LITERAL_RE.match(stripped):
+            return True
+    return False
+
+
 def content_signal_match_for(
     content_first_200_bytes: str,
     archetype_signals: dict[str, dict] | None = None,
@@ -575,12 +607,18 @@ def content_signal_match_for(
     Phase 2A returns a coarse signal: known directive present, or "none".
     Phase 2B integrates archetype-specific signal matching against the
     active profile's archetypes.json content_signal definitions.
+
+    frozen_string_literal (Ruby's magic comment) outranks shebang: the magic
+    comment may sit below a shebang line, and ranking shebang first would make
+    the directive undetectable in exactly the files that carry both.
     """
     head = content_first_200_bytes
     if '"use client"' in head or "'use client'" in head:
         return "use_client"
     if '"use server"' in head or "'use server'" in head:
         return "use_server"
+    if _has_frozen_string_literal_directive(head):
+        return "frozen_string_literal"
     if head.startswith("#!"):
         return "shebang"
     if head.lstrip().startswith("// @ts-"):
