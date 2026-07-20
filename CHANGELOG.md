@@ -4,6 +4,21 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.5] - 2026-07-21
+
+### Changed
+
+- **deep-work delivery is a fixed 8-slot template.** Across three graded sonnet runs the
+  pattern held: every requirement shaped as a checklist/required line was followed to the
+  letter, and every requirement living in prose was dropped stochastically — a different
+  subset each round (round 3 dropped the step-verify plan and the fates line that round 2
+  rendered, and one evidence cell described a browser action never performed). The report is
+  now a fixed ordered template (built / evidence table / guard checks / convergence /
+  finding fates / defaults / not-verified / worktree) where an empty slot renders as
+  "none - <reason>" instead of vanishing, evidence cells must copy from real tool results in
+  the session ("did I actually run this?" is the stated test), and a terminal completeness
+  pass checks every slot before sending.
+
 ## [4.5.4] - 2026-07-21
 
 ### Changed

@@ -415,18 +415,36 @@ dependency (contract rule 2c), stated in one line.
 
 ## Step 7: Deliver and integrate
 
-Report back:
+The report is a FIXED template, not a free-form summary. Render every slot
+below in order; a slot with nothing to say is rendered as
+`<slot>: none - <reason>`, never silently dropped. An omitted slot makes the
+report incomplete exactly like an unfilled evidence-table cell:
 
-- What was built, against each acceptance criterion - met / not met, as the
-  Step 6 per-criterion evidence table (the command run, the output observed,
-  pasted per row), plus the "Review convergence: N round(s)" line.
-- Every default taken (contract rule 2b), one line each, so any of them can
-  be flipped cheaply now.
-- What was verified clean, and what was NOT verified (and why).
-- The worktree path and branch, with the integration options: merge locally,
-  push the branch and open a PR, or discard. The integration decision belongs
-  to the user - pushing, merging into a shared branch, or opening a PR
-  happens only on their explicit go.
+1. **Built** - what was delivered, one paragraph.
+2. **Evidence table** - one row per acceptance criterion (criterion | exact
+   command/flow | observed output pasted | met/not met). Fill this table by
+   COPYING from tool results earlier in this session, then re-read each row
+   asking "did I actually run this, this session?" - a cell describing an
+   action not performed (a flow imagined from the code, a click never made)
+   is fabrication, strictly worse than an honest "not driven".
+3. **Guard checks** - which flips ran (git or editor-with-reason), which
+   tests failed, restored-clean confirmation.
+4. **Review convergence** - the per-round line ("N round(s) (r1: X applied,
+   r2: 0) - converged | cap hit | self-reviewed").
+5. **Finding fates recorded** - "N accepted / M declined / K converted" or
+   "fate recording failed: <reason>" or "none - zero findings".
+6. **Defaults taken** - one line each (contract rule 2b).
+7. **Not verified** - what was not driven, and why.
+8. **Worktree** - path, branch, commit state, integration options: merge
+   locally, push the branch and open a PR, or discard. The integration
+   decision belongs to the user - pushing, merging into a shared branch, or
+   opening a PR happens only on their explicit go.
+
+Before sending, run the completeness pass: all 8 slots present in order,
+every evidence cell traceable to a real tool result this session, the
+convergence and fates lines byte-shaped as specified. The same discipline
+applies to the Step 4 brief's checklist - a rendered brief or report missing
+a slot is unfinished work, not a style choice.
 - This applies on FAILURE too: a task that blocked on a hard dependency or
   could not pass verification still reports the worktree path and branch with
   whatever partial work it holds. Leave the worktree in place - removing it
