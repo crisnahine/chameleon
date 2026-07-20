@@ -98,3 +98,40 @@ def test_orchestrator_select_extractor_unchanged_for_typescript(tmp_path):
     (tmp_path / "tsconfig.json").write_text("{}", encoding="utf-8")
     ext = _select_extractor(tmp_path)
     assert ext is not None and ext.language == "typescript"
+
+
+def test_select_plain_javascript_repo(tmp_path):
+    # A pure-JS ESM service (root package.json + .js sources, zero TypeScript
+    # anywhere) is first-class: it must select the TypeScript-family extractor
+    # instead of failing as unsupported.
+    (tmp_path / "package.json").write_text('{"type": "module"}', encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "server.js").write_text("export function boot() {}\n", encoding="utf-8")
+    ext = registry.select_extractor(tmp_path)
+    assert ext is not None and ext.language == "typescript"
+
+
+def test_js_sources_do_not_claim_a_django_repo(tmp_path):
+    # A backend repo's asset bundle (root package.json + static .js) must keep
+    # its backend language: manage.py marks Django, so Python wins.
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "manage.py").write_text("#!/usr/bin/env python\n", encoding="utf-8")
+    (tmp_path / "static").mkdir()
+    (tmp_path / "static" / "app.js").write_text("function f() {}\n", encoding="utf-8")
+    (tmp_path / "core").mkdir()
+    (tmp_path / "core" / "views.py").write_text("def index(request): ...\n", encoding="utf-8")
+    ext = registry.select_extractor(tmp_path)
+    assert ext is not None and ext.language == "python"
+
+
+def test_js_sources_do_not_claim_a_gem_repo(tmp_path):
+    # Same guard for Ruby: a gemspec keeps the repo Ruby even with a root
+    # package.json and docs-site JS lying around.
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "widget.gemspec").write_text("Gem::Specification.new\n", encoding="utf-8")
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "widget.rb").write_text("module Widget; end\n", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "site.js").write_text("function f() {}\n", encoding="utf-8")
+    ext = registry.select_extractor(tmp_path)
+    assert ext is not None and ext.language == "ruby"

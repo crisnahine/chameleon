@@ -306,7 +306,19 @@ class TypeScriptExtractor:
                         return False
             except (OSError, PermissionError):
                 continue
-        return _has_typescript_source_files(repo_root, max_depth=3)
+        if _has_typescript_source_files(repo_root, max_depth=3):
+            return True
+        # Plain-JavaScript repo: a root package.json plus shallow .js-family
+        # sources is a JS project even with zero TypeScript anywhere — the
+        # parse pipeline already handles .js/.jsx/.mjs/.cjs. Gated on the
+        # package.json (stray scripts in a non-JS repo are not a project) and
+        # on the absence of a competing backend manifest, so a Rails or
+        # Django app's asset bundle never flips the repo to JS.
+        if package_json.exists() and not _has_competing_backend_manifest(repo_root):
+            return _has_typescript_source_files(
+                repo_root, max_depth=3, extensions=(".js", ".jsx", ".mjs", ".cjs")
+            )
+        return False
 
     def parse_repo(
         self,
@@ -574,12 +586,15 @@ def _extras_from_record(record: dict) -> dict:
     return extras
 
 
-def _has_typescript_source_files(repo_root: Path, *, max_depth: int = 3) -> bool:
-    """Shallow-walk to find any .ts/.tsx file (BUG-010 detection fallback).
+def _has_typescript_source_files(
+    repo_root: Path, *, max_depth: int = 3, extensions: tuple[str, ...] = (".ts", ".tsx")
+) -> bool:
+    """Shallow-walk to find any source file with the given extensions.
 
-    Bounded by depth and total files found so a giant tree can't hang
-    detection. Skips conventional ignore dirs to avoid wasting walks on
-    node_modules / dist / .git / etc.
+    BUG-010 detection fallback for .ts/.tsx; the plain-JavaScript detection
+    passes the .js family instead. Bounded by depth and total files found so a
+    giant tree can't hang detection. Skips conventional ignore dirs to avoid
+    wasting walks on node_modules / dist / .git / etc.
     """
     if not repo_root.is_dir():
         return False
@@ -617,7 +632,29 @@ def _has_typescript_source_files(repo_root: Path, *, max_depth: int = 3) -> bool
                     if depth + 1 <= max_depth:
                         next_frontier.append((entry, depth + 1))
                 else:
-                    if name.endswith(".ts") or name.endswith(".tsx"):
+                    if name.endswith(extensions):
                         return True
         frontier = next_frontier
     return False
+
+
+# Root manifests that mark a repo as belonging to a LATER extractor in the
+# registry. The plain-JS fallback must not claim a Rails or Django app off its
+# asset bundle: with any of these present the repo keeps its backend
+# language's precedence, exactly as before JS-only detection existed.
+_COMPETING_BACKEND_MANIFESTS = (
+    "Gemfile",
+    "manage.py",
+    "pyproject.toml",
+    "setup.py",
+    "Pipfile",
+)
+
+
+def _has_competing_backend_manifest(repo_root: Path) -> bool:
+    try:
+        if any((repo_root / m).exists() for m in _COMPETING_BACKEND_MANIFESTS):
+            return True
+        return any(True for _ in repo_root.glob("*.gemspec"))
+    except OSError:
+        return False
