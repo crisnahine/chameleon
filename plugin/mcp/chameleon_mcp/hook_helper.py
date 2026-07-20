@@ -2957,33 +2957,17 @@ def _rough_arity(params_text: str, drop_self: bool) -> int:
             depth = max(0, depth - 1)
         elif ch == "," and depth == 0:
             count += 1
+    # Canonical bracket-aware comma splitter lives in lint_engine (imported at
+    # use-site to avoid a load-time cycle; hook_helper already depends on
+    # lint_engine). Kept single-sourced so the two never drift.
+    from chameleon_mcp.lint_engine import _split_top_level
+
     parts = [p.strip() for p in _split_top_level(params_text)]
     parts = [p for p in parts if p]
     n = len(parts) if parts else count
     if drop_self and parts and parts[0].split(":")[0].strip() in ("self", "cls"):
         n -= 1
     return max(0, n)
-
-
-def _split_top_level(s: str) -> list[str]:
-    out: list[str] = []
-    depth = 0
-    cur: list[str] = []
-    for ch in s:
-        if ch in "([{":
-            depth += 1
-            cur.append(ch)
-        elif ch in ")]}":
-            depth = max(0, depth - 1)
-            cur.append(ch)
-        elif ch == "," and depth == 0:
-            out.append("".join(cur))
-            cur = []
-        else:
-            cur.append(ch)
-    if cur:
-        out.append("".join(cur))
-    return out
 
 
 def _extract_method_body_hashes(content: str, file_path: str) -> list[tuple[str, str]]:

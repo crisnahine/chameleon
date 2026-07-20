@@ -4,6 +4,25 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.49] - 2026-07-20
+
+### Fixed
+- The Python inheritance lint false-positived on every subscripted-generic base.
+  Derivation strips the generic type-param (`_strip_type_params`, v4.4.36) so a
+  typed cohort's dominant base is `BaseRepository`, but `_py_positional_bases`
+  compared the raw `BaseRepository[Shipment]` and never matched, firing
+  `inheritance-convention-violation` on every generic repository on every edit --
+  the enforcement-side twin of the derivation asymmetry v4.4.36/37 fixed. The
+  lint now strips the subscript with the SAME `_strip_type_params`, and the base
+  split is bracket-depth-aware so a multi-arg generic (`Generic[T, U]`) is not
+  fractured on its internal comma. A genuinely wrong base still flags. Verified
+  end-to-end: `class VehicleRepository(BaseRepository[Vehicle])` in the FastAPI
+  fixture no longer fires the rule.
+
+  The bracket-aware comma splitter was de-duplicated in the process: hook_helper
+  carried an identical `_split_top_level`; both now share lint_engine's copy so
+  they cannot drift.
+
 ## [4.4.48] - 2026-07-20
 
 ### Fixed

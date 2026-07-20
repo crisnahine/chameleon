@@ -183,3 +183,49 @@ def test_base_role_suffix_helper():
     # generic trailing words are not roles
     assert _base_role_suffix("ActiveInteraction::Base") is None
     assert _base_role_suffix("StandardError") is None
+
+
+# ---- Python subscripted-generic base normalization ------------------------
+# Derivation strips the generic subscript (conventions._strip_type_params) so a
+# typed cohort's dominant base is `BaseRepository`, but the lint compared the raw
+# `BaseRepository[Shipment]` and never matched, firing a false positive on every
+# generic repository on every edit. Lint must strip the subscript symmetrically.
+
+_PY_GENERIC_CONV = {
+    "inheritance": {
+        "dominant_base": "BaseRepository",
+        "frequency": 0.89,
+        "known_bases": ["BaseRepository"],
+    }
+}
+
+
+def test_python_generic_base_matches_dominant():
+    src = "class ShipmentRepository(BaseRepository[Shipment]):\n    pass\n"
+    assert "inheritance-convention-violation" not in _rules(
+        lint_conventions(src, _PY_GENERIC_CONV, language="python")
+    )
+
+
+def test_python_multiarg_generic_base_matches():
+    # A multi-type-arg generic base carries an internal comma; the base split
+    # must not fracture on it (Generic[T, U] is ONE base, not two).
+    conv = {
+        "inheritance": {
+            "dominant_base": "Base",
+            "frequency": 0.9,
+            "known_bases": ["Base", "Generic"],
+        }
+    }
+    src = "class Repo(Base, Generic[T, U]):\n    pass\n"
+    assert "inheritance-convention-violation" not in _rules(
+        lint_conventions(src, conv, language="python")
+    )
+
+
+def test_python_wrong_generic_base_still_flags():
+    # FN GUARD: a genuinely wrong base still deviates even when subscripted.
+    src = "class ShipmentRepository(SomethingElse[Shipment]):\n    pass\n"
+    assert "inheritance-convention-violation" in _rules(
+        lint_conventions(src, _PY_GENERIC_CONV, language="python")
+    )

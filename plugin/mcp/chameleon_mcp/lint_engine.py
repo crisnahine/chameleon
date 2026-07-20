@@ -51,7 +51,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from chameleon_mcp.conventions import _classify_casing, _split_compound_suffix
+from chameleon_mcp.conventions import (
+    _classify_casing,
+    _split_compound_suffix,
+    _strip_type_params,
+)
 from chameleon_mcp.kind_labels import humanize_kind
 from chameleon_mcp.signatures import bucket_named_export_count, content_signal_match_for
 
@@ -4646,19 +4650,53 @@ def _python_guard_violations(scan_content: str, conventions: dict) -> list[Viola
     ]
 
 
+def _split_top_level(s: str) -> list[str]:
+    """Split on commas that are NOT inside a bracketed group.
+
+    A generic base carries its own commas (``Generic[T, U]``, ``Dict[str, int]``)
+    and a call/param list nests parens; a naive ``str.split(",")`` fractures
+    those. Track ``([{`` depth so only top-level commas separate items. Shared by
+    the Python base-list parse here and hook_helper's signature-param split.
+    """
+    out: list[str] = []
+    depth = 0
+    cur: list[str] = []
+    for ch in s:
+        if ch in "([{":
+            depth += 1
+            cur.append(ch)
+        elif ch in ")]}":
+            depth = max(0, depth - 1)
+            cur.append(ch)
+        elif ch == "," and depth == 0:
+            out.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    if cur:
+        out.append("".join(cur))
+    return out
+
+
 def _py_positional_bases(bases_raw: str | None) -> list[str]:
     """Positional base names from a class's base list, dropping keyword args
-    (``metaclass=...``), unpackings (``*bases``), and the universal ``object``."""
+    (``metaclass=...``), unpackings (``*bases``), and the universal ``object``.
+
+    A subscripted generic base (``BaseRepository[Shipment]``, ``Generic[T]``) is
+    normalized to its own name via ``_strip_type_params`` -- the SAME strip the
+    derivation applies before counting the dominant base, so the lint compares
+    like against like. Without it a typed cohort's ``BaseRepository[Shipment]``
+    never matched the derived ``BaseRepository`` and the inheritance rule
+    false-positived on every generic class on every edit.
+    """
     out: list[str] = []
     if bases_raw:
-        for part in bases_raw.split(","):
+        for part in _split_top_level(bases_raw):
             part = part.strip()
-            if (
-                not part
-                or "=" in part
-                or part.startswith("*")
-                or part in ("object", "builtins.object")
-            ):
+            if not part or "=" in part or part.startswith("*"):
+                continue
+            part = _strip_type_params(part)
+            if not part or part in ("object", "builtins.object"):
                 continue
             out.append(part)
     return out
