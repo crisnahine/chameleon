@@ -197,6 +197,31 @@ Highest-value confirmed residuals (each demonstrated with a real invocation by i
 | GAP-013 | The ten new role names were added to the filename map but not the *directory* map, so `repositories/`, `handlers/`, `clients/` as packages still miss. |
 | GAP-016 | The widened gemspec regex requires whitespace before the quote, so `spec.add_dependency("x")` (no space) still parses to zero findings. |
 
+### Fixes I re-verified myself, not via an agent
+
+Five claims were checked directly by me with real invocations on brand-new fixtures, to avoid
+relaying an agent's verdict on load-bearing points:
+
+| Gap | My verdict | Evidence |
+|---|---|---|
+| GAP-019 (generic bases normalized) | **HOLDS** | `py-plain` fixture has `Repository[Detection]`, `Repository[Waveform]`, `Repository[Network]`… → derived `dominant_base: "Repository"` at frequency 0.875 over 8 samples. Without normalization each parameterization is a distinct base and no convention clears the floor. |
+| GAP-028 (pairing floor) | **HOLDS** | `TEST_PAIRING_MIN_SAMPLE=5` now matches `MIN_SAMPLE_SIZE=5`, and `test_pairing` is genuinely derived on 5 fresh fixtures across all 3 languages (2–6 archetypes each). |
+| GAP-034 (torn `.eslintrc.json`) | **HOLDS** | Purpose-built repro with a truncated `.eslintrc.json` → `rules.json` records `"parse_warning": "malformed JSON in .eslintrc.json: Expecting ',' delimiter: line 4 column 1"`, not a silent bare pass. |
+| GAP-004 (engine floor) | **HOLDS** | A fresh bootstrap stamps `engine_min_version: "3.0.0"` (a static floor) alongside `engine_version: "4.4.52"` — not the self-orphaning "own version" the bug described. |
+| GAP-008 (call-graph honesty) | **PARTIAL — residual confirmed** | See below. |
+
+**GAP-008, verified both directions.** Accuracy is excellent: `get_callers` on a module-level
+function returned `total: 7` with five caller records and exact line numbers `[41] [75] [33]
+[32,35] [95,98]` — an independent grep found exactly those seven sites, so 100% precision and
+recall. The instance-dispatch case is handled honestly: `get_by_email`, called as
+`self._applicants.get_by_email(...)`, returns `total: 0` *with* the blind-spot note.
+
+But the residual the fix re-audit reported is real. The note is gated on the answer being **empty**:
+the 7-caller response carried `truncated: false` and **no note at all**. A function whose callers mix
+module-level and instance dispatch therefore returns an affirmative, complete-looking answer that
+silently omits the instance calls — which is more dangerous than the `total: 0` case the fix
+addressed, because zero at least invites suspicion.
+
 ---
 
 ## 4. Re-verified matrix — first-party evidence
