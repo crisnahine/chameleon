@@ -5104,21 +5104,29 @@ def posttool_recorder() -> int:
     is_bash = isinstance(tool_name, str) and tool_name == "Bash"
 
     tool_input = _as_dict(payload.get("tool_input"))
-    tool_response = _as_dict(payload.get("tool_response"))
+    tool_response = payload.get("tool_response")
     command = tool_input.get("command", "")
     session_id = payload.get("session_id", "unknown")
-    # The documented Bash PostToolUse response carries `exit_code`
-    # (code.claude.com/docs/en/hooks.md#posttooluse: exit_code / stdout / stderr /
-    # interrupted). Reading `returnCode` matched nothing, so EVERY command logged
-    # the -1 absent-value sentinel and `session_test_run_seen` -- which requires a
-    # zero exit -- could never be true: the turn-end "no passing test run" nudge
-    # was unsatisfiable no matter how much the user tested. `returnCode` is kept
-    # as a fallback so a harness that still sends the old key keeps working.
+    # The Bash tool_response carries no exit status at all: a captured payload is
+    # {stdout, stderr, interrupted, isImage, noOutputExpected}. Reading a status
+    # key -- under any spelling -- therefore always missed, every command logged
+    # the -1 absent-value sentinel, and `session_test_run_seen` (which requires a
+    # zero exit) could never be true, leaving the turn-end "no passing test run"
+    # nudge unsatisfiable no matter how much the user tested.
+    #
+    # The event itself is the status. PostToolUse fires only after a tool call
+    # SUCCEEDS; a failed call raises PostToolUseFailure instead, which this hook
+    # is not registered for. So reaching here for a Bash command means that
+    # command exited zero, and the explicit keys stay as a preferred source for
+    # any host or harness that does send one.
     #
     # An interrupted command (timeout, user cancel) is NOT a passing run even when
-    # it reports exit 0 -- it may have run none of the suite -- so it degrades to
-    # the same sentinel rather than silencing the nudge on work that never
+    # the call reports success -- it may have run none of the suite -- so it
+    # degrades to the sentinel rather than silencing the nudge on work that never
     # completed.
+    # Only a genuinely present response object evidences a completed call. An
+    # absent or non-dict `tool_response` is a malformed payload, not a success,
+    # and keeps the sentinel.
     exit_code = None
     if isinstance(tool_response, dict):
         if tool_response.get("interrupted"):
@@ -5127,7 +5135,7 @@ def posttool_recorder() -> int:
             raw = tool_response.get("exit_code")
             if raw is None:
                 raw = tool_response.get("returnCode")
-            exit_code = raw
+            exit_code = 0 if raw is None else raw
 
     if not is_bash:
         _emit({})

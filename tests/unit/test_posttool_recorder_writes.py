@@ -208,8 +208,12 @@ def test_nonzero_exit_code_preserved(tmp_path: Path):
     assert record["exit_code"] == 127
 
 
-def test_missing_return_code_defaults_to_minus_one(tmp_path: Path):
-    """tool_response present but without returnCode -> exit_code stored as -1."""
+def test_status_free_response_records_success(tmp_path: Path):
+    """No status key -> exit_code 0: PostToolUse fires only on a successful call.
+
+    This is the shape a live session sends for every Bash command, so treating it
+    as unknown left the whole exec log at the -1 sentinel.
+    """
     repo = _make_non_git_repo(tmp_path)
     repo_id = _expected_repo_id(repo)
 
@@ -217,7 +221,7 @@ def test_missing_return_code_defaults_to_minus_one(tmp_path: Path):
         {
             "tool_name": "Bash",
             "tool_input": {"command": "echo hi"},
-            "tool_response": {"stdout": "hi"},  # no returnCode key
+            "tool_response": {"stdout": "hi", "stderr": "", "interrupted": False},
             "session_id": "s1",
             "cwd": str(repo),
         },
@@ -225,7 +229,7 @@ def test_missing_return_code_defaults_to_minus_one(tmp_path: Path):
     )
 
     record = _read_only_log_record(tmp_path, repo_id)
-    assert record["exit_code"] == -1
+    assert record["exit_code"] == 0
 
 
 def test_missing_tool_response_entirely(tmp_path: Path):

@@ -16,6 +16,10 @@ campaign is designed to prevent.
                                              [--effectiveness ...]
     qa-matrix.py show <cell_id>
     qa-matrix.py audit                     integrity check of the ledger itself
+
+`--ledger PATH` points every command at a different cell file. An independent
+re-verification keeps its own ledger so its verdicts can never be confused with,
+or silently merged into, the run it is auditing.
 """
 
 from __future__ import annotations
@@ -34,20 +38,24 @@ EVIDENCE_REQUIRED = {"PASS", "NA-ASSERTED"}
 VALID = {"PENDING", "PASS", "FAIL", "NA-ASSERTED", "BLOCKED"}
 
 
-def load() -> list[dict]:
-    return [json.loads(line) for line in LEDGER.read_text().splitlines() if line.strip()]
+def _ledger(args) -> Path:
+    return Path(args.ledger) if getattr(args, "ledger", None) else LEDGER
 
 
-def save(rows: list[dict]) -> None:
+def load(path: Path = LEDGER) -> list[dict]:
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def save(rows: list[dict], path: Path = LEDGER) -> None:
     # Rewrite whole-file: the ledger is small enough that an atomic replace is
     # cheaper than tracking offsets, and a torn ledger would strand the campaign.
-    tmp = LEDGER.with_suffix(".jsonl.tmp")
+    tmp = path.with_suffix(".jsonl.tmp")
     tmp.write_text("".join(json.dumps(r) + "\n" for r in rows))
-    tmp.replace(LEDGER)
+    tmp.replace(path)
 
 
 def cmd_status(args) -> int:
-    rows = load()
+    rows = load(_ledger(args))
     by_surface = defaultdict(Counter)
     by_column = defaultdict(Counter)
     for r in rows:
@@ -86,7 +94,7 @@ def cmd_status(args) -> int:
 
 
 def cmd_next(args) -> int:
-    rows = load()
+    rows = load(_ledger(args))
     pend = [r for r in rows if r["status"] == "PENDING"]
     if args.column:
         pend = [r for r in pend if r["column"] == args.column]
@@ -106,7 +114,7 @@ def cmd_mark(args) -> int:
     if args.status in EVIDENCE_REQUIRED and not (args.evidence or "").strip():
         print(f"REFUSED: {args.status} requires --evidence (an unevidenced pass is untested)")
         return 2
-    rows = load()
+    rows = load(_ledger(args))
     hit = False
     for r in rows:
         if r["cell_id"] == args.cell_id:
@@ -122,13 +130,13 @@ def cmd_mark(args) -> int:
     if not hit:
         print(f"no such cell: {args.cell_id}")
         return 1
-    save(rows)
+    save(rows, _ledger(args))
     print(f"{args.cell_id} -> {args.status}")
     return 0
 
 
 def cmd_show(args) -> int:
-    for r in load():
+    for r in load(_ledger(args)):
         if r["cell_id"] == args.cell_id:
             print(json.dumps(r, indent=2))
             return 0
@@ -137,7 +145,7 @@ def cmd_show(args) -> int:
 
 
 def cmd_audit(args) -> int:
-    rows = load()
+    rows = load(_ledger(args))
     problems = []
     ids = Counter(r["cell_id"] for r in rows)
     dupes = [k for k, v in ids.items() if v > 1]
@@ -168,6 +176,7 @@ def cmd_audit(args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--ledger", help="cell file to operate on (default: the campaign ledger)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("status").set_defaults(fn=cmd_status)
