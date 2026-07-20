@@ -253,6 +253,37 @@ test, and all three are correct. Derived archetype names are genuinely useful �
 `view`, `form`, `admin`, `migration`, `urls` for Django. This is the plugin's core value proposition
 and it demonstrably works on unfamiliar code.
 
+### Per-edit conformance — the core value proposition, driven on all 10
+
+A real `PreToolUse` fire for a NEW file in each fixture's dominant layer, on the trusted profile:
+
+| Col | Archetype resolved | Confidence / match | Context |
+|---|---|---|---:|
+| C1 ts-plain | `service` | high / exact | 6,655 B |
+| C2 ts-nextjs | `lib-module-2` | high / exact | 6,253 B |
+| C3 ts-nestjs | `service` | medium / ast | 2,258 B |
+| C4 rb-plain | `class-renderers` | low / fallback | 3,079 B |
+| C5 rb-rails | `service` | high / exact | 3,721 B |
+| C6 py-plain | `service` | high / ast | 2,572 B |
+| C7 py-django | `service` | high / exact | 8,069 B |
+| C8 py-drf | `serializer` | medium / ast | 2,519 B |
+| C9 py-flask | `service` | high / exact | — |
+| C10 py-fastapi | `service` | high / exact | 6,160 B |
+
+**9 of 10 resolve to the correct layer**, 8 of them carrying a canonical witness and a
+reuse-before-create list. The one weak name is C2's `lib-module-2` — a numeric disambiguator, and
+`lib/` in that repo really is a grab-bag of unrelated subdirectories, so the name is uninformative
+but not wrong.
+
+**A false alarm I raised against myself, worth recording.** My first C9 probe used
+`app/services/digest_service.py` and got `class-clients, confidence=low, match_quality=fallback` —
+which looks like a wrong-layer match. It was my error: that repo co-locates services as
+`app/<feature>/services.py` and has no `app/services/` directory at all. Re-probed at the repo's
+real convention, C9 returns `service, confidence=high, match_quality=exact`. Chameleon did the right
+thing on a path that matches no cohort: it fell back and **said so** via `confidence=low,
+match_quality=fallback` rather than asserting a confident wrong answer. That honesty signal is
+load-bearing, and it worked.
+
 ### Hook robustness — confirmed, no exceptions
 
 21 hostile payloads × all 6 hooks: empty stdin, 300 random bytes, null fields, missing keys,
