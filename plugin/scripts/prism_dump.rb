@@ -160,7 +160,31 @@ def constant_name(node)
   when Prism::ConstantReadNode
     node.name.to_s
   when Prism::ConstantPathNode
-    node.full_name
+    # Walk the path manually instead of full_name: older bundled prism
+    # versions (0.19 on Ruby 3.3) drop or mishandle the root anchor, so
+    # `::Audit` read back as bare `Audit` and the lexical resolver treated an
+    # absolute reference as ambiguous. Newer prism exposes the segment name
+    # as #name; older only as #child (a ConstantReadNode). A dynamic parent
+    # (self::FOO, expr::FOO) is not a static constant -- return nil.
+    parts = []
+    cur = node
+    while cur.is_a?(Prism::ConstantPathNode)
+      seg =
+        if cur.respond_to?(:name) && cur.name
+          cur.name.to_s
+        elsif cur.respond_to?(:child) && cur.child.respond_to?(:name)
+          cur.child.name.to_s
+        end
+      return nil if seg.nil? || seg.empty?
+      parts.unshift(seg)
+      cur = cur.parent
+    end
+    case cur
+    when nil
+      "::#{parts.join('::')}"
+    when Prism::ConstantReadNode
+      ([cur.name.to_s] + parts).join('::')
+    end
   end
 rescue StandardError
   nil
