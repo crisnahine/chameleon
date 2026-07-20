@@ -4,6 +4,21 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.52] - 2026-07-20
+
+### Fixed
+
+- **A `core` / `common` / `shared` cohort is named after its directory instead of a hash.**
+  These three read generic, so they sat in `_STRUCTURAL_DIRS` alongside the source roots and
+  could never name a cluster -- the cohort fell through to a `cluster-<hash>` archetype. A hash
+  carries strictly LESS information than the directory it replaced: the per-edit header read
+  `archetype=cluster-b2ee7e53` for `app/core/` where `archetype=core` was available and correct.
+  Found by bootstrapping ten brand-new fixture repos on the deployed plugin -- 4 of 10 carried a
+  hashed archetype, every one for exactly these directories. After the fix, hashed archetypes
+  across the ten fixtures drop from 5 to 2, and both survivors are cohorts sitting directly in an
+  `app/` source root, where no single name is honest and the hash remains right. Source roots
+  (`src`, `app`, `packages`, `lib`) stay excluded and keep their own regression test.
+
 ## [4.4.51] - 2026-07-20
 
 ### Fixed
