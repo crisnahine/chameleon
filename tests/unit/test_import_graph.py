@@ -113,6 +113,56 @@ class TestAliasResolution:
         assert layering["forbidden_upward_edges"][0]["from"] == "model"
 
 
+class TestPythonSourceRoots:
+    def test_absolute_import_resolves_under_src_root(self, tmp_path: Path):
+        # The PyPA src/ layout writes an absolute intra-package import WITHOUT
+        # the src/ prefix, because src/ is the source root, not a package.
+        # Probing only the repo root found nothing, so the edge was silently
+        # dropped as "external" and layering, cycles and reexport-chase were
+        # empty on every src-layout repo. symbol_index._python_source_roots
+        # already models this (the calls index and reverse index both use it);
+        # the layering resolver simply did not.
+        from chameleon_mcp.bootstrap.import_graph import _resolve_python
+
+        target = _write(tmp_path / "src" / "coldchain" / "config.py")
+        importer = _write(tmp_path / "src" / "coldchain" / "db.py")
+        assert _resolve_python("coldchain.config", importer, tmp_path) == target
+
+    def test_absolute_import_resolves_under_non_package_source_root(self, tmp_path: Path):
+        # The other shape the shared helper models: a backend/ service dir that
+        # is not itself a package but directly contains one.
+        from chameleon_mcp.bootstrap.import_graph import _resolve_python
+
+        target = _write(tmp_path / "backend" / "app" / "models.py")
+        _write(tmp_path / "backend" / "app" / "__init__.py")
+        importer = _write(tmp_path / "backend" / "app" / "readers.py")
+        assert _resolve_python("app.models", importer, tmp_path) == target
+
+    def test_src_layout_layering_edge_is_built(self, tmp_path: Path):
+        cfg = _write(tmp_path / "src" / "coldchain" / "config.py")
+        svc_files = [
+            _pf(
+                _write(tmp_path / "src" / "coldchain" / "services" / f"s{i}.py"),
+                [("coldchain.config", "named")],
+            )
+            for i in range(3)
+        ]
+        layering = build_layering(
+            files_by_archetype={"service": svc_files, "config": [_pf(cfg, [])]},
+            repo_root=tmp_path,
+            language="python",
+        )
+        assert layering["forbidden_upward_edges"], "no edge built for a src-layout import"
+
+    def test_flat_layout_still_resolves(self, tmp_path: Path):
+        # The flat layout (the other documented option) must be unaffected.
+        from chameleon_mcp.bootstrap.import_graph import _resolve_python
+
+        target = _write(tmp_path / "coldchain" / "config.py")
+        importer = _write(tmp_path / "coldchain" / "db.py")
+        assert _resolve_python("coldchain.config", importer, tmp_path) == target
+
+
 class TestRubyResolution:
     def test_require_relative_resolves(self, tmp_path: Path):
         base = _write(tmp_path / "lib" / "base.rb")

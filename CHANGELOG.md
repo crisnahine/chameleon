@@ -4,6 +4,27 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.40] - 2026-07-20
+
+### Fixed
+- Layering, import cycles and reexport-chase were empty on every Python
+  src-layout repo. `import_graph._resolve_python` probed an absolute spec
+  (`pkg.sub`) against the repo root only, but a src-layout repo writes that
+  import with no `src/` prefix (src/ is the source root, not a package), so it
+  resolved to nothing and every cross-file edge was silently dropped as
+  "external". On a real fixture, `coldchain.config`, `coldchain.errors` and
+  `coldchain.logging` -- all genuine intra-package imports -- each resolved to
+  `None` while the files sat on disk.
+
+  The resolver now probes every Python source root via
+  `symbol_index._python_source_roots`, the SAME helper the calls index and the
+  reverse index already resolve through, so all three agree on what a specifier
+  points at (it also covers the non-package `backend/` service-root shape, not
+  just `src/`). The repo root is probed first, so flat-layout repos are
+  unchanged. This was a duplicated-resolver drift, the same class as the Ruby
+  DSL regex in v4.4.38: the correct implementation already existed and this call
+  site simply never used it.
+
 ## [4.4.39] - 2026-07-20
 
 ### Fixed

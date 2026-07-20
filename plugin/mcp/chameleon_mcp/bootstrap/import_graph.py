@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from chameleon_mcp._thresholds import threshold
+from chameleon_mcp.symbol_index import _python_source_roots
 
 if TYPE_CHECKING:
     from chameleon_mcp.extractors._base import ParsedFile
@@ -164,20 +165,37 @@ def _resolve_python(spec: str, from_file: Path, repo_root: Path) -> Path | None:
             base = base.parent
         if rest:
             base = base / Path(rest.replace(".", "/"))
+        bases = [base]
     else:
-        base = repo_root / Path(spec.replace(".", "/"))
-    try:
-        base = base.resolve()
-        base.relative_to(repo_root.resolve())
-    except (OSError, ValueError):
-        return None
-    candidates = (Path(str(base) + ".py"), Path(str(base) + ".pyi"), base / "__init__.py")
-    try:
-        for cand in candidates:
-            if cand.is_file():
-                return cand
-    except OSError:
-        return None
+        # An absolute spec is probed against every Python source root, not just
+        # the repo root: a src-layout repo writes `pkg.sub` with no `src/`
+        # prefix (src/ is the source root, not a package), so probing the repo
+        # root alone resolved nothing and every cross-file edge was dropped as
+        # "external" -- leaving layering, cycles and reexport-chase empty on the
+        # whole repo. `_python_source_roots` is the same helper the calls index
+        # and the reverse index already resolve through, so all three agree on
+        # what a specifier points at. Repo root is probed first, so flat-layout
+        # repos are unchanged.
+        rel = Path(spec.replace(".", "/"))
+        bases = [src_root / rel for src_root in _python_source_roots(repo_root)]
+
+    for base in bases:
+        try:
+            resolved = base.resolve()
+            resolved.relative_to(repo_root.resolve())
+        except (OSError, ValueError):
+            continue
+        candidates = (
+            Path(str(resolved) + ".py"),
+            Path(str(resolved) + ".pyi"),
+            resolved / "__init__.py",
+        )
+        try:
+            for cand in candidates:
+                if cand.is_file():
+                    return cand
+        except OSError:
+            continue
     return None
 
 
