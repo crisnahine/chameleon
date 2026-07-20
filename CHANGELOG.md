@@ -4,6 +4,35 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.1] - 2026-07-20
+
+### Added
+
+- **Module-object imports are importer edges**: `from app.services import shipment_service`
+  breaks on a rename of the module file, and `query_symbol_importers` now lists such sites
+  (kind `module`) — excluded from export-set consumers so a module name is never judged
+  against an export set.
+- **Co-located `*.spec.ts` files get a cross-directory archetype** with a real witness (via the
+  existing allow-tests canonical retry), instead of one-member sparse clusters with no guidance;
+  role clusters — spec included — are dense at two members.
+- **Repo-wide preferred imports**: a convention carried by nearly every file (the
+  `from __future__ import annotations` in 33 of 34 files) now renders as advisory
+  `(repo-wide)` IMPORTS lines even when every cluster is under the per-archetype sample floor.
+  Archetype-scoped enforcement is untouched.
+- **Symmetric export-style advisory**: adding a default export where the archetype exports
+  named bindings only now flags `default-export-kind-mismatch` (warning), mirroring the
+  long-standing missing-default direction.
+- The verify cooldown windows are operator-tunable thresholds
+  (`CHAMELEON_VERIFY_SEEN_TTL_SECONDS` / `CHAMELEON_VERIFY_ESCALATED_TTL_SECONDS`).
+
+### Fixed
+
+- A multi-witness structural tie now prefers the candidate carrying a content signal, so one
+  signal-less witness can no longer disable the directive check for its whole archetype.
+- The statusline cache records the plugin data dir its trust states were read from; a render
+  under a different `CHAMELEON_PLUGIN_DATA` universe ignores it instead of serving another
+  universe's trust line.
+
 ## [4.5.0] - 2026-07-20
 
 ### Added
