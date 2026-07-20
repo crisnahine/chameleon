@@ -1601,6 +1601,33 @@ class TestPythonSrcLayout:
         roots = _python_source_roots(tmp_path.resolve())
         assert roots == [tmp_path.resolve()]
 
+    def test_absolute_import_resolves_under_two_level_source_root(self, tmp_path):
+        # A package rooted two levels down (`plugin/mcp/chameleon_mcp`, a
+        # `services/billing/billing` monorepo service): neither `plugin/` nor
+        # `plugin/mcp/` is a package, only the grandchild is, so the one-level
+        # probe missed it and every intra-package absolute import silently
+        # dropped its cross-file edge.
+        _touch(tmp_path, "plugin/mcp/chameleon_mcp/__init__.py")
+        _touch(tmp_path, "plugin/mcp/chameleon_mcp/store.py")
+        _touch(tmp_path, "plugin/mcp/chameleon_mcp/helper.py")
+        target = FakeParsed(
+            tmp_path / "plugin" / "mcp" / "chameleon_mcp" / "store.py",
+            {"named_export_names": ["append_row"], "export_set_open": False},
+        )
+        caller = FakeParsed(
+            tmp_path / "plugin" / "mcp" / "chameleon_mcp" / "helper.py",
+            {
+                "import_symbols": [
+                    {"name": "append_row", "module": "chameleon_mcp.store", "line": 4}
+                ],
+                "call_sites": [_site("append_row", None, "bare", 9, "record")],
+            },
+        )
+        idx = build_calls_index([target, caller], tmp_path, "python")
+        entry = idx["callees"]["plugin/mcp/chameleon_mcp/store.py"]["append_row"]
+        assert entry["callers"][0]["grade"] == "import"
+        assert entry["callers"][0]["path"] == "plugin/mcp/chameleon_mcp/helper.py"
+
 
 class TestModuleAttribute:
     """Python `from pkg import mod; mod.func()` submodule-attribute edges: the
@@ -1853,3 +1880,47 @@ def test_load_refuses_uncommitted_profile(tmp_path):
     assert load_calls_index(repo) is None
     (cham / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     assert load_calls_index(repo) is not None
+
+
+def test_dump_capped_file_is_persisted_and_loaded(tmp_path):
+    # A file whose dump hit the per-file call-site cap must be persisted as
+    # capped_files and survive the load round trip, so query time can say
+    # "callers from this file may be missing" instead of a confident zero.
+    _touch(tmp_path, "src/util.ts")
+    _touch(tmp_path, "src/hub.ts")
+    target = FakeParsed(
+        tmp_path / "src" / "util.ts",
+        {"named_export_names": ["helper"], "export_set_open": False},
+    )
+    hub = FakeParsed(
+        tmp_path / "src" / "hub.ts",
+        {
+            "import_symbols": [{"name": "helper", "module": "./util", "line": 1}],
+            "call_sites": [_site("helper", None, "bare", 5, "boot")],
+            "call_sites_truncated": True,
+        },
+    )
+    idx = build_calls_index([target, hub], tmp_path, "typescript")
+    assert idx["capped_files"] == ["src/hub.ts"]
+    # An entry whose kept callers include a capped contributor is a lower
+    # bound, so the builder marks it truncated.
+    assert idx["callees"]["src/util.ts"]["helper"]["truncated"] is True
+    _write_index(tmp_path, idx)
+    loaded = load_calls_index(tmp_path)
+    assert loaded is not None
+    assert loaded.capped_files == frozenset({"src/hub.ts"})
+
+
+def test_artifact_without_capped_key_loads_empty_capped_set(tmp_path):
+    # Backward compatibility: an artifact built before capped_files existed
+    # (or one built with no capped file) loads with an empty set.
+    _write_index(
+        tmp_path,
+        {
+            "schema_version": SCHEMA_VERSION,
+            "callees": {"a.ts": {"fn": {"callers": [], "total": 0, "truncated": False}}},
+        },
+    )
+    loaded = load_calls_index(tmp_path)
+    assert loaded is not None
+    assert loaded.capped_files == frozenset()

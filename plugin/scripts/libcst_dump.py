@@ -45,8 +45,21 @@ MAX_FILE_SIZE = 1_000_000
 # outlier file cannot bloat the dump record (consensus needs a sample, not all).
 MAX_CALLABLE_SIGNATURES = 200
 # One file's recorded call sites are capped so a generated megafile cannot bloat
-# the dump; the true total is preserved for honest truncation.
-MAX_CALL_SITES = 2000
+# the dump; the true total is preserved for honest truncation. A real hub
+# module (a 5k-line helper) can legitimately carry several thousand sites, so
+# the default leaves headroom; CHAMELEON_MAX_CALL_SITES overrides it (same
+# variable and default in ts_dump.mjs / prism_dump.rb — keep the three in sync).
+
+
+def _env_cap(name: str, default: int) -> int:
+    try:
+        value = int(os.environ.get(name, ""))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+MAX_CALL_SITES = _env_cap("CHAMELEON_MAX_CALL_SITES", 10_000)
 
 # Decision points for branch_count: the cyclomatic decision set minus boolean
 # operators. `elif` is a nested `If` in libcst, so it counts as another branch

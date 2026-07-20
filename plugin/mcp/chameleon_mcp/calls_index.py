@@ -594,7 +594,13 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
             }
         callees_out[callee_rel] = names_out
 
-    return {"schema_version": SCHEMA_VERSION, "callees": callees_out}
+    out = {"schema_version": SCHEMA_VERSION, "callees": callees_out}
+    # Persist which files hit the dump-time site cap so QUERY time can say
+    # "callers from these files may be missing" instead of serving an
+    # authoritative-looking zero. Additive key: an older loader ignores it.
+    if dump_capped_rels:
+        out["capped_files"] = sorted(dump_capped_rels)
+    return out
 
 
 class CallsIndex:
@@ -603,8 +609,15 @@ class CallsIndex:
     (the consumer treats that as "no cross-file facts", never as "no
     callers")."""
 
-    def __init__(self, callees: dict[str, dict[str, dict]]) -> None:
+    def __init__(
+        self, callees: dict[str, dict[str, dict]], capped_files: frozenset[str] = frozenset()
+    ) -> None:
         self._callees = callees
+        # Files whose dump-time call-site record hit the per-file cap: caller
+        # rows sourced from them are a lower bound, and a callee whose ONLY
+        # callers sat beyond the cap has no entry at all. Query paths surface
+        # this so an empty answer is never mistaken for a verified zero.
+        self.capped_files = capped_files
 
     def callers_of(self, rel: str, name: str) -> dict | None:
         """``{"callers": [...], "total": int, "truncated": bool}`` or None.
@@ -756,6 +769,13 @@ def load_calls_index(repo_root: Path | str | None) -> CallsIndex | None:
         if names:
             callees[rel] = names
 
-    index = CallsIndex(callees)
+    raw_capped = data.get("capped_files")
+    capped = (
+        frozenset(c for c in raw_capped if isinstance(c, str))
+        if isinstance(raw_capped, list)
+        else frozenset()
+    )
+
+    index = CallsIndex(callees, capped_files=capped)
     _CALLS_CACHE[key] = (token, index)
     return index

@@ -26,8 +26,13 @@ const MAX_FILE_SIZE = 1_000_000;
 // bloat the dump record (the consensus only needs a representative sample).
 const MAX_CALLABLE_SIGNATURES = 200;
 // One file's recorded call sites are capped so a generated megafile cannot
-// bloat the dump; the true total is preserved for honest truncation.
-const MAX_CALL_SITES = 2000;
+// bloat the dump; the true total is preserved for honest truncation. A real
+// hub module can legitimately carry several thousand sites, so the default
+// leaves headroom; CHAMELEON_MAX_CALL_SITES overrides it (same variable and
+// default in libcst_dump.py / prism_dump.rb — keep the three in sync).
+const _envCallSiteCap = Number.parseInt(process.env.CHAMELEON_MAX_CALL_SITES || "", 10);
+const MAX_CALL_SITES =
+  Number.isFinite(_envCallSiteCap) && _envCallSiteCap > 0 ? _envCallSiteCap : 10000;
 
 function getScriptKind(filePath) {
   if (filePath.endsWith(".tsx")) return ts.ScriptKind.TSX;

@@ -12,8 +12,12 @@ MAX_FILE_SIZE = 1_000_000
 # one outlier file cannot bloat the dump record (consensus needs a sample).
 MAX_CALLABLE_SIGNATURES = 200
 # One file's recorded call sites are capped so a generated megafile cannot
-# bloat the dump; the true total is preserved for honest truncation.
-MAX_CALL_SITES = 2000
+# bloat the dump; the true total is preserved for honest truncation. A real
+# hub module can legitimately carry several thousand sites, so the default
+# leaves headroom; CHAMELEON_MAX_CALL_SITES overrides it (same variable and
+# default in libcst_dump.py / ts_dump.mjs -- keep the three in sync).
+_env_call_site_cap = ENV['CHAMELEON_MAX_CALL_SITES'].to_i
+MAX_CALL_SITES = _env_call_site_cap.positive? ? _env_call_site_cap : 10_000
 
 def kind_name(node)
   node.class.name.split('::').last

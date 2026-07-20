@@ -3889,6 +3889,25 @@ EMPTY_CALLEES_NOTE = (
     "before relying on this; run /chameleon-refresh if the snapshot may be stale."
 )
 
+DUMP_CAPPED_NOTE = (
+    " Additionally, some files in this repo had more call sites than the per-file "
+    "derivation cap records (see dump_capped_files); an edge inside those files "
+    "may be missing from this answer even though the file was analyzed."
+)
+
+
+def _dump_capped_payload(index, repo_root, arg_root, sanitize) -> dict | None:
+    """Compact ``{count, examples}`` for capped dump files, or None when none.
+
+    Names at most three files so the caller can grep exactly where the graph
+    may undercount; ``count`` carries the true total.
+    """
+    capped = getattr(index, "capped_files", None)
+    if not capped:
+        return None
+    examples = [sanitize(_reroot_rel(rel, repo_root, arg_root)) for rel in sorted(capped)[:3]]
+    return {"count": len(capped), "examples": examples}
+
 
 def _calls_index_unavailable_reason(repo_root: Path) -> str:
     """Why load_calls_index returned None: never built vs present-but-stale.
@@ -4017,6 +4036,8 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
 
     from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _sanitize
 
+    _capped = _dump_capped_payload(index, repo_root, _arg_root, _sanitize)
+
     entry = index.callers_of(rel, function_name)
     if entry is None:
         # The (file, name) pair was not recorded -- a known-absent callee is a
@@ -4030,8 +4051,10 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
             "callers": [],
             "total": 0,
             "truncated": False,
-            "note": EMPTY_CALLERS_NOTE,
+            "note": EMPTY_CALLERS_NOTE + (DUMP_CAPPED_NOTE if _capped else ""),
         }
+        if _capped:
+            result["dump_capped_files"] = _capped
         # Self-correcting negative: when the module HAS recorded callees under
         # other names, a near-miss (typo, camel/snake drift, renamed symbol)
         # is far likelier than a genuinely uncalled function -- name the
@@ -4103,7 +4126,9 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
     # caller" answer; carry the same absence-is-not-dead-code caveat the
     # known-absent branch and get_blast_radius already return.
     if not clean_callers:
-        result["note"] = EMPTY_CALLERS_NOTE
+        result["note"] = EMPTY_CALLERS_NOTE + (DUMP_CAPPED_NOTE if _capped else "")
+    if _capped:
+        result["dump_capped_files"] = _capped
     return _envelope(result)
 
 
@@ -4239,18 +4264,21 @@ def get_blast_radius(repo: str, file_path: str, function_name: str, depth: int =
             ]
         )
 
-    return _envelope(
-        {
-            "found": True,
-            "module": _sanitize(_reroot_rel(rel, repo_root, _arg_root)),
-            "function": _sanitize(function_name),
-            "depth": resolved_depth,
-            "chains": clean_chains,
-            "reached": radius["reached"],
-            "truncated": radius["truncated"],
-            "note": BLAST_RADIUS_NOTE,
-        }
-    )
+    result = {
+        "found": True,
+        "module": _sanitize(_reroot_rel(rel, repo_root, _arg_root)),
+        "function": _sanitize(function_name),
+        "depth": resolved_depth,
+        "chains": clean_chains,
+        "reached": radius["reached"],
+        "truncated": radius["truncated"],
+        "note": BLAST_RADIUS_NOTE,
+    }
+    _capped = _dump_capped_payload(index, repo_root, _arg_root, _sanitize)
+    if _capped:
+        result["note"] = BLAST_RADIUS_NOTE + DUMP_CAPPED_NOTE
+        result["dump_capped_files"] = _capped
+    return _envelope(result)
 
 
 def get_prose_rule_candidates(repo: str) -> dict:
@@ -4680,7 +4708,8 @@ def get_callees(repo: str, file_path: str, function_name: str) -> dict:
         out["status"] = "untrusted"
         return _envelope(out)
 
-    if load_calls_index(repo_root) is None:
+    _callees_index = load_calls_index(repo_root)
+    if _callees_index is None:
         out = dict(empty)
         out["reason"] = _calls_index_unavailable_reason(repo_root)
         return _envelope(out)
@@ -4719,6 +4748,14 @@ def get_callees(repo: str, file_path: str, function_name: str) -> dict:
     # consumer echoing the payload never reads empty as "calls nothing".
     if not clean:
         result["note"] = EMPTY_CALLEES_NOTE
+    # When THIS file's own dump-time call-site record hit the cap, its later
+    # outbound calls never reached the index -- say so instead of letting the
+    # answer read as the file's complete forward edge set.
+    if rel in getattr(_callees_index, "capped_files", frozenset()):
+        result["note"] = result.get("note", "") + DUMP_CAPPED_NOTE
+        result["dump_capped_files"] = _dump_capped_payload(
+            _callees_index, repo_root, _arg_root, _ss
+        )
     return _envelope(result)
 
 

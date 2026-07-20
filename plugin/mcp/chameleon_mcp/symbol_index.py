@@ -390,11 +390,15 @@ def _python_source_roots(root: Path) -> list[Path]:
     is the universal convention (and a PEP 420 namespace src-layout has no
     ``__init__`` for discovery to key on); plus any other immediate child that is
     NOT itself a package but DIRECTLY CONTAINS one (e.g. a ``backend/`` service
-    dir). An absolute ``pkg.sub`` then resolves under whichever root holds
-    ``pkg/``. A child that is itself a package (has ``__init__``) is the package,
-    not a root, so it is skipped -- flat-layout and package-rooted repos are
-    unchanged because the root is probed first. Build-time only, bounded to one
-    directory level; a root that holds nothing simply yields None on probe.
+    dir), plus one level deeper: a grandchild dir that is not a package but
+    directly contains one (a ``plugin/mcp/`` holding ``chameleon_mcp/``, a
+    ``services/billing/`` holding ``billing/``). An absolute ``pkg.sub`` then
+    resolves under whichever root holds ``pkg/``. A child that is itself a
+    package (has ``__init__``) is the package, not a root, so it is skipped --
+    flat-layout and package-rooted repos are unchanged because the root is
+    probed first. Build-time only, bounded to two directory levels with the
+    non-source dirs pruned at each; a root that holds nothing simply yields
+    None on probe.
     """
     roots = [root]
     src = root / "src"
@@ -403,6 +407,20 @@ def _python_source_roots(root: Path) -> list[Path]:
             roots.append(src)
     except OSError:
         src = None
+
+    def _is_package(d: Path) -> bool:
+        return (d / "__init__.py").exists() or (d / "__init__.pyi").exists()
+
+    def _source_subdirs(d: Path) -> list[Path]:
+        try:
+            return sorted(
+                s
+                for s in d.iterdir()
+                if s.is_dir() and s.name not in _PY_NON_SOURCE_DIRS and not s.name.startswith(".")
+            )
+        except OSError:
+            return []
+
     try:
         children = sorted(p for p in root.iterdir() if p.is_dir())
     except OSError:
@@ -411,15 +429,18 @@ def _python_source_roots(root: Path) -> list[Path]:
         if child == src or child.name in _PY_NON_SOURCE_DIRS or child.name.startswith("."):
             continue
         try:
-            if (child / "__init__.py").exists() or (child / "__init__.pyi").exists():
+            if _is_package(child):
                 # child is itself a package: its modules import from the root.
                 continue
-            if any(
-                (sub / "__init__.py").exists() or (sub / "__init__.pyi").exists()
-                for sub in child.iterdir()
-                if sub.is_dir() and sub.name not in _PY_NON_SOURCE_DIRS
-            ):
+            subs = _source_subdirs(child)
+            if any(_is_package(sub) for sub in subs):
                 roots.append(child)
+            for sub in subs:
+                # A non-package grandchild dir holding a package is a root too
+                # (the two-level layout); a package sub already resolves via
+                # child when child was appended above.
+                if not _is_package(sub) and any(_is_package(g) for g in _source_subdirs(sub)):
+                    roots.append(sub)
         except OSError:
             continue
     return roots
