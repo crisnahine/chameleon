@@ -254,11 +254,48 @@ def cluster_files(
     else:
         resolved_threshold = max(1, int(min_cluster_size))
 
+    def _threshold_for_cluster(key, members, root, resolved: int) -> int:
+        """Role-bucketed clusters are dense at two members.
+
+        A framework role bucket (Django's cross-app ``views.py`` -> ``view``,
+        a Next.js ``page.tsx``, a Nest ``*.service.ts``) is an intentional
+        semantic grouping: two apps' views files ARE the repo's view layer.
+        The adaptive floor exists to stop accidental path-shaped groupings
+        from becoming archetypes, so it must not drop the deliberate ones --
+        a two-app Django repo otherwise bootstraps with its models, views and
+        serializers all sparse and unguided. A single-member cluster stays
+        sparse either way (one file is a location, not a layer).
+        """
+        if resolved <= 2 or not members:
+            return resolved
+        try:
+            p = members[0].path
+            rel = str(p.relative_to(root)) if root is not None else str(p)
+        except (ValueError, OSError):
+            return resolved
+        try:
+            from chameleon_mcp.signatures import (
+                nestjs_role_for_path,
+                nextjs_role_for_path,
+                python_role_for_path,
+            )
+
+            if any(
+                fn(rel) is not None
+                for fn in (python_role_for_path, nextjs_role_for_path, nestjs_role_for_path)
+            ):
+                return 2
+        except Exception:
+            return resolved
+        return resolved
+
     clusters = [
         Cluster(
             key=k,
             members=members,
-            sparse_threshold=resolved_threshold,
+            sparse_threshold=_threshold_for_cluster(
+                k, members, repo_root, resolved_threshold
+            ),
             sub_bucket_counts=dict(sub_bucket_counter[k]),
         )
         for k, members in by_key.items()
@@ -303,7 +340,10 @@ def _loose_merge_sparse_clusters(clusters: list[Cluster], sparse_threshold: int)
     tight: list[Cluster] = []
     sparse_by_bucket: dict[tuple[str, bool], list[Cluster]] = defaultdict(list)
     for c in clusters:
-        if c.size >= sparse_threshold:
+        # Each cluster's OWN threshold, not the global one: a role-bucketed
+        # cluster dense at two members must pass through untouched, not be
+        # loose-merged as if it were an accidental grouping.
+        if c.size >= c.sparse_threshold:
             tight.append(c)
             continue
         bucket_key = (c.key.path_pattern_bucket or "", bool(c.key.jsx_present))
