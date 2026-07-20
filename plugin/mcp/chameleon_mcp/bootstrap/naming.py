@@ -828,10 +828,46 @@ def _dominant_layer_name(member_paths: Iterable[str]) -> str | None:
 
     top, count = Counter(parents).most_common(1)[0]
     if count / len(parents) < _DOMINANT_DIR_RATIO:
-        return None
+        return _common_ancestor_name(member_paths)
     if top in _STRUCTURAL_DIRS:
         return None
     return _sanitize(_singularize(top))
+
+
+def _common_ancestor_name(member_paths: Iterable[str]) -> str | None:
+    """Name from the deepest directory the WHOLE cohort shares, or None.
+
+    A cohort spanning a package and its subpackages has no dominant immediate
+    parent (``chameleon_mcp/`` next to ``chameleon_mcp/bootstrap/`` and
+    ``chameleon_mcp/stop/``), so the layer vote above fails and the archetype
+    fell to ``cluster-<hash>`` -- even though every member sits under one
+    package directory whose name is exactly what the file IS. Walk the shared
+    path prefix and take its deepest non-structural segment. Kept verbatim
+    (no singularizing): a package or app name is a proper noun, not a layer.
+    """
+    prefixes: list[list[str]] = []
+    for path in member_paths or ():
+        segments = [s for s in str(path).replace("\\", "/").split("/")[:-1] if s]
+        prefixes.append(segments)
+    if len(prefixes) < _DOMINANT_DIR_MIN_MEMBERS:
+        return None
+    common = prefixes[0]
+    for segs in prefixes[1:]:
+        limit = min(len(common), len(segs))
+        i = 0
+        while i < limit and common[i] == segs[i]:
+            i += 1
+        common = common[:i]
+        if not common:
+            return None
+    for segment in reversed(common):
+        lowered = segment.lower()
+        if lowered in _STRUCTURAL_DIRS:
+            continue
+        candidate = _sanitize(lowered)
+        if candidate is not None:
+            return candidate
+    return None
 
 
 def _short_hash_for(cluster: Any) -> str:

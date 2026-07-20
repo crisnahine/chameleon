@@ -805,3 +805,25 @@ def test_known_token_still_wins_over_the_directory_fallback():
     # The existing ladder is more specific; the fallback must not preempt it.
     members = [f"app/controllers/c_{i}.rb" for i in range(7)]
     assert _base_name_for(_cluster(bucket="app/controllers:rb", members=members)) == "controller"
+
+
+def test_package_spanning_subpackages_names_after_common_ancestor():
+    # A package rooted deeper than the repo (plugin/mcp/chameleon_mcp) whose
+    # cohort spans the package dir AND its subpackages has no dominant
+    # immediate parent, so the layer vote fails; the deepest shared
+    # non-structural directory is the package itself and names the cohort.
+    members = (
+        [f"plugin/mcp/chameleon_mcp/mod_{i}.py" for i in range(5)]
+        + [f"plugin/mcp/chameleon_mcp/bootstrap/b_{i}.py" for i in range(3)]
+        + [f"plugin/mcp/chameleon_mcp/stop/s_{i}.py" for i in range(3)]
+    )
+    name = _base_name_for(_cluster(bucket="plugin/mcp/chameleon_mcp:py", members=members))
+    assert name == "chameleon-mcp", f"cohort fell back to {name!r}"
+
+
+def test_cohort_spanning_unrelated_dirs_keeps_the_hash():
+    # No dominant parent AND no shared non-structural ancestor: the honest
+    # answer is still the hash, never a borrowed name.
+    members = [f"src/alpha/a_{i}.ts" for i in range(4)] + [f"src/beta/b_{i}.ts" for i in range(4)]
+    name = _base_name_for(_cluster(bucket="src:ts", members=members))
+    assert name is None
