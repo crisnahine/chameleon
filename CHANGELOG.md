@@ -4,6 +4,20 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.53] - 2026-07-20
+
+### Fixed
+
+- **`/chameleon-journey` asks before spending.** The skill documented the cost (~$38, ~65 min, $40
+  cap) but its Run section went straight to the spawning command, with no step that puts the
+  decision to the user -- so a bare `/chameleon-journey` could start an hour-long billed run
+  unprompted. That contradicts the project's own testing policy, which says of this exact harness:
+  "Run before a release, not on every `/qa`. Ask before spending." The skill now requires a free
+  `--dry-run` preflight, a stated projection, and an affirmative confirmation before the first
+  Claude-spawning command; `--dry-run` and `--list` stay ungated, and an explicit authorization in
+  the user's own message still skips the prompt. Found by driving all 14 slash commands as real
+  headless sessions.
+
 ## [4.4.52] - 2026-07-20
 
 ### Fixed

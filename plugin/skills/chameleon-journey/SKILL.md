@@ -14,9 +14,24 @@ Run the journey harness at `tests/journey/`. The harness verifies chameleon's fu
 
 Full run: 21 acts, ~$38 cost ceiling, ~65 min runtime, $40 hard budget cap (default `--max-budget-usd`).
 
+## Confirm the spend first
+
+A full run bills real API usage and takes about an hour, so it is not something to start on the
+user's behalf from a bare `/chameleon-journey`. Before the first Claude-spawning command:
+
+1. Run `--dry-run` (free) to confirm the preflight passes, and `--list` if the user wants to see
+   what would execute.
+2. State the projected cost, the runtime, and the budget cap that will apply.
+3. **Ask the user to confirm, and wait for an affirmative answer.** Typing the slash command is a
+   request to use the harness, not standing approval to spend ~$38.
+
+Skip the confirmation only when the user's own message already authorized the spend (an explicit
+"yes, run the full journey" or a `--max-budget-usd` they chose themselves). A run gated to zero
+spend (`--dry-run`, `--list`) needs no confirmation.
+
 ## Run
 
-From the chameleon repo (clone) root:
+Only after the user has confirmed. From the chameleon repo (clone) root:
 
 ```bash
 PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.journey.runner
