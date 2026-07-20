@@ -4,6 +4,17 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.2] - 2026-07-20
+
+### Fixed
+
+- **Constant paths are extracted portably across prism versions.** Ruby 3.3's bundled prism
+  (0.19) drops the root anchor from `ConstantPathNode#full_name`, so a `::Audit` reference read
+  back as bare `Audit` and the lexical resolver treated an absolute reference as ambiguous — a
+  CI-only failure the local prism 1.9 never showed. The dump now walks the path segments itself
+  (keeping the `::` anchor on every version) and returns nil for dynamic parents (`self::FOO`)
+  instead of stringifying them.
+
 ## [4.5.1] - 2026-07-20
 
 ### Added
