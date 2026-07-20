@@ -300,6 +300,18 @@ class TestEslint:
         assert res.sources["eslint"] == ".eslintrc.yaml"
         assert res.parse_warnings["eslint"].startswith("malformed YAML in .eslintrc.yaml:")
 
+    def test_malformed_eslintrc_json_records_warning(self, tmp_path):
+        # A torn .eslintrc.json (the format a NestJS scaffold ships) must record a
+        # parse_warning like every other eslint format -- the JSON reader alone
+        # swallowed the error with a bare `pass`, so a broken config read as "no
+        # eslint config declared" and the orchestrator's eslint parse_warning
+        # branch was dead for JSON.
+        (tmp_path / ".eslintrc.json").write_text('{ "rules": { "no-console": "warn", TORN')
+        res = read_tool_configs(tmp_path)
+        assert res.eslint is None
+        assert res.sources["eslint"] == ".eslintrc.json"
+        assert res.parse_warnings["eslint"].startswith("malformed JSON in .eslintrc.json:")
+
     def test_eslintrc_js_static_parse_succeeds(self, tmp_path):
         # Default path (no eval): static regex parser handles simple literals.
         (tmp_path / ".eslintrc.js").write_text(

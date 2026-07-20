@@ -61,6 +61,7 @@
 | GAP-031 | **HIGH** | API-shape principle gate missed singular route/router/blueprint, so it never fired on Flask/FastAPI | 4.4.47 |
 | GAP-032 | docs | using-chameleon skill description omitted Next.js/NestJS from its framework-awareness list (under-advertised TS support) | 4.4.48 |
 | GAP-033 | precision | Python inheritance lint FP on subscripted-generic bases (BaseRepository[X] != BaseRepository); enforcement twin of GAP-019 | 4.4.49 |
+| GAP-034 | **HIGH** | torn .eslintrc.json swallowed silently (bare pass), dropped its parse_warning; GAP-030 class still live for the JSON format NestJS ships | 4.4.50 |
 | GAP-009b-ii | **HIGH** | naming table listed 6 of 15 NestJS role suffixes; feature-co-located `*.repository.ts` hashed | 4.4.34 |
 | GAP-017-ii | precision | root E501 opt-out overridden by an enforcing sibling app's `line_length` (mixed per-app config) | 4.4.34 |
 

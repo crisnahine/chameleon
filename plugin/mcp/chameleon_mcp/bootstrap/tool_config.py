@@ -162,8 +162,15 @@ def read_tool_configs(repo_root: Path) -> ToolConfigResult:
                 result.eslint = json.loads(_strip_jsonc_comments(_read_capped(p)))
                 result.sources["eslint"] = name
                 break
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as exc:
+                # Record the failure like the YAML/JS/tsconfig readers do; the
+                # JSON reader alone used a bare `pass`, so a torn .eslintrc.json
+                # (the format a NestJS scaffold ships) read as "no eslint config
+                # declared" and the orchestrator's eslint parse_warning branch
+                # was dead for JSON. Keep scanning the other formats.
+                result.sources["eslint"] = name
+                result.parse_warnings["eslint"] = f"malformed JSON in {name}: {exc}"
+                break
 
     if result.eslint is None:
         for name in (".eslintrc.yml", ".eslintrc.yaml"):

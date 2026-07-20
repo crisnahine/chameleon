@@ -4,6 +4,25 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.50] - 2026-07-20
+
+### Fixed
+- A torn `.eslintrc.json` / `.eslintrc` was silently swallowed, dropping its
+  "broken config" signal. The JSON eslintrc reader alone caught `JSONDecodeError`
+  with a bare `pass` and recorded no `parse_warning`, while the `.eslintrc.yml`,
+  `.eslintrc.js`, tsconfig and rubocop readers all record one -- so a malformed
+  `.eslintrc.json` (the format a NestJS scaffold ships) read as "no eslint config
+  declared", and the orchestrator's `elif "eslint" in parse_warnings` branch was
+  dead for JSON. The reader now records `malformed JSON in <name>: <err>` and the
+  source, mirroring the other formats, so a torn config surfaces its warning in
+  rules.json. This is the same GAP-030 class the v4.4.46 python_format fix
+  addressed; that commit's claim that "eslint wires this through" was only true
+  for the YAML/JS formats, not JSON. Verified end-to-end on a fresh repo with a
+  torn `.eslintrc.json`. Found by the step-7 clean-room re-verification on a
+  brand-new NestJS fixture. (Prettier has the same bare-`pass` in its JSON reader
+  but no orchestrator consumer, so it produces no user-visible signal either way
+  and was deliberately left unchanged.)
+
 ## [4.4.49] - 2026-07-20
 
 ### Fixed
