@@ -7,7 +7,7 @@ exercise by a reviewer who did not perform the original campaign. `TESTING.md` c
 Every such claim was treated as unproven until reproduced here.
 
 **Baseline audited:** `b79b15c` (v4.4.50), branch `plugin-testing-fixes`, working tree clean.
-**Shipped by this verification:** v4.4.51, v4.4.52 (both tagged, both deployed and re-verified).
+**Shipped by this verification:** v4.4.51 → v4.4.55 (five releases, all tagged, deployed and re-verified).
 **Date:** 2026-07-20 · host `darwin 25.5.0` arm64 · claude CLI 2.1.215.
 
 ---
@@ -20,7 +20,7 @@ but `TESTING.md`'s final claim is overstated in three specific, demonstrable way
 | Claim in `TESTING.md` | Verdict |
 |---|---|
 | 7,680 cells driven by real invocation, 0 FAIL | **Overstated.** The ledger is real and the fixes are real, but ~1,600 cells carry evidence tagged to a plugin version older than the fixes that followed, and 270 skill cells were filled by reading `SKILL.md` files and calling the underlying MCP tool rather than invoking the slash command. |
-| Every shipped fix holds | **Mostly true, one false.** 33 fixes independently re-audited: 32 hold for their reported scenario; **GAP-005 was never actually fixed** and is repaired here. |
+| Every shipped fix holds | **Mostly true, one false.** 33 fixes independently re-audited: 32 hold for their reported scenario; **GAP-005 was never actually fixed** and is repaired here. ~30 carry a demonstrated adjacent gap. |
 | Fresh-repo clean-room confirms every fix | **Directionally true, not sufficient.** 10 brand-new repos built here reproduce a defect class the campaign declared resolved (opaque `cluster-<hash>` archetype names in 4 of 10). Fixed here as v4.4.52. |
 | Robustness / fail-open holds under hostile input | **Confirmed.** 21 hostile payloads × 6 hooks: zero crashes, zero malformed output. This claim held up completely. |
 | Framework classification correct in all 10 columns | **Confirmed** on 10 brand-new repos the fixes were never tuned against. 10/10. |
@@ -150,6 +150,58 @@ it replaced.
 
 **Fix (v4.4.52).** The three are removed from the exclusion set; source roots stay excluded and keep
 a dedicated regression test. Verified across all 10 languages/frameworks (§4).
+
+### F-4 — `/chameleon-journey` could start a ~$38 billed run with no confirmation. (HIGH, fixed → v4.4.53)
+
+Found by driving the command for real rather than reading its `SKILL.md`. The skill documented the
+cost (~$38, ~65 min, $40 cap) but its Run section went straight to the spawning command, with no
+step putting the decision to the user. The project's own testing policy says of this exact harness:
+*"Run before a release, not on every `/qa`. **Ask before spending.**"*
+
+Reading the skill file — which is how the original campaign scored this cell — shows the cost
+prominently and looks fine. Only invoking it exposes that nothing ever asks. Fixed: a free
+`--dry-run` preflight, a stated projection, and an affirmative answer are now required;
+`--dry-run` and `--list` stay ungated.
+
+### F-5 — An idiomatic RSpec spec produced no canonical witness. (HIGH, fixed → v4.4.54)
+
+The GAP-024 re-audit claimed plain-RSpec Ruby still ships a witnessless test archetype. I built a
+paired A/B to isolate it: two gems identical except that one's specs carry `require "spec_helper"`.
+
+```
+bare         test witness = []                                    per-edit ctx = 657 B, no witness block
+withrequire  test witness = [spec/clients/invoice_client_spec.rb]  per-edit ctx = 1067 B, witness block present
+```
+
+One line of difference. And the bare form is the *standard* layout — `rspec --init` writes `.rspec`
+with `--require spec_helper`, so an idiomatic spec has no top-level require.
+
+**Root cause.** The Ruby dimension extractor recognized only `class` / `module` / `def` / `require`
+at column 0. A spec whose sole top-level node is `RSpec.describe … do` reported
+`top_level_node_kinds == []`, canonical selection scored every member `trivial`, and the archetype
+shipped with no witness.
+
+**Fix.** A top-level receiver call opening a block (`do` / `{`) now counts as a `CallNode`. The block
+opener is required, so an ordinary statement (`puts x`, a bare `Foo.bar`) still does not read as a
+declaration. Green: the bare variant now yields the same witness as the require variant.
+
+### F-6 — Every flat ESLint config reported a cause that was not true. (MEDIUM, fixed → v4.4.55)
+
+Both TypeScript fixtures produced:
+
+```
+"parse_warning": "eslint.config.mjs: no top-level module.exports assignment found"
+```
+
+The file has no `module.exports` precisely because it correctly uses `export default` — the
+canonical flat-config shape in ESLint's own documentation (an array, usually via `defineConfig([…])`
+or `tseslint.config(…)`), and the default since ESLint 9. The message sent a reader hunting for a
+CommonJS export that was never meant to exist, and named no way forward.
+
+**I deliberately did not change the parse behaviour.** Reading a flat config means resolving spreads,
+imports and helper calls — i.e. executing it — which is gated behind `CHAMELEON_ALLOW_ESLINT_EVAL`
+so an untrusted repo's code never runs during bootstrap. That boundary is correct and tested. The
+warning now states exactly that and points at the flag.
 
 ---
 
@@ -318,9 +370,9 @@ merged into the run it audits; driven via `qa-matrix.py --ledger`).
 
 | | cells |
 |---|---:|
-| Re-driven with first-party evidence | **450** (5.9%) |
+| Re-driven with first-party evidence | **651** (8.5%) |
 | Covered by the 33-fix adversarial re-audit | in addition, not cell-mapped |
-| Not re-driven | 7,230 |
+| Not re-driven | 7,027 |
 
 **I did not re-drive all 7,680 cells, and I am not going to claim I did.** Doing so with genuine real
 invocations is a multi-session exercise. What I re-drove is the load-bearing subset: the full
@@ -348,6 +400,22 @@ unprompted. This contradicts the project's own testing policy, which says of thi
 *"Run before a release, not on every `/qa`. **Ask before spending.**"* Fixed in **v4.4.53**: a free
 `--dry-run` preflight, a stated projection, and an affirmative confirmation are now required;
 `--dry-run` and `--list` stay ungated.
+
+**C2 (Next.js) corroborates C3 and adds two findings.** `/chameleon-init` auto-renamed 7 of 13
+archetypes to human-readable names (`lib-module` → `repository`, `test` → `service-test`), left zero
+hashes, and disclosed 17 below-floor files and a bimodal cluster unprompted. `/chameleon-teach`
+again re-verified the taught claim against the tree instead of trusting it, and named the exact file
+and line (`legacy-import-service.ts:7`) that enabling enforcement would break — then stopped rather
+than editing source. `/chameleon-trust` refused to grant in a `--permission-mode bypassPermissions`
+headless session without a typed token, which is the correct security posture.
+
+Its two new findings: the flat-ESLint warning (F-6, fixed), and a **critical** claim that
+`/chameleon-pr-review` produced no review across three real invocations on a diff with 8+ planted
+defects, wedging past an 870 s timeout. **I could not verify that claim first-party** — reproducing
+it needs the `claude -p` sessions the account limit blocked. It is recorded as *unverified*, not as
+a confirmed defect, and is the single highest-priority item for a follow-up session. Note the same
+agent also reported a harness defect of its own (parallel columns sharing one scratchpad, so capture
+files clobbered each other), which is a plausible alternative explanation for an empty capture.
 
 **A second C3 claim I narrowed.** The auditor reported that the `test` archetype covers only 3 of
 14 spec files, so *"11 domain spec files get no archetype guidance."* The cluster count is right
@@ -421,12 +489,16 @@ so I stopped and documented it instead. Root cause, reproduction, and fix design
 
 ## 6. What is unresolved or unverified — stated plainly
 
-- **7,230 of 7,680 cells were not re-driven by me.** They may well be correct; I did not verify them.
-- **4 of 37 claimed fixes are unaudited** (GAP-019, GAP-028, GAP-034, GAP-035) — the agents assigned
-  to them hit a session limit.
-- **The 14 slash commands are still being re-driven** as real headless sessions across all 10 columns
-  (M-4). Results were not available when this document was written. This is the single largest
-  remaining gap in the original campaign's evidence, and it is in flight, not closed.
+- **7,027 of 7,680 cells were not re-driven by me.** They may well be correct; I did not verify them.
+- **The 14 slash commands were driven in only 2 of 10 columns** (C2 Next.js, C3 NestJS). Three
+  attempts were made; the account's session limit stopped the rest. **C1 and C4–C10 are unverified
+  for the skills surface** — this remains the largest gap in the original campaign's evidence and I
+  am not inferring those columns from the two that ran.
+- **One critical claim is unverified:** that `/chameleon-pr-review` produces no review at all on a
+  real diff (C2, three attempts). Reproducing it needs the sessions the limit blocked, and the same
+  agent reported a harness bug that could explain an empty capture. Highest-priority follow-up.
+- **1 of 37 claimed fixes is unaudited** (GAP-035). GAP-019, GAP-028 and GAP-034 were re-verified
+  first-party after their agents were cut off — all three HOLD.
 - **M-7 (dashed-gem layer collapse) is open** with a documented root cause and a rejected naive fix.
 - **~30 adjacent residuals** surfaced by the fix re-audit (§3) are recorded but not fixed. Each is a
   real, demonstrated gap; none is a regression of a shipped fix.
@@ -442,6 +514,9 @@ so I stopped and documented it instead. Root cause, reproduction, and fix design
 | v4.4.51 | Record a Bash run's real exit status (F-1) | Live session: `exit_code=0 test_seen=True` |
 | v4.4.51 | Deploy + verify the installed-plugin registry pin (F-2) | `verify` now fails on a stale pin |
 | v4.4.52 | Name `core`/`common`/`shared` cohorts after their directory (F-3) | Hashed archetypes 5 → 2 across 10 fixtures |
+| v4.4.53 | `/chameleon-journey` asks before spending (F-4) | Skill had no consent step before a ~$38 run |
+| v4.4.54 | Give an idiomatic RSpec spec a canonical witness (F-5) | Paired A/B: witness `[]` → present; context 657 B → 1,044 B |
+| v4.4.55 | Name the real cause for an unreadable flat ESLint config (F-6) | Warning no longer cites a `module.exports` the file never had |
 
 Supporting tooling: `scripts/qa-mcp-call.py` (exercise MCP tools over the *real* stdio transport
 rather than an in-process import) and `qa-matrix.py --ledger` (a separate cell file for an
@@ -474,7 +549,16 @@ What is not true:
 - "Every fix holds" is false in one case (GAP-005) and incomplete in about thirty, where a
   hand-curated list is correct for the tuned layout and wrong for a common alternative.
 - The clean-room sign-off could not have been fully load-bearing: brand-new fixtures built here
-  immediately reproduced a defect class the report declared resolved.
+  immediately reproduced a defect class the report declared resolved, and driving the slash commands
+  for real in just two columns produced four more defects worth releasing (F-3 through F-6).
+
+**The pattern across all six findings.** Every one was invisible to the method that scored it green.
+GAP-005 was invisible to a unit test written from the same misreading of the docs. F-2 was invisible
+to a byte-for-byte directory diff. F-4 was invisible to reading the skill file, where the cost is
+documented prominently. F-5 was invisible to any fixture whose specs happened to carry a `require`.
+F-6 was invisible to a bootstrap that checks only whether a warning exists, not whether it is true.
+**Real invocation is not a more thorough version of static verification — it observes a different
+thing**, and the campaign's ~1,600 statically-scored cells are where I would look next.
 
 **The single most important lesson** is F-2. The campaign built a careful protocol to guarantee it
 never tested a stale plugin, wrote a script to enforce it, and the script checked three of the four
