@@ -4,6 +4,17 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.6] - 2026-07-21
+
+### Changed
+
+- **The deep-work brief is a fixed 9-slot template**, completing what v4.5.5 did for the
+  delivery report. Round 4 of the graded sonnet runs scored 9/10 with the report template fully
+  complied — the one surviving omission was the brief's step plan, which sonnet keeps collapsing
+  into the files list. The plan slot now has a literal per-step shape ("<n>. <action> ->
+  verify: <check for THIS step>") with the collapse explicitly named as non-compliant, and the
+  brief gets the same pre-send completeness pass as the report.
+
 ## [4.5.5] - 2026-07-21
 
 ### Changed

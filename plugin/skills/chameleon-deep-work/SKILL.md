@@ -209,40 +209,44 @@ library API, a protocol detail:
 
 ## Step 4: The 100% Understanding Brief (the comeback)
 
-The gate between digging and building. Every box checked, or back to Steps
-2-3:
+The gate between digging and building. Like the Step 7 report, the brief is
+a FIXED template, not a free-form summary: render every slot below in order,
+an empty slot as `<slot>: none - <reason>`, never silently dropped. A slot
+that does not appear in the rendered brief was not done:
 
-- [ ] Goal and acceptance criteria restated
-- [ ] Every file to create or change is listed, each with its archetype and
-      canonical (or "unprofiled - manual conformance" honestly noted)
-- [ ] Every symbol whose contract changes has its callers / blast radius
-      mapped, with the update plan for each call site
-- [ ] Every unknown is resolved (with where it was verified) or defaulted
-      (with the chosen default and the reason)
-- [ ] The unknowns list survived a re-enumeration audit (the final pass added
-      zero new items, or the cap was hit and the leftovers are named here)
-- [ ] Every expert answer a decision rests on was verified first-hand (the
-      cited line read, the cited doc fetched) or is marked unverified in
-      the brief
-- [ ] The step plan exists, ordered, each step with its own verification
-- [ ] Risks named, with the rollback (the worktree makes rollback trivial;
-      say what else, if anything, is hard to undo)
-- [ ] The dig-ladder line: "Ladder: used <rungs> | skipped <rungs> - <reason>"
-      (rungs 1-4 by name; on a trusted repo over ~40 files a skipped rung
-      needs a real reason, not silence)
-- [ ] The experts line: "Experts: <N> dispatched (<one per unknown>)" or
-      "Experts: none - <reason>" (over ~100 files with 2+ independent
-      unknowns, "none" needs the reason)
+1. **Goal & criteria** - restated, numbered.
+2. **Files** - every file to create or change, each with its archetype and
+   canonical (or "unprofiled - manual conformance" honestly noted).
+3. **Contracts** - every symbol whose contract changes, its callers / blast
+   radius mapped, the update plan for each call site.
+4. **Unknowns** - each one resolved (with where it was verified, file:line)
+   or defaulted (with the chosen default and the reason). Every expert
+   answer a decision rests on was verified first-hand or is marked
+   unverified here.
+5. **Re-audit line** - "Unknowns re-audit: 0 new" or the leftovers named.
+6. **Plan** - the ordered steps, each step ON ITS OWN LINE in the shape
+   `<n>. <action> -> verify: <the specific check for THIS step>`. This slot
+   is the one most often collapsed into slot 2 - a files list is WHERE the
+   work happens, a plan is the ORDER it happens in and how each increment is
+   proven; "verify: covered by the final test suite" on every line is a
+   collapsed plan, not a plan.
+7. **Risks & rollback** - the worktree makes rollback trivial; say what
+   else, if anything, is hard to undo.
+8. **Ladder line** - "Ladder: used <rungs> | skipped <rungs> - <reason>"
+   (rungs 1-4 by name; on a trusted repo over ~40 files a skipped rung
+   needs a real reason, not silence).
+9. **Experts line** - "Experts: <N> dispatched (<one per unknown>)" or
+   "Experts: none - <reason>" (over ~100 files with 2+ independent
+   unknowns, "none" needs the reason).
 
-Present the brief to the user, compact. The RENDERED brief must visibly carry
-(1) the ordered step plan with each step's verification, (2) the
-re-enumeration line ("unknowns re-audit: 0 new" or the leftovers), and (3)
-file:line for every evidence claim - a bare filename is a pointer, not
-evidence; a checked box that does not appear in the rendered brief was not
-checked. Then PROCEED - do not end the turn with "shall I continue?". The contract forbids question-stalling, the
-worktree makes every implementation step reversible, and the user interrupts
-if the direction is wrong. The one thing that pauses the skill is a hard
-dependency (contract rule 2c), stated in one line.
+Before presenting, run the same completeness pass as Step 7: all 9 slots
+present in order, file:line for every evidence claim (a bare filename is a
+pointer, not evidence), slot 6 in the literal per-step shape. Present it
+compact, then PROCEED - do not end the turn with "shall I continue?". The
+contract forbids question-stalling, the worktree makes every implementation
+step reversible, and the user interrupts if the direction is wrong. The one
+thing that pauses the skill is a hard dependency (contract rule 2c), stated
+in one line.
 
 ## Step 5: Implement in a worktree
 
