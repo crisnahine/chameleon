@@ -293,9 +293,7 @@ def cluster_files(
         Cluster(
             key=k,
             members=members,
-            sparse_threshold=_threshold_for_cluster(
-                k, members, repo_root, resolved_threshold
-            ),
+            sparse_threshold=_threshold_for_cluster(k, members, repo_root, resolved_threshold),
             sub_bucket_counts=dict(sub_bucket_counter[k]),
         )
         for k, members in by_key.items()
