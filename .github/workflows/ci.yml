@@ -67,7 +67,7 @@ jobs:
           cache-dependency-glob: 'plugin/mcp/uv.lock'
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '20'
           cache: 'npm'
@@ -160,7 +160,7 @@ jobs:
           cache-dependency-glob: 'plugin/mcp/uv.lock'
 
       - name: Set up Node.js (bootstrap's TypeScript extractor)
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '20'
           cache: 'npm'
@@ -318,7 +318,7 @@ jobs:
           pip-audit --desc on --progress-spinner off
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '20'
 
