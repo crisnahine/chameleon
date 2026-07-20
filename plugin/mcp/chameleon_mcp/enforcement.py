@@ -311,9 +311,11 @@ def _evict_if_needed(state: EnforcementState) -> None:
 
 
 def cooldown_for_level(level: int) -> int:
+    from chameleon_mcp._thresholds import threshold_int
+
     if level == LEVEL_NONE:
-        return 30
-    return 5
+        return threshold_int("VERIFY_SEEN_TTL_SECONDS")
+    return threshold_int("VERIFY_ESCALATED_TTL_SECONDS")
 
 
 def is_self_correction(file_state: FileState, now: float) -> bool:

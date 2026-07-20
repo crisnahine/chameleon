@@ -1832,7 +1832,14 @@ def session_start() -> int:
                     pass
 
         if profiles:
-            cache_data: dict = {"profiles": profiles}
+            # The data dir the trust states were read from: a cache written
+            # under a test-isolated CHAMELEON_PLUGIN_DATA must not be served
+            # to a render running against the default universe (or vice
+            # versa), so the reader compares and ignores a mismatched cache.
+            cache_data: dict = {
+                "profiles": profiles,
+                "data_dir": str(_plugin_data_dir()),
+            }
             if upgrade_badge:
                 cache_data["update"] = upgrade_badge
             cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -5201,7 +5208,6 @@ def posttool_recorder() -> int:
 
 
 _EDIT_TOOLS: frozenset[str] = frozenset({"Edit", "Write", "NotebookEdit"})
-_VERIFY_SEEN_TTL_SECONDS = 30
 
 
 def _lint_file_in_process(
@@ -6404,7 +6410,11 @@ def posttool_verify() -> int:
         marker = repo_data_dir / (f".verify_seen.{_safe_session_marker(session_id)}.{file_hash}")
         content_digest = _content_digest_16(content)
 
-        cooldown_ttl = _VERIFY_SEEN_TTL_SECONDS
+        # Same source as the escalated window: the never-flagged branch of
+        # cooldown_for_level, so the TTL pair lives in _thresholds together.
+        from chameleon_mcp.enforcement import LEVEL_NONE, cooldown_for_level
+
+        cooldown_ttl = cooldown_for_level(LEVEL_NONE)
         if enforcement_state is not None and file_state is not None:
             try:
                 # The escalated TTL is NOT zeroed during the self-correction

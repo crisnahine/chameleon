@@ -59,6 +59,11 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # line against the CURRENT checkout (the profile's line can be production-ref
     # derived or predate a local edit). Bounded so the per-edit verify stays cheap.
     "NEARBY_SIG_VERIFY_MAX_BYTES": 200_000,
+    # PostToolUse verify dedup windows: how long a byte-identical re-verify is
+    # skipped for a never-flagged file, and the shorter window once the file has
+    # escalated (L0+) so iterating on a flagged file re-renders promptly.
+    "VERIFY_SEEN_TTL_SECONDS": 30,
+    "VERIFY_ESCALATED_TTL_SECONDS": 5,
     # Cooldown FLOOR for a migration-triggered auto-refresh (engine upgrade or a
     # profile missing calibration). The general auto-refresh cooldown is
     # max_age_hours*3600//4 (up to ~42h), which a pre-upgrade refresh's marker

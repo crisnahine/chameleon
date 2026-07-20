@@ -116,7 +116,16 @@ except Exception:
 fi
 
 cache_file="$project_dir/.claude/.chameleon-statusline-cache"
-if [[ -f "$cache_file" ]]; then
+if [[ -f "$cache_file" ]] && command -v jq &>/dev/null; then
+  # A cache written under a different CHAMELEON_PLUGIN_DATA universe (test
+  # isolation) must not be served here: its trust states describe another
+  # data dir. An absent data_dir field (older cache) is accepted.
+  cache_data_dir=$(jq -r '.data_dir // empty' "$cache_file" 2>/dev/null || true)
+  if [[ -n "$cache_data_dir" && "$cache_data_dir" != "${CHAMELEON_PLUGIN_DATA:-$HOME/.local/share/chameleon}" ]]; then
+    cache_file=""
+  fi
+fi
+if [[ -n "$cache_file" && -f "$cache_file" ]]; then
   if command -v jq &>/dev/null; then
     # One jq pass emits every field as a tagged, tab-separated record so the
     # process spawn count stays constant regardless of profile count (the
