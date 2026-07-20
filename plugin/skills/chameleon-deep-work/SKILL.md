@@ -227,6 +227,12 @@ The gate between digging and building. Every box checked, or back to Steps
 - [ ] The step plan exists, ordered, each step with its own verification
 - [ ] Risks named, with the rollback (the worktree makes rollback trivial;
       say what else, if anything, is hard to undo)
+- [ ] The dig-ladder line: "Ladder: used <rungs> | skipped <rungs> - <reason>"
+      (rungs 1-4 by name; on a trusted repo over ~40 files a skipped rung
+      needs a real reason, not silence)
+- [ ] The experts line: "Experts: <N> dispatched (<one per unknown>)" or
+      "Experts: none - <reason>" (over ~100 files with 2+ independent
+      unknowns, "none" needs the reason)
 
 Present the brief to the user, compact. The RENDERED brief must visibly carry
 (1) the ordered step plan with each step's verification, (2) the
@@ -363,7 +369,14 @@ dependency (contract rule 2c), stated in one line.
   `confirmed` verdict means the decline was wrong: apply the finding, and the
   round is non-converged. If ANY finding was applied, the diff changed - the
   fixes are new unreviewed code, so run round N+1; also re-run the specific
-  verification each applied finding's criterion or gate describes. Terminate
+  verification each applied finding's criterion or gate describes. This has
+  no small-fix exemption: a test-only or 20-line fix is still unreviewed
+  code, and "converged (0 findings after the fix)" without an actual
+  post-fix reviewer run in the record is a mis-claim. The report's
+  convergence line therefore names each round with its applied count -
+  "Review convergence: N round(s) (r1: 3 applied, r2: 0) - converged" -
+  so a final round with a nonzero applied count is self-evidently
+  non-converged. Terminate
   when a round applies zero findings (converged); cap at 3 rounds, and a
   cap-hit with findings still being applied is reported as such, never
   silently. When expert dispatch is unavailable (you are yourself a

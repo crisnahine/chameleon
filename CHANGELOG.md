@@ -4,6 +4,18 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.4] - 2026-07-21
+
+### Changed
+
+- **deep-work round-2 hardenings** from a graded real `--model sonnet` run at real-repo scale
+  (8/10; the checklist-shaped v4.5.3 rules all landed, the prose-shaped ones were bypassed):
+  the dig-ladder and experts obligations move into the Step 4 brief's enumerated checklist as
+  required lines ("Ladder: used ... | skipped ... - reason", "Experts: N dispatched / none -
+  reason"), and review convergence explicitly has no small-fix exemption — the report's
+  convergence line now names each round with its applied count, so a final round that applied a
+  finding is self-evidently non-converged.
+
 ## [4.5.3] - 2026-07-21
 
 ### Changed
