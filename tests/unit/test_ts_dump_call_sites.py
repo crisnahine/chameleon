@@ -148,6 +148,31 @@ def test_enclosing_class_on_methods(tmp_path):
 
 @pytest.mark.skipif(not _HAVE_TS, reason="node + typescript node_modules not available")
 def test_call_sites_cap(tmp_path):
+    # Pin the cap MECHANISM via the operator override rather than the default
+    # (10,000, sized for real hub modules): 2,500 sites under a 2,000 cap must
+    # truncate honestly.
+    import os
+
+    many = "export function f() {\n" + "g();\n" * 2500 + "}\nfunction g() {}\n"
+    f = tmp_path / "many.ts"
+    f.write_text(many, encoding="utf-8")
+    out = subprocess.run(
+        ["node", str(_TS_DUMP)],
+        input=str(f) + "\n",
+        capture_output=True,
+        text=True,
+        check=True,
+        env={**os.environ, "CHAMELEON_MAX_CALL_SITES": "2000"},
+    )
+    rec = json.loads(out.stdout.strip().splitlines()[-1])
+    assert len(rec["call_sites"]) == 2000
+    assert rec["call_sites_truncated"] is True
+    assert rec["call_sites_total"] >= 2500
+
+
+def test_call_sites_default_cap_keeps_hub_module_sites(tmp_path):
+    # The default leaves headroom for a real hub module: 2,500 sites survive
+    # untruncated.
     many = "export function f() {\n" + "g();\n" * 2500 + "}\nfunction g() {}\n"
     f = tmp_path / "many.ts"
     f.write_text(many, encoding="utf-8")
@@ -159,9 +184,8 @@ def test_call_sites_cap(tmp_path):
         check=True,
     )
     rec = json.loads(out.stdout.strip().splitlines()[-1])
-    assert len(rec["call_sites"]) == 2000
-    assert rec["call_sites_truncated"] is True
-    assert rec["call_sites_total"] >= 2500
+    assert len(rec["call_sites"]) >= 2500
+    assert rec["call_sites_truncated"] is False
 
 
 _FIXTURE_ALIASED_IMPORTS = """\

@@ -204,7 +204,8 @@ def test_merge_profiles_unparseable_json_fails_cleanly(tmp_path):
     _write_profile_json(theirs, {"archetypes": {}})
     res = tools.merge_profiles("/x", "/b", str(ours), str(theirs))["data"]
     assert res["status"] == "failed"
-    assert "parse error" in res["error"]
+    assert "not a JSON profile artifact" in res["error"]
+    assert "declining" in res["error"]
     assert res["merged_profile_path"] is None
     # ours.json must be left untouched on a parse failure
     assert ours.read_text() == "{ this is not json"
