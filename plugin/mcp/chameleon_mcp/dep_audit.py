@@ -76,6 +76,19 @@ def _audit_npm(repo_root: Path, *, timeout: int) -> dict:
     except (json.JSONDecodeError, ValueError):
         return _unavailable("npm-audit", "npm audit returned no parseable JSON (offline?)")
 
+    # npm v7+ delivers auditor errors as PARSEABLE JSON: a missing lockfile is
+    # {"error":{"code":"ENOLOCK",...}}, and the same channel carries every
+    # network/registry failure (ENETUNREACH, EAI_AGAIN, E401). Such a body has
+    # neither `metadata` nor `vulnerabilities`, so without this guard it fell
+    # through to status "ok" total 0 -- a security tool reporting a false
+    # all-clear when no audit ran. Degrade to unavailable instead: an error body,
+    # or any object missing BOTH audit keys, is not a clean result.
+    if isinstance(data, dict) and isinstance(data.get("error"), dict):
+        code = data["error"].get("code") or "unknown"
+        return _unavailable("npm-audit", f"npm audit error: {code}")
+    if isinstance(data, dict) and "metadata" not in data and "vulnerabilities" not in data:
+        return _unavailable("npm-audit", "npm audit produced no vulnerability data (offline?)")
+
     # npm v7+ shape: {"vulnerabilities": {<name>: {...}},
     #   "metadata": {"vulnerabilities": {"info":N,"low":N,...,"total":N}}}.
     meta = data.get("metadata") if isinstance(data, dict) else None
@@ -156,6 +169,19 @@ def _audit_bundler(repo_root: Path, *, timeout: int) -> dict:
             current["title"] = stripped.split(":", 1)[1].strip()
     if current:
         advisories.append(current)
+    # Distinguish "ran clean" from "failed to run". bundler-audit prints
+    # `No vulnerabilities found` only on a genuine clean pass; a missing lockfile
+    # prints `Could not find "Gemfile.lock"` and any other failure prints an
+    # error, all with ZERO advisory blocks. Without this, a run that never
+    # audited anything (the Gemfile-only case the manifest gate at run_dep_audit
+    # arms) returned status "ok" total 0 -- the same false all-clear as the npm
+    # error-body bug. Exit code is not the discriminator: a clean pass AND a
+    # missing-lockfile run both exit 0 on modern bundler-audit, and a run WITH
+    # advisories exits non-zero, so the text marker is what separates them.
+    combined = out + "\n" + (proc.stderr or "")
+    if not advisories and "No vulnerabilities found" not in combined:
+        first = next((ln.strip() for ln in combined.splitlines() if ln.strip()), "no output")
+        return _unavailable("bundler-audit", f"bundler-audit did not run cleanly: {first}")
     return {
         "tool": "bundler-audit",
         "status": "ok",

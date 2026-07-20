@@ -2917,9 +2917,21 @@ def _bootstrap_single(
             "parse_warning": tool_configs.parse_warnings["rubocop"],
         }
     if tool_configs.python_format:
-        rules_data["rules"]["python_format"] = {
+        python_format_rule: dict = {
             "source": tool_configs.sources.get("python_format", "pyproject.toml"),
             "rules": tool_configs.python_format,
+        }
+        if "python_format" in tool_configs.parse_warnings:
+            python_format_rule["parse_warning"] = tool_configs.parse_warnings["python_format"]
+        rules_data["rules"]["python_format"] = python_format_rule
+    elif "python_format" in tool_configs.parse_warnings:
+        # A malformed pyproject/ruff/flake8 config parses to no format rules, but
+        # the warning that it is BROKEN must still surface -- every other tool
+        # stanza (tsconfig/eslint/rubocop) wires this through, and dropping it
+        # here made a torn Python config read as "no config declared".
+        rules_data["rules"]["python_format"] = {
+            "source": tool_configs.sources.get("python_format", ""),
+            "parse_warning": tool_configs.parse_warnings["python_format"],
         }
 
     # idioms.md is user-authored: taught idioms cannot be regenerated, so a

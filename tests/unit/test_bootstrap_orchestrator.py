@@ -1041,3 +1041,45 @@ class TestDamagedIdiomsCarryForward:
         assert report.status == "success"
         assert report.idiom_warnings == []
         assert report.idioms_collected == 0
+
+
+class TestPythonFormatParseWarningSurfaced:
+    """rules.json must carry a python_format parse_warning when pyproject.toml is
+    malformed -- every other tool stanza (tsconfig, eslint, rubocop) wires its
+    warning through, but python_format dropped it, so a torn ruff/black config
+    parsed to nothing AND lost the only signal that it was broken."""
+
+    def _py_repo(self, tmp_path: Path) -> Path:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        # A malformed TOML: read_tool_configs yields python_format=None plus a
+        # parse_warnings['python_format'] naming the failure.
+        (repo / "pyproject.toml").write_text("[tool.ruff\nline-length = ", encoding="utf-8")
+        for i in range(3):
+            _write(
+                repo, f"src/svc_{i}.py", f"class Svc{i}:\n    def call(self):\n        return {i}\n"
+            )
+        return repo
+
+    def _bootstrap_with_fake_parse(self, repo: Path, monkeypatch):
+        from chameleon_mcp.extractors._base import ParseResult
+        from chameleon_mcp.extractors.python import PythonExtractor
+
+        files = sorted((repo / "src").glob("*.py"))
+        monkeypatch.setattr(
+            PythonExtractor,
+            "parse_repo",
+            lambda self, repo_root, glob="**/*", limit=None, paths=None: ParseResult(
+                files=[_pf(p, kinds=("ClassDef",)) for p in files], skipped=[]
+            ),
+        )
+        return o.bootstrap_repo(repo)
+
+    def test_rules_json_carries_python_format_parse_warning(self, tmp_path: Path, monkeypatch):
+        repo = self._py_repo(tmp_path)
+        report = self._bootstrap_with_fake_parse(repo, monkeypatch)
+        assert report.status == "success"
+        rules = json.loads((repo / ".chameleon" / "rules.json").read_text(encoding="utf-8"))
+        pf = rules["rules"].get("python_format")
+        assert pf is not None, "python_format stanza missing despite a malformed pyproject"
+        assert "malformed TOML" in pf.get("parse_warning", "")

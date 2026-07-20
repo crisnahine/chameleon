@@ -46,6 +46,9 @@
 | GAP-025 | precision | unfrozen-clock blind to Django's mandated timezone.now(); pytest-freezegun fixture unrecognized | 4.4.42 |
 | GAP-026 | **HIGH** | flat tests/ layout never generated as a pairing candidate, so a fully-tested repo measured 0% paired (all 3 languages) | 4.4.43 |
 | GAP-027 | **HIGH** | Python src-layout collapsed every package layer into one archetype (the Python half of GAP-022) | 4.4.44 |
+| GAP-028 | precision | TEST_PAIRING_MIN_SAMPLE=10 sat above real cohort size; pairing derived for almost nothing | 4.4.45 |
+| GAP-029 | **HIGH/security** | dep_audit reported false all-clear (status ok, total 0) when the auditor never ran (npm error body; bundler missing lockfile) | 4.4.46 |
+| GAP-030 | precision | python_format rules stanza silently dropped its parse_warning (only stanza missing it) | 4.4.46 |
 | GAP-009b-ii | **HIGH** | naming table listed 6 of 15 NestJS role suffixes; feature-co-located `*.repository.ts` hashed | 4.4.34 |
 | GAP-017-ii | precision | root E501 opt-out overridden by an enforcing sibling app's `line_length` (mixed per-app config) | 4.4.34 |
 

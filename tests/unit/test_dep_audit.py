@@ -100,6 +100,56 @@ class TestNpmAudit:
         result = dep_audit.run_dep_audit(tmp_path)
         assert result["audits"][0]["status"] == "unavailable"
 
+    def test_json_error_body_fails_open_not_clean(self, tmp_path, monkeypatch):
+        # npm v7+ delivers auditor errors as PARSEABLE JSON:
+        # {"error":{"code":"ENOLOCK",...}} for a missing lockfile, and the same
+        # channel carries every network/registry failure (ENETUNREACH, EAI_AGAIN,
+        # E401). That parsed, had no metadata/vulnerabilities, and fell through to
+        # status:"ok" total:0 -- a security tool reporting a false all-clear when
+        # no audit ran. It must degrade to unavailable, the "network is down" case
+        # the module docstring promises.
+        (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(dep_audit.shutil, "which", lambda _b: "/usr/bin/npm")
+
+        def fake_run(args, **_k):
+            body = json.dumps({"error": {"code": "ENOLOCK", "summary": "requires a lockfile"}})
+            return SimpleNamespace(returncode=1, stdout=body, stderr="")
+
+        monkeypatch.setattr(dep_audit.subprocess, "run", fake_run)
+        result = dep_audit.run_dep_audit(tmp_path)
+        assert result["audits"][0]["status"] == "unavailable"
+
+    def test_json_without_audit_keys_fails_open(self, tmp_path, monkeypatch):
+        # Belt and braces: any parseable object carrying NEITHER metadata NOR
+        # vulnerabilities is not an audit result and must not read as clean.
+        (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(dep_audit.shutil, "which", lambda _b: "/usr/bin/npm")
+
+        def fake_run(args, **_k):
+            return SimpleNamespace(returncode=0, stdout=json.dumps({"note": "hi"}), stderr="")
+
+        monkeypatch.setattr(dep_audit.subprocess, "run", fake_run)
+        result = dep_audit.run_dep_audit(tmp_path)
+        assert result["audits"][0]["status"] == "unavailable"
+
+    def test_json_empty_audit_reports_clean(self, tmp_path, monkeypatch):
+        # A genuine clean audit DOES carry the metadata block with total 0; that
+        # must still read as ok, not be swept into unavailable by the fix above.
+        (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(dep_audit.shutil, "which", lambda _b: "/usr/bin/npm")
+        clean = {
+            "vulnerabilities": {},
+            "metadata": {"vulnerabilities": {"info": 0, "low": 0, "total": 0}},
+        }
+
+        def fake_run(args, **_k):
+            return SimpleNamespace(returncode=0, stdout=json.dumps(clean), stderr="")
+
+        monkeypatch.setattr(dep_audit.subprocess, "run", fake_run)
+        result = dep_audit.run_dep_audit(tmp_path)
+        assert result["audits"][0]["status"] == "ok"
+        assert result["audits"][0]["total"] == 0
+
     def test_timeout_fails_open(self, tmp_path, monkeypatch):
         (tmp_path / "package.json").write_text("{}", encoding="utf-8")
         monkeypatch.setattr(dep_audit.shutil, "which", lambda _b: "/usr/bin/npm")
@@ -137,6 +187,41 @@ class TestBundlerAudit:
         assert ba["total"] == 1
         assert ba["findings"][0]["package"] == "rack"
         assert ba["findings"][0]["severity"] == "High"
+
+    def test_clean_pass_reports_ok(self, tmp_path, monkeypatch):
+        # A genuine clean pass prints the marker with zero advisory blocks; it
+        # must read as ok/0, not be swept into unavailable by the failed-run guard.
+        (tmp_path / "Gemfile.lock").write_text("", encoding="utf-8")
+        monkeypatch.setattr(
+            dep_audit.shutil, "which", lambda b: "/usr/bin/bundler-audit" if "audit" in b else None
+        )
+
+        def fake_run(args, **_k):
+            return SimpleNamespace(returncode=0, stdout="No vulnerabilities found\n", stderr="")
+
+        monkeypatch.setattr(dep_audit.subprocess, "run", fake_run)
+        ba = dep_audit.run_dep_audit(tmp_path)["audits"][0]
+        assert ba["status"] == "ok"
+        assert ba["total"] == 0
+
+    def test_missing_lockfile_run_fails_open_not_clean(self, tmp_path, monkeypatch):
+        # bundler-audit on a repo with a Gemfile but no Gemfile.lock exits 0 with
+        # `Could not find "Gemfile.lock"` and zero advisory blocks -- the same
+        # false all-clear class as the npm error-body bug. It must degrade to
+        # unavailable, not report ok/0.
+        (tmp_path / "Gemfile.lock").write_text("", encoding="utf-8")
+        monkeypatch.setattr(
+            dep_audit.shutil, "which", lambda b: "/usr/bin/bundler-audit" if "audit" in b else None
+        )
+
+        def fake_run(args, **_k):
+            return SimpleNamespace(
+                returncode=0, stdout='Could not find "Gemfile.lock" in "/x"\n', stderr=""
+            )
+
+        monkeypatch.setattr(dep_audit.subprocess, "run", fake_run)
+        ba = dep_audit.run_dep_audit(tmp_path)["audits"][0]
+        assert ba["status"] == "unavailable"
 
 
 class TestToolEnvelope:

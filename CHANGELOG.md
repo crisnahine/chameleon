@@ -4,6 +4,31 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.46] - 2026-07-20
+
+### Fixed
+- `dep_audit` reported a false all-clear when the auditor never ran -- a security
+  tool collapsing the two states it exists to distinguish. npm v7+ delivers
+  auditor errors as PARSEABLE JSON (`{"error":{"code":"ENOLOCK",...}}` for a
+  missing lockfile; the same channel carries every network/registry failure), and
+  that body has neither `metadata` nor `vulnerabilities`, so it fell through to
+  `status:"ok" total:0`. bundler-audit had the same class: a missing-lockfile run
+  exits 0 with `Could not find "Gemfile.lock"` and zero advisory blocks, which
+  also read as ok/0. A caller seeing `status:"ok", total:0, findings:[]`
+  concluded "no known CVEs" when no audit had run. Both now degrade to the
+  `unavailable` no-signal result the module docstring already promises: npm on an
+  error body or any object missing both audit keys; bundler when zero advisories
+  parse AND the clean-pass marker `No vulnerabilities found` is absent. A genuine
+  clean audit (npm metadata with total 0, bundler's marker) still reads ok.
+  Verified end-to-end on the fixtures: ts-nextjs -> `unavailable: npm audit error:
+  ENOLOCK`, rb-rails -> `unavailable: bundler-audit did not run cleanly`.
+- The `python_format` rules stanza dropped its parse warning. Every other tool
+  stanza (tsconfig, eslint, rubocop) wires a `parse_warning` through to rules.json
+  when the config is malformed AND emits a warning-only stanza when the config is
+  broken-but-empty; `python_format` did neither, so a torn `pyproject.toml` /
+  ruff / flake8 config parsed to no rules AND silently lost the signal that it was
+  broken, reading as "no config declared". Mirrored the rubocop pattern exactly.
+
 ## [4.4.45] - 2026-07-20
 
 ### Fixed
