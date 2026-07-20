@@ -83,21 +83,33 @@ def _specs(repo: Path, n: int) -> list[ParsedFile]:
     return out
 
 
-def test_canonical_less_spec_cluster_still_resolves_id(tmp_path):
-    """An all-spec cluster has no eligible canonical (spec/ is canonical-pool
-    excluded), but the orchestrator must still resolve its cluster_id so it
-    emits an archetype. Before this fix the cluster was silently dropped and
-    every spec file resolved to archetype=None."""
+def _legacy(repo: Path, n: int) -> list[ParsedFile]:
+    out = []
+    for i in range(n):
+        p = _write(repo, f"legacy/svc_{i}.rb", f"class Old{i}\n  def call; {i}; end\nend\n")
+        out.append(_pf(p))
+    return out
+
+
+def test_canonical_less_cluster_still_resolves_id(tmp_path):
+    """A cluster with no eligible canonical must still resolve its cluster_id so
+    the orchestrator emits an archetype. Before this fix the cluster was
+    silently dropped and every one of its files resolved to archetype=None.
+
+    The vehicle is a legacy/ cluster: legacy is a QUALITY exclusion and is never
+    admitted to the canonical pool. (This test used a spec cluster until the
+    test archetype was given its own witness -- a spec cluster now legitimately
+    gets one, so it no longer produces the canonical-less state under test.)"""
     from chameleon_mcp.bootstrap import orchestrator as o
 
     repo = tmp_path / "repo"
     app = _services(repo, 3)  # app/services -> eligible canonical
-    spec = _specs(repo, 3)  # spec/services -> no eligible canonical
-    clustering = cluster_files(app + spec, repo_root=repo)
+    legacy = _legacy(repo, 3)  # legacy/ -> no eligible canonical
+    clustering = cluster_files(app + legacy, repo_root=repo)
     sel = select_canonicals(clustering.dense_clusters, repo)
 
-    spec_cluster = next(
-        c for c in clustering.dense_clusters if all("spec/" in str(pf.path) for pf in c.members)
+    legacy_cluster = next(
+        c for c in clustering.dense_clusters if all("legacy/" in str(pf.path) for pf in c.members)
     )
     app_cluster = next(
         c
@@ -105,15 +117,15 @@ def test_canonical_less_spec_cluster_still_resolves_id(tmp_path):
         if all("app/services" in str(pf.path) for pf in c.members)
     )
 
-    # precondition: the spec cluster genuinely has no eligible canonical
-    assert spec_cluster in sel.clusters_without_eligible_canonical
+    # precondition: the legacy cluster genuinely has no eligible canonical
+    assert legacy_cluster in sel.clusters_without_eligible_canonical
 
     cid_app, sel_app = o._resolve_cluster_id(app_cluster, sel)
-    cid_spec, sel_spec = o._resolve_cluster_id(spec_cluster, sel)
+    cid_legacy, sel_legacy = o._resolve_cluster_id(legacy_cluster, sel)
 
     assert cid_app is not None and sel_app is not None  # canonical cluster: id + witness
-    assert cid_spec is not None  # canonical-less cluster: still gets an id
-    assert sel_spec is None  # ...but carries no witness
+    assert cid_legacy is not None  # canonical-less cluster: still gets an id
+    assert sel_legacy is None  # ...but carries no witness
 
 
 def test_only_failing_canonical_cluster_is_dropped(tmp_path):

@@ -379,7 +379,7 @@ def select_canonicals(
     for cluster in clusters:
         cluster_id = _hash_cluster_key(cluster)
 
-        eligible = []
+        rels = []
         for pf in cluster.members:
             try:
                 rel = str(pf.path.relative_to(repo_root))
@@ -387,8 +387,19 @@ def select_canonicals(
                 # Member resolved outside repo_root (stray/symlinked path).
                 # Mirror clustering.py's guard instead of crashing bootstrap.
                 rel = str(pf.path)
-            if is_eligible_as_canonical(rel):
-                eligible.append(pf)
+            rels.append((pf, rel))
+
+        eligible = [pf for pf, rel in rels if is_eligible_as_canonical(rel)]
+        if not eligible:
+            # An empty pool means every member was excluded, and for a TEST
+            # cluster that is by construction: the pool drops tests so the model
+            # never imitates one while writing source. But this archetype IS
+            # tests, so a sibling test is the correct witness -- and with no
+            # witness the rules gated on witness content (unstubbed-network,
+            # unfrozen-clock) could never fire in any repo. Retry admitting the
+            # test-reason exclusions only; legacy/deprecated/generated members
+            # stay excluded, so a legacy-only cluster still gets no witness.
+            eligible = [pf for pf, rel in rels if is_eligible_as_canonical(rel, allow_tests=True)]
         if not eligible:
             no_eligible.append(cluster)
             continue

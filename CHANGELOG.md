@@ -4,6 +4,32 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.41] - 2026-07-20
+
+### Fixed
+- The `test` archetype never received a canonical witness, so two test-quality
+  rules were structurally unreachable in every repo and every language.
+  `select_canonicals` drops test files from the canonical pool -- correct, so the
+  model never imitates a test while writing source -- but that left the TEST
+  archetype's own cluster with an empty pool and no witness at all. Both
+  `unstubbed-network` and `unfrozen-clock` gate on `if not witness_content:
+  return []`, so they could never fire: 2 of the 7 test-quality rules were dead
+  code in production. (The witness gate itself is sound and deliberately
+  self-calibrating -- a repo that never stubs produces no stub token and the rule
+  stays quiet -- but its input was structurally absent, not merely empty.)
+
+  The canonical-pool exclusions are now split by REASON: test dirs/globs are a
+  "don't imitate a test while writing source" exclusion, while
+  legacy/archive/deprecated are a quality exclusion that holds regardless. When a
+  cluster's normal pool comes out empty -- which for a test cluster is by
+  construction -- selection retries admitting only the test-reason exclusions.
+  Legacy-only and all-generated clusters still get no witness, and no cluster
+  that already had one changes.
+
+  Verified end-to-end on a real fixture: `canonicals["test"]` went from `[]` to
+  `tests/carrier-service.test.ts` + `tests/geo.test.ts`, while every other
+  archetype kept its source witness.
+
 ## [4.4.40] - 2026-07-20
 
 ### Fixed

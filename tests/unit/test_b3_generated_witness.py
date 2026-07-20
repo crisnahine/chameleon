@@ -81,6 +81,34 @@ def test_handwritten_wins_witness_over_generated_sibling(tmp_path):
     assert "svc_data.gen.rb" not in witnesses
 
 
+def test_test_cluster_gets_a_test_file_as_witness(tmp_path):
+    # The canonical pool excludes tests so the model never imitates a test when
+    # writing source. But for the TEST archetype itself a sibling test IS the
+    # correct witness ("match sibling test shape"), and with the pool empty the
+    # archetype got no canonical at all -- which silently disabled the two
+    # test-quality rules gated on witness content (unstubbed-network,
+    # unfrozen-clock), in every repo and every language.
+    repo = tmp_path / "repo"
+    a = _write(repo, "tests/a_test.rb", "class ATest\n  def test_x; end\nend\n")
+    b = _write(repo, "tests/b_test.rb", "class BTest\n  def test_y; end\nend\n")
+    result = cluster_files([_pf(a), _pf(b)], repo, min_cluster_size=2)
+    sel = select_canonicals(result.clusters, repo)
+    chosen = {s.witness_path.name for s in sel.selections.values()}
+    assert chosen & {"a_test.rb", "b_test.rb"}, f"test cluster got no witness: {chosen}"
+
+
+def test_legacy_only_cluster_still_has_no_witness(tmp_path):
+    # The test-pool fallback must not resurrect legacy/deprecated code as a
+    # witness -- those are excluded for a quality reason, not a test reason.
+    repo = tmp_path / "repo"
+    a = _write(repo, "legacy/a.rb", "class A\n  def call; end\nend\n")
+    b = _write(repo, "legacy/b.rb", "class B\n  def call; end\nend\n")
+    result = cluster_files([_pf(a), _pf(b)], repo, min_cluster_size=2)
+    sel = select_canonicals(result.clusters, repo)
+    chosen = {s.witness_path.name for s in sel.selections.values()}
+    assert not (chosen & {"a.rb", "b.rb"}), "legacy code must never become a witness"
+
+
 def test_all_generated_cluster_has_no_witness_but_does_not_crash(tmp_path):
     # A cluster whose every member is generated yields no eligible canonical.
     # That must be handled gracefully (no crash; the cluster is reported as

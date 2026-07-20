@@ -126,23 +126,33 @@ EXCLUDE_FROM_CLUSTERING_EXACT_RELPATHS = frozenset(
 # fnmatch globs like "**/tests/**" silently miss a top-level "tests/" dir
 # (the leading "**/" requires a preceding segment), which is the most common
 # layout in TS/JS and Rails repos — so component matching is used instead.
-EXCLUDE_FROM_CANONICAL_POOL_DIRS = frozenset(
+# Split by REASON, not by name: a test dir is excluded so the model never
+# imitates a test while writing source, but for the TEST archetype itself a
+# sibling test IS the correct witness. A legacy/deprecated dir is excluded for a
+# quality reason that holds no matter what is being written, so it is never
+# re-admitted. The public union is unchanged for every existing caller.
+_TEST_CANONICAL_POOL_DIRS = frozenset(
     {
         "__tests__",
         "test",
         "tests",
         "spec",
         "specs",
-        "legacy",
-        "archive",
-        "_archive",
-        ".archive",
-        "deprecated",
         "cypress",
         "e2e",
         ".storybook",
     }
 )
+_LEGACY_CANONICAL_POOL_DIRS = frozenset(
+    {
+        "legacy",
+        "archive",
+        "_archive",
+        ".archive",
+        "deprecated",
+    }
+)
+EXCLUDE_FROM_CANONICAL_POOL_DIRS = _TEST_CANONICAL_POOL_DIRS | _LEGACY_CANONICAL_POOL_DIRS
 
 # Leaf-name filename globs for canonical selection (test/story/fixture files
 # that live alongside ordinary source). Matched against the bare filename so
@@ -522,7 +532,7 @@ def is_generated_path(rel_path: str) -> bool:
     return _matches_any(p.name, GENERATED_FILE_GLOBS)
 
 
-def is_eligible_as_canonical(rel_path: str) -> bool:
+def is_eligible_as_canonical(rel_path: str, *, allow_tests: bool = False) -> bool:
     """Return True if a file may be picked as a canonical witness.
 
     Files in test/, legacy/, archive/, etc. are excluded from canonical
@@ -532,10 +542,20 @@ def is_eligible_as_canonical(rel_path: str) -> bool:
     files are excluded by their leaf filename. Machine-generated files
     (:func:`is_generated_path`) are excluded too, so the AI is never told to
     follow codegen output.
+
+    ``allow_tests`` re-admits ONLY the test-reason exclusions, for the one case
+    where a test file is the right witness: the test archetype's own cluster.
+    Without it that cluster has an empty pool and gets no canonical at all,
+    which silently disabled every rule gated on witness content. Legacy /
+    deprecated / generated stay excluded either way — those are quality
+    exclusions that hold regardless of what is being written.
     """
-    if _has_excluded_component(Path(rel_path), EXCLUDE_FROM_CANONICAL_POOL_DIRS):
+    excluded_dirs = _LEGACY_CANONICAL_POOL_DIRS if allow_tests else EXCLUDE_FROM_CANONICAL_POOL_DIRS
+    if _has_excluded_component(Path(rel_path), excluded_dirs):
         return False
-    if _matches_any(Path(rel_path).name, EXCLUDE_FROM_CANONICAL_POOL_FILE_GLOBS):
+    if not allow_tests and _matches_any(
+        Path(rel_path).name, EXCLUDE_FROM_CANONICAL_POOL_FILE_GLOBS
+    ):
         return False
     if is_generated_path(rel_path):
         return False

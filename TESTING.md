@@ -42,6 +42,7 @@
 | GAP-021 | **HIGH** | Ruby DSL conventions dropped for module-nested classes (Rails API layout); `^  ` two-space anchor | 4.4.38 |
 | GAP-022 | **HIGH** | RubyGems `lib/<gem>/<layer>/` layers collapsed into one 56-file archetype; all per-role conventions erased | 4.4.39 |
 | GAP-023 | **HIGH** | Python src-layout absolute imports unresolved, so layering/cycles/reexport-chase empty on every src-layout repo | 4.4.40 |
+| GAP-024 | **HIGH** | test archetype got no canonical witness, making unstubbed-network + unfrozen-clock structurally unreachable in every repo | 4.4.41 |
 | GAP-009b-ii | **HIGH** | naming table listed 6 of 15 NestJS role suffixes; feature-co-located `*.repository.ts` hashed | 4.4.34 |
 | GAP-017-ii | precision | root E501 opt-out overridden by an enforcing sibling app's `line_length` (mixed per-app config) | 4.4.34 |
 

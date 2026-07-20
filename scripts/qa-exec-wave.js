@@ -56,7 +56,7 @@ const SCHEMA = {
 
 const WAVE_SIZE = (args && args.waveSize) || 35
 const OFFSET = (args && args.offset) || 0
-const LIVE_VER = (args && args.liveVersion) || '4.4.40'
+const LIVE_VER = (args && args.liveVersion) || '4.4.41'
 const LIVE_DIR = HOME + '/.claude/plugins/cache/chameleon/chameleon/' + LIVE_VER
 
 phase('Execute')
