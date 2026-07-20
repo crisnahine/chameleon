@@ -4,6 +4,21 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.55] - 2026-07-20
+
+### Fixed
+
+- **A flat ESLint config now reports why it could not be read.** A flat config exports an ARRAY of
+  blocks -- the canonical shape in ESLint's own documentation, usually built by `defineConfig([...])`
+  or `tseslint.config(...)`, and the default since ESLint 9 -- while the static parser reads only an
+  object literal. Every flat config therefore fell to `no top-level module.exports assignment
+  found`, which is wrong twice: the file has no `module.exports` precisely because it correctly uses
+  `export default`, sending readers after a CommonJS export that was never meant to exist, and the
+  message named no way forward. The warning now states that a flat config exports an array the
+  static parser cannot read without executing it, and points at `CHAMELEON_ALLOW_ESLINT_EVAL=1`.
+  Parse behaviour is deliberately unchanged -- resolving spreads, imports and helper calls means
+  executing the config, which stays opt-in so an untrusted repo's code never runs during bootstrap.
+
 ## [4.4.54] - 2026-07-20
 
 ### Fixed
