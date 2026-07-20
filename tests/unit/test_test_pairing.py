@@ -85,6 +85,28 @@ class TestCandidateTestPaths:
         # No leading src/app/lib -> the test root is prefixed.
         assert "test/widgets/foo.test.ts" in paths
 
+    def test_ts_flat_test_root_candidate(self):
+        # The dominant vitest/jest layout keeps every test directly under tests/
+        # with no mirrored subtree: src/services/invoicing-service.ts pairs with
+        # tests/invoicing-service.test.ts. Only the mirrored form was generated,
+        # so a repo where every source file IS paired measured 0% and the whole
+        # convention (and the stale-test advisory riding on it) went inert.
+        paths = {
+            p
+            for _l, p in _candidate_test_paths(
+                "src/services/invoicing-service.ts", language="typescript"
+            )
+        }
+        assert "tests/invoicing-service.test.ts" in paths
+
+    def test_python_flat_test_root_candidate(self):
+        paths = {p for _l, p in _candidate_test_paths("src/coldchain/db.py", language="python")}
+        assert "tests/test_db.py" in paths
+
+    def test_ruby_flat_test_root_candidate(self):
+        paths = {p for _l, p in _candidate_test_paths("lib/freightline/router.rb", language="ruby")}
+        assert "spec/router_spec.rb" in paths
+
     def test_ruby_colocated_candidates_present(self):
         paths = {p for _l, p in _candidate_test_paths("app/models/user.rb", language="ruby")}
         assert "app/models/user_spec.rb" in paths

@@ -4,6 +4,29 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.43] - 2026-07-20
+
+### Fixed
+- Test-pairing derivation missed the flat `tests/` layout in all three
+  languages, so a fully-tested repo measured 0% paired. `_candidate_test_paths`
+  generated only co-located and MIRRORED-subtree candidates, so
+  `src/services/invoicing-service.ts` was probed at
+  `tests/services/invoicing-service.test.ts` and never at the flat
+  `tests/invoicing-service.test.ts` the repo actually uses -- the dominant
+  vitest/jest shape, and equally common as `tests/test_x.py` (pytest) and
+  `spec/x_spec.rb`. Pairing came back 0/N, below the 0.6 floor, so
+  `test_pairing` was `{}` and the stale-test advisory riding on it was
+  permanently inert on those repos.
+
+  Added a flat test-root candidate for TypeScript, Python and Ruby. Two source
+  files sharing a stem in different directories both map to the same flat
+  candidate, so this can over-pair; that direction only ever UNDER-nags and is
+  strictly better than the layout measuring as testless. Existence-gated like
+  every other candidate, so a non-matching guess costs nothing.
+
+  Verified on a real fixture: `src/services/carrier-service.ts` now pairs via
+  `tests/carrier-service.test.ts` (previously no candidate matched at all).
+
 ## [4.4.42] - 2026-07-20
 
 ### Fixed

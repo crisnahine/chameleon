@@ -678,6 +678,12 @@ def _candidate_test_paths(rel_path: str, *, language: str) -> list[tuple[str, st
                             _join([root, group] + inner + [f"test_{stem}{ext}"]),
                         )
                     )
+        # Flat test root: tests/test_db.py for src/coldchain/db.py, with no
+        # mirrored subtree. Same rationale (and same over-pairing trade) as the
+        # TypeScript flat candidate below.
+        for root in ("tests", "test"):
+            candidates.append((f"flat {root}/test_", _join([root, f"test_{stem}{ext}"])))
+            candidates.append((f"flat {root}/_test", _join([root, f"{stem}_test{ext}"])))
         return candidates
 
     if language == "ruby":
@@ -694,6 +700,12 @@ def _candidate_test_paths(rel_path: str, *, language: str) -> list[tuple[str, st
             else:
                 mirror = [root] + dir_parts
             candidates.append((label, _join(mirror + [f"{stem}{suffix}{ext}"])))
+        # Flat test root: spec/router_spec.rb for lib/freightline/router.rb, with
+        # no mirrored subtree. Same rationale (and same over-pairing trade) as the
+        # TypeScript flat candidate below.
+        for root in _RUBY_MIRROR_ROOTS:
+            suffix = "_spec" if root == "spec" else "_test"
+            candidates.append((f"flat {root}/{suffix}", _join([root, f"{stem}{suffix}{ext}"])))
         return candidates
 
     # TypeScript / JavaScript.
@@ -711,6 +723,18 @@ def _candidate_test_paths(rel_path: str, *, language: str) -> list[tuple[str, st
         else:
             mirror = [root] + dir_parts
         candidates.append((label, _join(mirror + [f"{stem}.test{ext}"])))
+    # Flat test root: every test directly under tests/ with no mirrored subtree
+    # (src/services/invoicing-service.ts -> tests/invoicing-service.test.ts).
+    # This is the dominant vitest/jest layout, and generating only the mirrored
+    # form measured a fully-paired repo at 0%, which emptied the convention and
+    # left the stale-test advisory permanently inert. Two source files sharing a
+    # stem in different dirs both map here, so a flat candidate can over-pair;
+    # that direction only ever UNDER-nags (the advisory stays quiet or cites a
+    # sibling's test) and is strictly better than the layout measuring as
+    # testless. Existence-gated like every candidate, so a wrong guess is free.
+    for root in _TS_MIRROR_ROOTS:
+        for marker in (".test", ".spec"):
+            candidates.append((f"flat {root}/{marker}", _join([root, f"{stem}{marker}{ext}"])))
     return candidates
 
 
