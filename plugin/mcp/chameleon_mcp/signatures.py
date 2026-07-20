@@ -516,7 +516,30 @@ def path_pattern_bucket_for(
         and parts[0] in _PACKAGE_ROOTS
         and parts[-1].endswith(_PACKAGE_ROOTS[parts[0]])
     ):
-        bucket = f"{parts[0]}/{parts[1]}/{parts[2]}"
+        if len(parts) == 4:
+            # lib/<gem>/<layer>/<file> -- the package occupies exactly one
+            # segment, so the layer is parts[2] and the leading anchor is exact.
+            bucket = f"{parts[0]}/{parts[1]}/{parts[2]}"
+        else:
+            # The package can span MORE than one segment, and a leading anchor
+            # then names the wrong thing. RubyGems maps a dashed gem name onto a
+            # directory chain -- acme-widgets lives at lib/acme/widgets/, and the
+            # same holds for aws-sdk-s3, rack-attack, google-protobuf -- so
+            # parts[2] is a namespace continuation, not a layer. Bucketing there
+            # collapsed EVERY layer of such a gem into one archetype (measured:
+            # 30 files, 5 layers, 1 cluster named class-widgets), which is the
+            # same total convention loss the leading anchor was introduced to
+            # fix, just moved to the more common naming. Python namespace
+            # packages under src/ shift identically.
+            #
+            # Past the one-segment case the package chain's length is not
+            # recoverable from the path alone, so anchor on what IS knowable: a
+            # file's immediate parent directory is its layer. This can split one
+            # layer that groups by sub-domain (lib/gem/services/billing/) into
+            # per-domain cohorts, which is the milder failure -- each still
+            # derives its own conventions and earns a real name, whereas the
+            # collapse erases all of them.
+            bucket = f"{parts[0]}/{parts[-2]}"
         if include_extension:
             ext = _extension_of(parts[-1])
             if ext:
