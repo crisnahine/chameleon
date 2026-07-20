@@ -63,6 +63,11 @@ _TEST_RUNNER_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^(?:\S*/)?pytest\b"),
     re.compile(r"^(?:\S*/)?python[0-9.]*\s+-m\s+(?:pytest|unittest)\b"),
     re.compile(r"^(?:\S*/)?(?:tox|nox)\b"),
+    # Django's canonical runner: `python manage.py test` / `./manage.py test` /
+    # `django-admin test`. The rails/mix arms already cover their frameworks'
+    # native runners; Django's was the one first-class framework missing.
+    re.compile(r"^(?:\S*/)?(?:python[0-9.]*\s+)?manage\.py\s+test\b"),
+    re.compile(r"^(?:\S*/)?django-admin\s+test\b"),
     # Ruby.
     re.compile(r"^(?:\S*/)?rspec\b"),
     re.compile(r"^(?:\S*/)?rails\s+test\b"),

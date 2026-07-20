@@ -29,6 +29,9 @@ from chameleon_mcp.exec_log import classify_test_command
         "pytest -q tests/unit",
         "python -m pytest tests/",
         "python3.12 -m unittest discover",
+        "python manage.py test",
+        "./manage.py test orders",
+        "django-admin test",
         "rspec spec/models/user_spec.rb",
         "bundle exec rspec",
         "bin/rails test",
@@ -73,6 +76,7 @@ def test_classify_recognizes_runners(command: str):
         "npm run build",
         "echo running tests",  # mere mention, not an invocation
         "pip install pytest",  # installs the runner, does not run it
+        "python manage.py migrate",  # Django management command, not the test runner
         "cat test.py",
         "rm -rf tests/",
         "docker build -t app .",
