@@ -748,6 +748,16 @@ def _base_name_for(
 # Directory segments that group code without describing its ROLE. A cohort
 # sitting in one of these shares a location, not a purpose, so naming it after
 # the segment would be worse than the hash it replaces.
+#
+# `core`, `common` and `shared` are deliberately NOT here. They read generic, but
+# they are the utility layer a real repo actually names, and excluding them cost
+# more than it saved: the cohort fell through to a `cluster-<hash>` archetype,
+# and a hash carries strictly LESS information than the directory it replaced --
+# the per-edit header read `archetype=cluster-b2ee7e53` where `archetype=core`
+# was available and correct. Measured on ten brand-new fixtures, 4 of 10 repos
+# carried a hashed archetype for exactly these three directories. A source ROOT
+# (`src`, `app`, `packages`) stays excluded, because a cohort sitting directly in
+# one spans every layer and no single name would be honest.
 _STRUCTURAL_DIRS: frozenset[str] = frozenset(
     {
         "src",
@@ -760,9 +770,6 @@ _STRUCTURAL_DIRS: frozenset[str] = frozenset(
         "internal",
         "source",
         "sources",
-        "core",
-        "common",
-        "shared",
         "modules",
         "main",
         "code",

@@ -769,6 +769,29 @@ def test_structural_directories_do_not_name_a_cluster():
         assert name != d.rstrip("s"), f"{d}/ must not name a cluster"
 
 
+@pytest.mark.parametrize("directory", ["core", "common", "shared"])
+def test_generic_but_descriptive_layer_directories_name_the_cluster(directory):
+    # `core`, `common` and `shared` are the utility layer a real repo actually
+    # names, unlike the source roots above. Treating them as unnameable sent the
+    # cohort to a `cluster-<hash>` archetype, and a hash carries strictly LESS
+    # information than the directory it replaced: the per-edit header read
+    # `archetype=cluster-b2ee7e53` where `archetype=core` was available.
+    # Measured on brand-new fixtures: 4 of 10 repos had a hashed archetype for
+    # exactly these directories.
+    members = [f"app/{directory}/thing_{i}.py" for i in range(7)]
+    name = _base_name_for(_cluster(bucket=f"app/{directory}:py", members=members))
+    assert name == directory, f"app/{directory}/ cohort fell back to {name!r}"
+
+
+def test_source_roots_still_do_not_name_a_cluster():
+    # The counterpart guard: a cohort sitting directly in a source root has no
+    # role, so it must still fall back rather than be named after the root.
+    for d in ("src", "lib", "app", "packages", "internal"):
+        members = [f"{d}/a_{i}.ts" for i in range(7)]
+        name = _base_name_for(_cluster(bucket=f"{d}:ts", members=members))
+        assert name != d.rstrip("s"), f"{d}/ must not name a cluster"
+
+
 def test_mixed_directories_do_not_take_a_name():
     # No single dominant directory -> no honest name to derive.
     members = [f"src/repositories/a_{i}.ts" for i in range(3)] + [
