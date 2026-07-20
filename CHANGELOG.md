@@ -4,6 +4,31 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.51] - 2026-07-20
+
+### Fixed
+
+- **Bash exit status recorded from the event, not an absent payload key.** The Bash
+  `PostToolUse` `tool_response` carries no exit status at all -- a captured live payload is
+  `{stdout, stderr, interrupted, isImage, noOutputExpected}` -- so reading a status key under
+  any spelling always missed and every command logged the `-1` absent-value sentinel. With
+  `session_test_run_seen` requiring a zero exit, the turn-end "no passing test run this turn"
+  advisory was unsatisfiable no matter how much the user tested (measured on the plugin's own
+  repo: 37,291 of 37,293 rows recorded `-1`). `PostToolUse` fires only after a tool call
+  succeeds -- a failed call raises `PostToolUseFailure`, which the hook is not registered for --
+  so an uninterrupted Bash response object now records exit 0. An explicit `exit_code` /
+  `returnCode` still wins when a host sends one, and an absent or non-dict response keeps the
+  sentinel. The contract test that guarded this asserted the broken behaviour, written from the
+  same misreading of the docs, and now uses the captured payload shape as its fixture.
+
+### Added
+
+- `scripts/qa-mcp-call.py` (dev tooling): calls an MCP tool over the real stdio transport,
+  launching the server exactly the way `.mcp.json` does, so a verification run exercises the
+  wire rather than an in-process import.
+- `scripts/qa-matrix.py --ledger PATH`: point the cell ledger commands at a different cell file
+  so an independent re-verification keeps its verdicts separate from the run it audits.
+
 ## [4.4.50] - 2026-07-20
 
 ### Fixed
