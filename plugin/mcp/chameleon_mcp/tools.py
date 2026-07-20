@@ -2652,6 +2652,30 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
             )
 
     canonicals = loaded.canonicals.get("canonicals", {}).get(archetype, [])
+    # The bootstrap stamps `witnessless_reason` on an archetype it emitted with
+    # no canonical; map the two known values onto their accurate sentences and
+    # keep the generic wording for anything else (older profile, absent key).
+    _arch_body = known_archetypes.get(archetype)
+    _wl_reason = _arch_body.get("witnessless_reason") if isinstance(_arch_body, dict) else None
+    if _wl_reason == "poisoning_only":
+        _no_witness_reason = (
+            "archetype has no canonical witness: every candidate tripped the "
+            "dangerous-pattern scan (e.g. eval/exec, raw SQL concatenation); "
+            "the archetype is kept, but its witness content is withheld"
+        )
+    elif _wl_reason == "no_eligible":
+        _no_witness_reason = (
+            "archetype has no canonical witness: no candidate was eligible for "
+            "the canonical pool (e.g. test/legacy paths, trivial/empty, or "
+            "below the confidence threshold)"
+        )
+    else:
+        _no_witness_reason = (
+            "archetype has no canonical witness (all candidates excluded "
+            "from the canonical pool, e.g. test/legacy paths; or trivial/"
+            "empty; or below the confidence threshold; or none passed the "
+            "secret/injection scans)"
+        )
     # A structurally-malformed value (a non-list, or a list whose first entry is
     # not a dict, or a non-dict `witness`) can pass _loads_hardened, which only
     # validates the top-level object shape. Guard every access so a corrupt or
@@ -2662,12 +2686,7 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
         return _with_repo_root(
             {
                 "status": "no_witness",
-                "reason": (
-                    "archetype has no canonical witness (all candidates excluded "
-                    "from the canonical pool, e.g. test/legacy paths; or trivial/"
-                    "empty; or below the confidence threshold; or none passed the "
-                    "secret/injection scans)"
-                ),
+                "reason": _no_witness_reason,
                 "archetype_name": archetype,
                 "repo_id": repo_id,
                 "content": None,
@@ -2693,12 +2712,7 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
         return _with_repo_root(
             {
                 "status": "no_witness",
-                "reason": (
-                    "archetype has no canonical witness (all candidates excluded "
-                    "from the canonical pool, e.g. test/legacy paths; or trivial/"
-                    "empty; or below the confidence threshold; or none passed the "
-                    "secret/injection scans)"
-                ),
+                "reason": _no_witness_reason,
                 "archetype_name": archetype,
                 "repo_id": repo_id,
                 "content": None,
@@ -3768,9 +3782,13 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
         # A through-barrel importer carries the re-export chain it was chased
         # across; surface it so a rename blast radius shows WHY a file that never
         # names this module still depends on it. Rerooted / sanitized in _clean.
+        # `kind` marks a barrel's own `export { x } from` line ("reexport") so it
+        # reads apart from an ordinary import site.
         site = {"path": imp.path, "line": imp.line}
         if imp.via:
             site["via"] = list(imp.via)
+        if getattr(imp, "kind", None):
+            site["kind"] = imp.kind
         return site
 
     for name, importers in sorted(indexed.items()):
@@ -4533,16 +4551,17 @@ def search_codebase(
                 "page back (offset=0) or narrow the query"
             )
         else:
-            # A clean (non-degraded) empty result: the query matched no callable
-            # and no class/module definition. The index covers both, but only
-            # what the last profile build captured, so point at the actionable
-            # next steps rather than let an empty result read as "this symbol
-            # does not exist".
+            # A clean (non-degraded) empty result: the query matched no callable,
+            # no class/module definition, and no exported const. The index covers
+            # all three, but only what the last profile build captured, so point
+            # at the actionable next steps rather than let an empty result read
+            # as "this symbol does not exist".
             empty_note = (
-                "No symbol matched. The index covers callables (functions, methods) "
-                "and class/module definitions from the last profile build -- try a "
-                "different name or a file-path fragment, describe_codebase for the "
-                "archetype overview, or /chameleon-refresh if the index may be stale."
+                "No symbol matched. The index covers callables (functions, methods), "
+                "class/module definitions, and exported consts from the last profile "
+                "build -- try a different name or a file-path fragment, "
+                "describe_codebase for the archetype overview, or /chameleon-refresh "
+                "if the index may be stale."
             )
         # Append, never clobber: an unknown-response_format warning set above
         # must survive alongside the empty-result guidance.

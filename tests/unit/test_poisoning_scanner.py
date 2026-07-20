@@ -338,14 +338,16 @@ def test_hit_dict_has_exact_keys():
 
 
 def test_dangerous_patterns_table_shape():
-    """raw_sql_concat now spans three syntaxes (TS backtick, Ruby #{}, Python
-    f-string); only weak_hash and math_random require security context."""
+    """raw_sql_concat spans three syntaxes (TS backtick, Ruby #{}, Python
+    f-string) and exec_call spans two arms (bare call, known command-execution
+    receiver); only weak_hash and math_random require security context."""
     kinds = [k for _, k, _ in DANGEROUS_PATTERNS]
     assert kinds == [
         "raw_sql_concat",
         "raw_sql_concat",
         "raw_sql_concat",
         "eval_call",
+        "exec_call",
         "exec_call",
         "subprocess_shell_true",
         "weak_hash",
@@ -500,3 +502,42 @@ def test_ruby_value_interpolation_still_flagged_after_exemption():
 
 def test_python_value_interpolation_still_flagged_after_exemption():
     assert "raw_sql_concat" in _kinds('cur.execute(f"SELECT * FROM users WHERE id = {user_id}")')
+
+
+# --------------------------------------------------------------------------- #
+# exec_call: two arms. The old single member-blind pattern flagged every JS
+# `RegExp.prototype.exec` use (`PATTERN.exec(line)`) -- string matching, not
+# command execution -- which poisoned canonical candidates in regex-heavy
+# cohorts. The bare call and known command-execution receivers still flag.
+# --------------------------------------------------------------------------- #
+
+
+def test_regexp_exec_member_call_not_flagged():
+    samples = [
+        "const m = CLF_PATTERN.exec(line);",
+        "while ((match = re.exec(text)) !== null) {}",
+        "const parts = /(\\d+)/.exec(input);",
+    ]
+    for src in samples:
+        assert "exec_call" not in _kinds(src), src
+
+
+def test_bare_exec_call_still_flagged():
+    assert _kinds("exec(cmd)") == ["exec_call"]
+
+
+def test_child_process_exec_member_call_flagged():
+    hits = scan_for_dangerous_patterns('child_process.exec("rm -rf " + dir)')
+    assert [h["kind"] for h in hits] == ["exec_call"]
+    assert hits[0]["match"].startswith("child_process.exec")
+
+
+def test_command_execution_receivers_flagged():
+    for recv in ("childProcess", "cp", "Process", "Kernel", "Open3"):
+        assert "exec_call" in _kinds(f"{recv}.exec(cmd)"), recv
+
+
+def test_child_process_exec_reported_once_not_twice():
+    # The bare arm's lookbehind must not double-count the member form.
+    hits = scan_for_dangerous_patterns("child_process.exec(cmd)")
+    assert [h["kind"] for h in hits] == ["exec_call"]

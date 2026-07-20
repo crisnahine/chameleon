@@ -522,3 +522,113 @@ def test_load_refuses_uncommitted_profile(tmp_path):
     assert load_symbol_signatures(tmp_path) is None
     (chameleon / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
     assert load_symbol_signatures(tmp_path) is not None
+
+
+# ---------------------------------------------------------------------------
+# values section: exported non-callable const bindings
+# ---------------------------------------------------------------------------
+
+
+def _value_file(name: str, extras: dict) -> ParsedFile:
+    return ParsedFile(
+        path=Path(name),
+        content_first_200_bytes="",
+        top_level_node_kinds=(),
+        default_export_kind=None,
+        named_export_count=0,
+        import_specifiers=(),
+        has_jsx=False,
+        extras=extras,
+    )
+
+
+def test_build_stores_exported_value_binding(tmp_path):
+    f = _value_file(
+        str(tmp_path / "parser.ts"),
+        {"value_export_bindings": [{"name": "jsonParser", "line": 7}]},
+    )
+    payload = build_symbol_signatures([f], tmp_path)
+    assert payload["values"]["parser.ts"]["jsonParser"] == {"start_line": 7}
+    # A value-only file contributes nothing to the callable/class sections.
+    assert payload["files"] == {}
+    assert payload["classes"] == {}
+
+
+def test_build_value_binding_skips_names_already_callable_or_class(tmp_path):
+    f = _value_file(
+        str(tmp_path / "mixed.ts"),
+        {
+            "callable_signatures": [
+                {
+                    "name": "makeThing",
+                    "kind": "function",
+                    "params": [],
+                    "start_line": 1,
+                    "end_line": 3,
+                }
+            ],
+            "class_shapes": [{"name": "Thing", "start_line": 5}],
+            "value_export_bindings": [
+                {"name": "makeThing", "line": 1},
+                {"name": "Thing", "line": 5},
+                {"name": "DEFAULTS", "line": 9},
+            ],
+        },
+    )
+    payload = build_symbol_signatures([f], tmp_path)
+    assert list(payload["values"]["mixed.ts"]) == ["DEFAULTS"]
+
+
+def test_build_value_binding_skips_malformed_rows(tmp_path):
+    f = _value_file(
+        str(tmp_path / "vals.ts"),
+        {
+            "value_export_bindings": [
+                {"name": "noLine"},
+                {"name": "", "line": 2},
+                {"line": 3},
+                "garbage",
+                {"name": "ok", "line": 4},
+            ]
+        },
+    )
+    payload = build_symbol_signatures([f], tmp_path)
+    assert list(payload["values"]["vals.ts"]) == ["ok"]
+
+
+def test_load_round_trips_value_items(tmp_path):
+    chameleon = tmp_path / ".chameleon"
+    chameleon.mkdir()
+    (chameleon / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
+    f = _value_file(
+        str(tmp_path / "parser.ts"),
+        {"value_export_bindings": [{"name": "jsonParser", "line": 7}]},
+    )
+    (chameleon / SYMBOL_SIGNATURES_FILENAME).write_text(
+        json.dumps(build_symbol_signatures([f], tmp_path))
+    )
+    index = load_symbol_signatures(tmp_path)
+    assert index is not None
+    assert dict(index.value_items()) == {"parser.ts": {"jsonParser": {"start_line": 7}}}
+    # The callable views are untouched by value entries.
+    assert len(index) == 0
+
+
+def test_load_artifact_without_values_key_still_loads(tmp_path):
+    # An artifact written before the values section existed has no "values" key
+    # and must load with an empty value walk, not fail.
+    chameleon = tmp_path / ".chameleon"
+    chameleon.mkdir()
+    (chameleon / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
+    (chameleon / SYMBOL_SIGNATURES_FILENAME).write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "files": {"a.ts": {"f": {"params": [], "start_line": 1, "end_line": 2}}},
+            }
+        )
+    )
+    index = load_symbol_signatures(tmp_path)
+    assert index is not None
+    assert index.lookup("a.ts", "f") is not None
+    assert list(index.value_items()) == []

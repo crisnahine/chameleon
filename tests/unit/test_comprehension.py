@@ -472,3 +472,80 @@ def test_empty_notes_still_steer_to_refresh_and_refuse_dead_code():
     for note in (EMPTY_CALLERS_NOTE, EMPTY_CALLEES_NOTE):
         assert "refresh" in note.lower()
         assert "not" in note.lower()
+
+
+# --------------------------------------------------------------------------- #
+# values section: exported consts are searchable
+# --------------------------------------------------------------------------- #
+
+
+def _write_sigs_artifact(tmp_path, payload: dict):
+    repo = tmp_path / "vals_repo"
+    cham = repo / ".chameleon"
+    cham.mkdir(parents=True)
+    (cham / "COMMITTED").touch()
+    (cham / "symbol_signatures.json").write_text(json.dumps(payload))
+    return repo
+
+
+def test_search_finds_exported_const(tmp_path):
+    repo = _write_sigs_artifact(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "files": {"svc.py": {"make_service": _sig(10)}},
+            "values": {"src/parsers/json-parser.ts": {"jsonParser": {"start_line": 7}}},
+        },
+    )
+    results = C.search_symbols(repo, "jsonParser", limit=10)
+    assert results, "expected the const to match"
+    top = results[0]
+    assert top["name"] == "jsonParser"
+    assert top["file"] == "src/parsers/json-parser.ts"
+    assert top["line"] == 7
+    assert top["kind"] == "const"
+    assert top["signature"].startswith("const jsonParser")
+    assert "src/parsers/json-parser.ts" in top["signature"]
+    # Never fabricate params for a value binding.
+    assert "(" not in top["signature"]
+
+
+def test_search_values_only_artifact_still_searches(tmp_path):
+    # A repo whose artifact carries only value bindings (no callables, no
+    # classes) must still search, per the widened emptiness guard.
+    repo = _write_sigs_artifact(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "files": {},
+            "classes": {},
+            "values": {"config.ts": {"DEFAULTS": {"start_line": 3}}},
+        },
+    )
+    results = C.search_symbols(repo, "DEFAULTS", limit=10)
+    assert [r["name"] for r in results] == ["DEFAULTS"]
+    assert results[0]["kind"] == "const"
+
+
+def test_search_const_deduped_against_callable(tmp_path):
+    # A name present in both the callable and values maps for one file (a
+    # hand-mangled artifact; the builder prevents it) keeps the callable row.
+    repo = _write_sigs_artifact(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "files": {"a.ts": {"dup": _sig(4)}},
+            "values": {"a.ts": {"dup": {"start_line": 9}}},
+        },
+    )
+    results = C.search_symbols(repo, "dup", limit=10)
+    assert len(results) == 1
+    assert results[0]["line"] == 4
+    assert results[0].get("kind") != "const"
+
+
+def test_search_callable_behavior_unchanged_with_values_present(profiled_repo):
+    # The values walk must not perturb the existing callable ranking.
+    results = C.search_symbols(profiled_repo, "make_service", limit=10)
+    assert results[0]["name"] == "make_service"
+    assert results[0]["callers"] == 1

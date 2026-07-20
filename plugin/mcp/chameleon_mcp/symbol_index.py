@@ -70,6 +70,8 @@ SCHEMA_VERSION = 2
 # (only reverse_index's row shape did), so a v1 exports index is byte-for-byte
 # readable as-is. Only a schema outside this set (a corrupt value, or a genuinely
 # newer engine's schema) is treated as unparseable.
+# Site rows may additionally carry an optional ``kind`` ("reexport" for a barrel
+# re-export line recorded as an importer site); readers treat it as absent-ok.
 _READABLE_SCHEMA_VERSIONS = (1, SCHEMA_VERSION)
 # Profile languages whose extractors carry the named-export/import extras these
 # builders read, so bootstrap writes both index artifacts for them. Ruby has no
@@ -314,11 +316,16 @@ class Importer:
     defining file), outermost first; empty for a direct import. It lets a query
     show ``importer -> barrel -> this file`` so a caller understands why an edge
     that never names this file lands on it.
+
+    ``kind`` marks how the site consumes the name: ``"reexport"`` when the
+    recorded line is a barrel's ``export { x } from`` statement rather than an
+    import; ``None`` for an ordinary import site.
     """
 
     path: str
     line: int | None
     via: tuple[str, ...] = ()
+    kind: str | None = None
 
 
 _PY_INDEX_SUFFIXES = (".py", ".pyi")
@@ -896,19 +903,22 @@ def build_reverse_index(files, repo_root: Path | str, language: str = "typescrip
     _resolve_module = make_module_resolver(root, language)
     reexport_map = build_reexport_map(files, root, _resolve_module)
 
-    # target_rel -> name -> set of (importer_rel, line, via_tuple)
-    accum: dict[str, dict[str, set[tuple[str, int | None, tuple[str, ...]]]]] = {}
+    # target_rel -> name -> set of (importer_rel, line, via_tuple, kind_or_None)
+    accum: dict[str, dict[str, set[tuple[str, int | None, tuple[str, ...], str | None]]]] = {}
     for pf in files or ():
         extras = getattr(pf, "extras", None) or {}
         rows = extras.get("import_symbols")
-        if not isinstance(rows, list) or not rows:
+        re_rows = extras.get("re_exports")
+        has_imports = isinstance(rows, list) and rows
+        has_reexports = isinstance(re_rows, list) and re_rows
+        if not has_imports and not has_reexports:
             continue
         try:
             importer_rel = Path(pf.path).resolve().relative_to(root).as_posix()
             importer_dir = Path(pf.path).resolve().parent
         except (ValueError, OSError):
             continue
-        for row in rows:
+        for row in rows if has_imports else ():
             if not isinstance(row, dict):
                 continue
             name = row.get("name")
@@ -921,30 +931,58 @@ def build_reverse_index(files, repo_root: Path | str, language: str = "typescrip
             line = row.get("line")
             line_val = int(line) if isinstance(line, int) else None
             accum.setdefault(target_key, {}).setdefault(name, set()).add(
-                (importer_rel, line_val, ())
+                (importer_rel, line_val, (), None)
             )
             final_key, final_name, via = chase_reexport(target_key, name, reexport_map)
             if final_key != target_key:
                 accum.setdefault(final_key, {}).setdefault(final_name, set()).add(
-                    (importer_rel, line_val, tuple(via))
+                    (importer_rel, line_val, tuple(via), None)
+                )
+        # A barrel's `export { origin } from './impl'` line is itself a consumer
+        # site of the origin module: removing/renaming the origin export breaks
+        # this line first. Record it against the origin (and, through multi-hop
+        # barrels, the defining file) with a "reexport" marker so a query can
+        # tell the barrel line apart from an ordinary import site.
+        for row in re_rows if has_reexports else ():
+            if not isinstance(row, dict):
+                continue
+            origin = row.get("origin")
+            module = row.get("module")
+            if not isinstance(origin, str) or not isinstance(module, str):
+                continue
+            target_key = _resolve_module(module, importer_dir)
+            if target_key is None:
+                continue
+            line = row.get("line")
+            line_val = int(line) if isinstance(line, int) else None
+            accum.setdefault(target_key, {}).setdefault(origin, set()).add(
+                (importer_rel, line_val, (), "reexport")
+            )
+            final_key, final_name, via = chase_reexport(target_key, origin, reexport_map)
+            if final_key != target_key:
+                accum.setdefault(final_key, {}).setdefault(final_name, set()).add(
+                    (importer_rel, line_val, tuple(via), "reexport")
                 )
 
     out: dict[str, dict[str, list[dict]]] = {}
     for target_key, by_name in accum.items():
         names_out: dict[str, list[dict]] = {}
         for name, importer_set in by_name.items():
-            # Sort by (path, line, via) for a deterministic record; line None
-            # sorts last via the -1 sentinel so a placed import precedes an
+            # Sort by (path, line, via, kind) for a deterministic record; line
+            # None sorts last via the -1 sentinel so a placed import precedes an
             # unplaced one from the same file.
             rows_sorted = sorted(
-                importer_set, key=lambda r: (r[0], r[1] if r[1] is not None else -1, r[2])
+                importer_set,
+                key=lambda r: (r[0], r[1] if r[1] is not None else -1, r[2], r[3] or ""),
             )
             capped = rows_sorted[:_MAX_IMPORTERS_PER_SYMBOL]
             rows_list: list[dict] = []
-            for p, ln, via in capped:
+            for p, ln, via, kind in capped:
                 entry: dict = {"path": p, "line": ln}
                 if via:
                     entry["via"] = list(via)
+                if kind:
+                    entry["kind"] = kind
                 rows_list.append(entry)
             names_out[name] = rows_list
         if names_out:
@@ -1034,8 +1072,14 @@ def _parse_reverse_targets(raw_targets) -> dict[str, dict[str, list[Importer]]]:
                     if isinstance(raw_via, list)
                     else ()
                 )
+                raw_kind = r.get("kind")
                 importers.append(
-                    Importer(path=p, line=ln if isinstance(ln, int) else None, via=via)
+                    Importer(
+                        path=p,
+                        line=ln if isinstance(ln, int) else None,
+                        via=via,
+                        kind=raw_kind if isinstance(raw_kind, str) and raw_kind else None,
+                    )
                 )
             if importers:
                 names[name] = importers

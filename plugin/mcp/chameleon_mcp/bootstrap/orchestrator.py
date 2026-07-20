@@ -1380,13 +1380,17 @@ def _collapse_same_pattern_archetypes(
         losers = names_sorted[1:]
         kept_meta = dict(new_archetypes[keeper])
         kept_meta["cluster_size"] = sum(archetypes[n].get("cluster_size", 0) for n in names_sorted)
-        new_archetypes[keeper] = kept_meta
         merged_canonicals = list(new_canonicals.get(keeper, []))
         for loser in losers:
             for entry in new_canonicals.get(loser, []):
                 merged_canonicals.append(entry)
             new_canonicals.pop(loser, None)
             new_archetypes.pop(loser, None)
+        # A witnessless keeper can inherit a loser's canonical here; the
+        # no-witness marker would then misstate an archetype that HAS a witness.
+        if merged_canonicals:
+            kept_meta.pop("witnessless_reason", None)
+        new_archetypes[keeper] = kept_meta
         new_canonicals[keeper] = merged_canonicals
 
     return new_archetypes, new_canonicals
@@ -1424,6 +1428,28 @@ def _resolve_cluster_id(cluster, selection):
     if cid in no_canonical_ids:
         return cid, None
     return None, None
+
+
+def _witnessless_reason(cluster, selection) -> str | None:
+    """Why a witnessless cluster has no canonical: ``"poisoning_only"`` when its
+    candidates failed ONLY the dangerous-pattern scan, ``"no_eligible"`` when no
+    candidate was eligible for the canonical pool at all, ``None`` for a cluster
+    that is not in either witnessless category."""
+    try:
+        cid = _hash_cluster_key(cluster)
+        poisoning_ids = {
+            _hash_cluster_key(c) for c in getattr(selection, "clusters_failing_poisoning_only", [])
+        }
+        if cid in poisoning_ids:
+            return "poisoning_only"
+        no_eligible_ids = {
+            _hash_cluster_key(c) for c in selection.clusters_without_eligible_canonical
+        }
+        if cid in no_eligible_ids:
+            return "no_eligible"
+    except Exception:
+        pass
+    return None
 
 
 def bootstrap_repo(
@@ -2623,6 +2649,13 @@ def _bootstrap_single(
         }
         if cluster.sub_bucket_counts:
             archetype_entry["sub_buckets"] = dict(cluster.sub_bucket_counts)
+        if sel is None:
+            # Distinguish "every candidate tripped the dangerous-pattern scan"
+            # from "no candidate was pool-eligible at all", so the excerpt tool
+            # can state the honest reason instead of a generic no-witness line.
+            witnessless_reason = _witnessless_reason(cluster, selection)
+            if witnessless_reason:
+                archetype_entry["witnessless_reason"] = witnessless_reason
         witness_path = None
         try:
             if hasattr(sel, "witness_path") and sel.witness_path:

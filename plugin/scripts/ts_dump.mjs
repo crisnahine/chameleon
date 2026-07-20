@@ -610,6 +610,11 @@ function extractFile(filePath) {
     function_scopes: [],
     callable_signatures: [],
     class_shapes: [],
+    // Exported non-callable value bindings (`export const CONFIG = {...}`):
+    // arrows/function expressions land in callable_signatures, class
+    // expressions in class_shapes, so only the remaining initializer shapes
+    // are recorded here. `{name, line}` per binding.
+    value_export_bindings: [],
     // Per-class instance-property -> declared type name, for resolving
     // `this.<prop>.<method>()` (DI / typed-field) call edges. `{class, props}`.
     class_property_types: [],
@@ -647,6 +652,43 @@ function extractFile(filePath) {
 
     collectExportNames(stmt, exportNameSet, exportState);
     collectReExports(stmt, result.re_exports, sourceFile);
+
+    if (
+      stmt.kind === ts.SyntaxKind.VariableStatement &&
+      Array.isArray(stmt.modifiers) &&
+      stmt.modifiers.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)
+    ) {
+      for (const decl of stmt.declarationList.declarations) {
+        if (result.value_export_bindings.length >= MAX_CALLABLE_SIGNATURES) break;
+        if (
+          !decl.name ||
+          decl.name.kind !== ts.SyntaxKind.Identifier ||
+          typeof decl.name.text !== "string"
+        ) {
+          continue;
+        }
+        const init = decl.initializer;
+        // Callable/class initializers are already indexed by their own
+        // sections; a wrapper call (forwardRef/memo/...) names a callable.
+        if (
+          init &&
+          (init.kind === ts.SyntaxKind.ArrowFunction ||
+            init.kind === ts.SyntaxKind.FunctionExpression ||
+            init.kind === ts.SyntaxKind.ClassExpression ||
+            isWrapperCall(init))
+        ) {
+          continue;
+        }
+        let bindingLine = null;
+        try {
+          bindingLine =
+            sourceFile.getLineAndCharacterOfPosition(decl.name.getStart(sourceFile)).line + 1;
+        } catch (e) {
+          bindingLine = null;
+        }
+        result.value_export_bindings.push({ name: decl.name.text, line: bindingLine });
+      }
+    }
 
     if (stmt.kind === ts.SyntaxKind.ImportDeclaration) {
       const moduleName =

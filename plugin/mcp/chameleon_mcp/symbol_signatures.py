@@ -97,13 +97,16 @@ def build_symbol_signatures(files, repo_root: Path | str) -> dict:
 
     collected: list[tuple[str, dict]] = []
     collected_classes: list[tuple[str, dict]] = []
+    collected_values: list[tuple[str, dict]] = []
     for pf in files or ():
         extras = getattr(pf, "extras", None) or {}
         raw = extras.get("callable_signatures")
         raw_cls = extras.get("class_shapes")
+        raw_vals = extras.get("value_export_bindings")
         has_callables = isinstance(raw, list) and raw
         has_classes = isinstance(raw_cls, list) and raw_cls
-        if not has_callables and not has_classes:
+        has_values = isinstance(raw_vals, list) and raw_vals
+        if not has_callables and not has_classes and not has_values:
             continue
         try:
             rel = Path(pf.path).resolve().relative_to(root).as_posix()
@@ -172,12 +175,38 @@ def build_symbol_signatures(files, repo_root: Path | str) -> dict:
             cls_by_name[name] = crow
         if cls_by_name:
             collected_classes.append((rel, cls_by_name))
+        # Exported non-callable value bindings (`export const CONFIG = {...}`),
+        # so search can locate a const by name. A name already recorded as a
+        # callable or class in this file keeps its richer row; only genuinely
+        # value-only bindings land here.
+        vals_by_name: dict[str, dict] = {}
+        for entry in raw_vals if has_values else ():
+            if len(vals_by_name) >= per_file_cap:
+                break
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            start = entry.get("line")
+            if not isinstance(name, str) or not name or not isinstance(start, int):
+                continue
+            if name in vals_by_name or name in by_name or name in cls_by_name:
+                continue
+            vals_by_name[name] = {"start_line": start}
+        if vals_by_name:
+            collected_values.append((rel, vals_by_name))
 
     collected.sort(key=lambda item: item[0])
     collected_classes.sort(key=lambda item: item[0])
+    collected_values.sort(key=lambda item: item[0])
     out = {rel: names for rel, names in collected[:file_cap]}
     out_classes = {rel: names for rel, names in collected_classes[:file_cap]}
-    return {"schema_version": SCHEMA_VERSION, "files": out, "classes": out_classes}
+    out_values = {rel: names for rel, names in collected_values[:file_cap]}
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "files": out,
+        "classes": out_classes,
+        "values": out_values,
+    }
 
 
 class SymbolSignatures:
@@ -191,10 +220,14 @@ class SymbolSignatures:
     """
 
     def __init__(
-        self, entries: dict[str, dict[str, dict]], classes: dict[str, dict[str, dict]] | None = None
+        self,
+        entries: dict[str, dict[str, dict]],
+        classes: dict[str, dict[str, dict]] | None = None,
+        values: dict[str, dict[str, dict]] | None = None,
     ) -> None:
         self._entries = entries
         self._classes = classes or {}
+        self._values = values or {}
 
     def lookup(self, rel: str, name: str) -> dict | None:
         """The signature row for ``name`` defined in ``rel``, or None."""
@@ -218,6 +251,12 @@ class SymbolSignatures:
         with recorded class/module definitions -- the class-name search walk.
         Empty for an artifact built before class definitions were indexed."""
         return self._classes.items()
+
+    def value_items(self):
+        """``(rel, {name: {start_line}})`` pairs for every file with recorded
+        exported value bindings -- the const-name search walk. Empty for an
+        artifact built before value bindings were indexed."""
+        return self._values.items()
 
     def __len__(self) -> int:
         return len(self._entries)
@@ -305,7 +344,23 @@ def load_symbol_signatures(repo_root: Path | str | None) -> SymbolSignatures | N
             if cnames:
                 classes[rel] = cnames
 
-    index = SymbolSignatures(entries, classes)
+    # The values section is additive like "classes": an artifact written before
+    # it existed simply has no "values" key, so const search stays empty until a
+    # refresh.
+    values: dict[str, dict[str, dict]] = {}
+    raw_values = data.get("values")
+    if isinstance(raw_values, dict):
+        for rel, by_name in raw_values.items():
+            if not isinstance(rel, str) or not isinstance(by_name, dict):
+                continue
+            vnames: dict[str, dict] = {}
+            for name, row in by_name.items():
+                if isinstance(name, str) and isinstance(row, dict):
+                    vnames[name] = row
+            if vnames:
+                values[rel] = vnames
+
+    index = SymbolSignatures(entries, classes, values)
     _CACHE[key] = (token, index)
     return index
 

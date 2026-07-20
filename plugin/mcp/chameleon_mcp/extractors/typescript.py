@@ -503,6 +503,11 @@ def _extras_from_record(record: dict) -> dict:
     class_property_types = record.get("class_property_types")
     if isinstance(class_property_types, list) and class_property_types:
         extras["class_property_types"] = class_property_types
+    # Exported non-callable value bindings (`export const CONFIG = {...}`) feed
+    # the symbol-signature index's values section so search can locate them.
+    value_bindings = record.get("value_export_bindings")
+    if isinstance(value_bindings, list) and value_bindings:
+        extras["value_export_bindings"] = value_bindings
     # Named export bindings + the open-set flag drive the phantom-symbol index.
     # `named_export_names` is the full set of importable names; `export_set_open`
     # is True when the file does `export * from` and its export set can't be

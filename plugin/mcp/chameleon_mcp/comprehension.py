@@ -23,8 +23,11 @@ from chameleon_mcp._thresholds import threshold_int
 
 def _signature_string(name: str, row: dict, rel: str) -> str:
     """Compact ``name(params): ret -- path`` for a callable signature row, or
-    ``class Name(Base) -- path`` for a class/module row, or the bare name if
-    rendering fails."""
+    ``class Name(Base) -- path`` for a class/module row, or ``const name --
+    path`` for an exported value binding, or the bare name if rendering fails."""
+    if isinstance(row, dict) and row.get("kind") == "const":
+        # A value binding has no params/return to render; never fabricate them.
+        return f"const {name} — {rel}"
     if isinstance(row, dict) and row.get("kind") == "class":
         base = row.get("extends")
         keyword = row.get("keyword") if row.get("keyword") in ("module", "class") else "class"
@@ -65,9 +68,9 @@ def search_symbols(repo_root, query: str, *, limit: int) -> list[dict]:
     the symbol has in ``calls_index`` (a more-called symbol is more central), then
     by ``(file, name)`` for determinism. Returns up to ``limit`` dicts
     ``{name, file, line, signature, callers}`` plus ``kind`` when the row
-    records one (``class`` for class/module definitions, the callable kind
-    otherwise). Empty on no index / no match / blank query. The "where is X /
-    find Y" comprehension primitive.
+    records one (``class`` for class/module definitions, ``const`` for exported
+    value bindings, the callable kind otherwise). Empty on no index / no match /
+    blank query. The "where is X / find Y" comprehension primitive.
     """
     from chameleon_mcp.calls_index import load_calls_index
     from chameleon_mcp.symbol_signatures import load_symbol_signatures
@@ -78,12 +81,17 @@ def search_symbols(repo_root, query: str, *, limit: int) -> list[dict]:
         return []
     profile_root = resolve_profile_root(Path(repo_root))
     sigs = load_symbol_signatures(profile_root)
-    # len(sigs) counts CALLABLE files only; a repo whose files carry classes but
-    # no recorded callables (e.g. Ruby module/DSL files, bare dataclasses) has an
-    # empty callable map yet real class definitions, so also proceed when the
-    # class section is non-empty -- otherwise class search would silently return
-    # nothing while the empty-result note claims classes are covered.
-    if sigs is None or (len(sigs) == 0 and not any(True for _ in sigs.class_items())):
+    # len(sigs) counts CALLABLE files only; a repo whose files carry classes or
+    # exported value bindings but no recorded callables (e.g. Ruby module/DSL
+    # files, bare dataclasses, a pure-constants module) has an empty callable map
+    # yet real definitions, so also proceed when either additive section is
+    # non-empty -- otherwise their search would silently return nothing while
+    # the empty-result note claims they are covered.
+    if sigs is None or (
+        len(sigs) == 0
+        and not any(True for _ in sigs.class_items())
+        and not any(True for _ in sigs.value_items())
+    ):
         return []
     calls = load_calls_index(profile_root)
     qtokens = q.split()
@@ -132,6 +140,29 @@ def search_symbols(repo_root, query: str, *, limit: int) -> list[dict]:
                 crow_out["keyword"] = kw
             candidates.append((tier, callers, rel, name, crow_out))
             seen_cls.add((rel, name))
+
+    # Exported value bindings from the additive values section, so "find const X"
+    # resolves even though a const is neither a callable nor a class. Deduped
+    # against callable/class matches on (rel, name).
+    seen_vals = {(rel, name) for _t, _c, rel, name, _r in candidates}
+    for rel, vnames in sigs.value_items():
+        pl = rel.lower()
+        path_hit = q in pl
+        for name, vrow in vnames.items():
+            if (rel, name) in seen_vals or not isinstance(vrow, dict):
+                continue
+            tier = _match_tier(q, qtokens, name.lower(), pl, path_hit)
+            if tier is None:
+                continue
+            callers = 0
+            if calls is not None:
+                entry = calls.callers_of(rel, name)
+                if entry:
+                    callers = entry.get("total", 0)
+            candidates.append(
+                (tier, callers, rel, name, {"start_line": vrow.get("start_line"), "kind": "const"})
+            )
+            seen_vals.add((rel, name))
 
     # symbol_signatures indexes CALLABLES + (now) classes, but calls_index also
     # records classes/constants as callees. Without this fallback a callee

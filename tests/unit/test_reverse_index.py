@@ -337,3 +337,112 @@ class TestModuleKeyForPath:
     def test_outside_root_none(self, tmp_path):
         outside = tmp_path.parent / "out.ts"
         assert module_key_for_path(outside, tmp_path) is None
+
+
+class TestReexportSites:
+    """A barrel's `export { x } from './impl'` line is itself a consumer site of
+    the origin module and is recorded with kind="reexport"."""
+
+    def test_reexport_line_recorded_as_importer_site(self, tmp_path):
+        _touch(tmp_path, "src/parsers/json-parser.ts")
+        barrel = FakeParsed(
+            tmp_path / "src" / "index.ts",
+            {
+                "re_exports": [
+                    {
+                        "exported": "jsonParser",
+                        "origin": "jsonParser",
+                        "module": "./parsers/json-parser",
+                        "line": 9,
+                    }
+                ]
+            },
+        )
+        idx = build_reverse_index([barrel], tmp_path)
+        rows = idx["targets"]["src/parsers/json-parser.ts"]["jsonParser"]
+        assert rows == [{"path": "src/index.ts", "line": 9, "kind": "reexport"}]
+
+    def test_import_rows_carry_no_kind(self, tmp_path):
+        _touch(tmp_path, "src/pricing.ts")
+        importer = FakeParsed(
+            tmp_path / "src" / "cart.ts",
+            {"import_symbols": [{"name": "editPrice", "module": "./pricing", "line": 3}]},
+        )
+        idx = build_reverse_index([importer], tmp_path)
+        rows = idx["targets"]["src/pricing.ts"]["editPrice"]
+        assert rows == [{"path": "src/cart.ts", "line": 3}]
+
+    def test_reexport_chases_through_multi_hop_barrel(self, tmp_path):
+        # top.ts re-exports x from mid.ts, which re-exports it from impl.ts:
+        # top's re-export line is recorded on mid (direct) AND on impl (chased,
+        # via=[mid]), both marked reexport.
+        _touch(tmp_path, "impl.ts")
+        _touch(tmp_path, "mid.ts")
+        mid = FakeParsed(
+            tmp_path / "mid.ts",
+            {"re_exports": [{"exported": "x", "origin": "x", "module": "./impl", "line": 1}]},
+        )
+        top = FakeParsed(
+            tmp_path / "top.ts",
+            {"re_exports": [{"exported": "x", "origin": "x", "module": "./mid", "line": 2}]},
+        )
+        idx = build_reverse_index([mid, top], tmp_path)
+        mid_rows = idx["targets"]["mid.ts"]["x"]
+        assert {"path": "top.ts", "line": 2, "kind": "reexport"} in mid_rows
+        impl_rows = idx["targets"]["impl.ts"]["x"]
+        assert {"path": "mid.ts", "line": 1, "kind": "reexport"} in impl_rows
+        assert {"path": "top.ts", "line": 2, "via": ["mid.ts"], "kind": "reexport"} in impl_rows
+
+    def test_import_through_barrel_chase_still_works(self, tmp_path):
+        # The existing import-row chase is unchanged by the re-export walk.
+        _touch(tmp_path, "impl.ts")
+        _touch(tmp_path, "barrel.ts")
+        barrel = FakeParsed(
+            tmp_path / "barrel.ts",
+            {"re_exports": [{"exported": "x", "origin": "x", "module": "./impl", "line": 1}]},
+        )
+        consumer = FakeParsed(
+            tmp_path / "page.ts",
+            {"import_symbols": [{"name": "x", "module": "./barrel", "line": 4}]},
+        )
+        idx = build_reverse_index([barrel, consumer], tmp_path)
+        impl_rows = idx["targets"]["impl.ts"]["x"]
+        assert {"path": "page.ts", "line": 4, "via": ["barrel.ts"]} in impl_rows
+
+    def test_load_round_trips_kind(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _write_index(
+            repo,
+            {
+                "schema_version": SCHEMA_VERSION,
+                "targets": {
+                    "impl.ts": {
+                        "x": [
+                            {"path": "index.ts", "line": 2, "kind": "reexport"},
+                            {"path": "page.ts", "line": 4},
+                        ]
+                    }
+                },
+            },
+        )
+        idx = load_reverse_index(repo)
+        assert idx is not None
+        importers = idx.importers_of("impl.ts", "x")
+        by_path = {imp.path: imp for imp in importers}
+        assert by_path["index.ts"].kind == "reexport"
+        assert by_path["page.ts"].kind is None
+
+    def test_load_tolerates_non_string_kind(self, tmp_path):
+        repo = tmp_path / "repo2"
+        repo.mkdir()
+        _write_index(
+            repo,
+            {
+                "schema_version": SCHEMA_VERSION,
+                "targets": {"impl.ts": {"x": [{"path": "index.ts", "line": 2, "kind": 7}]}},
+            },
+        )
+        idx = load_reverse_index(repo)
+        assert idx is not None
+        assert idx.importers_of("impl.ts", "x")[0].kind is None

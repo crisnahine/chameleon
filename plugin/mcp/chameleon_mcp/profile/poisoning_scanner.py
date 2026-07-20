@@ -68,7 +68,19 @@ DANGEROUS_PATTERNS: tuple[tuple[re.Pattern[str], str, bool], ...] = (
         False,
     ),
     (re.compile(r"\beval\s*\(", re.IGNORECASE), "eval_call", False),
-    (re.compile(r"\bexec\s*\(", re.IGNORECASE), "exec_call", False),
+    # `exec` splits into two arms: the bare call (`exec(cmd)`, no receiver) and
+    # the member call on a known command-execution receiver. A generic member
+    # match flagged every JS `RegExp.prototype.exec` use (`PATTERN.exec(line)`),
+    # which is string matching, not command execution.
+    (re.compile(r"(?<!\.)\bexec\s*\(", re.IGNORECASE), "exec_call", False),
+    (
+        re.compile(
+            r"\b(?:child_process|childProcess|cp|Process|Kernel|Open3)\s*\.\s*exec\s*\(",
+            re.IGNORECASE,
+        ),
+        "exec_call",
+        False,
+    ),
     (re.compile(r"shell\s*=\s*True", re.IGNORECASE), "subprocess_shell_true", False),
     (re.compile(r"\b(MD5|SHA1)\b", re.IGNORECASE), "weak_hash", True),
     (re.compile(r"Math\.random\s*\(", re.IGNORECASE), "math_random_for_security", True),
