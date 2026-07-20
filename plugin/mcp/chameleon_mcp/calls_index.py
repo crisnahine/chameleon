@@ -45,12 +45,17 @@ Grades:
   member of that class. Any gap yields no edge rather than a guess. Python's
   ``self.attr`` counterpart is a documented follow-up (Python DI is not
   idiomatic and needs __init__ assignment tracking).
-- ``constant_receiver`` - Ruby only: Const.method where Const matches a
-  class key exactly. Keys are fully qualified (``enclosing_class_path``,
-  module nesting included; old dumps fall back to the lexical class name),
-  so a bare receiver matches a top-level class only and a namespaced class
-  is reachable only through its qualified name. The matched key must name
-  exactly one defining file across the dump AND the matched member must be
+- ``constant_receiver`` - Ruby only: Const.method where Const resolves to a
+  class key. Keys are fully qualified (``enclosing_class_path``, module
+  nesting included; old dumps fall back to the lexical class name) and the
+  receiver is resolved the way Ruby resolves constants: lexically outward
+  from the call site's recorded module nesting (a bare ``Name`` inside
+  ``module A; module B`` tries ``A::B::Name``, then ``A::Name``, then
+  ``Name``; a ``::``-anchored receiver is absolute). Every nesting level
+  that matches must agree on ONE defining file -- two levels resolving to
+  different files, or one key defined in two files, is ambiguous and yields
+  no edge. A site without recorded nesting (an old dump, or top-level code)
+  degrades to the exact-receiver match. The matched member must be
   class-level (kind ``singleton_method``: ``def self.x`` or a ``class <<
   self`` def) -- an instance def with the same name is undispatchable from
   a constant receiver, so it yields no edge. ``new`` maps to the INSTANCE
@@ -135,6 +140,55 @@ VALID_GRADES = frozenset(
 )
 
 
+def lexical_candidates(receiver: str, nesting) -> list[str]:
+    """Fully qualified keys a Ruby constant receiver may resolve to, innermost
+    lexical scope first.
+
+    Mirrors Ruby's lexical-outward constant resolution: a bare ``Name`` inside
+    ``module A; module B`` tries ``A::B::Name``, then ``A::Name``, then
+    ``Name``. ``nesting`` is the site's recorded enclosing module/class names,
+    outermost first; candidates drop whole frames from the right, never
+    ``::``-components inside one (a compact ``class Utils::Helper`` frame is a
+    single lexical scope -- Module.nesting never invents the intermediate
+    namespaces). A ``::``-anchored receiver is absolute: its only candidate is
+    the anchored name itself. A site without nesting (an old dump, or
+    top-level code) degrades to the exact-receiver match.
+    """
+    if receiver.startswith("::"):
+        return [receiver[2:]]
+    segments = [s for s in (nesting or ()) if isinstance(s, str) and s]
+    out = ["::".join(segments[:i]) + "::" + receiver for i in range(len(segments), 0, -1)]
+    out.append(receiver)
+    return out
+
+
+def resolve_constant_receiver(receiver, nesting, defs_by_key) -> tuple[str, str] | None:
+    """Resolve a Ruby constant receiver to ``(defining_rel, qualified_key)``.
+
+    ``defs_by_key`` maps fully qualified constant paths to the set of rels
+    defining them. Exactly-one-file semantics: across every lexical candidate
+    that matches a definition, all matches must agree on ONE defining file --
+    two nesting levels resolving to different files, or one key defined in two
+    files, is ambiguous and resolves to nothing (the index asserts only what
+    it can pin). When several candidate keys share that one file, the
+    innermost key wins, which is Ruby's own resolution order. Returns None
+    when nothing matches or the match is ambiguous.
+    """
+    if not isinstance(receiver, str) or not receiver:
+        return None
+    winner_key = None
+    files: set[str] = set()
+    for key in lexical_candidates(receiver, nesting):
+        defs = defs_by_key.get(key)
+        if defs:
+            if winner_key is None:
+                winner_key = key
+            files.update(defs)
+    if winner_key is None or len(files) != 1:
+        return None
+    return next(iter(files)), winner_key
+
+
 def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
     """Build the ``calls_index.json`` payload from parsed source files.
 
@@ -201,8 +255,8 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
     # a lower bound on the real call count.
     dump_capped_rels: set[str] = set()
     # class name -> rels that define it, across the whole dump. The
-    # constant_receiver grade only fires when this set has exactly one
-    # member: an ambiguous constant proves nothing.
+    # constant_receiver grade resolves receivers against these keys and only
+    # fires on exactly one defining file: an ambiguous constant proves nothing.
     class_defs: dict[str, set[str]] = {}
 
     for pf in files or ():
@@ -514,18 +568,18 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
                 if language != "ruby":
                     continue
                 receiver = site.get("receiver")
-                # Class keys are fully qualified, so a receiver matches only on
-                # exact equality: a bare receiver can match a top-level class
-                # only, never a namespaced one. A bare name CAN lexically
-                # resolve to a namespaced class from inside its namespace, but
-                # call sites carry no lexical context, so asserting that edge
-                # would be a guess; the bare form stays unmatched (accepted
-                # undercoverage).
-                defs = class_defs.get(receiver) if isinstance(receiver, str) else None
-                if not defs or len(defs) != 1:
+                # Class keys are fully qualified; the receiver resolves against
+                # them lexically outward from the site's recorded module nesting
+                # (A::B::Name, then A::Name, then Name), the way Ruby resolves
+                # a bare constant. A resolution that different nesting levels
+                # pin to different files proves nothing and yields no edge.
+                raw_nesting = site.get("nesting")
+                nesting = raw_nesting if isinstance(raw_nesting, list) else None
+                resolved = resolve_constant_receiver(receiver, nesting, class_defs)
+                if resolved is None:
                     continue
-                (target_rel,) = defs
-                members = (class_members.get(target_rel) or {}).get(receiver) or {}
+                target_rel, target_key = resolved
+                members = (class_members.get(target_rel) or {}).get(target_key) or {}
                 if name == "new":
                     # A `def self.new` override owns construction: whether and
                     # how it reaches initialize is not provable statically, so

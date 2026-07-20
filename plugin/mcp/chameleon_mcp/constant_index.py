@@ -10,17 +10,25 @@ call site). That yields Rails blast-radius ("rename this service class, here are
 its callers") from data already in the parse extras, with no new extraction.
 
 Join semantics mirror the calls_index ``constant_receiver`` grade exactly:
-``defined_in`` is keyed on the fully qualified ``enclosing_class_path`` and
-``referenced_by`` on the literal receiver string, matched by exact equality. A
-bare ``Foo`` receiver matches a top-level ``Foo`` only, never a namespaced
-``App::Foo`` (a call site carries no lexical nesting), and a constant defined in
-two files is ambiguous -- the same accepted undercoverage as the grade.
+``defined_in`` is keyed on the fully qualified ``enclosing_class_path`` and a
+reference is resolved against those keys lexically outward from its call
+site's recorded module nesting (a bare ``Foo`` inside ``module App`` tries
+``App::Foo`` before ``Foo``; a ``::``-anchored receiver is absolute), then
+recorded under the winning qualified key. A reference whose nesting levels
+match different defining files is ambiguous and recorded nowhere -- the index
+asserts only what it can pin to one file. A reference no candidate defines
+keeps its literal receiver key (a framework class with an empty ``defined_in``
+is harmless); a reference whose one matching key is a constant reopened
+across several files keeps that key (the consumer sees the multi-file
+``defined_in`` and treats that ambiguity itself).
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+
+from chameleon_mcp.calls_index import lexical_candidates, resolve_constant_receiver
 
 SCHEMA_VERSION = 1
 
@@ -44,7 +52,10 @@ def build_constant_index(files, repo_root: Path | str, language: str = "ruby") -
 
     root = Path(repo_root).resolve() if not isinstance(repo_root, Path) else repo_root.resolve()
     defined_in: dict[str, set[str]] = {}
-    referenced_by: dict[str, set[str]] = {}
+    # (receiver, nesting, referencing rel), resolved only after every file's
+    # definitions are collected: a reference's lexical candidates are matched
+    # against the WHOLE dump's definition keys, not the files seen so far.
+    reference_sites: list[tuple[str, list | None, str]] = []
 
     for pf in files or ():
         path = getattr(pf, "path", None)
@@ -73,7 +84,34 @@ def build_constant_index(files, repo_root: Path | str, language: str = "ruby") -
                 continue
             receiver = site.get("receiver")
             if isinstance(receiver, str) and receiver:
-                referenced_by.setdefault(receiver, set()).add(rel)
+                nesting = site.get("nesting")
+                reference_sites.append(
+                    (receiver, nesting if isinstance(nesting, list) else None, rel)
+                )
+
+    referenced_by: dict[str, set[str]] = {}
+    for receiver, nesting, rel in reference_sites:
+        resolved = resolve_constant_receiver(receiver, nesting, defined_in)
+        if resolved is not None:
+            # Unify the reference onto the qualified entry it resolves to, so a
+            # bare `Foo` written inside `module App` joins App::Foo's blast
+            # radius instead of dangling as a disjoint bare-name entry.
+            referenced_by.setdefault(resolved[1], set()).add(rel)
+            continue
+        matched = [k for k in lexical_candidates(receiver, nesting) if k in defined_in]
+        if len(matched) == 1:
+            # The one matching key is a constant reopened across several files
+            # (the resolver refuses a multi-file pin). The join target is
+            # still unambiguous; the consumer sees the multi-file defined_in
+            # and treats that ambiguity itself.
+            referenced_by.setdefault(matched[0], set()).add(rel)
+        elif not matched:
+            # Nothing in the repo defines any candidate: a framework class.
+            # Keep the literal receiver key -- an empty defined_in is harmless.
+            referenced_by.setdefault(receiver, set()).add(rel)
+        # Several keys matched with disagreeing files: recording any join
+        # would knowingly pick a maybe-wrong winner, so the reference is
+        # dropped -- the index asserts only what it can pin.
 
     # Index every constant that is DEFINED locally (an editable file has a blast
     # radius) plus every constant that is REFERENCED (so a referenced-but-defined

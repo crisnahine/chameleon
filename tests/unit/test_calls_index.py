@@ -1366,10 +1366,10 @@ class TestRealDumperRubyNamespaces:
         ]
 
     @pytest.mark.skipif(not _have_prism(), reason="ruby + prism gem unavailable")
-    def test_bare_receiver_inside_same_module_yields_no_edge(self, tmp_path):
-        # Settings.get from inside ANOTHER file's `module A` context WOULD
-        # lexically resolve to A::Settings, but call sites carry no lexical
-        # context, so the edge is unprovable. Pinned as accepted undercoverage.
+    def test_bare_receiver_inside_same_module_records_edge(self, tmp_path):
+        # Settings.get from inside ANOTHER file's `module A` context lexically
+        # resolves to A::Settings; the dump records the site's module nesting,
+        # so the edge is provable.
         from chameleon_mcp.extractors.ruby import RubyExtractor
 
         (tmp_path / "namespace_a.rb").write_text(
@@ -1382,7 +1382,14 @@ class TestRealDumperRubyNamespaces:
         )
         pr = RubyExtractor().parse_repo(repo_root=tmp_path, glob="**/*.rb")
         idx = build_calls_index(pr.files, tmp_path, "ruby")
-        assert "namespace_a.rb" not in idx["callees"]
+        assert idx["callees"]["namespace_a.rb"]["get"]["callers"] == [
+            {
+                "path": "other_a.rb",
+                "caller": "run",
+                "line": 4,
+                "grade": "constant_receiver",
+            }
+        ]
 
     @pytest.mark.skipif(not _have_prism(), reason="ruby + prism gem unavailable")
     def test_compact_path_class_matches_qualified_receiver(self, tmp_path):
@@ -1924,3 +1931,313 @@ def test_artifact_without_capped_key_loads_empty_capped_set(tmp_path):
     loaded = load_calls_index(tmp_path)
     assert loaded is not None
     assert loaded.capped_files == frozenset()
+
+
+class TestConstantReceiverLexicalNesting:
+    def test_gem_nesting_bare_receiver_resolves_outward(self, tmp_path):
+        # `DuplicateScanner.scan` inside `module Ledgermatch; module Commands`
+        # lexically resolves to Ledgermatch::DuplicateScanner: the site's
+        # recorded nesting supplies the candidates the receiver walks outward.
+        target = FakeParsed(
+            tmp_path / "lib" / "ledgermatch" / "duplicate_scanner.rb",
+            {
+                "callable_signatures": [
+                    _sig(
+                        "scan",
+                        enclosing_class="DuplicateScanner",
+                        kind="singleton_method",
+                        enclosing_class_path="Ledgermatch::DuplicateScanner",
+                    )
+                ]
+            },
+        )
+        caller = FakeParsed(
+            tmp_path / "lib" / "ledgermatch" / "commands" / "reconcile.rb",
+            {
+                "call_sites": [
+                    {
+                        **_site("scan", "DuplicateScanner", "constant", 12, "call"),
+                        "nesting": ["Ledgermatch", "Commands"],
+                    }
+                ]
+            },
+        )
+        idx = build_calls_index([target, caller], tmp_path, "ruby")
+        entry = idx["callees"]["lib/ledgermatch/duplicate_scanner.rb"]["scan"]
+        assert entry["callers"] == [
+            {
+                "path": "lib/ledgermatch/commands/reconcile.rb",
+                "caller": "call",
+                "line": 12,
+                "grade": "constant_receiver",
+            }
+        ]
+
+    def test_two_nesting_levels_different_files_yield_no_edge(self, tmp_path):
+        # A bare `Scanner` inside Ledgermatch::Commands matches BOTH
+        # Ledgermatch::Commands::Scanner and Ledgermatch::Scanner, defined in
+        # different files: the resolution is ambiguous, so nothing is asserted.
+        inner = FakeParsed(
+            tmp_path / "lib" / "ledgermatch" / "commands" / "scanner.rb",
+            {
+                "callable_signatures": [
+                    _sig(
+                        "run",
+                        enclosing_class="Scanner",
+                        kind="singleton_method",
+                        enclosing_class_path="Ledgermatch::Commands::Scanner",
+                    )
+                ]
+            },
+        )
+        outer = FakeParsed(
+            tmp_path / "lib" / "ledgermatch" / "scanner.rb",
+            {
+                "callable_signatures": [
+                    _sig(
+                        "run",
+                        enclosing_class="Scanner",
+                        kind="singleton_method",
+                        enclosing_class_path="Ledgermatch::Scanner",
+                    )
+                ]
+            },
+        )
+        caller = FakeParsed(
+            tmp_path / "lib" / "ledgermatch" / "commands" / "audit.rb",
+            {
+                "call_sites": [
+                    {
+                        **_site("run", "Scanner", "constant", 4, "call"),
+                        "nesting": ["Ledgermatch", "Commands"],
+                    }
+                ]
+            },
+        )
+        idx = build_calls_index([inner, outer, caller], tmp_path, "ruby")
+        assert idx["callees"] == {}
+
+    def test_flat_top_level_with_nesting_still_resolves(self, tmp_path):
+        # A top-level class referenced from inside a namespace: only the
+        # outermost candidate matches, so the flat Rails-style edge survives.
+        target = FakeParsed(
+            tmp_path / "app" / "models" / "billing.rb",
+            {
+                "callable_signatures": [
+                    _sig("charge", enclosing_class="Billing", kind="singleton_method")
+                ]
+            },
+        )
+        caller = FakeParsed(
+            tmp_path / "app" / "services" / "admin" / "pay.rb",
+            {
+                "call_sites": [
+                    {**_site("charge", "Billing", "constant", 6, "pay"), "nesting": ["Admin"]}
+                ]
+            },
+        )
+        idx = build_calls_index([target, caller], tmp_path, "ruby")
+        entry = idx["callees"]["app/models/billing.rb"]["charge"]
+        assert entry["callers"][0]["grade"] == "constant_receiver"
+
+    def test_root_anchored_receiver_resolves_to_top_level_only(self, tmp_path):
+        # `::Audit.log` inside `module Ledgermatch` is absolute: it must edge
+        # to the top-level Audit, never to the nested Ledgermatch::Audit the
+        # lexical walk would otherwise prefer.
+        top = FakeParsed(
+            tmp_path / "lib" / "audit.rb",
+            {
+                "callable_signatures": [
+                    _sig("log", enclosing_class="Audit", kind="singleton_method")
+                ]
+            },
+        )
+        nested = FakeParsed(
+            tmp_path / "lib" / "ledgermatch" / "audit.rb",
+            {
+                "callable_signatures": [
+                    _sig(
+                        "log",
+                        enclosing_class="Audit",
+                        kind="singleton_method",
+                        enclosing_class_path="Ledgermatch::Audit",
+                    )
+                ]
+            },
+        )
+        caller = FakeParsed(
+            tmp_path / "lib" / "ledgermatch" / "cli.rb",
+            {
+                "call_sites": [
+                    {**_site("log", "::Audit", "constant", 9, "run"), "nesting": ["Ledgermatch"]}
+                ]
+            },
+        )
+        idx = build_calls_index([top, nested, caller], tmp_path, "ruby")
+        assert idx["callees"]["lib/audit.rb"]["log"]["callers"] == [
+            {
+                "path": "lib/ledgermatch/cli.rb",
+                "caller": "run",
+                "line": 9,
+                "grade": "constant_receiver",
+            }
+        ]
+        assert "lib/ledgermatch/audit.rb" not in idx["callees"]
+
+    def test_site_without_nesting_keeps_exact_match_only(self, tmp_path):
+        # Old dumps carry no nesting: a bare receiver still cannot reach a
+        # namespaced key, preserving the pre-nesting exact-equality behavior.
+        target = FakeParsed(
+            tmp_path / "lib" / "ledgermatch" / "duplicate_scanner.rb",
+            {
+                "callable_signatures": [
+                    _sig(
+                        "scan",
+                        enclosing_class="DuplicateScanner",
+                        kind="singleton_method",
+                        enclosing_class_path="Ledgermatch::DuplicateScanner",
+                    )
+                ]
+            },
+        )
+        caller = FakeParsed(
+            tmp_path / "lib" / "ledgermatch" / "commands" / "reconcile.rb",
+            {"call_sites": [_site("scan", "DuplicateScanner", "constant", 12, "call")]},
+        )
+        idx = build_calls_index([target, caller], tmp_path, "ruby")
+        assert idx["callees"] == {}
+
+    def test_same_file_at_two_levels_resolves_to_innermost_key(self, tmp_path):
+        # Ledgermatch::Commands::Report and Ledgermatch::Report both live in
+        # one file: the file pin is unambiguous, and the innermost key (Ruby's
+        # own resolution order) supplies the member set.
+        target = FakeParsed(
+            tmp_path / "lib" / "ledgermatch" / "report.rb",
+            {
+                "callable_signatures": [
+                    _sig(
+                        "render",
+                        enclosing_class="Report",
+                        kind="singleton_method",
+                        enclosing_class_path="Ledgermatch::Commands::Report",
+                    ),
+                    _sig(
+                        "render",
+                        enclosing_class="Report",
+                        kind="method",
+                        enclosing_class_path="Ledgermatch::Report",
+                    ),
+                ]
+            },
+        )
+        caller = FakeParsed(
+            tmp_path / "lib" / "ledgermatch" / "commands" / "audit.rb",
+            {
+                "call_sites": [
+                    {
+                        **_site("render", "Report", "constant", 3, "call"),
+                        "nesting": ["Ledgermatch", "Commands"],
+                    }
+                ]
+            },
+        )
+        idx = build_calls_index([target, caller], tmp_path, "ruby")
+        # The innermost key's `render` is a singleton_method, so the edge is
+        # graded; had the outer (instance) key won, no edge would exist.
+        entry = idx["callees"]["lib/ledgermatch/report.rb"]["render"]
+        assert entry["callers"][0]["grade"] == "constant_receiver"
+
+
+class TestRealDumperRubyGemNesting:
+    @pytest.mark.skipif(not _have_prism(), reason="ruby + prism gem unavailable")
+    def test_gem_layout_bare_receiver_records_edge(self, tmp_path):
+        # End-to-end through prism_dump.rb: the standard gem layout where the
+        # caller and callee share `module Ledgermatch` but the reference is
+        # written bare. The dump must carry the site's nesting for the builder
+        # to resolve it.
+        from chameleon_mcp.extractors.ruby import RubyExtractor
+
+        scanner = tmp_path / "lib" / "ledgermatch" / "duplicate_scanner.rb"
+        scanner.parent.mkdir(parents=True)
+        scanner.write_text(
+            "module Ledgermatch\n"
+            "  class DuplicateScanner\n"
+            "    def self.scan(rows)\n"
+            "      rows\n"
+            "    end\n"
+            "  end\n"
+            "end\n",
+            encoding="utf-8",
+        )
+        reconcile = tmp_path / "lib" / "ledgermatch" / "commands" / "reconcile.rb"
+        reconcile.parent.mkdir(parents=True)
+        reconcile.write_text(
+            "module Ledgermatch\n"
+            "  module Commands\n"
+            "    class Reconcile\n"
+            "      def call\n"
+            "        DuplicateScanner.scan([])\n"
+            "      end\n"
+            "    end\n"
+            "  end\n"
+            "end\n",
+            encoding="utf-8",
+        )
+        pr = RubyExtractor().parse_repo(repo_root=tmp_path, glob="**/*.rb")
+        idx = build_calls_index(pr.files, tmp_path, "ruby")
+        assert idx["callees"]["lib/ledgermatch/duplicate_scanner.rb"]["scan"]["callers"] == [
+            {
+                "path": "lib/ledgermatch/commands/reconcile.rb",
+                "caller": "call",
+                "line": 5,
+                "grade": "constant_receiver",
+            }
+        ]
+
+    @pytest.mark.skipif(not _have_prism(), reason="ruby + prism gem unavailable")
+    def test_root_anchored_and_bare_references_pick_their_own_targets(self, tmp_path):
+        # In one caller: `::Audit.log` is absolute and must edge to the
+        # top-level Audit, while the bare `Audit.log` two lines up matches
+        # BOTH Ledgermatch::Audit and the top-level Audit (different files) --
+        # ambiguous under the exactly-one-file contract, so no edge, even
+        # though runtime Ruby would pick the inner one.
+        from chameleon_mcp.extractors.ruby import RubyExtractor
+
+        (tmp_path / "audit.rb").write_text(
+            "class Audit\n  def self.log(m)\n    m\n  end\nend\n",
+            encoding="utf-8",
+        )
+        nested = tmp_path / "lib" / "ledgermatch" / "audit.rb"
+        nested.parent.mkdir(parents=True)
+        nested.write_text(
+            "module Ledgermatch\n"
+            "  class Audit\n"
+            "    def self.log(m)\n"
+            "      m\n"
+            "    end\n"
+            "  end\n"
+            "end\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "lib" / "ledgermatch" / "cli.rb").write_text(
+            "module Ledgermatch\n"
+            "  class Cli\n"
+            "    def run\n"
+            "      Audit.log('nested')\n"
+            "      ::Audit.log('top')\n"
+            "    end\n"
+            "  end\n"
+            "end\n",
+            encoding="utf-8",
+        )
+        pr = RubyExtractor().parse_repo(repo_root=tmp_path, glob="**/*.rb")
+        idx = build_calls_index(pr.files, tmp_path, "ruby")
+        assert "lib/ledgermatch/audit.rb" not in idx["callees"]
+        assert idx["callees"]["audit.rb"]["log"]["callers"] == [
+            {
+                "path": "lib/ledgermatch/cli.rb",
+                "caller": "run",
+                "line": 5,
+                "grade": "constant_receiver",
+            }
+        ]

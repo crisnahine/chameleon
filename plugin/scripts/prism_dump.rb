@@ -328,6 +328,14 @@ def extract_file(file_path)
     if site
       call_sites_total += 1
       if call_sites.length < MAX_CALL_SITES
+        # A constant receiver resolves lexically outward from its call site
+        # (A::B::Name, then A::Name, then Name), so the site records the
+        # enclosing module/class names that resolution starts from. Segments
+        # are the raw nesting frames, outermost first: a compact
+        # `class Utils::Helper` stays one segment, matching Module.nesting,
+        # which never invents the intermediate namespaces. Additive field,
+        # omitted at top level so existing site shapes are unchanged there.
+        site[:nesting] = nesting_stack.dup if site[:kind] == 'constant' && !nesting_stack.empty?
         call_sites << site.merge(
           line: line_of(node.location),
           caller: def_stack.last || '<module>'

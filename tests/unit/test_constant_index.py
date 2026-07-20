@@ -215,3 +215,147 @@ def test_empty_and_malformed_inputs(tmp_path):
     # a record with garbage extras must not crash
     bad = SimpleNamespace(path=tmp_path / "z.rb", extras={"call_sites": "notalist"})
     assert build_constant_index([bad], tmp_path)["constants"] == {}
+
+
+def _pf_nested(path, *, classes=None, refs=None):
+    """A parse record whose reference sites may carry lexical nesting:
+    refs -> (receiver, nesting) pairs, nesting None for a top-level site."""
+    extras = {}
+    if classes:
+        extras["callable_signatures"] = [
+            {"name": f"m{i}", "enclosing_class_path": c} for i, c in enumerate(classes)
+        ]
+    if refs:
+        extras["call_sites"] = [
+            {"name": "call", "receiver": r, "kind": "constant"}
+            | ({"nesting": n} if n is not None else {})
+            for r, n in refs
+        ]
+    return SimpleNamespace(path=path, extras=extras)
+
+
+def test_gem_nesting_reference_unifies_onto_qualified_entry(tmp_path):
+    # A bare `DuplicateScanner` written inside Ledgermatch::Commands joins the
+    # Ledgermatch::DuplicateScanner entry instead of dangling as a disjoint
+    # bare-name entry with no defined_in.
+    files = [
+        _pf_nested(
+            tmp_path / "lib/ledgermatch/duplicate_scanner.rb",
+            classes=["Ledgermatch::DuplicateScanner"],
+        ),
+        _pf_nested(
+            tmp_path / "lib/ledgermatch/commands/reconcile.rb",
+            refs=[("DuplicateScanner", ["Ledgermatch", "Commands"])],
+        ),
+    ]
+    idx = build_constant_index(files, tmp_path, language="ruby")
+    entry = idx["constants"]["Ledgermatch::DuplicateScanner"]
+    assert entry["defined_in"] == ["lib/ledgermatch/duplicate_scanner.rb"]
+    assert entry["referenced_by"] == ["lib/ledgermatch/commands/reconcile.rb"]
+    assert "DuplicateScanner" not in idx["constants"]
+    assert referencing_files(idx, "Ledgermatch::DuplicateScanner") == [
+        "lib/ledgermatch/commands/reconcile.rb"
+    ]
+
+
+def test_ambiguous_nesting_levels_reference_recorded_nowhere(tmp_path):
+    # Bare `Scanner` inside Ledgermatch::Commands matches two different files
+    # at two nesting levels: recording any join would pick a maybe-wrong
+    # winner, so the reference is dropped entirely.
+    files = [
+        _pf_nested(
+            tmp_path / "lib/ledgermatch/commands/scanner.rb",
+            classes=["Ledgermatch::Commands::Scanner"],
+        ),
+        _pf_nested(tmp_path / "lib/ledgermatch/scanner.rb", classes=["Ledgermatch::Scanner"]),
+        _pf_nested(
+            tmp_path / "lib/ledgermatch/commands/audit.rb",
+            refs=[("Scanner", ["Ledgermatch", "Commands"])],
+        ),
+    ]
+    idx = build_constant_index(files, tmp_path, language="ruby")
+    assert "Scanner" not in idx["constants"]
+    assert idx["constants"]["Ledgermatch::Commands::Scanner"]["referenced_by"] == []
+    assert idx["constants"]["Ledgermatch::Scanner"]["referenced_by"] == []
+
+
+def test_flat_top_level_reference_with_nesting_still_unifies(tmp_path):
+    # A top-level class referenced from inside a namespace: only the outermost
+    # candidate matches, so the flat entry keeps its blast radius.
+    files = [
+        _pf_nested(tmp_path / "app/models/billing.rb", classes=["Billing"]),
+        _pf_nested(tmp_path / "app/services/admin/pay.rb", refs=[("Billing", ["Admin"])]),
+    ]
+    idx = build_constant_index(files, tmp_path, language="ruby")
+    assert idx["constants"]["Billing"]["referenced_by"] == ["app/services/admin/pay.rb"]
+
+
+def test_root_anchored_reference_resolves_to_top_level_entry(tmp_path):
+    # `::Audit` inside `module Ledgermatch` is absolute: it joins the
+    # top-level Audit entry, never the nested Ledgermatch::Audit the lexical
+    # walk would otherwise prefer.
+    files = [
+        _pf_nested(tmp_path / "lib/audit.rb", classes=["Audit"]),
+        _pf_nested(tmp_path / "lib/ledgermatch/audit.rb", classes=["Ledgermatch::Audit"]),
+        _pf_nested(tmp_path / "lib/ledgermatch/cli.rb", refs=[("::Audit", ["Ledgermatch"])]),
+    ]
+    idx = build_constant_index(files, tmp_path, language="ruby")
+    assert idx["constants"]["Audit"]["referenced_by"] == ["lib/ledgermatch/cli.rb"]
+    assert idx["constants"]["Ledgermatch::Audit"]["referenced_by"] == []
+
+
+def test_reopened_class_reference_keeps_multi_file_entry(tmp_path):
+    # A constant reopened across two files still lists its referencers under
+    # the one matching key; the consumer sees the multi-file defined_in and
+    # treats that ambiguity itself.
+    files = [
+        _pf_nested(tmp_path / "a.rb", classes=["Dup"]),
+        _pf_nested(tmp_path / "b.rb", classes=["Dup"]),
+        _pf_nested(tmp_path / "c.rb", refs=[("Dup", None)]),
+    ]
+    idx = build_constant_index(files, tmp_path, language="ruby")
+    assert idx["constants"]["Dup"]["defined_in"] == ["a.rb", "b.rb"]
+    assert idx["constants"]["Dup"]["referenced_by"] == ["c.rb"]
+
+
+def test_unresolved_framework_reference_keeps_literal_key(tmp_path):
+    # No candidate is defined in the repo: the literal receiver keeps its
+    # entry (empty defined_in, harmless) so the reference is still visible.
+    files = [
+        _pf_nested(
+            tmp_path / "lib/ledgermatch/report.rb",
+            classes=["Ledgermatch::Report"],
+            refs=[("ActiveRecord::Base", ["Ledgermatch"])],
+        ),
+    ]
+    idx = build_constant_index(files, tmp_path, language="ruby")
+    assert idx["constants"]["ActiveRecord::Base"]["defined_in"] == []
+    assert idx["constants"]["ActiveRecord::Base"]["referenced_by"] == ["lib/ledgermatch/report.rb"]
+
+
+def test_gem_nesting_blast_radius_reaches_query_helper(tmp_path):
+    # The query_symbol_importers Ruby branch sees the unified entry: the gem
+    # file's qualified constant now lists its bare-reference caller.
+    from chameleon_mcp.tools import _ruby_constant_importers
+
+    files = [
+        _pf_nested(
+            tmp_path / "lib/ledgermatch/duplicate_scanner.rb",
+            classes=["Ledgermatch::DuplicateScanner"],
+        ),
+        _pf_nested(
+            tmp_path / "lib/ledgermatch/commands/reconcile.rb",
+            refs=[("DuplicateScanner", ["Ledgermatch", "Commands"])],
+        ),
+    ]
+    idx = build_constant_index(files, tmp_path, language="ruby")
+    ch = tmp_path / ".chameleon"
+    ch.mkdir()
+    (ch / "constant_index.json").write_text(json.dumps(idx))
+
+    out = _ruby_constant_importers(tmp_path, tmp_path / "lib/ledgermatch/duplicate_scanner.rb")
+    assert out["found"] is True
+    assert [i["name"] for i in out["importers"]] == ["Ledgermatch::DuplicateScanner"]
+    assert [s["path"] for s in out["importers"][0]["sites"]] == [
+        "lib/ledgermatch/commands/reconcile.rb"
+    ]
