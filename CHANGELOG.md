@@ -4,6 +4,22 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.54] - 2026-07-20
+
+### Fixed
+
+- **An idiomatic RSpec spec now yields a canonical witness.** A spec's only top-level node is
+  `RSpec.describe … do`, because `rspec --init` writes `.rspec` with `--require spec_helper` and the
+  file then carries no top-level require. The Ruby dimension extractor recognized only
+  `class`/`module`/`def`/`require`, so such a spec reported `top_level_node_kinds == []`, canonical
+  selection scored every member `trivial`, and the test archetype shipped witnessless -- losing the
+  per-edit exemplar for essentially every idiomatic RSpec gem. Measured on a paired A/B differing by
+  exactly one `require "spec_helper"` line: bare gave `witness=[]` and 657 B of per-edit context
+  with no witness block; with-require gave a witness and 1,067 B including it. A top-level receiver
+  call opening a block (`do` / `{`) now counts as a `CallNode`, so both spellings produce the same
+  signature. The block opener is required, so an ordinary top-level statement (`puts x`, a bare
+  `Foo.bar`) still does not read as a declaration.
+
 ## [4.4.53] - 2026-07-20
 
 ### Fixed
