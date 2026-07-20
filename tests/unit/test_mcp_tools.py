@@ -921,6 +921,38 @@ def test_query_symbol_importers_python_uses_python_export_reader(trusted_repo):
     assert broken_names == {"OldName"}
 
 
+def test_query_symbol_importers_module_object_rows_are_live_importers(trusted_repo):
+    # A kind="module" row (`from app.services import shipment_service`) names the
+    # module FILE, not one of its exports: it must surface as a live importer of
+    # the module, never as a broken export (the file exports no binding named
+    # after itself).
+    cham = trusted_repo / ".chameleon"
+    svc = trusted_repo / "app" / "services"
+    svc.mkdir(parents=True)
+    (svc / "shipment_service.py").write_text(
+        "async def list_shipments():\n    return []\n", encoding="utf-8"
+    )
+    _write_reverse_index(
+        cham,
+        {
+            "app/services/shipment_service.py": {
+                "shipment_service": [
+                    {"path": "app/routers/shipments.py", "line": 7, "kind": "module"}
+                ]
+            }
+        },
+    )
+    res = tools.query_symbol_importers(str(trusted_repo), str(svc / "shipment_service.py"))
+    _assert_envelope(res)
+    data = res["data"]
+    assert data["found"] is True
+    assert {row["name"] for row in data["importers"]} == {"shipment_service"}
+    assert data["importers"][0]["sites"] == [
+        {"path": "app/routers/shipments.py", "line": 7, "kind": "module"}
+    ]
+    assert data["broken"] == []
+
+
 def test_query_symbol_importers_python_init_reexports(trusted_repo):
     # An __init__.py whose exports include sibling submodules must read via the
     # Python reader (which adds __init__ siblings), not the TS regex.

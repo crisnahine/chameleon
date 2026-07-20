@@ -58,7 +58,7 @@ MIN_SAMPLE_SIZE_NAMING = 5
 # Every other section in the conventions block (see empty_conventions) is keyed
 # by archetype, so an archetype rename must remap those keys and leave these
 # untouched. Source of truth for apply_archetype_renames' rekey loop.
-REPO_LEVEL_CONVENTION_SECTIONS = frozenset({"layering"})
+REPO_LEVEL_CONVENTION_SECTIONS = frozenset({"layering", "repo_imports"})
 
 
 def empty_conventions(*, generation: int) -> dict:
@@ -68,6 +68,12 @@ def empty_conventions(*, generation: int) -> dict:
         "min_sample_size": MIN_SAMPLE_SIZE,
         "conventions": {
             "imports": {},
+            # Repo-level (not per-archetype): modules a strong majority of the
+            # whole corpus imports. Advisory context only -- never a source for
+            # the import-preference enforcement rule, which stays archetype-
+            # scoped. Fills the gap where every cluster sits under the sample
+            # floor so no per-archetype imports entry can derive.
+            "repo_imports": {},
             "import_ordering": {},
             "naming": {},
             "inheritance": {},
@@ -193,6 +199,55 @@ def extract_import_conventions(
         preferred.append({"module": module, "source": module, "frequency": count, "total": total})
 
     return {"preferred": preferred, "competing": competing}
+
+
+# Share of import-bearing files that must import a module before it counts as a
+# repo-wide preference. A strong-majority bar, deliberately higher than any
+# per-cluster frequency band: a repo-wide line speaks for every archetype at
+# once, so only near-ubiquitous modules qualify.
+_REPO_WIDE_PREFERRED_SHARE = 0.60
+
+
+def extract_repo_wide_import_conventions(files: list[ParsedFile]) -> dict:
+    """Repo-wide preferred imports over the WHOLE parsed corpus.
+
+    The per-archetype pass (:func:`extract_import_conventions`) is cluster
+    scoped, so a repo whose every cluster sits under ``MIN_SAMPLE_SIZE`` derives
+    no imports entry at all -- even when nearly every file imports the same
+    module (``__future__`` in a from-scratch Python repo). This pass runs over
+    all parsed files and keeps only modules imported by a strong majority
+    (``_REPO_WIDE_PREFERRED_SHARE``) of the files that import anything, with the
+    same framework-noise skip the cluster pass applies. Returns
+    ``{"preferred": [...]}``; ADVISORY ONLY -- the result renders into the
+    conventions block marked repo-wide and never feeds the archetype-scoped
+    import-preference enforcement rule.
+    """
+    if len(files) < MIN_SAMPLE_SIZE:
+        return {"preferred": []}
+
+    module_counts: Counter[str] = Counter()
+    files_with_imports = 0
+    for f in files:
+        modules = {module for module, _kind in getattr(f, "import_specifiers", ())}
+        if not modules:
+            continue
+        files_with_imports += 1
+        for module in modules:
+            module_counts[module] += 1
+    if files_with_imports < MIN_SAMPLE_SIZE:
+        return {"preferred": []}
+
+    preferred: list[dict] = []
+    for module, count in module_counts.most_common():
+        share = count / files_with_imports
+        if share > _FRAMEWORK_THRESHOLD and module in _FRAMEWORK_MODULES:
+            continue
+        if share < _REPO_WIDE_PREFERRED_SHARE:
+            continue
+        preferred.append(
+            {"module": module, "source": module, "frequency": count, "total": files_with_imports}
+        )
+    return {"preferred": preferred}
 
 
 def _import_group(module: str) -> str:
@@ -2357,6 +2412,7 @@ def extract_all_conventions(
     language: str = "typescript",
     doc_coverage_by_archetype: dict[str, list[tuple[int, int]]] | None = None,
     repo_root: Path | None = None,
+    all_files: list[ParsedFile] | None = None,
 ) -> dict:
     """Extract import and naming conventions for each archetype.
 
@@ -2376,12 +2432,31 @@ def extract_all_conventions(
     ``repo_root`` enables the repo-level import-layering graph (resolving each
     file's relative/alias imports to a target path -> archetype). When omitted
     the layering section stays empty; every other convention is unaffected.
+
+    ``all_files`` is the FULL parsed corpus (dense + sparse cluster members) the
+    repo-wide preferred-imports pass samples. When omitted it falls back to the
+    union of ``files_by_archetype`` -- the dense-cluster members only, which
+    undercounts on a heavily sparse repo.
     """
     conventions = empty_conventions(generation=generation)
     for archetype, files in files_by_archetype.items():
         import_conv = extract_import_conventions(files)
         if import_conv["preferred"] or import_conv["competing"]:
             conventions["conventions"]["imports"][archetype] = import_conv
+    corpus = all_files
+    if corpus is None:
+        seen_corpus_paths: set[str] = set()
+        corpus = []
+        for files in files_by_archetype.values():
+            for f in files:
+                key = str(getattr(f, "path", "")) or str(id(f))
+                if key in seen_corpus_paths:
+                    continue
+                seen_corpus_paths.add(key)
+                corpus.append(f)
+    repo_wide = extract_repo_wide_import_conventions(corpus)
+    if repo_wide["preferred"]:
+        conventions["conventions"]["repo_imports"] = repo_wide
     for archetype, files in files_by_archetype.items():
         ordering_conv = extract_import_ordering_conventions(files)
         if ordering_conv:
@@ -2691,7 +2766,7 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
         import_lines.append(f"- Use {pref}, not {over}{suffix}")
 
     seen_preferred: set[str] = set()
-    all_preferred: list[tuple[int, str]] = []
+    all_preferred: list[tuple[int, str, bool]] = []
     for _arch, data in conv.get("imports", {}).items():
         if not isinstance(data, dict):
             continue
@@ -2701,15 +2776,28 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
             mod = p["module"]
             if mod not in seen_preferred:
                 seen_preferred.add(mod)
-                all_preferred.append((p.get("frequency", 0), mod))
+                all_preferred.append((p.get("frequency", 0), mod, False))
+    # Repo-wide preferred imports (the whole-corpus majority pass) render into
+    # the same IMPORTS section marked repo-wide; a module already carried by an
+    # archetype-scoped entry keeps its unmarked line.
+    _repo_wide_data = conv.get("repo_imports", {})
+    if isinstance(_repo_wide_data, dict):
+        for p in _repo_wide_data.get("preferred", []):
+            if not isinstance(p, dict) or not p.get("module"):
+                continue
+            mod = p["module"]
+            if mod not in seen_preferred:
+                seen_preferred.add(mod)
+                all_preferred.append((p.get("frequency", 0), mod, True))
     all_preferred.sort(reverse=True)
     _pref_shown = _pref_total = 0
-    for _freq, mod in all_preferred:
+    for _freq, mod, _repo_wide in all_preferred:
         basename = mod.rsplit("/", 1)[-1]
         if len(basename) > 2 and basename not in ("index", "types", "utils"):
             _pref_total += 1
             if _pref_shown < _MAX_CONVENTION_ITEMS:
-                import_lines.append(f"- Prefer {mod}")
+                suffix = " (repo-wide)" if _repo_wide else ""
+                import_lines.append(f"- Prefer {mod}{suffix}")
                 _pref_shown += 1
     if _pref_total > _pref_shown:
         import_lines.append(f"- (+{_pref_total - _pref_shown} more preferred modules)")

@@ -1077,7 +1077,11 @@ def lint(
 
     Encoding rule (from `derive_ast_query`):
     - A non-null ast_query field carries an expectation.
-    - A null field means "no expectation set" — never flag.
+    - A null field means "no expectation set" — never flag. One exception:
+      for TypeScript a null `default_export_kind` alongside a non-zero
+      named-export bucket IS an expectation — the archetype exports named
+      bindings only — so a file that INTRODUCES a default export gets the
+      symmetric `default-export-kind-mismatch` advisory.
     - `content_signal == "none"` from the cluster signature is stored as None
       in ast_query, so a null content_signal here means "any directive (or no
       directive) is acceptable".
@@ -1150,6 +1154,33 @@ def lint(
                 actual=str(actual_default) if actual_default is not None else "none",
                 severity="warning",
                 message=message,
+            )
+        )
+    elif (
+        expected_default is None
+        and actual_default is not None
+        and language == "typescript"
+        and ast_query.get("named_export_count_bucket") not in (None, "0")
+    ):
+        # The symmetric direction of the mismatch above: the archetype exports
+        # named bindings only (no witness carries a default export, and the
+        # named-export bucket shows the export surface is real, not a
+        # side-effect script), and this file INTRODUCES a default export. Same
+        # rule id both ways -- one export-style dimension, two deviations.
+        # TypeScript/JS only: for Ruby/Python a None expectation means the
+        # cluster has no single primary construct, not a named-only style.
+        violations.append(
+            Violation(
+                rule="default-export-kind-mismatch",
+                expected="none",
+                actual=str(actual_default),
+                severity="warning",
+                message=(
+                    "archetype exports named bindings only (no sibling has a "
+                    "default export); file adds a default export of "
+                    f"{humanize_kind(actual_default)} -- export it as a named "
+                    "binding like its siblings"
+                ),
             )
         )
 

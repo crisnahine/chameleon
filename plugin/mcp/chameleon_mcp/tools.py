@@ -3352,16 +3352,31 @@ def lint_file(
     best_ast_violations: list = []
     best_confidence = 0.0
     best_struct_count = float("inf")
+    best_has_signal = False
     for cq in candidate_queries:
         v_list = _lint(snapshot, cq, language=language)
         c = _canonical_confidence(snapshot, cq)
         struct_count = sum(1 for v in v_list if v.rule == "top-level-node-kinds-mismatch")
-        if struct_count < best_struct_count or (
-            struct_count == best_struct_count and c > best_confidence
+        # On a structural tie, prefer the candidate that carries a content_signal
+        # over one that lacks it, BEFORE the confidence tiebreak. A signal-less
+        # witness skips the directive check entirely, so it always scores higher
+        # confidence against a probe missing the directive -- letting one
+        # signal-less sibling witness silently disable the directive check for
+        # the whole archetype.
+        has_signal = bool(cq.get("content_signal"))
+        if (
+            struct_count < best_struct_count
+            or (struct_count == best_struct_count and has_signal and not best_has_signal)
+            or (
+                struct_count == best_struct_count
+                and has_signal == best_has_signal
+                and c > best_confidence
+            )
         ):
             best_ast_violations = [v.to_dict() for v in v_list]
             best_confidence = c
             best_struct_count = struct_count
+            best_has_signal = has_signal
 
     convention_violations: list[dict] = []
     try:
@@ -3737,7 +3752,10 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
     target_key = module_key_for_path(p, repo_root)
     if target_key is None:
         return _envelope(dict(empty))
-    indexed = index.names_for(target_key)
+    # Module-object rows (`from pkg import mod`, kind="module") are importer
+    # sites of THIS file, so this rename-blast-radius view opts into them; the
+    # loop below keeps them out of the export-set judgment.
+    indexed = index.names_for(target_key, include_module_rows=True)
     if not indexed:
         # The module is real but nothing imports it by name; report found with
         # empty lists so a caller can tell "no importers" from "couldn't look".
@@ -3747,7 +3765,8 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
         out["module"] = _reroot_rel(target_key, repo_root, _arg_root_ni)
         return _envelope(out)
 
-    if _module_file_missing(repo_root, target_key):
+    _module_missing = _module_file_missing(repo_root, target_key)
+    if _module_missing:
         # A DELETED module exports nothing and the set is CLOSED, so every indexed
         # importer that still names a binding is a genuine break. Separating this
         # from an unreadable module (below) mirrors get_crossfile_context; the old
@@ -3795,7 +3814,16 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
         if name in current:
             sites = [_qsi_site(imp) for imp in importers]
             importers_out.append({"name": name, "count": len(importers), "sites": sites})
-        elif not open_set:
+            continue
+        # A "module" row consumes the module OBJECT, not a named export, so it
+        # is a live importer whenever this file still exists -- its name (the
+        # module's basename) is never judged against the export set.
+        module_rows = [imp for imp in importers if getattr(imp, "kind", None) == "module"]
+        if module_rows and not _module_missing:
+            sites = [_qsi_site(imp) for imp in module_rows]
+            importers_out.append({"name": name, "count": len(module_rows), "sites": sites})
+        symbol_rows = [imp for imp in importers if getattr(imp, "kind", None) != "module"]
+        if symbol_rows and not open_set:
             # Re-verify each recorded importer still references `name` FROM this
             # module on disk before calling it broken: the index is a snapshot, so
             # a fully-migrated importer (reference dropped, or import repointed to a
@@ -3804,7 +3832,7 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
             # normal index-stale-vs-working-tree state of active editing.
             live = [
                 imp
-                for imp in importers
+                for imp in symbol_rows
                 if _live_importer_break(
                     repo_root, imp.path, name, imp.line, target_key, _qsi_lang, _qsi_resolver
                 )

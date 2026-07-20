@@ -77,3 +77,21 @@ class TestRoleBucketSparseExemption:
         )
         assert misc is not None and misc.size == 2
         assert misc.is_sparse
+
+    def test_two_member_colocated_spec_cluster_is_dense(self, tmp_path):
+        # Co-located spec files role-bucket cross-dir; two features' specs are
+        # the repo's spec layer and must survive the adaptive floor like any
+        # other framework role grouping.
+        result = self._cluster_names(
+            [
+                "src/orders/orders.service.spec.ts",
+                "src/inventory/inventory.service.spec.ts",
+                "lib/a.ts",
+                "lib/b.ts",
+                "lib/c.ts",
+            ],
+            tmp_path,
+        )
+        spec = next((c for c in result.clusters if c.key.path_pattern_bucket == "spec:ts"), None)
+        assert spec is not None and spec.size == 2
+        assert not spec.is_sparse

@@ -359,6 +359,38 @@ _NESTJS_ROLE_SUFFIXES: tuple[tuple[str, str], ...] = (
 )
 
 
+# Jest/Vitest co-locate specs beside the source they test (orders/orders.service
+# .spec.ts), so each feature directory's lone spec file lands in its own sparse
+# 1-member cluster and the repo's test layer never forms an archetype -- no
+# canonical witness, no guidance, even though every spec shares one shape. The
+# basename suffix is the role signal, exactly like the NestJS suffixes above.
+_TS_SPEC_SUFFIXES: tuple[str, ...] = (
+    ".spec.ts",
+    ".spec.tsx",
+    ".test.ts",
+    ".test.tsx",
+)
+
+
+def ts_spec_role_for_path(file_path: str) -> str | None:
+    """Return ``"spec"`` for a co-locatable TS test-file basename, or None.
+
+    Self-gated on the ``.spec.ts(x)`` / ``.test.ts(x)`` basename suffix so it
+    never reshapes an ordinary source file, and checked AFTER the Next.js and
+    NestJS role matchers (none of which can match these suffixes) so existing
+    role buckets keep precedence. A ``*.e2e-spec.ts`` does not end in a bare
+    ``.spec.ts`` and stays directory-bucketed with its e2e siblings.
+    """
+    parts = [p for p in file_path.split("/") if p and p not in (".", "..")]
+    if not parts:
+        return None
+    last = parts[-1].lower()
+    for suffix in _TS_SPEC_SUFFIXES:
+        if last.endswith(suffix):
+            return "spec"
+    return None
+
+
 def nestjs_role_for_path(file_path: str) -> str | None:
     """Return the NestJS/Angular filename-role archetype for a TS path, or None.
 
@@ -489,6 +521,24 @@ def path_pattern_bucket_for(
             bucket = f"{parts[0]}/{parts[1]}/{nest_role}"
         else:
             bucket = nest_role
+        if include_extension:
+            ext = _extension_of(parts[-1])
+            if ext:
+                bucket = f"{bucket}:{ext}"
+        return (bucket, "")
+
+    # Co-located TS spec/test files bucket by role across feature dirs (below
+    # every other role matcher so existing role buckets keep precedence; none of
+    # them can match a *.spec.ts basename anyway). Same shape as the branches
+    # above: empty sub_bucket so the cross-dir merge survives
+    # _split_by_sub_bucket, monorepo workspace prefix preserved so two apps'
+    # specs don't collide.
+    spec_role = ts_spec_role_for_path(file_path)
+    if spec_role is not None:
+        if len(parts) >= 4 and parts[0] in _MONOREPO_WORKSPACE_ROOTS:
+            bucket = f"{parts[0]}/{parts[1]}/{spec_role}"
+        else:
+            bucket = spec_role
         if include_extension:
             ext = _extension_of(parts[-1])
             if ext:

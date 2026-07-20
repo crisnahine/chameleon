@@ -71,7 +71,9 @@ SCHEMA_VERSION = 2
 # readable as-is. Only a schema outside this set (a corrupt value, or a genuinely
 # newer engine's schema) is treated as unparseable.
 # Site rows may additionally carry an optional ``kind`` ("reexport" for a barrel
-# re-export line recorded as an importer site); readers treat it as absent-ok.
+# re-export line recorded as an importer site, "module" for a Python
+# module-object import recorded against the module FILE it names); readers
+# treat it as absent-ok.
 _READABLE_SCHEMA_VERSIONS = (1, SCHEMA_VERSION)
 # Profile languages whose extractors carry the named-export/import extras these
 # builders read, so bootstrap writes both index artifacts for them. Ruby has no
@@ -319,7 +321,10 @@ class Importer:
 
     ``kind`` marks how the site consumes the name: ``"reexport"`` when the
     recorded line is a barrel's ``export { x } from`` statement rather than an
-    import; ``None`` for an ordinary import site.
+    import; ``"module"`` when the imported name is a MODULE the site consumes
+    as an object (Python ``from pkg import mod``), recorded against the module
+    file itself so a rename of that file surfaces its importers; ``None`` for
+    an ordinary import site.
     """
 
     path: str
@@ -894,6 +899,15 @@ def build_reverse_index(files, repo_root: Path | str, language: str = "typescrip
     unchanged, so an existence break is caught whether the barrel drops the
     re-export or the implementation drops the definition, and a query on the
     implementation file finally sees its through-barrel consumers.
+
+    Module-object imports (additive, Python only): ``from pkg import mod``
+    imports the MODULE ``pkg/mod.py``, which a rename of that file breaks, but
+    the symbol row above lands only on the package ``__init__``. When
+    ``module``.``name`` resolves to an in-repo file, the importer is ALSO
+    recorded against that module file under the imported name, marked
+    ``kind="module"`` (mirroring the "reexport" marker) so export-set readers
+    can tell it apart from a named-binding import. Symbol-import rows are
+    byte-identical with or without this pass.
     """
     try:
         root = Path(repo_root).resolve()
@@ -925,11 +939,24 @@ def build_reverse_index(files, repo_root: Path | str, language: str = "typescrip
             module = row.get("module")
             if not isinstance(name, str) or not isinstance(module, str):
                 continue
+            line = row.get("line")
+            line_val = int(line) if isinstance(line, int) else None
+            if language == "python":
+                # `from pkg import mod` imports the MODULE pkg/mod.py as an
+                # object, so a rename of that file breaks this line -- yet the
+                # symbol row below lands only on the package (`pkg/__init__.py`).
+                # When `module`.`name` itself resolves to an in-repo file, also
+                # record the importer against that module file, marked "module"
+                # so readers never judge the name against the file's export set.
+                joined = module + name if module.endswith(".") else f"{module}.{name}"
+                module_key = _resolve_module(joined, importer_dir)
+                if module_key is not None:
+                    accum.setdefault(module_key, {}).setdefault(name, set()).add(
+                        (importer_rel, line_val, (), "module")
+                    )
             target_key = _resolve_module(module, importer_dir)
             if target_key is None:
                 continue
-            line = row.get("line")
-            line_val = int(line) if isinstance(line, int) else None
             accum.setdefault(target_key, {}).setdefault(name, set()).add(
                 (importer_rel, line_val, (), None)
             )
@@ -1007,9 +1034,28 @@ class ReverseIndex:
         """Files that import ``name`` from the module at ``target_rel``."""
         return list((self._targets.get(target_rel) or {}).get(name, ()))
 
-    def names_for(self, target_rel: str) -> dict[str, list[Importer]]:
-        """All imported-name -> importers entries recorded for one module."""
-        return dict(self._targets.get(target_rel) or {})
+    def names_for(
+        self, target_rel: str, *, include_module_rows: bool = False
+    ) -> dict[str, list[Importer]]:
+        """All imported-name -> importers entries recorded for one module.
+
+        ``kind="module"`` rows (a Python ``from pkg import mod`` recorded
+        against the module file itself) are EXCLUDED by default: their name is
+        the module's basename, never one of its exported bindings, so any
+        consumer that compares the returned names against the file's export set
+        would misread them as removed exports. A caller that renders importer
+        sites rather than judging exports opts in with ``include_module_rows``.
+        """
+        out: dict[str, list[Importer]] = {}
+        for name, importers in (self._targets.get(target_rel) or {}).items():
+            rows = (
+                list(importers)
+                if include_module_rows
+                else [imp for imp in importers if imp.kind != "module"]
+            )
+            if rows:
+                out[name] = rows
+        return out
 
     def target_keys(self) -> list[str]:
         """Repo-relative keys of every module the index records importers for.
@@ -1028,11 +1074,18 @@ class ReverseIndex:
         module USED to export (so an importer references it) but does not export
         now. This is the deterministic existence-break case: a removed or renamed
         export with a call site still naming the old binding.
+
+        ``kind="module"`` rows are skipped: their name is the module file's own
+        basename (never an exported binding), so judging it against the export
+        set would fabricate a break on every module-object import.
         """
         out: dict[str, list[Importer]] = {}
         for name, importers in (self._targets.get(target_rel) or {}).items():
-            if name not in current_exports and importers:
-                out[name] = list(importers)
+            if name in current_exports:
+                continue
+            rows = [imp for imp in importers if imp.kind != "module"]
+            if rows:
+                out[name] = rows
         return out
 
     def __len__(self) -> int:

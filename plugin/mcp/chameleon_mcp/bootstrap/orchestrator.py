@@ -2782,6 +2782,10 @@ def _bootstrap_single(
         language=extractor.language,
         doc_coverage_by_archetype=doc_coverage_by_archetype,
         repo_root=repo_root,
+        # The full parsed corpus (sparse-cluster members included), so the
+        # repo-wide preferred-imports pass samples every file, not just the
+        # dense-cluster union.
+        all_files=parse_result.files,
     )
 
     # Mirror the per-archetype callable-signature consensus into each canonical's

@@ -446,3 +446,102 @@ class TestReexportSites:
         idx = load_reverse_index(repo)
         assert idx is not None
         assert idx.importers_of("impl.ts", "x")[0].kind is None
+
+
+def _write_py(repo: Path, rel: str, body: str = "VALUE = 1\n") -> Path:
+    p = repo / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(body, encoding="utf-8")
+    return p
+
+
+class TestModuleObjectImports:
+    """`from app.services import shipment_service` imports the MODULE
+    app/services/shipment_service.py; the builder records the importer against
+    that file too, marked kind="module", alongside the unchanged symbol row on
+    the package __init__."""
+
+    def _build(self, tmp_path):
+        _write_py(tmp_path, "app/services/__init__.py", "")
+        _write_py(tmp_path, "app/services/shipment_service.py", "async def list_shipments(): ...\n")
+        importer = FakeParsed(
+            tmp_path / "app" / "routers" / "shipments.py",
+            {"import_symbols": [{"name": "shipment_service", "module": "app.services", "line": 7}]},
+        )
+        return build_reverse_index([importer], tmp_path, language="python")
+
+    def test_module_row_recorded_against_module_file(self, tmp_path):
+        idx = self._build(tmp_path)
+        rows = idx["targets"]["app/services/shipment_service.py"]["shipment_service"]
+        assert rows == [{"path": "app/routers/shipments.py", "line": 7, "kind": "module"}]
+
+    def test_symbol_row_on_package_byte_identical(self, tmp_path):
+        idx = self._build(tmp_path)
+        rows = idx["targets"]["app/services/__init__.py"]["shipment_service"]
+        assert rows == [{"path": "app/routers/shipments.py", "line": 7}]
+
+    def test_relative_module_object_import(self, tmp_path):
+        # `from . import config` inside app/: the joined ".config" resolves to
+        # app/config.py and gets a module row there.
+        _write_py(tmp_path, "app/__init__.py", "")
+        _write_py(tmp_path, "app/config.py", "SETTING = 1\n")
+        importer = FakeParsed(
+            tmp_path / "app" / "main.py",
+            {"import_symbols": [{"name": "config", "module": ".", "line": 2}]},
+        )
+        idx = build_reverse_index([importer], tmp_path, language="python")
+        rows = idx["targets"]["app/config.py"]["config"]
+        assert rows == [{"path": "app/main.py", "line": 2, "kind": "module"}]
+
+    def test_symbol_import_gets_no_module_row(self, tmp_path):
+        # `from app.models import User`: app/models/User resolves to no file, so
+        # only the ordinary symbol row on the package exists.
+        _write_py(tmp_path, "app/models/__init__.py", "class User: ...\n")
+        importer = FakeParsed(
+            tmp_path / "app" / "views.py",
+            {"import_symbols": [{"name": "User", "module": "app.models", "line": 1}]},
+        )
+        idx = build_reverse_index([importer], tmp_path, language="python")
+        assert idx["targets"]["app/models/__init__.py"]["User"] == [
+            {"path": "app/views.py", "line": 1}
+        ]
+        assert "app/models/User.py" not in idx["targets"]
+
+    def test_typescript_build_records_no_module_rows(self, tmp_path):
+        # The module-object pass is Python-only; a TS build is byte-identical.
+        p = tmp_path / "src" / "pricing.ts"
+        p.parent.mkdir(parents=True)
+        p.write_text("// stub\n", encoding="utf-8")
+        importer = FakeParsed(
+            tmp_path / "src" / "cart.ts",
+            {"import_symbols": [{"name": "editPrice", "module": "./pricing", "line": 3}]},
+        )
+        idx = build_reverse_index([importer], tmp_path)
+        assert idx["targets"]["src/pricing.ts"]["editPrice"] == [{"path": "src/cart.ts", "line": 3}]
+
+    def test_broken_importers_skips_module_rows(self):
+        idx = ReverseIndex(
+            {
+                "app/services/shipment_service.py": {
+                    "shipment_service": [Importer("app/routers/shipments.py", 7, kind="module")],
+                    "gone_binding": [Importer("app/legacy.py", 2)],
+                }
+            }
+        )
+        broken = idx.broken_importers("app/services/shipment_service.py", frozenset())
+        # The module row's name is the file's basename, never an export: it must
+        # not read as a removed export even against an empty export set.
+        assert set(broken) == {"gone_binding"}
+
+    def test_names_for_excludes_module_rows_by_default(self):
+        idx = ReverseIndex(
+            {
+                "app/services/shipment_service.py": {
+                    "shipment_service": [Importer("app/routers/shipments.py", 7, kind="module")],
+                    "list_shipments": [Importer("app/other.py", 1)],
+                }
+            }
+        )
+        assert set(idx.names_for("app/services/shipment_service.py")) == {"list_shipments"}
+        opted_in = idx.names_for("app/services/shipment_service.py", include_module_rows=True)
+        assert set(opted_in) == {"shipment_service", "list_shipments"}

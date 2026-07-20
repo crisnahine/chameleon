@@ -278,11 +278,17 @@ def cluster_files(
                 nestjs_role_for_path,
                 nextjs_role_for_path,
                 python_role_for_path,
+                ts_spec_role_for_path,
             )
 
             if any(
                 fn(rel) is not None
-                for fn in (python_role_for_path, nextjs_role_for_path, nestjs_role_for_path)
+                for fn in (
+                    python_role_for_path,
+                    nextjs_role_for_path,
+                    nestjs_role_for_path,
+                    ts_spec_role_for_path,
+                )
             ):
                 return 2
         except Exception:

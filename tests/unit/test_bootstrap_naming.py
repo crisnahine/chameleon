@@ -395,6 +395,19 @@ class TestLooksLikeTest:
     def test_empty_members_and_no_pattern_token_is_false(self):
         assert _looks_like_test("app/models", []) is False
 
+    def test_colocated_spec_role_bucket_names_test(self):
+        # The spec role bucket ("spec:ts") merges co-located *.spec.ts files
+        # across feature dirs; every member basename carries a test suffix, so
+        # the cluster names test-like even though no member sits in a test dir.
+        c = _cluster(
+            bucket="spec:ts",
+            members=[
+                "src/orders/orders.service.spec.ts",
+                "src/inventory/inventory.service.spec.ts",
+            ],
+        )
+        assert propose_archetype_name(c, set()) == "test"
+
 
 # --------------------------------------------------------------------------
 # Majority helpers

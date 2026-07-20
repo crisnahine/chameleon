@@ -12,6 +12,7 @@ from chameleon_mcp.signatures import (
     nestjs_role_for_path,
     path_pattern_bucket_for,
     python_role_for_path,
+    ts_spec_role_for_path,
 )
 
 
@@ -145,6 +146,70 @@ class TestPathPatternBucketFor:
         b1, _ = path_pattern_bucket_for("src/components/Button.tsx", include_extension=True)
         b2, _ = path_pattern_bucket_for("src/components/helper.ts", include_extension=True)
         assert b1 != b2
+
+
+class TestTsSpecRoleBucket:
+    """Co-located *.spec.ts / *.test.ts(x) files bucket cross-directory into one
+    "spec" role bucket so the repo's test layer forms an archetype instead of
+    per-feature 1-member sparse clusters."""
+
+    def test_colocated_specs_share_one_bucket(self):
+        b1, s1 = path_pattern_bucket_for("src/orders/orders.service.spec.ts")
+        b2, s2 = path_pattern_bucket_for("src/inventory/inventory.service.spec.ts")
+        assert b1 == b2 == "spec"
+        # Empty sub_bucket so the cross-dir merge survives _split_by_sub_bucket.
+        assert s1 == s2 == ""
+
+    def test_test_suffix_and_tsx_bucket(self):
+        b1, _ = path_pattern_bucket_for("src/components/Button.test.tsx")
+        b2, _ = path_pattern_bucket_for("__tests__/expense-form.test.tsx")
+        assert b1 == b2 == "spec"
+
+    def test_controller_spec_does_not_take_nest_role(self):
+        # suppliers.controller.spec.ts ends in .spec.ts, NOT .controller.ts: it
+        # must land in the spec bucket, never the nest controller role.
+        bucket, _ = path_pattern_bucket_for("src/suppliers/suppliers.controller.spec.ts")
+        assert bucket == "spec"
+        assert nestjs_role_for_path("src/suppliers/suppliers.controller.spec.ts") is None
+
+    def test_e2e_spec_stays_directory_bucketed(self):
+        # *.e2e-spec.ts does not end in a bare .spec.ts; the e2e suite keeps its
+        # own directory cluster.
+        bucket, _ = path_pattern_bucket_for("test/orders.e2e-spec.ts")
+        assert bucket != "spec"
+
+    def test_existing_role_buckets_keep_precedence(self):
+        # The spec check runs after the framework role matchers: a controller and
+        # an app-router page still take their role buckets.
+        bucket, _ = path_pattern_bucket_for("src/orders/orders.controller.ts")
+        assert bucket == "controller"
+        bucket, _ = path_pattern_bucket_for("app/dashboard/page.tsx")
+        assert bucket == "app-page"
+
+    def test_python_test_files_untouched(self):
+        # Python tests keep their existing directory bucketing (the Python role
+        # machinery owns .py routing).
+        bucket, _ = path_pattern_bucket_for("tests/core/test_registry.py")
+        assert bucket != "spec"
+
+    def test_monorepo_workspace_prefix_preserved(self):
+        b1, s1 = path_pattern_bucket_for("apps/web/components/Button.spec.ts")
+        b2, _ = path_pattern_bucket_for("apps/admin/components/Nav.spec.ts")
+        assert b1 == "apps/web/spec"
+        assert b2 == "apps/admin/spec"
+        assert s1 == ""
+
+    def test_extension_suffix_applies(self):
+        bucket, _ = path_pattern_bucket_for(
+            "src/orders/orders.service.spec.ts", include_extension=True
+        )
+        assert bucket == "spec:ts"
+
+    def test_role_helper_gates_on_suffix(self):
+        assert ts_spec_role_for_path("src/orders/orders.service.spec.ts") == "spec"
+        assert ts_spec_role_for_path("src/orders/orders.service.ts") is None
+        assert ts_spec_role_for_path("spec/models/user_spec.rb") is None
+        assert ts_spec_role_for_path("test/orders.e2e-spec.ts") is None
 
 
 class TestContentSignalMatchFor:

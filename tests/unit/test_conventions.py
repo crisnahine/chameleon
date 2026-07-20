@@ -7,6 +7,7 @@ from pathlib import Path
 
 from chameleon_mcp.conventions import (
     CONVENTIONS_SCHEMA_VERSION,
+    REPO_LEVEL_CONVENTION_SECTIONS,
     empty_conventions,
     extract_all_conventions,
     extract_import_conventions,
@@ -14,6 +15,7 @@ from chameleon_mcp.conventions import (
     extract_key_exports,
     extract_method_call_conventions,
     extract_naming_conventions,
+    extract_repo_wide_import_conventions,
     format_conventions_for_session,
     serialize_conventions,
 )
@@ -106,6 +108,121 @@ class TestImportFrequencyExtractor:
         preferred_modules = [p["module"] for p in result.get("preferred", [])]
         assert "react" not in preferred_modules
         assert "@/lib/api" in preferred_modules
+
+
+class TestRepoWideImportExtractor:
+    def test_strong_majority_module_detected(self):
+        # 33 of 34 files import __future__; every per-directory cluster is under
+        # the sample floor, but the repo-wide pass sees the whole corpus.
+        files = [
+            _make_parsed_file(f"pipeform/mod{i}.py", [("__future__", "named")]) for i in range(33)
+        ]
+        files.append(_make_parsed_file("pipeform/plain.py", [("os", "named")]))
+        result = extract_repo_wide_import_conventions(files)
+        modules = [p["module"] for p in result["preferred"]]
+        assert "__future__" in modules
+        entry = next(p for p in result["preferred"] if p["module"] == "__future__")
+        assert entry["frequency"] == 33
+        assert entry["total"] == 34
+
+    def test_below_majority_share_excluded(self):
+        files = [_make_parsed_file(f"a/f{i}.py", [("pathlib", "named")]) for i in range(5)] + [
+            _make_parsed_file(f"b/f{i}.py", [("json", "named")]) for i in range(5)
+        ]
+        result = extract_repo_wide_import_conventions(files)
+        # Each module sits at 50% of import-bearing files: below the 60% bar.
+        assert result["preferred"] == []
+
+    def test_below_corpus_floor_empty(self):
+        files = [_make_parsed_file(f"f{i}.py", [("__future__", "named")]) for i in range(4)]
+        assert extract_repo_wide_import_conventions(files)["preferred"] == []
+
+    def test_import_free_files_do_not_dilute_share(self):
+        # 6 importers of __future__ + 10 files with no imports at all: share is
+        # judged against files WITH imports, so the majority still derives.
+        files = [_make_parsed_file(f"src/f{i}.py", [("__future__", "named")]) for i in range(6)] + [
+            _make_parsed_file(f"src/plain{i}.py", []) for i in range(10)
+        ]
+        result = extract_repo_wide_import_conventions(files)
+        assert [p["module"] for p in result["preferred"]] == ["__future__"]
+
+    def test_framework_noise_skipped(self):
+        files = [
+            _make_parsed_file(f"src/c{i}.tsx", [("react", "named"), ("zod", "named")])
+            for i in range(12)
+        ]
+        modules = [p["module"] for p in extract_repo_wide_import_conventions(files)["preferred"]]
+        assert "react" not in modules
+        assert "zod" in modules
+
+    def test_registered_as_repo_level_section(self):
+        # apply_archetype_renames' rekey loop must never treat "preferred" as an
+        # archetype key.
+        assert "repo_imports" in REPO_LEVEL_CONVENTION_SECTIONS
+        assert empty_conventions(generation=1)["conventions"]["repo_imports"] == {}
+
+
+class TestRepoWideImportsPipeline:
+    def _files(self):
+        return [
+            _make_parsed_file(f"pipeform/sub{i % 5}/mod{i}.py", [("__future__", "named")])
+            for i in range(12)
+        ]
+
+    def test_all_files_feeds_repo_wide_section(self):
+        # Every cluster is under MIN_SAMPLE_SIZE (so no per-archetype imports
+        # entry derives), yet the repo-wide section fills from the full corpus.
+        files = self._files()
+        by_arch = {f"cluster-{i}": files[i * 2 : i * 2 + 2] for i in range(6)}
+        conv = extract_all_conventions(
+            files_by_archetype=by_arch,
+            declarations_by_archetype={},
+            generation=1,
+            language="python",
+            all_files=files,
+        )
+        assert conv["conventions"]["imports"] == {}
+        repo_wide = conv["conventions"]["repo_imports"]
+        assert [p["module"] for p in repo_wide["preferred"]] == ["__future__"]
+
+    def test_advisory_only_never_an_archetype_imports_entry(self):
+        # The enforcement rule reads conventions.imports[<archetype>]; the
+        # repo-wide result must never appear there.
+        files = self._files()
+        conv = extract_all_conventions(
+            files_by_archetype={"module": files},
+            declarations_by_archetype={},
+            generation=1,
+            language="python",
+            all_files=files,
+        )
+        assert "repo_imports" not in conv["conventions"]["imports"]
+        for entry in conv["conventions"]["imports"].values():
+            assert "repo-wide" not in json.dumps(entry)
+
+    def test_session_block_marks_repo_wide_lines(self):
+        conv = empty_conventions(generation=1)
+        conv["conventions"]["repo_imports"] = {
+            "preferred": [
+                {"module": "__future__", "source": "__future__", "frequency": 33, "total": 34}
+            ]
+        }
+        block = format_conventions_for_session(conv)
+        assert "IMPORTS" in block
+        assert "- Prefer __future__ (repo-wide)" in block
+
+    def test_archetype_scoped_line_wins_over_repo_wide_mark(self):
+        conv = empty_conventions(generation=1)
+        conv["conventions"]["imports"]["service"] = {
+            "preferred": [{"module": "pathlib", "source": "pathlib", "frequency": 12, "total": 14}],
+            "competing": [],
+        }
+        conv["conventions"]["repo_imports"] = {
+            "preferred": [{"module": "pathlib", "source": "pathlib", "frequency": 20, "total": 30}]
+        }
+        block = format_conventions_for_session(conv)
+        assert "- Prefer pathlib" in block
+        assert "- Prefer pathlib (repo-wide)" not in block
 
 
 class TestNamingExtractor:

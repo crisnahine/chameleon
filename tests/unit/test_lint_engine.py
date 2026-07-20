@@ -344,6 +344,44 @@ class TestLint:
         rules = [v.rule for v in lint(snap, query, language="python")]
         assert rules == ["default-export-kind-mismatch"]
 
+    def test_added_default_export_in_named_only_archetype_flagged(self):
+        # The symmetric direction: the archetype exports named bindings only
+        # (no default across the cluster, real named-export surface), and the
+        # file INTRODUCES a default export. Same rule id, warning, advisory.
+        snap = DimensionSnapshot(default_export_kind="ClassDeclaration", named_export_count=3)
+        query = {"default_export_kind": None, "named_export_count_bucket": "2-4"}
+        violations = lint(snap, query, language="typescript")
+        assert len(violations) == 1
+        v = violations[0]
+        assert v.rule == "default-export-kind-mismatch"
+        assert v.severity == "warning"
+        assert v.expected == "none"
+        assert v.actual == "ClassDeclaration"
+        assert "named bindings only" in v.message
+
+    def test_added_default_export_not_flagged_when_archetype_has_default(self):
+        snap = DimensionSnapshot(default_export_kind="FunctionDeclaration", named_export_count=1)
+        query = {"default_export_kind": "FunctionDeclaration", "named_export_count_bucket": "1"}
+        assert lint(snap, query, language="typescript") == []
+
+    def test_added_default_export_not_flagged_without_named_surface(self):
+        # A zero-named-export archetype (side-effect scripts) records no
+        # named-only style; introducing a default export there says nothing.
+        snap = DimensionSnapshot(default_export_kind="FunctionDeclaration")
+        query = {"default_export_kind": None, "named_export_count_bucket": "0"}
+        assert lint(snap, query, language="typescript") == []
+        query_unset = {"default_export_kind": None}
+        assert lint(snap, query_unset, language="typescript") == []
+
+    def test_added_default_export_not_flagged_for_python_or_ruby(self):
+        # For Ruby/Python a None expectation means "no single primary
+        # construct", not a named-only export style.
+        snap = DimensionSnapshot(default_export_kind="ClassDeclaration", named_export_count=3)
+        query = {"default_export_kind": None, "named_export_count_bucket": "2-4"}
+        assert lint(snap, query, language="python") == []
+        assert lint(snap, query, language="ruby") == []
+        assert lint(snap, query) == []
+
     def test_jsx_file_has_jsx_archetype_expects_none(self):
         snap = DimensionSnapshot(jsx_present=True)
         query = {"jsx_present": False}
