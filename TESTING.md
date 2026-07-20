@@ -31,7 +31,7 @@
 |---|---|---|---|
 | GAP-001 | advisory noise | credential-context gate matched substrings (`auth` in "authored") | 4.4.16 |
 | GAP-004 | **HIGH** | every release orphaned the profiles it wrote (25 engines locked out) | 4.4.17 |
-| GAP-005 | false positive | turn-end test-run advisory unsatisfiable (wrong payload key) | 4.4.18 |
+| GAP-005 | false positive | turn-end test-run advisory unsatisfiable (wrong payload key) — **the 4.4.18 fix did not work; really fixed in 4.4.51, see VERIFICATION.md F-1** | 4.4.18 / 4.4.51 |
 | GAP-006 | **HIGH** | bootstrap read tool config from `$HOME`, discarding the repo's own | 4.4.19 |
 | GAP-007a | precision | `raw_sql_concat` flagged constant-only interpolation (partial — did not fix the symptom) | 4.4.20 |
 | GAP-007b | **HIGH** | scan-excluded cohort deleted, so edits got a wrong-layer witness | 4.4.21 |
@@ -1853,7 +1853,19 @@ hostile and degraded state.
 
 ## Final report — Step 7 sign-off (2026-07-20)
 
-**Verdict: the full 7,680-cell matrix passes with correct, effective output and zero failures, and a skeptical clean-room re-verification on brand-new fixtures confirms every shipped fix holds.**
+**Verdict: the full 7,680-cell matrix reached terminal status with zero FAIL, and every shipped fix
+was re-verified against the structure it was reported on.**
+
+> **Superseded in part — see [VERIFICATION.md](./VERIFICATION.md).** An independent audit
+> (2026-07-20) reproduced three mismatches against this report: GAP-005 was never actually fixed
+> (the Bash `PostToolUse` payload carries no exit status under any spelling), `qa-deploy.sh`
+> verified three of the four hops that decide which plugin a session loads, and the
+> `cluster-<hash>` archetype-naming class still reproduces on brand-new repos. All three are fixed
+> in v4.4.51/v4.4.52. That audit also found ~30 adjacent residuals where a fix is correct for the
+> layout it was tuned against and wrong for a common alternative, and it documents where this
+> report's own evidence is weaker than its headline (skill cells filled by file inspection rather
+> than slash-command invocation; ~1,600 cells tagged to superseded builds). Read both documents
+> together; where they disagree, VERIFICATION.md is the later and better-evidenced.**
 
 ### Completed coverage matrix
 
@@ -1905,4 +1917,7 @@ The dominant defect class this campaign surfaced was **the same convention norma
 
 Working tree clean; branch merged to `main` and pushed (HEAD == origin/main). All 17 releases have a `## [ver]` CHANGELOG entry, a matching git tag (all ancestors of HEAD), and a synced version bump across the six manifest files. TESTING.md GAP table, CHANGELOG, and code are consistent (independent audit agent, 0 findings). Docs (architecture.md, language-support-matrix.md, environment-variables.md) do not contradict the shipped fixes.
 
-**All documentation is up to date. The plugin is proven to work under real usage across every supported language and framework.**
+**The plugin is demonstrably effective across every supported language and framework, and
+exceptionally robust under degraded and hostile input. It is not "proven correct": see
+[VERIFICATION.md](./VERIFICATION.md) §6 for what remains unverified, and §3 for the residual gaps
+this campaign's fixes did not close.**
