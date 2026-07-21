@@ -4,6 +4,21 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.14] - 2026-07-21
+
+### Changed
+
+- **State claims are pasted command output.** Three graded Rails rounds moved the same honesty
+  defect to whichever place was still free prose: the ladder line (closed in v4.5.13 by carrying
+  counts), then slot 8, which claimed "tracked files clean" with two tracked files dirty in a
+  `git status` run one tool call earlier. The worktree slot now pastes `git status --porcelain`
+  and `git log --oneline` at write time — empty output IS the clean claim — and the rule
+  generalizes to any sentence about repo, process, or environment state.
+- **Read-only reviewers must not mutate app state.** A review subagent wrote two rows outside a
+  transaction into the app's test database and left the delivered branch with a RED suite
+  (whole-table ordering assertions). Reviewers verify against a prepared test database and reset
+  it, or drive read-only.
+
 ## [4.5.13] - 2026-07-21
 
 ### Changed

@@ -97,7 +97,13 @@ expert, matched to the work:
   repo). When the harness does not expose it, dispatch a general-purpose
   subagent under the same rules.
 - **Reviewers** (Step 6): a fresh-context, read-only pass over the finished
-  diff against the brief. Fresh eyes catch what the author's context has
+  diff against the brief. Read-only means the APP's state too: a reviewer
+  that runs the suite or drives the app must not leave rows in a shared
+  development/test database, files in its storage dir, or caches primed - a
+  graded run handed over a branch whose suite was RED because a review
+  subagent wrote two rows outside a transaction and the repo's
+  whole-table ordering assertions then failed. Verify against a prepared
+  test database and reset it, or drive read-only. Fresh eyes catch what the author's context has
   gone blind to. No packaged agent here: the reviewer's prompt is composed
   per round from THIS task's brief, diff, and declined-findings log.
 
@@ -474,7 +480,15 @@ report incomplete exactly like an unfilled evidence-table cell:
 8. **Worktree** - path, branch, commit state, integration options: merge
    locally, push the branch and open a PR, or discard. The integration
    decision belongs to the user - pushing, merging into a shared branch, or
-   opening a PR happens only on their explicit go.
+   opening a PR happens only on their explicit go. Every STATE claim in this
+   slot is a pasted command result, never a characterization: run
+   `git status --porcelain` at write time and paste its output (empty output
+   IS the clean claim), same for the commit list (`git log --oneline`). "The
+   tree is clean" written from impression is the defect - a graded run wrote
+   "tracked files clean" with two tracked files dirty in a `git status` it
+   had run one tool call earlier. The rule generalizes: any sentence about
+   repo, process, or environment state carries the command output that
+   proves it, or it is not made.
 9. **Proactive follow-ups** - the dig and the implementation read a lot of
    code; what did that reading SURFACE beyond the task? Three lists, each
    entry one line: (a) adjacent issues observed near the changed surface
