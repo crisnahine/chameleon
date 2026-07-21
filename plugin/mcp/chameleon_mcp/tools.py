@@ -4626,7 +4626,11 @@ def describe_codebase(repo: str, response_format: str = "detailed") -> dict:
 
     resolved_path, repo_id = _resolve_repo_arg(repo)
     if repo_id is None or resolved_path is None:
-        return _envelope(dict(empty))
+        # A bare basename ("my-repo") resolves to nothing; without a reason the
+        # caller reads found:false as "no profile" and never retries correctly.
+        out = dict(empty)
+        out["reason"] = "repo-arg-unresolved: pass the absolute repo root or the repo_id"
+        return _envelope(out)
     repo_root = Path(resolved_path)
 
     gate = _trust_state_for(repo_id)

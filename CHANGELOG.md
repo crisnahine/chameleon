@@ -4,6 +4,23 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.8] - 2026-07-21
+
+### Fixed
+
+- **Trust works non-interactively.** `/chameleon-trust <repo-basename>` stalled at the
+  interactive confirmation under `claude -p`, silently stranding the repo untrusted for the
+  whole session — the entire guidance layer absent, observed on a graded run. The argument IS
+  the typed confirmation: the skill now proceeds directly when it matches, and surfaces the
+  expected token when it does not.
+- **Delimited test/dummy/fake fixture segments are placeholder secrets.** `gh-test-secret`-style
+  node:test fixture values fired 14 error-severity secret findings on one graded run. A
+  segment-bounded test/testing/dummy/fake marker plus the existing entropy gate drops the
+  human-written fixture shape while a real test-mode key (Stripe `sk_test_<random>`: high
+  entropy) and embedded letters (`contest-winner`) stay flagged.
+- `describe_codebase` names why a bare-basename repo argument resolved to nothing instead of a
+  reasonless `found: false`.
+
 ## [4.5.7] - 2026-07-21
 
 ### Added

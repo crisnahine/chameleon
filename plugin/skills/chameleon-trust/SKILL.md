@@ -22,6 +22,15 @@ The trust prompt is a security gate. **Don't grant trust mechanically.**
 1. Confirm the user is in a repo (TypeScript/JavaScript, Ruby, or Python) with `.chameleon/profile.json` present.
 2. Show the user `profile.summary.md` (a human-readable view of the profile).
 3. Ask the user to type the **repo root's directory name** — the basename of the directory that contains `.chameleon/`, e.g. `repo` for `/Users/you/projects/repo`, never a parent directory's name and never the session's cwd basename — (or `yes-trust-<8-char-prefix>`) to confirm trust.
+   **Argument form**: when the invocation already carries the exact token as
+   its argument (`/chameleon-trust <repo-basename>` or `/chameleon-trust
+   yes-trust-<prefix>`), the human typed the token into the command — that IS
+   the confirmation. Show the summary, then proceed directly to step 4 with
+   the argument as the token; do not re-prompt (a non-interactive `claude -p`
+   session has no second turn, and stalling here silently strands the repo
+   untrusted for the whole session). An argument that does NOT match the
+   expected token is not a confirmation: surface the mismatch and the
+   expected token instead of guessing.
 4. Call `chameleon-mcp::chameleon_lifecycle(action="trust_profile", params={"repo": <repo_path>, "confirmation_token": <typed value>})`.
 5. The tool validates the token and writes `${PLUGIN_DATA}/<repo_id>/.trust` with `granted_at`, `granted_by_user`, `profile_sha256`.
 

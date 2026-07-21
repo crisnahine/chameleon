@@ -53,6 +53,12 @@ _PLACEHOLDER_SECRET_VALUES = frozenset(
 _PLACEHOLDER_SECRET_RE = re.compile(
     r"^(?:your[-_]|my[-_]secret|put[-_]your|xxx+)"
     r"|[-_]here$|<[^>]*>|\{\{.*\}\}|\$\{[^}]*\}|%\([^)]*\)|example\.(?:com|org)"
+    # A delimited "test"/"testing"/"dummy"/"fake" SEGMENT marks a fixture value
+    # ("gh-test-secret", "mg_test_key", "fake-token"). Segment-bounded so a
+    # random credential merely containing the letters is untouched, and the
+    # entropy gate below keeps a REAL test-mode key (Stripe's sk_test_<random>:
+    # high entropy) flagged -- only low-entropy human-written placeholders drop.
+    r"|(?:^|[-_.])(?:test(?:ing)?|dummy|fake)(?:[-_.]|$)"
     r"|^x+$|^0+$|^\.+$|^-+$",
     re.IGNORECASE,
 )
