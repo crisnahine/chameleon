@@ -4,6 +4,23 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.13] - 2026-07-21
+
+### Changed
+
+- **The ladder line carries two counts, so padding is unwritable.** v4.5.12 told the model to
+  count rather than recall; a graded Rails re-fire then wrote "I read every `app/` file" over
+  15 of 19 — with its own 19-file `find` output in context — proving exhortation inside a slot
+  does not hold where shape does. The line is now the fixed form "Ladder: used ... | skipped
+  ... - reason | read N of M source files": "every file" cannot be rendered in it, and the
+  whole-read shortcut is judged against the real M, not the read subset.
+- **Every plan step needs its `-> verify:` clause**, including the last ones — the steps that
+  lose the clause are empirically the ones that later go undone.
+- **Unexecuted plan steps belong in "Not verified".** The plan is a promise; a silently dropped
+  step (hostile-input probes that never ran) is a broken one unless it is named.
+- **Numbers in evidence cells must come from a tool result** — a plausible count written from
+  memory ("4 tests" for a 5-test file) is the same defect as a fabricated action.
+
 ## [4.5.12] - 2026-07-21
 
 ### Changed

@@ -225,16 +225,26 @@ that does not appear in the rendered brief was not done:
    unverified here.
 5. **Re-audit line** - "Unknowns re-audit: 0 new" or the leftovers named.
 6. **Plan** - the ordered steps, each step ON ITS OWN LINE in the shape
-   `<n>. <action> -> verify: <the specific check for THIS step>`. This slot
+   `<n>. <action> -> verify: <the specific check for THIS step>`. EVERY step,
+   including the last ones (adversarial probes, the commit step) - a line
+   without its `-> verify:` clause is not a step, and the steps that lose the
+   clause are empirically the ones that later go undone. This slot
    is the one most often collapsed into slot 2 - a files list is WHERE the
    work happens, a plan is the ORDER it happens in and how each increment is
    proven; "verify: covered by the final test suite" on every line is a
    collapsed plan, not a plan.
 7. **Risks & rollback** - the worktree makes rollback trivial; say what
    else, if anything, is hard to undo.
-8. **Ladder line** - "Ladder: used <rungs> | skipped <rungs> - <reason>"
-   (rungs 1-4 by name; on a trusted repo over ~40 files a skipped rung
-   needs a real reason, not silence).
+8. **Ladder line** - the fixed shape
+   "Ladder: used <rungs by name> | skipped <rungs> - <reason> | read N of M
+   source files", where N is your own count of files opened this session and
+   M is the repo's source-file count from the glob/find you ran. Both numbers
+   or the line is unfinished: "every file", "all of app/", and a bare "the
+   repo is small" are not renderable in this shape, which is the point - a
+   graded run wrote "I read every app/ file" over 15 of 19 with its own
+   19-file find output in context. When N < M, the skipped-rung reason must
+   survive the real M, not the read subset (the ~40-file whole-read shortcut
+   is judged against M).
 9. **Experts line** - "Experts: <N> dispatched (<one per unknown>)" or
    "Experts: none - <reason>" (over ~100 files with 2+ independent
    unknowns, "none" needs the reason).
@@ -440,7 +450,10 @@ report incomplete exactly like an unfilled evidence-table cell:
    COPYING from tool results earlier in this session, then re-read each row
    asking "did I actually run this, this session?" - a cell describing an
    action not performed (a flow imagined from the code, a click never made)
-   is fabrication, strictly worse than an honest "not driven".
+   is fabrication, strictly worse than an honest "not driven". Any NUMBER in
+   a cell (test counts, file counts, timings) must come from a tool result
+   you can point at; a plausible-looking count written from memory is the
+   same defect ("4 tests" for a 5-test file, never run alone).
 3. **Guard checks** - which flips ran (git or editor-with-reason), which
    tests failed, restored-clean confirmation.
 4. **Review convergence** - the per-round line ("N round(s) (r1: X applied,
@@ -453,7 +466,11 @@ report incomplete exactly like an unfilled evidence-table cell:
    run wrote "9 accepted" from memory over a ledger holding 8, with its own
    convergence line summing to 8 two lines up.
 6. **Defaults taken** - one line each (contract rule 2b).
-7. **Not verified** - what was not driven, and why.
+7. **Not verified** - what was not driven, and why. This includes any
+   PLAN STEP from the brief that was not carried out: the plan is a promise,
+   so a step silently dropped (the hostile-input probes that never ran) is a
+   broken one unless it is named here. Reconcile the plan against what you
+   actually did before writing this slot.
 8. **Worktree** - path, branch, commit state, integration options: merge
    locally, push the branch and open a PR, or discard. The integration
    decision belongs to the user - pushing, merging into a shared branch, or
