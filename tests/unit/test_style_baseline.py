@@ -167,7 +167,7 @@ def test_ruby_interpolated_and_escaped_double_quotes_are_exempt():
     # rubocop's single_quotes style accepts both, so flagging them steers
     # the model to break working code (observed as FP noise on a real run).
     rules = _rubocop({"Style/StringLiterals": {"EnforcedStyle": "single_quotes"}})
-    src = 'a = "value #{x}"' + chr(10) + 'b = "line' + '\\n' + 'break"' + chr(10)
+    src = 'a = "value #{x}"' + chr(10) + 'b = "line' + "\\n" + 'break"' + chr(10)
     out = scan_style_rules(src, language="ruby", rules=rules)
     assert out == []
     # A plain double-quoted literal still flags under the same rules.
