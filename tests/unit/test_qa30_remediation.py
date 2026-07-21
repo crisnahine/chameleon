@@ -159,3 +159,23 @@ def test_inheritance_still_flags_a_genuinely_wrong_base():
         language="ruby",
     )
     assert any(v.rule == "inheritance-convention-violation" for v in viols)
+
+
+def test_python_inheritance_exempts_enum_subclasses():
+    # A StrEnum co-located in a pydantic schema module is a different KIND of
+    # class; telling it to inherit BaseModel is nonsense (observed as a
+    # warning-level FP on a real FastAPI run).
+    from chameleon_mcp.lint_engine import lint_conventions
+
+    conventions = {"inheritance": {"dominant_base": "BaseModel", "frequency": 0.83}}
+    src = (
+        "class ShipmentStatus(StrEnum):\n    PENDING = 'pending'\n\n"
+        "class Priority(enum.IntEnum):\n    LOW = 1\n\n"
+        "class Kind(models.TextChoices):\n    A = 'a'\n"
+    )
+    viols = lint_conventions(src, conventions, language="python")
+    assert not any(v.rule == "inheritance-convention-violation" for v in viols)
+    # A genuinely off-base class in the same module still flags.
+    src2 = "class Weird(ExternalThing):\n    pass\n"
+    viols2 = lint_conventions(src2, conventions, language="python")
+    assert any(v.rule == "inheritance-convention-violation" for v in viols2)

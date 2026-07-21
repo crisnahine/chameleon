@@ -4898,6 +4898,14 @@ def _python_inheritance_violations(scan_content: str, inheritance: dict) -> list
         # archetype's base, not a cross-role deviation. Mirrors the Ruby role exemption.
         if _superclass_shares_base_role(bases[0], dominant_base):
             continue
+        # An enum is a different KIND of class, not a deviation from the
+        # archetype's model/serializer base: a StrEnum co-located in a pydantic
+        # schema module is idiomatic and cannot meaningfully inherit BaseModel.
+        if any(
+            b.rsplit(".", 1)[-1] in ("Enum", "StrEnum", "IntEnum", "IntFlag", "Flag", "TextChoices")
+            for b in bases
+        ):
+            continue
         # The file-shared exemption is PRIMARY-base only: a class IS one of the
         # file's shared types when its FIRST base is the shared one. A foreign
         # primary base with a merely-shared SECONDARY mixin (`class W(ExternalThing,
