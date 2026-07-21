@@ -443,8 +443,19 @@ report incomplete exactly like an unfilled evidence-table cell:
    locally, push the branch and open a PR, or discard. The integration
    decision belongs to the user - pushing, merging into a shared branch, or
    opening a PR happens only on their explicit go.
+9. **Proactive follow-ups** - the dig and the implementation read a lot of
+   code; what did that reading SURFACE beyond the task? Three lists, each
+   entry one line: (a) adjacent issues observed near the changed surface
+   (each with file:line - a latent bug, a stale pattern, a missing test the
+   task did not cover), (b) the ranked next tasks this change sets up (the
+   follow-up feature, the cleanup now unblocked), (c) risks worth watching
+   (the fragile seam a future change will trip on). "none - <reason>" per
+   empty list. Proactive means NAMING, never doing: acting on any of these
+   is a new task on the user's go - scope discipline holds (contract rule
+   2a), and this slot is where the discipline's byproduct lands instead of
+   being silently discarded.
 
-Before sending, run the completeness pass: all 8 slots present in order,
+Before sending, run the completeness pass: all 9 slots present in order,
 every evidence cell traceable to a real tool result this session, the
 convergence and fates lines byte-shaped as specified. The same discipline
 applies to the Step 4 brief's checklist - a rendered brief or report missing

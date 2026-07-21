@@ -4,6 +4,17 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.7] - 2026-07-21
+
+### Added
+
+- **deep-work delivers proactive follow-ups as a mandatory report slot.** The dig and the
+  implementation read far more code than they change; that reading now lands in the report
+  instead of being silently discarded: adjacent issues observed near the changed surface
+  (file:line), the ranked next tasks the change sets up, and risks worth watching — naming,
+  never doing; acting on any of them is a new task on the user's go, so scope discipline
+  holds while its byproduct becomes visible.
+
 ## [4.5.6] - 2026-07-21
 
 ### Changed
