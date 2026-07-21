@@ -4,6 +4,17 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.9] - 2026-07-21
+
+### Fixed
+
+- **Init no longer stalls headless on its production-branch question.** On an origin-less or
+  branch-conflicted repo, `/chameleon-init` waited for an answer that a `claude -p` session can
+  never give, stranding the repo with no profile at all — a graded run flew fully unguided this
+  way. The question keeps its one-turn interactive form, but a non-interactive session takes
+  the stated safe default (detected branch, or working-tree derivation) and proceeds,
+  reporting the default it took.
+
 ## [4.5.8] - 2026-07-21
 
 ### Fixed

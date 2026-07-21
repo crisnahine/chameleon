@@ -46,6 +46,17 @@ running init twice would overwrite the existing profile.
      Ask once: "Which branch should chameleon treat as production? (Enter
      to skip — the working tree will be analyzed instead)". Pass a
      non-empty answer via `production_ref`; on skip just proceed.
+
+   Both questions are ONE-TURN questions with a safe default, never a gate:
+   in a non-interactive session (`claude -p` — no second turn will ever
+   come), do not stall waiting for the answer — take the default (the
+   detected branch on `conflict`; working-tree derivation on
+   local-only), proceed to step 3 immediately, and state the taken default
+   in the summary. A stalled init strands the repo with NO profile at all,
+   which is strictly worse than either default; a real graded run flew
+   fully unguided because this question waited for a turn that could not
+   happen. The defaults are cheap to flip later (/chameleon-refresh with an
+   explicit production_ref, or editing config.json).
 3. Call `chameleon-mcp::chameleon_lifecycle(action="bootstrap_repo", params={"path": <repo_root>})`
    (plus `"production_ref": <answer>` in `params` when step 2 asked). With a lock, the pipeline
    analyzes the production branch's tree — a detached materialization of
