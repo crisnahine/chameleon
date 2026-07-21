@@ -3042,6 +3042,14 @@ def scan_style_rules(
             # rubocop allow; do not flag it.
             if want_char in literal[1:-1]:
                 continue
+            # A Ruby double-quoted string that INTERPOLATES (#{...}) or carries
+            # an escape sequence (\n, \t) cannot be single-quoted at all --
+            # rubocop's own double_quotes/single_quotes styles both accept it.
+            # Flagging it steers the model to break working code.
+            if language == "ruby" and opener == '"':
+                body = literal[1:-1]
+                if "#{" in body or "\\" in body:
+                    continue
             line_no = _position_to_line(content, m.start())
             _emit(
                 f"{other_label}-quoted string at line {line_no}",
