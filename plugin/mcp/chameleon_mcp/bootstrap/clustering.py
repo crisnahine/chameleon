@@ -255,18 +255,20 @@ def cluster_files(
         resolved_threshold = max(1, int(min_cluster_size))
 
     def _threshold_for_cluster(key, members, root, resolved: int) -> int:
-        """Role-bucketed clusters are dense at two members.
+        """Role-bucketed clusters are dense at ONE member.
 
         A framework role bucket (Django's cross-app ``views.py`` -> ``view``,
         a Next.js ``page.tsx``, a Nest ``*.service.ts``) is an intentional
-        semantic grouping: two apps' views files ARE the repo's view layer.
-        The adaptive floor exists to stop accidental path-shaped groupings
-        from becoming archetypes, so it must not drop the deliberate ones --
-        a two-app Django repo otherwise bootstraps with its models, views and
-        serializers all sparse and unguided. A single-member cluster stays
-        sparse either way (one file is a location, not a layer).
+        semantic grouping: the adaptive floor exists to stop accidental
+        path-shaped groupings from becoming archetypes, and a role bucket is
+        never accidental. Dense-at-two shipped first ("one file is a
+        location, not a layer") and a graded run refuted it: a one-app
+        Django repo's single serializers.py formed no serializer archetype
+        and MIS-PAIRED to the test archetype via path fallback -- for a
+        framework role, one file IS the layer, and its own witness beats a
+        wrong archetype's.
         """
-        if resolved <= 2 or not members:
+        if resolved <= 1 or not members:
             return resolved
         try:
             p = members[0].path
@@ -290,7 +292,7 @@ def cluster_files(
                     ts_spec_role_for_path,
                 )
             ):
-                return 2
+                return 1
         except Exception:
             return resolved
         return resolved

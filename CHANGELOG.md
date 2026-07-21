@@ -4,6 +4,28 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.11] - 2026-07-21
+
+### Fixed
+
+- **A single framework-role file forms its own archetype.** Dense-at-two shipped in v4.5.0 and
+  a graded Django run refuted it: a one-app repo's lone serializers.py formed no serializer
+  archetype and mis-paired to the TEST archetype via path fallback — a wrong witness instead of
+  its own. For a framework role, one file is the layer; role buckets are dense at one.
+- **DRF viewsets no longer flagged against a CBV-dominant view convention** — a camel-bounded
+  interior role match recognizes ModelViewSet as the View family (mixed CBV+DRF view modules
+  fired "should inherit ListView" on every viewset).
+- **Enum subclasses exempt from the Python inheritance convention** (StrEnum in a pydantic
+  schema module cannot meaningfully inherit BaseModel).
+- One-to-three-character alphabetic dummy secrets ("pw") are placeholders — no credential that
+  short exists, and they fired error-severity findings in Django test fixtures.
+
+### Changed
+
+- deep-work's review cap may extend one round at a time past 3 only while the latest round
+  still applied a finding, disclosed in the convergence line — a graded run correctly kept
+  reviewing under exactly these conditions and now the spec matches the right behavior.
+
 ## [4.5.10] - 2026-07-21
 
 ### Changed

@@ -373,7 +373,11 @@ in one line.
   `confirmed` verdict means the decline was wrong: apply the finding, and the
   round is non-converged. If ANY finding was applied, the diff changed - the
   fixes are new unreviewed code, so run round N+1; also re-run the specific
-  verification each applied finding's criterion or gate describes. This has
+  verification each applied finding's criterion or gate describes. The cap
+  may be EXTENDED one round at a time past 3 only while the latest round
+  still applied a finding (stopping mid-application is worse than one more
+  look), each extension disclosed in the convergence line; a round that
+  applies nothing ends the loop wherever it stands. This has
   no small-fix exemption: a test-only or 20-line fix is still unreviewed
   code, and "converged (0 findings after the fix)" without an actual
   post-fix reviewer run in the record is a mis-claim. The report's

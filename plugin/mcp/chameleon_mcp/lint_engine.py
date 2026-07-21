@@ -997,7 +997,20 @@ def _superclass_shares_base_role(superclass: str, dominant_base: str) -> bool:
     if not role:
         return False
     sup_tail = superclass.rsplit("::", 1)[-1].rsplit(".", 1)[-1]
-    return sup_tail.endswith(role)
+    if sup_tail.endswith(role):
+        return True
+    # A camel-bounded INTERIOR occurrence is the same role in a longer
+    # compound: a DRF ModelViewSet carries the View role of a CBV-dominant
+    # view module (mixed CBV+DRF files fired "should inherit ListView" on
+    # every viewset). The occurrence must start and end on camel boundaries
+    # so a role embedded mid-word never matches.
+    i = sup_tail.find(role)
+    while i != -1:
+        end = i + len(role)
+        if end == len(sup_tail) or sup_tail[end].isupper():
+            return True
+        i = sup_tail.find(role, i + 1)
+    return False
 
 
 def _namespace_local_base(class_name: str, known_bases: set[str], dominant: str) -> str:

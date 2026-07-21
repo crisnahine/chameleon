@@ -54,8 +54,11 @@ class TestRoleBucketSparseExemption:
         assert not view.is_sparse
         assert view in result.dense_clusters
 
-    def test_single_member_role_cluster_stays_sparse(self, tmp_path):
-        # One file is a location, not a layer -- the exemption starts at two.
+    def test_single_member_role_cluster_is_dense(self, tmp_path):
+        # Reversed from dense-at-two on graded evidence: a one-app Django
+        # repo's single serializers.py formed no serializer archetype and
+        # mis-paired to the test archetype via path fallback. For a framework
+        # role, one file IS the layer.
         result = self._cluster_names(
             ["catalog/serializers.py", "lib/a.py", "lib/b.py", "lib/c.py"],
             tmp_path,
@@ -64,7 +67,7 @@ class TestRoleBucketSparseExemption:
             (c for c in result.clusters if c.key.path_pattern_bucket == "serializer:py"), None
         )
         assert ser is not None and ser.size == 1
-        assert ser.is_sparse
+        assert not ser.is_sparse
 
     def test_non_role_two_member_cluster_stays_sparse(self, tmp_path):
         # An accidental two-file directory grouping keeps the adaptive floor.

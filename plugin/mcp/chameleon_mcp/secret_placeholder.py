@@ -85,6 +85,10 @@ def secret_value_is_placeholder(value: str) -> bool:
     v = value.strip()
     if not v or v.lower() in _PLACEHOLDER_SECRET_VALUES:
         return True
+    # A credential of one to three characters does not exist; "pw"-style
+    # dummies in test fixtures fired error-severity findings on a real run.
+    if len(v) <= 3 and v.isalpha():
+        return True
     return bool(_PLACEHOLDER_SECRET_RE.search(v)) and _shannon_entropy(v) < 3.5
 
 
