@@ -241,7 +241,13 @@ that does not appear in the rendered brief was not done:
 
 Before presenting, run the same completeness pass as Step 7: all 9 slots
 present in order, file:line for every evidence claim (a bare filename is a
-pointer, not evidence), slot 6 in the literal per-step shape. Present it
+pointer, not evidence), slot 6 in the literal per-step shape, and every
+UNIVERSAL claim counted, not recalled: "all N files read", "every caller
+updated", "throughout" are transcriptions from this session's tool calls -
+count them before writing the word, or weaken to the honest subset ("the 24
+files on the touched surface; the 15 framework stubs unopened"). A graded
+run wrote "read all 39 files" over a transcript showing 24 - the honest
+smaller claim would have scored; the padded universal failed it. Present it
 compact, then PROCEED - do not end the turn with "shall I continue?". The
 contract forbids question-stalling, the worktree makes every implementation
 step reversible, and the user interrupts if the direction is wrong. The one
@@ -466,7 +472,10 @@ report incomplete exactly like an unfilled evidence-table cell:
 
 Before sending, run the completeness pass: all 9 slots present in order,
 every evidence cell traceable to a real tool result this session, the
-convergence and fates lines byte-shaped as specified, and NO process you
+convergence and fates lines byte-shaped as specified, every universal
+claim ("all", "every", "throughout") counted from the session record
+rather than recalled - the same transcription discipline as the fates
+line, and the graded failure mode both times - and NO process you
 started still running - every dev server, watcher, or REPL spawned for
 verification is killed before delivery (a graded run left its Flask dev
 server serving on a high port after the report went out). The same discipline

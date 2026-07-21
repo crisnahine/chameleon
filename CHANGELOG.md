@@ -4,6 +4,17 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.12] - 2026-07-21
+
+### Changed
+
+- **deep-work universal claims are transcriptions.** The Rails graded round implemented
+  flawlessly and still dropped two dimensions to the same class: "read all 39 files" over a
+  transcript showing 24, and "ast/exact throughout" over one fallback injection. Any
+  "all/every/throughout" in the brief or report must be counted from the session record at
+  write time or weakened to the honest subset — the fates-line discipline, generalized to
+  every aggregate claim, in both completeness passes.
+
 ## [4.5.11] - 2026-07-21
 
 ### Fixed
