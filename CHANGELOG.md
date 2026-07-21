@@ -4,6 +4,23 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.10] - 2026-07-21
+
+### Changed
+
+- **deep-work's fates line is a transcription, not a recollection** — derived by re-counting
+  the session's own `record_finding_fate` calls (or reading the ledger back) immediately before
+  rendering; a graded run wrote "9 accepted" from memory over a ledger holding 8, with its own
+  convergence line summing to 8 two lines up. The delivery completeness pass also requires
+  killing every process the session started (a graded run left its Flask dev server running
+  after the report went out).
+
+### Fixed
+
+- Interpolated and escape-bearing Ruby double-quoted strings are exempt from the quote-style
+  advisory — single quotes are impossible there and rubocop's own styles accept them; observed
+  as pure FP noise on a graded run.
+
 ## [4.5.9] - 2026-07-21
 
 ### Fixed

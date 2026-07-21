@@ -436,7 +436,12 @@ report incomplete exactly like an unfilled evidence-table cell:
 4. **Review convergence** - the per-round line ("N round(s) (r1: X applied,
    r2: 0) - converged | cap hit | self-reviewed").
 5. **Finding fates recorded** - "N accepted / M declined / K converted" or
-   "fate recording failed: <reason>" or "none - zero findings".
+   "fate recording failed: <reason>" or "none - zero findings". The numbers
+   are a TRANSCRIPTION, never a recollection: derive them by re-counting
+   your own `record_finding_fate` calls this session (or reading
+   `get_finding_fate_stats` back) immediately before rendering - a graded
+   run wrote "9 accepted" from memory over a ledger holding 8, with its own
+   convergence line summing to 8 two lines up.
 6. **Defaults taken** - one line each (contract rule 2b).
 7. **Not verified** - what was not driven, and why.
 8. **Worktree** - path, branch, commit state, integration options: merge
@@ -457,7 +462,10 @@ report incomplete exactly like an unfilled evidence-table cell:
 
 Before sending, run the completeness pass: all 9 slots present in order,
 every evidence cell traceable to a real tool result this session, the
-convergence and fates lines byte-shaped as specified. The same discipline
+convergence and fates lines byte-shaped as specified, and NO process you
+started still running - every dev server, watcher, or REPL spawned for
+verification is killed before delivery (a graded run left its Flask dev
+server serving on a high port after the report went out). The same discipline
 applies to the Step 4 brief's checklist - a rendered brief or report missing
 a slot is unfinished work, not a style choice.
 - This applies on FAILURE too: a task that blocked on a hard dependency or
