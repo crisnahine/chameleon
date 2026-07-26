@@ -3731,7 +3731,7 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
     unresolvable / untrusted repo, missing index, unreadable module, and
     a ``file_path`` that has no recorded entry AND is not a file on disk
     (``path-not-a-file``; ``path-unstattable`` only when the stat itself
-    races) -- a module the index still records answers even once deleted. Never
+    races). Never
     fabricates an importer -- every site is a row the bootstrap recorded.
     """
     from chameleon_mcp.lint_engine import detect_language
@@ -4066,7 +4066,7 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
     repo, missing artifact, path outside the repo, and
     a ``file_path`` that has no recorded entry AND is not a file on disk
     (``path-not-a-file``; ``path-unstattable`` only when the stat itself
-    races) -- a module the index still records answers even once deleted. Never fabricates a caller.
+    races). Never fabricates a caller.
     """
     from chameleon_mcp.calls_index import load_calls_index
     from chameleon_mcp.profile.loader import find_repo_root
@@ -4278,7 +4278,7 @@ def get_blast_radius(repo: str, file_path: str, function_name: str, depth: int =
     repo, missing artifact, path outside the repo, and
     a ``file_path`` that has no recorded entry AND is not a file on disk
     (``path-not-a-file``; ``path-unstattable`` only when the stat itself
-    races) -- a module the index still records answers even once deleted. Never fabricates a caller.
+    races). Never fabricates a caller.
     """
     from chameleon_mcp._thresholds import threshold_int
     from chameleon_mcp.blast_radius import BLAST_RADIUS_NOTE, compute_blast_radius
@@ -4797,7 +4797,7 @@ def get_callees(repo: str, file_path: str, function_name: str) -> dict:
     invisible. Fails open with ``found: False`` on any ambiguity, including
     a ``file_path`` that has no recorded entry AND is not a file on disk
     (``path-not-a-file``; ``path-unstattable`` only when the stat itself
-    races) -- a module the index still records answers even once deleted.
+    races).
     """
     from chameleon_mcp.calls_index import load_calls_index
     from chameleon_mcp.comprehension import callees_of
@@ -5592,9 +5592,9 @@ def get_duplication_candidates(
     includes the budgeted excerpts. Fails open with
     ``found: False`` on any ambiguity (unresolvable / untrusted repo, missing
     catalog, and a ``file_path`` that is not a file on disk (``path-not-a-file``;
-    ``path-unstattable`` only when the stat itself races), or an unparsable
-    file). A file
-    that EXISTS but parses to no functions is a real answer, not an ambiguity.
+    ``path-unstattable`` only when the stat itself races)). A file that EXISTS
+    but parses to no functions -- including one the extractor cannot read --
+    is a real answer, not an ambiguity.
     Never fabricates a candidate -- each is a function the bootstrap recorded.
     """
     from chameleon_mcp._thresholds import threshold_int
