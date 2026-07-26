@@ -766,7 +766,9 @@ DEFAULTS: Final[dict[str, int | float]] = {
     "STOP_RENDER_TOKEN_CEILING": 1000,
     # SessionStart dead-session delivery's own, wider ceiling (spec section 6:
     # SessionStart <= 2,500 tokens) -- a session opener reads more than a
-    # mid-turn nudge, and there is no 3s wrapper cap on this hook to protect.
+    # mid-turn nudge. This bounds TOKENS, not wall clock: `plugin/hooks/session-start`
+    # wraps the Python in a 3s `timeout` that loses the whole injection on overrun,
+    # so raising this must not pull more work onto the hook.
     "SESSION_START_DELIVERY_TOKEN_CEILING": 2_500,
     # A ledger row's own owning session cannot be told apart from any other
     # session on the row itself (findings are not session-keyed, only

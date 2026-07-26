@@ -8,9 +8,10 @@ never renders a byte of what it finds.
 
 Detection runs on the SessionStart path, whose wrapper caps the whole Python
 emission at 3 seconds (`plugin/hooks/session-start`) and loses the ENTIRE
-injection on overrun, so both rungs stay cheap: one small JSON read against a
-known filename, then at most two shallow directory levels against a known path
-shape. Neither rung ever walks a tree recursively.
+injection on overrun, so the whole lookup stays cheap: two small JSON reads against
+known filenames (the plugin registry and the settings file, the latter read once and
+threaded to both rungs), then at most two shallow directory levels against a known
+path shape. Nothing here ever walks a tree recursively.
 
 The question answered is "is superpowers going to be active in this session",
 not merely "do its files exist" -- a plugin present on disk but switched off in
