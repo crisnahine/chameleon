@@ -347,3 +347,50 @@ class _patch_stack:
         for p in reversed(self._patches):
             p.stop()
         return False
+
+
+# --------------------------------------------------------------------------
+# The cap must not drop the witness the brief points AT
+# --------------------------------------------------------------------------
+
+
+def test_tdd_keeps_its_test_witness_when_the_cap_truncates(tmp_path, monkeypatch):
+    """The TDD brief says the canonical witness below is the file to imitate,
+    while writing a failing test. Alphabetical truncation dropped exactly that
+    witness on a real 18-archetype repo, so the block contradicted itself: a
+    directive pointing at data the same block had omitted.
+    """
+    monkeypatch.setenv("CHAMELEON_PEER_SKILL_MAX_ARCHETYPES", "2")
+    repo = _committed_profile(
+        tmp_path,
+        {
+            "component": "src/Component.tsx",
+            "data": "src/data.ts",
+            "test": "src/__tests__/thing.test.ts",
+        },
+    )
+    with _trusted(repo):
+        block = skill_context("superpowers:test-driven-development", str(repo))
+    assert "src/__tests__/thing.test.ts" in block
+    assert "(+1 more archetypes)" in block
+
+
+def test_other_fact_bearing_skills_keep_alphabetical_order(tmp_path, monkeypatch):
+    """Only a skill whose directive names a kind of file gets a preference. The
+    rest author across the whole repo and want breadth, so their ordering is
+    unchanged -- a repo under the cap renders identically either way.
+    """
+    monkeypatch.setenv("CHAMELEON_PEER_SKILL_MAX_ARCHETYPES", "2")
+    repo = _committed_profile(
+        tmp_path,
+        {
+            "component": "src/Component.tsx",
+            "data": "src/data.ts",
+            "test": "src/__tests__/thing.test.ts",
+        },
+    )
+    with _trusted(repo):
+        block = skill_context("superpowers:writing-plans", str(repo))
+    assert "src/Component.tsx" in block
+    assert "src/data.ts" in block
+    assert "src/__tests__/thing.test.ts" not in block

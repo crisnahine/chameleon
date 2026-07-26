@@ -38,6 +38,19 @@ the user should be able to walk away.
    the implementation happens in a linked git worktree, never on the user's
    checked-out branch.
 
+**With superpowers installed:** this skill is self-contained and asks no
+questions, so `superpowers:brainstorming` is NOT in its path in either
+direction - brainstorming is question-driven, which contradicts rule 2 above.
+The dig (Steps 2-3) replaces it. `writing-plans` is likewise not a step here:
+the Understanding Brief IS the plan, and it is written from a dig this skill
+already performed rather than for an engineer assumed to have no context.
+
+That contract is also stated in the SessionStart routing paragraph, but do not
+rely on reading it there: this skill runs in a worktree, and a worktree carries
+no `CLAUDE.local.md`, so the conventions block cannot dedup against the memory
+channel, the digest is fitted under a tighter budget, and the optional routing
+paragraph is the first thing shed. Stating it here is what makes it reliable.
+
 ## Input formats
 
 ```
