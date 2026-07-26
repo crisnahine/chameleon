@@ -2621,7 +2621,7 @@ def _nearby_signatures_section(file_path: str, repo_root: Path | None) -> str:
                     f"[{stamp}] chameleon: nearby-signatures section failed "
                     f"({type(exc).__name__}: {exc})\n"
                 )
-        except OSError:
+        except (OSError, RuntimeError):
             pass
         return ""
 
@@ -2881,7 +2881,9 @@ def _conventions_echo_section(archetype: str | None, repo_root: Path | None) -> 
     values in chameleon's own voice, so the caller renders it OUTSIDE the
     imitate-spotlight, next to the archetype facts it shares an artifact with.
 
-    Fails open to "" so a missing or unreadable profile never costs the advisory.
+    A missing or unreadable conventions.json still renders: the reminder is
+    appended unconditionally downstream and a subagent has no other channel for
+    it. Only a failure of the render itself falls through to "".
     """
     if repo_root is None or not archetype:
         return ""
@@ -2898,26 +2900,31 @@ def _conventions_echo_section(archetype: str | None, repo_root: Path | None) -> 
         # format_conventions_echo appends unconditionally and which a subagent
         # has no other channel to receive.
         pr_text = safe_prose_text(profile_dir / "principles.md")
-        conv_data: dict = {}
+        # Read straight from disk (not via load_profile_dir), so screen the
+        # conventions prose values for injection here: render sanitization does
+        # not neutralize injection prose, and trust persists across changes so
+        # the staleness gate no longer covers this echo path.
+        #
+        # The echo renders only the edited archetype's four dimensions; slice to
+        # that subset BEFORE the O(size) scrub so a multi-MB conventions.json
+        # doesn't cost the whole hot-path budget per edit (see
+        # _conventions_echo_subset).
+        conv_subset: dict = {}
         try:
             conventions_path = profile_dir / "conventions.json"
             if conventions_path.is_file():
                 _parsed = json.loads(conventions_path.read_text(encoding="utf-8"))
                 if isinstance(_parsed, dict):
-                    conv_data = _parsed
-        except (OSError, ValueError):
-            conv_data = {}
-        # Read straight from disk (not via load_profile_dir), so screen the
-        # conventions prose values + principles.md for injection here: render
-        # sanitization does not neutralize injection prose, and trust persists
-        # across changes so the staleness gate no longer covers this echo path.
-        #
-        # The echo renders only the edited archetype's four dimensions; slice to
-        # that subset BEFORE the O(size) scrub/sanitize so a multi-MB
-        # conventions.json doesn't cost the whole hot-path budget per edit (see
-        # _conventions_echo_subset).
-        conv_subset = _conventions_echo_subset(conv_data, archetype)
-        scrub_conventions_prose(conv_subset)
+                    conv_subset = _conventions_echo_subset(_parsed, archetype)
+                    scrub_conventions_prose(conv_subset)
+        except Exception:  # noqa: BLE001
+            # Bare, and the scrub sits inside it, so this mirrors session_start
+            # literally rather than approximately. A narrower (OSError,
+            # ValueError) would let RecursionError through -- deeply nested JSON
+            # subclasses RuntimeError, as _read_payload_dict already documents --
+            # and would leave a scrub failure able to drop the reminder, which is
+            # the one outcome this decoupling exists to prevent.
+            conv_subset = {}
         # Sanitize attacker-controllable inputs at the boundary, for parity with
         # the SessionStart path (the assembled echo carries a
         # <chameleon-conventions> wrapper the output-sanitizer would mangle).
@@ -2940,7 +2947,7 @@ def _conventions_echo_section(archetype: str | None, repo_root: Path | None) -> 
                     f"[{stamp}] chameleon: conventions-echo section failed "
                     f"({type(exc).__name__}: {exc})\n"
                 )
-        except OSError:
+        except (OSError, RuntimeError):
             pass
         return ""
 
