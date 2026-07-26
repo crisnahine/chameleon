@@ -38,7 +38,7 @@ def _empty_cache_root(tmp_path: Path) -> Path:
     Shape: <cache>/<marketplace>/chameleon/<version> -- the value Claude Code
     puts in CLAUDE_PLUGIN_ROOT. Rung 2 walks up three parents from here.
     """
-    root = tmp_path / "cache" / "some-marketplace" / "chameleon" / "4.5.15"
+    root = tmp_path / "cache" / "some-marketplace" / "chameleon" / "0.0.0-fixture"
     root.mkdir(parents=True)
     return root
 
@@ -50,7 +50,7 @@ def _cache_root_with_superpowers(tmp_path: Path, *, with_skill: bool = True) -> 
     and superpowers sits at <cache>/<marketplace>/superpowers/<version>/.
     """
     cache = tmp_path / "cache"
-    chameleon_root = cache / "some-marketplace" / "chameleon" / "4.5.15"
+    chameleon_root = cache / "some-marketplace" / "chameleon" / "0.0.0-fixture"
     chameleon_root.mkdir(parents=True)
     sp = cache / "superpowers-marketplace" / "superpowers" / "6.2.0"
     if with_skill:
@@ -208,7 +208,7 @@ def test_pathological_cache_stays_bounded(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     cache = tmp_path / "cache"
-    chameleon_root = cache / "mkt-0" / "chameleon" / "4.5.15"
+    chameleon_root = cache / "mkt-0" / "chameleon" / "0.0.0-fixture"
     chameleon_root.mkdir(parents=True)
     for i in range(200):
         (cache / f"mkt-{i}" / "notsuperpowers" / "1.0.0").mkdir(parents=True, exist_ok=True)
