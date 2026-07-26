@@ -296,6 +296,41 @@ def test_get_callers_directory_path_found_false(trusted_repo):
     assert data.get("reason") == "path-not-a-file"
 
 
+def test_get_callers_unstattable_path_refuses_rather_than_answering(trusted_repo):
+    """An unreadable parent directory leaves existence UNKNOWN, and an unknown
+    must not surface as a verified zero.
+
+    is_file() swallows the does-not-exist errnos but RAISES on EACCES, so this
+    is the one path where the guard cannot tell phantom from real. It degrades
+    to path-unresolved instead of falling through to found:true.
+    """
+    import os
+
+    cham = trusted_repo / ".chameleon"
+    _write_calls_index(
+        cham, {"other.ts": {"otherFn": {"callers": [], "total": 0, "truncated": False}}}
+    )
+    locked = trusted_repo / "locked"
+    locked.mkdir()
+    target = locked / "svc.ts"
+    target.write_text("export function makeService() {}\n", encoding="utf-8")
+    os.chmod(locked, 0o000)
+    try:
+        try:
+            target.is_file()
+        except OSError:
+            pass
+        else:
+            pytest.skip("parent-directory permissions are not enforced here (running as root?)")
+        res = tools.get_callers(str(trusted_repo), str(target), "makeService")
+        _assert_envelope(res)
+        data = res["data"]
+        assert data["found"] is False
+        assert data.get("reason") == "path-unresolved"
+    finally:
+        os.chmod(locked, 0o755)
+
+
 def test_get_callers_unknown_name_suggests_nearest_recorded(trusted_repo):
     """A near-miss name (typo/case drift) gets the closest recorded names back
     so the caller can self-correct without a search_codebase detour."""

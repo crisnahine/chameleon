@@ -1422,16 +1422,19 @@ def test_get_duplication_candidates_no_catalog_found_false(trusted_repo):
     assert res["data"]["found"] is False
 
 
-def test_get_duplication_candidates_phantom_path_found_false(trusted_repo, monkeypatch):
+def test_get_duplication_candidates_phantom_path_found_false(trusted_repo):
     """parse_edited_functions returns [] for an unreadable file and for a file
-    with no functions alike, so the empty branch must separate the two."""
+    with no functions alike, so the empty branch must separate the two.
+
+    No extractor stub here: a path that is not on disk returns [] at the
+    read_bytes guard, before an extractor is ever resolved.
+    """
     cham = trusted_repo / ".chameleon"
     _write_function_catalog(
         cham,
         {"fmt.ts": [{"name": "formatDate", "kind": "function", "arity": 1, "required": 1}]},
     )
     missing = trusted_repo / "nope.ts"
-    _stub_extractor(monkeypatch, missing, [])
     res = tools.get_duplication_candidates(str(trusted_repo), str(missing))
     _assert_envelope(res)
     assert res["data"]["found"] is False

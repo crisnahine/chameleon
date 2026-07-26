@@ -377,8 +377,8 @@ def _validate_file_path_arg(file_path: object) -> bool:
     return True
 
 
-def _path_absent(p: Path) -> bool:
-    """True when `p` names nothing on disk.
+def _phantom_path_reason(p: Path) -> str | None:
+    """The reason code for refusing an index answer about `p`, or None to answer.
 
     The index-backed read tools derive their lookup key by pure path arithmetic
     (`module_key_for_path`), which succeeds for a path that was never real. An
@@ -389,13 +389,17 @@ def _path_absent(p: Path) -> bool:
     answer. A module that is indexed but gone from disk is a DELETION, which the
     existence-break path reports deliberately, so this never gates that.
 
-    Fails closed to "present" on OSError: a stat that cannot complete must not
-    manufacture a negative answer.
+    Both failure directions refuse rather than answer. `is_file()` swallows the
+    does-not-exist errnos but RAISES on others (an unreadable parent directory,
+    an I/O error), and whether such a path is a real file is simply unknown --
+    reporting an empty result for it would assert the same verified zero this
+    guard exists to prevent, so it degrades to the existing `path-unresolved`
+    rather than claiming the path is not a file.
     """
     try:
-        return not p.is_file()
+        return None if p.is_file() else "path-not-a-file"
     except OSError:
-        return False
+        return "path-unresolved"
 
 
 def _effective_profile_dir(repo_root: Path) -> Path:
@@ -3679,13 +3683,19 @@ def _ruby_constant_importers(repo_root: Path, file_path: Path) -> dict:
                     ],
                 }
             )
-    if not importers and _path_absent(file_path):
+    if not importers:
         # No constant in the index names this path and nothing is on disk: the
-        # query was for a file that never existed. A deleted-but-indexed Ruby
-        # file still yields its constants above, so this never masks a deletion.
-        out = dict(empty)
-        out["reason"] = "path-not-a-file"
-        return out
+        # query was for a file that never existed. This gates on an empty result
+        # rather than on index membership, so a DELETED Ruby file whose constants
+        # have no referencing files is refused here too. That is deliberate: this
+        # branch's importer list is what a deletion would surface, an empty one
+        # carries nothing, and the Ruby path never populates `broken` (which is
+        # why contract-break scoping skips .rb entirely).
+        _phantom = _phantom_path_reason(file_path)
+        if _phantom:
+            out = dict(empty)
+            out["reason"] = _phantom
+            return out
     out = dict(empty)
     out["found"] = True
     out["module"] = rel
@@ -3789,9 +3799,10 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
         # real, so "no importers" would be a verified zero about a file that
         # does not exist. An INDEXED module gone from disk is a deletion, whose
         # existence breaks the branch below reports deliberately.
-        if _path_absent(p):
+        _phantom = _phantom_path_reason(p)
+        if _phantom:
             out = dict(empty)
-            out["reason"] = "path-not-a-file"
+            out["reason"] = _phantom
             return _envelope(out)
         # The module is real but nothing imports it by name; report found with
         # empty lists so a caller can tell "no importers" from "couldn't look".
@@ -4126,9 +4137,10 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
         # named a file that does not exist, so an empty caller list would read as
         # a verified zero. A deleted file the index still records keeps its
         # known-absent answer below.
-        if _path_absent(p):
+        _phantom = _phantom_path_reason(p)
+        if _phantom:
             out = dict(empty)
-            out["reason"] = "path-not-a-file"
+            out["reason"] = _phantom
             return _envelope(out)
         # The (file, name) pair was not recorded -- a known-absent callee is a
         # real answer (no deterministic callers at derivation time), not an error.
@@ -4336,10 +4348,12 @@ def get_blast_radius(repo: str, file_path: str, function_name: str, depth: int =
     # about a file that never existed -- reporting it as a verified zero blast
     # radius is exactly the "safe to change" answer that must not be fabricated.
     # A deleted file the index still records reaches its callers and is kept.
-    if not radius["chains"] and not radius["reached"] and _path_absent(p):
-        out = dict(empty)
-        out["reason"] = "path-not-a-file"
-        return _envelope(out)
+    if not radius["chains"] and not radius["reached"]:
+        _phantom = _phantom_path_reason(p)
+        if _phantom:
+            out = dict(empty)
+            out["reason"] = _phantom
+            return _envelope(out)
     clean_chains = []
     for chain in radius["chains"]:
         # Every chain starts at the SAME root hop -- the queried function
@@ -4843,10 +4857,12 @@ def get_callees(repo: str, file_path: str, function_name: str) -> dict:
     # No recorded callee for a path that is not on disk is a query about a file
     # that never existed, not a function that calls nothing. A deleted file the
     # index still records keeps its answer and the absence caveat below.
-    if not clean and _path_absent(p):
-        out = dict(empty)
-        out["reason"] = "path-not-a-file"
-        return _envelope(out)
+    if not clean:
+        _phantom = _phantom_path_reason(p)
+        if _phantom:
+            out = dict(empty)
+            out["reason"] = _phantom
+            return _envelope(out)
     result = {
         "found": True,
         "module": _ss(_reroot_rel(rel, repo_root, _arg_root)),
@@ -5645,9 +5661,10 @@ def get_duplication_candidates(
         # functions and for a file that cannot be read at all, so the two need
         # separating here: a constants-only module genuinely duplicates nothing,
         # while a path that is not on disk was never a question about this repo.
-        if _path_absent(p):
+        _phantom = _phantom_path_reason(p)
+        if _phantom:
             out = dict(empty)
-            out["reason"] = "path-not-a-file"
+            out["reason"] = _phantom
             return _envelope(out)
         out = dict(empty)
         out["found"] = True
