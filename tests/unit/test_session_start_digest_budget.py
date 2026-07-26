@@ -123,6 +123,10 @@ def test_routing_block_never_displaces_curated_digest_content():
     base = _using_chameleon_digest()
     exact = approx_tokens(base)
     with patch("chameleon_mcp.peer_plugins.superpowers_installed", return_value=True):
+        # Precondition: a block was genuinely on offer. Without it, "nothing was
+        # lost" holds trivially whenever the feature is dead, and the test would
+        # keep passing while guarding nothing.
+        assert _peer_routing_block() == _SUPERPOWERS_ROUTING
         out = _append_peer_routing(_fit_digest_to_budget(base, exact), exact)
     # Nothing curated was lost to make room for the block.
     assert out == base
@@ -133,6 +137,7 @@ def test_routing_block_never_displaces_curated_digest_content():
 def test_routing_block_is_dropped_whole_not_truncated():
     base = _using_chameleon_digest()
     with patch("chameleon_mcp.peer_plugins.superpowers_installed", return_value=True):
+        assert _peer_routing_block() == _SUPERPOWERS_ROUTING  # precondition
         out = _append_peer_routing(base, approx_tokens(base) + 1)
     assert out == base
 
@@ -141,6 +146,7 @@ def test_append_is_inert_on_an_empty_digest():
     """Under extreme pressure the digest shrinks to ""; a routing block with no
     digest under it would be a dangling fragment."""
     with patch("chameleon_mcp.peer_plugins.superpowers_installed", return_value=True):
+        assert _peer_routing_block() == _SUPERPOWERS_ROUTING  # precondition
         assert _append_peer_routing("", 10_000) == ""
 
 
