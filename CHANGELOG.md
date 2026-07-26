@@ -4,6 +4,37 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.15] - 2026-07-26
+
+### Added
+
+- **Chameleon and superpowers compose when both are installed.** The two plugins occupy
+  complementary layers — superpowers shapes process, chameleon shapes output and supplies facts —
+  but neither knew the other existed at runtime, so a session got two independent contracts and no
+  rule for sequencing them. The only cross-references lived inside chameleon skill bodies, which
+  are read after the skill is already invoked, too late to route. SessionStart now appends a
+  ~174-token routing paragraph naming which skill owns review, receiving review, and debugging,
+  and stating that `/chameleon-deep-work` is self-contained so `brainstorming` is not in its path —
+  a contract that was previously undefined, since deep-work forbids questions and brainstorming is
+  a gate of nothing but questions. The full version lives in `using-chameleon`; the digest carries
+  its summary. `CHAMELEON_PEER_ROUTING=0` disables it.
+- **Peer detection answers "will it be active", not "do its files exist."** Existence checks only —
+  no byte of the peer plugin's content is ever read or rendered. Claude Code's own registry is
+  authoritative when readable, so a leftover cache directory cannot keep the block alive after an
+  uninstall; `enabledPlugins` is honoured, so a disabled plugin reads as absent rather than routing
+  the model at skills that never load. Both rungs are bounded, because SessionStart's wrapper caps
+  the whole Python emission at 3 seconds and loses the entire injection on overrun.
+
+### Fixed
+
+- **Optional prose can no longer cost curated digest content.** The routing block is added only to
+  a digest that survived the budget fit whole, and only if it then fits in what remains. Composing
+  before the fit dropped the digest's trailing paragraph in a deterministic window, because
+  `_fit_digest_to_budget` charges a separator a full token where its early-return path charges
+  half; appending afterwards fixed that but left the block riding on top of a truncated digest,
+  where at a 250-token budget it outlived seven of eight curated paragraphs. Both directions are
+  now closed by construction rather than by window.
+
 ## [4.5.14] - 2026-07-21
 
 ### Changed
