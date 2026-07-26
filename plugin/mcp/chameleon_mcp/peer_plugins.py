@@ -57,7 +57,10 @@ def _max_dir_entries() -> int:
     try:
         from chameleon_mcp._thresholds import threshold_int
 
-        return threshold_int("PEER_CACHE_MAX_DIR_ENTRIES")
+        # threshold_int does not floor operator overrides, and a negative value
+        # would slice as "all but the last N" -- inverting the cap instead of
+        # tightening it. Clamp so an override can only ever consider fewer.
+        return max(0, threshold_int("PEER_CACHE_MAX_DIR_ENTRIES"))
     except Exception:
         return 64
 
@@ -83,6 +86,12 @@ def _plugin_disabled(plugin_key: str) -> bool:
     Absence is not a negative: an unreadable settings file, a missing key, or a
     plugin enabled per-project rather than per-user all read as "not disabled",
     so this can only ever suppress detection on an explicit false.
+
+    Scope is the USER-level settings file only. A plugin disabled for one
+    project via that project's .claude/settings.json still reads as enabled
+    here, so the routing block would appear in a session where superpowers does
+    not load. Closing that needs the project root threaded in plus the full
+    settings precedence chain; the boundary is stated rather than half-covered.
     """
     data = _read_json(Path.home() / ".claude" / "settings.json", _MAX_REGISTRY_BYTES)
     if not isinstance(data, dict):
@@ -115,19 +124,28 @@ def _registry_verdict() -> bool | None:
     plugins = data.get("plugins", data)
     if not isinstance(plugins, dict):
         return None
+    unreadable = False
     for key, entries in plugins.items():
         if not isinstance(key, str) or key.split("@", 1)[0] != _PEER_NAME:
             continue
         if not isinstance(entries, list):
+            # The registry names superpowers in a shape this code cannot read
+            # (a future schema storing the entry as a dict, say). That is not
+            # the same as "the registry does not list it", so it must not read
+            # as an authoritative negative -- let the cache rung speak instead.
+            unreadable = True
             continue
         for entry in entries:
             if not isinstance(entry, dict):
+                unreadable = True
                 continue
             install_path = entry.get("installPath")
             if isinstance(install_path, str) and install_path:
                 if Path(install_path).is_dir() and not _plugin_disabled(key):
                     return True
-    return False
+            else:
+                unreadable = True
+    return None if unreadable else False
 
 
 def _bounded_listing(directory: Path) -> list[Path]:

@@ -363,3 +363,30 @@ def test_oversize_registry_is_not_read(tmp_path, monkeypatch):
 
     with patch("pathlib.Path.home", return_value=home):
         assert superpowers_installed() is False
+
+
+def test_unreadable_entry_shape_defers_to_the_cache_rung(tmp_path, monkeypatch):
+    """A registry that NAMES superpowers in a shape this code cannot parse is
+    not an authoritative negative -- only a registry that parsed and genuinely
+    omits it is. Otherwise a future schema change would permanently disable
+    detection while a live install sits in the cache."""
+    home = tmp_path / "home"
+    home.mkdir()
+    # entries as a dict rather than the v2 one-element list
+    _write_registry(home, {"version": 3, "plugins": {"superpowers@mkt": {"installPath": "/x"}}})
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(_cache_root_with_superpowers(tmp_path)))
+
+    with patch("pathlib.Path.home", return_value=home):
+        assert superpowers_installed() is True
+
+
+def test_parsed_registry_omitting_superpowers_stays_authoritative(tmp_path, monkeypatch):
+    """The contrast case: a readable registry that simply lacks the key must
+    still beat a stale cache directory."""
+    home = tmp_path / "home"
+    home.mkdir()
+    _write_registry(home, {"version": 2, "plugins": {"chameleon@mkt": _entry(tmp_path)}})
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(_cache_root_with_superpowers(tmp_path)))
+
+    with patch("pathlib.Path.home", return_value=home):
+        assert superpowers_installed() is False

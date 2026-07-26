@@ -1650,23 +1650,29 @@ def _peer_routing_block() -> str:
 
 
 def _append_peer_routing(digest_text: str, budget_tokens: int) -> str:
-    """Append the routing block to an ALREADY-FITTED digest, if it still fits.
+    """Append the routing block to an ALREADY-FITTED digest, if there is room.
 
-    Composing before the fit looks equivalent but is not. `_fit_digest_to_budget`
-    charges each paragraph separator a whole token while its early-return path
-    estimates the joined text at half that, so the packed cost of the same text
-    always exceeds the whole-text estimate. A digest that fits whole can
-    therefore fail to survive its own repacking, and because the packer breaks
-    rather than continues, the routing block would take the digest's trailing
-    paragraphs down with it -- deterministically, for any repo whose budget
-    lands in that few-token window.
+    Two conditions, and the first is the load-bearing one.
 
-    Adding the block only on top of the fitted base makes "sheds first, and only
-    itself" true by construction: the block is either present in full or absent,
-    and it never displaces content that had already earned its place.
+    The digest must have survived the fit WHOLE. Composing before the fit looks
+    equivalent but is not: `_fit_digest_to_budget` charges each separator a full
+    token while its early-return path estimates the joined text at half that, so
+    a digest that fits whole can fail its own repacking, and the packer breaks
+    rather than continues -- the block would take the trailing paragraphs with
+    it. Appending afterwards fixes that, but only halfway: the headroom left by
+    a TRUNCATING fit is bounded by the first dropped paragraph, which is often
+    larger than the block, so the block would ride on top of a stump. At a
+    250-token budget that meant one curated paragraph kept, seven shed, and the
+    peer-routing prose outliving all of them -- the shed order exactly inverted,
+    and worse than emitting no block at all. A truncated digest is a digest
+    under pressure; optional prose has no claim on what is left of it.
+
+    Then the block must fit in what remains. Both together make the guarantee
+    unconditional: present in full or absent entirely, never displacing curated
+    content, and never the last thing standing.
     """
     block = _peer_routing_block()
-    if not block or not digest_text:
+    if not block or not digest_text or digest_text != _USING_CHAMELEON_DIGEST:
         return digest_text
     try:
         from chameleon_mcp.core.budget import approx_tokens

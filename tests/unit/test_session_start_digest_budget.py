@@ -134,6 +134,43 @@ def test_routing_block_never_displaces_curated_digest_content():
     assert "available on demand" in out  # the paragraph the old shape dropped
 
 
+def test_block_is_withheld_whenever_the_digest_was_truncated():
+    """Regression: gating only on "does the block still fit" let it ride on top
+    of a stump. The headroom left by a truncating fit is bounded by the FIRST
+    dropped paragraph, which is usually larger than the block, so at a 250-token
+    budget the digest kept 1 of 8 paragraphs and the routing prose outlived the
+    other 7 -- the shed order exactly inverted.
+
+    Checks every break point, not one budget: a single sampled budget is how the
+    round-1 regression test missed this (it used the whole-text early-return
+    path, where no truncation happens at all).
+    """
+    base = _using_chameleon_digest()
+    paragraphs = base.split("\n\n")
+    with patch("chameleon_mcp.peer_plugins.superpowers_installed", return_value=True):
+        assert _peer_routing_block() == _SUPERPOWERS_ROUTING  # precondition
+        truncating_budgets = 0
+        for budget in range(0, approx_tokens(base) + 1, 7):
+            fitted = _fit_digest_to_budget(base, budget)
+            out = _append_peer_routing(fitted, budget)
+            if fitted != base:
+                truncating_budgets += 1
+                assert _SUPERPOWERS_ROUTING not in out, budget
+    # The sweep actually exercised truncation rather than sailing past it.
+    assert truncating_budgets > 0
+    assert len(paragraphs) > 1
+
+
+def test_block_still_appends_when_the_whole_digest_survived():
+    """The withholding rule must not swallow the feature: given real headroom,
+    the block is still added."""
+    base = _using_chameleon_digest()
+    generous = approx_tokens(base) + approx_tokens("\n\n") + approx_tokens(_SUPERPOWERS_ROUTING)
+    with patch("chameleon_mcp.peer_plugins.superpowers_installed", return_value=True):
+        out = _append_peer_routing(_fit_digest_to_budget(base, generous), generous)
+    assert out == base + "\n\n" + _SUPERPOWERS_ROUTING
+
+
 def test_routing_block_is_dropped_whole_not_truncated():
     base = _using_chameleon_digest()
     with patch("chameleon_mcp.peer_plugins.superpowers_installed", return_value=True):
@@ -268,3 +305,46 @@ def test_session_start_shrinks_digest_under_a_large_dead_session_delivery(tmp_pa
     # ~900 tokens higher here).
     ceiling = threshold_int("SESSION_START_DELIVERY_TOKEN_CEILING")
     assert approx_tokens(ctx) <= ceiling + 100
+
+
+def test_session_start_actually_wires_the_routing_block(tmp_path, monkeypatch):
+    """End-to-end through the real session_start, not the helpers.
+
+    Every other routing test exercises _peer_routing_block / _append_peer_routing
+    in isolation, so deleting the wiring line in session_start left the whole
+    suite green. This pins the call itself.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(_PLUGIN_ROOT))
+    monkeypatch.setattr("chameleon_mcp.hook_helper._maybe_auto_refresh", lambda *a, **k: None)
+    monkeypatch.chdir(repo)
+
+    def _emit() -> str:
+        captured: list[str] = []
+        with (
+            patch("sys.stdin", io.StringIO(json.dumps({"session_id": "s1", "cwd": str(repo)}))),
+            patch("sys.stdout") as out,
+        ):
+            out.write = captured.append
+            from chameleon_mcp.hook_helper import session_start
+
+            session_start()
+        return json.loads("".join(captured))["hookSpecificOutput"]["additionalContext"]
+
+    with patch("chameleon_mcp.peer_plugins.superpowers_installed", return_value=True):
+        with_peer = _emit()
+    with patch("chameleon_mcp.peer_plugins.superpowers_installed", return_value=False):
+        without_peer = _emit()
+
+    assert _SUPERPOWERS_ROUTING in with_peer
+    assert _SUPERPOWERS_ROUTING not in without_peer
+    # The curated digest is intact in both: the block is additive headroom.
+    for ctx in (with_peer, without_peer):
+        assert "Hook lifecycle:" in ctx
+        assert "available on demand" in ctx
+    # And the emission differs by exactly the block plus its separator.
+    assert len(with_peer) - len(without_peer) == len(_SUPERPOWERS_ROUTING) + 2
