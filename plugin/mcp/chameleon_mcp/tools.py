@@ -3729,8 +3729,9 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
 
     Fails open with an empty result (``found: False``) on any ambiguity:
     unresolvable / untrusted repo, missing index, unreadable module, and
-    a ``file_path`` that is not a file on disk (``path-not-a-file``;
-    ``path-unstattable`` only when the stat itself races). Never
+    a ``file_path`` that has no recorded entry AND is not a file on disk
+    (``path-not-a-file``; ``path-unstattable`` only when the stat itself
+    races) -- a module the index still records answers even once deleted. Never
     fabricates an importer -- every site is a row the bootstrap recorded.
     """
     from chameleon_mcp.lint_engine import detect_language
@@ -4063,8 +4064,9 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
 
     Fails open with ``found: False`` on any ambiguity: unresolvable / untrusted
     repo, missing artifact, path outside the repo, and
-    a ``file_path`` that is not a file on disk (``path-not-a-file``;
-    ``path-unstattable`` only when the stat itself races). Never fabricates a caller.
+    a ``file_path`` that has no recorded entry AND is not a file on disk
+    (``path-not-a-file``; ``path-unstattable`` only when the stat itself
+    races) -- a module the index still records answers even once deleted. Never fabricates a caller.
     """
     from chameleon_mcp.calls_index import load_calls_index
     from chameleon_mcp.profile.loader import find_repo_root
@@ -4274,8 +4276,9 @@ def get_blast_radius(repo: str, file_path: str, function_name: str, depth: int =
 
     Fails open with ``found: False`` on any ambiguity: unresolvable / untrusted
     repo, missing artifact, path outside the repo, and
-    a ``file_path`` that is not a file on disk (``path-not-a-file``;
-    ``path-unstattable`` only when the stat itself races). Never fabricates a caller.
+    a ``file_path`` that has no recorded entry AND is not a file on disk
+    (``path-not-a-file``; ``path-unstattable`` only when the stat itself
+    races) -- a module the index still records answers even once deleted. Never fabricates a caller.
     """
     from chameleon_mcp._thresholds import threshold_int
     from chameleon_mcp.blast_radius import BLAST_RADIUS_NOTE, compute_blast_radius
@@ -4792,8 +4795,9 @@ def get_callees(repo: str, file_path: str, function_name: str) -> dict:
     (same_file, import, constant_receiver, typed_property, module_attribute). Absence of a callee is NOT proof the
     function calls nothing: dynamic dispatch and unsupported call paths are
     invisible. Fails open with ``found: False`` on any ambiguity, including
-    a ``file_path`` that is not a file on disk (``path-not-a-file``;
-    ``path-unstattable`` only when the stat itself races).
+    a ``file_path`` that has no recorded entry AND is not a file on disk
+    (``path-not-a-file``; ``path-unstattable`` only when the stat itself
+    races) -- a module the index still records answers even once deleted.
     """
     from chameleon_mcp.calls_index import load_calls_index
     from chameleon_mcp.comprehension import callees_of
