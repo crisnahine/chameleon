@@ -258,6 +258,44 @@ def test_get_callers_callee_absent_empty(trusted_repo):
     assert data["callers"] == []
 
 
+# ---------------------------------------------------------------------------
+# Path not on disk -> found False, reason path-not-a-file
+# ---------------------------------------------------------------------------
+
+
+def test_get_callers_phantom_path_found_false(trusted_repo):
+    """A path that is not on disk must not answer "no callers".
+
+    module_key_for_path is pure path arithmetic, so a typo'd path yields a
+    perfectly valid key the index simply has no row for -- indistinguishable
+    from a real file nothing calls unless existence is checked.
+    """
+    cham = trusted_repo / ".chameleon"
+    _write_calls_index(
+        cham, {"other.ts": {"otherFn": {"callers": [], "total": 0, "truncated": False}}}
+    )
+    res = tools.get_callers(str(trusted_repo), str(trusted_repo / "nope.ts"), "makeService")
+    _assert_envelope(res)
+    data = res["data"]
+    assert data["found"] is False
+    assert data.get("reason") == "path-not-a-file"
+
+
+def test_get_callers_directory_path_found_false(trusted_repo):
+    """A directory is not a file: the reason code names the condition exactly."""
+    cham = trusted_repo / ".chameleon"
+    _write_calls_index(
+        cham, {"other.ts": {"otherFn": {"callers": [], "total": 0, "truncated": False}}}
+    )
+    subdir = trusted_repo / "src"
+    subdir.mkdir()
+    res = tools.get_callers(str(trusted_repo), str(subdir), "makeService")
+    _assert_envelope(res)
+    data = res["data"]
+    assert data["found"] is False
+    assert data.get("reason") == "path-not-a-file"
+
+
 def test_get_callers_unknown_name_suggests_nearest_recorded(trusted_repo):
     """A near-miss name (typo/case drift) gets the closest recorded names back
     so the caller can self-correct without a search_codebase detour."""

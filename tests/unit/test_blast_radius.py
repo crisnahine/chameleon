@@ -164,6 +164,28 @@ def test_get_blast_radius_untrusted(trusted_repo):
     assert res["data"].get("status") == "untrusted"
 
 
+def test_get_blast_radius_phantom_path_found_false(trusted_repo):
+    """A zero blast radius for a path that is not on disk is a fabricated
+    "safe to change" answer, not a measurement."""
+    cham = trusted_repo / ".chameleon"
+    _write_calls_index(cham, _TWO_HOP)
+    res = tools.get_blast_radius(str(trusted_repo), str(trusted_repo / "nope.ts"), "makeService")
+    _assert_envelope(res)
+    assert res["data"]["found"] is False
+    assert res["data"].get("reason") == "path-not-a-file"
+
+
+def test_get_blast_radius_real_file_zero_reach_found_true(trusted_repo):
+    """A real file at the top of the call graph genuinely reaches nobody."""
+    cham = trusted_repo / ".chameleon"
+    _write_calls_index(cham, _TWO_HOP)
+    (trusted_repo / "main.ts").write_text("export function boot() {}\n", encoding="utf-8")
+    res = tools.get_blast_radius(str(trusted_repo), str(trusted_repo / "main.ts"), "boot")
+    _assert_envelope(res)
+    assert res["data"]["found"] is True
+    assert res["data"]["reached"] == 0
+
+
 def test_judge_reuses_the_shared_walker():
     """Behavior-preserving extraction: the judge keeps its private name bound to
     the shared walker, so its transitive impact block is unchanged."""

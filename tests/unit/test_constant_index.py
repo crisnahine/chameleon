@@ -125,6 +125,13 @@ def test_ruby_constant_importers_helper(tmp_path):
     ch.mkdir()
     (ch / "constant_index.json").write_text(json.dumps(idx))
 
+    # _pf builds parse records in memory only. Materialize the files they describe:
+    # the empty-importers answer below is only meaningful for a file that exists,
+    # since a path absent from BOTH the index and the disk is a phantom query.
+    for pf in files:
+        pf.path.parent.mkdir(parents=True, exist_ok=True)
+        pf.path.write_text("# fixture\n", encoding="utf-8")
+
     out = _ruby_constant_importers(tmp_path, tmp_path / "app/services/foo.rb")
     assert out["found"] is True
     assert out["module"] == "app/services/foo.rb"

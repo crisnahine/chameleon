@@ -399,6 +399,21 @@ def test_get_callees_tool(profiled_repo):
     assert [c["callee"] for c in data["callees"]] == ["make_service"]
 
 
+def test_get_callees_phantom_path_found_false(profiled_repo):
+    """Reporting that a file calls nothing, when it is not on disk, is fabricated."""
+    data = _data(tools.get_callees(str(profiled_repo), str(profiled_repo / "nope.py"), "setup"))
+    assert data["found"] is False
+    assert data.get("reason") == "path-not-a-file"
+
+
+def test_get_callees_real_file_no_callees_found_true(profiled_repo):
+    """A real leaf function genuinely calls nothing recorded."""
+    (profiled_repo / "leaf.py").write_text("def leaf():\n    return 1\n", encoding="utf-8")
+    data = _data(tools.get_callees(str(profiled_repo), str(profiled_repo / "leaf.py"), "leaf"))
+    assert data["found"] is True
+    assert data["callees"] == []
+
+
 def test_comprehension_tools_untrusted(profiled_repo):
     tp = repo_data_dir(tools._compute_repo_id(profiled_repo)) / ".trust"
     if tp.is_file():
