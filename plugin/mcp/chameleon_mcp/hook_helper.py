@@ -1488,6 +1488,18 @@ def _archetype_seen_key(archetype: str, agent_id: object) -> str:
     return f"{agent_id}\x1f{archetype}" if isinstance(agent_id, str) and agent_id else archetype
 
 
+def _is_subagent_payload(payload: dict) -> bool:
+    """True when this tool call came from a dispatched subagent.
+
+    Same field and same falsy-degrades contract as ``_archetype_seen_key``: only
+    a non-empty string ``agent_id`` marks a subagent, so a missing, empty, or
+    malformed value reads as the top-level agent rather than crashing the
+    per-edit hook or mislabelling the coordinator as a subagent.
+    """
+    agent_id = payload.get("agent_id")
+    return isinstance(agent_id, str) and bool(agent_id)
+
+
 def _seed_archetype_seen(
     repo_id: str | None,
     session_id: str | None,
@@ -1557,8 +1569,9 @@ def _ss_profile_loadable(profile_dir: Path) -> bool:
 # which stay available in the full skill on demand.
 _USING_CHAMELEON_DIGEST = (
     "`<chameleon-context>` blocks inject automatically -- conformance needs "
-    "no tool calls. Subagent on one task: skip this digest, your parent "
-    "already has the pattern context.\n"
+    "no tool calls. Subagent on one task: skip this digest -- the per-edit "
+    "hooks give you your OWN pattern context, scoped to you, not the "
+    "parent's.\n"
     "\n"
     "Hook lifecycle:\n"
     "- SessionStart: this digest + conventions + drift/production banners. "
@@ -2850,6 +2863,53 @@ _ARCH_FACTS_STRONG_BASE_FREQ = 0.60
 # punctuation. The allowlist is lossless for real profiles (verified against every
 # bootstrapped repo) and closes the class the denylist cannot fully cover.
 _ARCH_FACTS_TOKEN_RE = re.compile(r"^[\w$.:<>@?!]{1,80}$")
+
+
+def _conventions_echo_section(archetype: str | None, repo_root: Path | None) -> str:
+    """The edited archetype's convention summary, one principle, and the reminder.
+
+    What `format_conventions_echo` renders: the archetype's imports / naming /
+    inheritance / class-contract summary, ONE principle rotated by archetype, and
+    the fixed "verify symbols exist before using them" line. Profile-derived
+    values in chameleon's own voice, so the caller renders it OUTSIDE the
+    imitate-spotlight, next to the archetype facts it shares an artifact with.
+
+    Fails open to "" so a missing or unreadable profile never costs the advisory.
+    """
+    if repo_root is None or not archetype:
+        return ""
+    try:
+        from chameleon_mcp.conventions import format_conventions_echo
+        from chameleon_mcp.profile.loader import safe_prose_text, scrub_conventions_prose
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+        profile_dir = _enf_profile_dir(repo_root)
+        conventions_path = profile_dir / "conventions.json"
+        if not conventions_path.is_file():
+            return ""
+        conv_data = json.loads(conventions_path.read_text(encoding="utf-8"))
+        # Read straight from disk (not via load_profile_dir), so screen the
+        # conventions prose values + principles.md for injection here: render
+        # sanitization does not neutralize injection prose, and trust persists
+        # across changes so the staleness gate no longer covers this echo path.
+        #
+        # The echo renders only the edited archetype's four dimensions; slice to
+        # that subset BEFORE the O(size) scrub/sanitize so a multi-MB
+        # conventions.json doesn't cost the whole hot-path budget per edit (see
+        # _conventions_echo_subset).
+        conv_subset = _conventions_echo_subset(conv_data, archetype)
+        scrub_conventions_prose(conv_subset)
+        pr_text = safe_prose_text(profile_dir / "principles.md")
+        # Sanitize attacker-controllable inputs at the boundary, for parity with
+        # the SessionStart path (the assembled echo carries a
+        # <chameleon-conventions> wrapper the output-sanitizer would mangle).
+        return format_conventions_echo(
+            _sanitize_profile_obj(conv_subset),
+            archetype=archetype,
+            principles_text=sanitize_for_chameleon_context(pr_text),
+        )
+    except Exception:
+        return ""
 
 
 def _archetype_facts_section(archetype: str | None, repo_root: Path | None) -> str:
@@ -4421,38 +4481,7 @@ def preflight_and_advise() -> int:
             block += _STALE_TRUST_BANNER
         if summary:
             block += f"{sanitize_for_chameleon_context(summary)}\n"
-        conv_echo = ""
-        try:
-            from chameleon_mcp.conventions import format_conventions_echo
-
-            conventions_path = (
-                _enf_profile_dir(repo_root_path) / "conventions.json" if repo_root_path else None
-            )
-            if conventions_path and conventions_path.is_file():
-                conv_data = json.loads(conventions_path.read_text(encoding="utf-8"))
-                # Read straight from disk (not via load_profile_dir), so screen the
-                # conventions prose values + principles.md for injection here: render
-                # sanitization does not neutralize injection prose, and trust persists
-                # across changes so the staleness gate no longer covers this echo path.
-                from chameleon_mcp.profile.loader import safe_prose_text, scrub_conventions_prose
-
-                # The echo renders only the edited archetype's four dimensions;
-                # slice to that subset BEFORE the O(size) scrub/sanitize so a
-                # multi-MB conventions.json doesn't cost the whole hot-path budget
-                # per edit (see _conventions_echo_subset).
-                conv_subset = _conventions_echo_subset(conv_data, archetype_name)
-                scrub_conventions_prose(conv_subset)
-                pr_text = safe_prose_text(_enf_profile_dir(repo_root_path) / "principles.md")
-                # Sanitize attacker-controllable inputs at the boundary, for
-                # parity with the SessionStart path (the assembled echo carries a
-                # <chameleon-conventions> wrapper the output-sanitizer would mangle).
-                conv_echo = format_conventions_echo(
-                    _sanitize_profile_obj(conv_subset),
-                    archetype=archetype_name,
-                    principles_text=sanitize_for_chameleon_context(pr_text),
-                )
-        except Exception:
-            pass
+        conv_echo = _conventions_echo_section(archetype_name, repo_root_path)
         if conv_echo:
             block += f"{conv_echo}\n"
         block += "</chameleon-context>"
@@ -4493,6 +4522,18 @@ def preflight_and_advise() -> int:
     facts = _archetype_facts_section(archetype_name, repo_root_path)
     if facts:
         block += facts + "\n\n"
+    # A dispatched subagent gets no SessionStart (its matcher is
+    # startup|resume|clear|compact), so the conventions block and its
+    # verify-before-you-invent reminder never reach it through that channel. Its
+    # first edit in an archetype is Tier-2 by construction -- _archetype_seen_key
+    # gives each agent its own first sight -- and Tier-2 is the one branch that
+    # never carried the echo, so a fresh implementer wrote its first file with no
+    # convention summary at all. A top-level agent already has this from
+    # SessionStart, so it stays on the Tier-1-only path and pays nothing.
+    if _is_subagent_payload(payload):
+        subagent_echo = _conventions_echo_section(archetype_name, repo_root_path)
+        if subagent_echo:
+            block += subagent_echo + "\n\n"
     # Gather the sibling listing first, then emit the whole verbatim repo-derived
     # region (canonical witness + team idioms + sibling listing) as ONE
     # spotlighted block. The marker gives the model a provenance signal that this

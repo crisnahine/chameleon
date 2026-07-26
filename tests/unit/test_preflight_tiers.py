@@ -15,6 +15,8 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 
 def _make_pattern_context_result(
     archetype: str,
@@ -90,11 +92,16 @@ def _run_preflight_with_context(
     *,
     daemon_result: dict | None = None,
     env: dict | None = None,
+    agent_id: object = None,
 ) -> dict:
     """Run preflight_and_advise with full mock stack and controllable env.
 
     Sets CHAMELEON_PLUGIN_DATA so enforcement state reads/writes go to
     tmp_path, and patches the daemon + repo-resolution chain.
+
+    ``agent_id`` rides the payload as a TOP-LEVEL key, where the hook reads it
+    (see ``_archetype_seen_key`` / ``_is_subagent_payload``): a non-empty string
+    marks a dispatched subagent, anything else reads as the top-level agent.
     """
     if daemon_result is None:
         daemon_result = _make_pattern_context_result(archetype)
@@ -113,6 +120,8 @@ def _run_preflight_with_context(
         "tool_input": {"file_path": file_path},
         "session_id": "test-session",
     }
+    if agent_id is not None:
+        payload["agent_id"] = agent_id
 
     merged_env = {"CHAMELEON_PLUGIN_DATA": str(data_dir)}
     if env:
@@ -368,3 +377,92 @@ def test_tier2_unresolvable_idiom_title_skips_slug_without_crash(tmp_path, monke
 
     doc = read_session_doc(repo_id, "test-session")
     assert doc.idioms_shown_slugs == set()
+
+
+# ---------------------------------------------------------------------------
+# The conventions echo: Tier-1 always, Tier-2 only for a dispatched subagent
+# ---------------------------------------------------------------------------
+
+_PRINCIPLE_MARKER = "ZZPRINCIPLEMARKER"
+_ECHO_REMINDER = "Verify symbols/imports/paths exist before using them"
+
+
+def _seed_conventions(tmp_path: Path, archetype: str) -> None:
+    """Write the two artifacts the conventions echo reads.
+
+    find_repo_root is mocked to tmp_path in this module's driver, so the echo
+    resolves its profile dir to tmp_path/.chameleon. The conventions must be
+    keyed under the SAME archetype the run passes, since the echo slices to the
+    edited archetype before rendering (_conventions_echo_subset).
+    """
+    cham = tmp_path / ".chameleon"
+    cham.mkdir(parents=True, exist_ok=True)
+    (cham / "conventions.json").write_text(
+        json.dumps(
+            {
+                "generation": 1,
+                "conventions": {
+                    "naming": {archetype: {"method_casing": {"value": "snake_case", "ratio": 1.0}}}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cham / "principles.md").write_text(f"1. {_PRINCIPLE_MARKER} keep functions small\n", "utf-8")
+
+
+def test_tier2_subagent_gets_the_conventions_echo(tmp_path):
+    """A dispatched subagent receives no SessionStart, and its FIRST edit in an
+    archetype is Tier-2 -- the branch that never carried the echo. Without this
+    it writes its first file with no convention summary and, more importantly,
+    no anti-hallucination reminder at all."""
+    _seed_conventions(tmp_path, "component")
+    result = _run_preflight_with_context(tmp_path, "component", agent_id="a680c2d3d2aaa609f")
+    ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
+    assert "Canonical witness" in ctx or "REQUIRED:" in ctx  # sanity: really Tier-2
+    assert _ECHO_REMINDER in ctx
+    assert _PRINCIPLE_MARKER in ctx
+
+
+def test_tier2_top_level_agent_does_not_get_the_conventions_echo(tmp_path):
+    """The top-level agent already received conventions and principles at
+    SessionStart, so Tier-2 must not spend the tokens a second time."""
+    _seed_conventions(tmp_path, "component")
+    result = _run_preflight_with_context(tmp_path, "component")
+    ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
+    assert "Canonical witness" in ctx or "REQUIRED:" in ctx  # sanity: really Tier-2
+    assert _ECHO_REMINDER not in ctx
+    assert _PRINCIPLE_MARKER not in ctx
+
+
+def test_tier1_still_carries_the_conventions_echo(tmp_path):
+    """Tier-1 behaviour is unchanged by the extraction.
+
+    Nothing pinned this before: no existing test writes conventions.json on the
+    preflight path, so the echo silently rendered empty in every prior run.
+    """
+    _seed_conventions(tmp_path, "component")
+    result = _run_preflight_second_edit(tmp_path, "component")
+    ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
+    assert "Canonical witness" not in ctx  # sanity: really Tier-1
+    assert _ECHO_REMINDER in ctx
+    assert _PRINCIPLE_MARKER in ctx
+
+
+@pytest.mark.parametrize("junk", [123, {"id": "x"}, [], ""])
+def test_malformed_agent_id_reads_as_top_level_for_the_echo(tmp_path, junk):
+    """Payload fields are harness input. A non-string or empty agent_id must
+    degrade to top-level behaviour, matching _archetype_seen_key's contract,
+    never crash the per-edit hook.
+
+    Parametrized rather than looped so each case gets a fresh tmp_path: sharing
+    one would mark the archetype seen on the first pass and drop every later
+    case into Tier-1, which carries the echo for everyone and would assert
+    nothing about the agent_id gate.
+    """
+    _seed_conventions(tmp_path, "component")
+    result = _run_preflight_with_context(tmp_path, "component", agent_id=junk)
+    ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
+    assert "hookSpecificOutput" in result, f"hook crashed on agent_id={junk!r}"
+    assert "Canonical witness" in ctx or "REQUIRED:" in ctx  # sanity: really Tier-2
+    assert _ECHO_REMINDER not in ctx, f"agent_id={junk!r} wrongly read as a subagent"

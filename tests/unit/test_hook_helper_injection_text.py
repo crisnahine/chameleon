@@ -67,13 +67,27 @@ def test_stale_trust_banner_wired_on_both_tiers():
 
 def test_preflight_echo_screens_principles_via_safe_prose_text():
     # Trust persists across profile changes, so the staleness gate no longer keeps
-    # a poisoned principles.md out of the PreToolUse Tier-1 conventions echo. That
-    # render must read principles.md through safe_prose_text (injection-drop), not
-    # a raw read_text the render sanitizer would pass through.
-    src = _preflight_source()
+    # a poisoned principles.md out of the PreToolUse conventions echo. That render
+    # must read principles.md through safe_prose_text (injection-drop), not a raw
+    # read_text the render sanitizer would pass through.
+    #
+    # Inspect the shared echo builder, not the preflight body it was factored out
+    # of (same move as test_violation_header_pluralizes below). Both tiers now
+    # call it -- Tier-1 always, Tier-2 for a dispatched subagent -- so the screen
+    # living here covers strictly more surface than it did inline.
+    src = inspect.getsource(hook_helper._conventions_echo_section)
     assert "safe_prose_text" in src
     assert 'principles.md").read_text' not in src
     assert "pr_path.read_text" not in src
+
+
+def test_preflight_delegates_the_echo_rather_than_rendering_it_inline():
+    # The screen above is only load-bearing while preflight actually routes
+    # through the shared builder. If a future edit re-inlines a principles read
+    # into either tier, that read would escape the injection screen entirely.
+    src = _preflight_source()
+    assert "_conventions_echo_section" in src
+    assert "principles.md" not in src
 
 
 # --- BUG-F4: violation header pluralizes ------------------------------------
