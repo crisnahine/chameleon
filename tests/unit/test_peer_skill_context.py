@@ -394,3 +394,35 @@ def test_other_fact_bearing_skills_keep_alphabetical_order(tmp_path, monkeypatch
     assert "src/Component.tsx" in block
     assert "src/data.ts" in block
     assert "src/__tests__/thing.test.ts" not in block
+
+
+def test_tdd_on_a_repo_with_no_test_archetype_orders_alphabetically(tmp_path, monkeypatch):
+    """The byte-identical guarantee, on the branch that actually computes a key.
+
+    The other ordering test uses a skill with no priority entry, which takes the
+    plain-sorted branch and so cannot detect a broken key function. This one
+    invokes TDD -- priority set, zero matches -- so every archetype ranks equal
+    and ties must break on the name.
+    """
+    monkeypatch.setenv("CHAMELEON_PEER_SKILL_MAX_ARCHETYPES", "2")
+    repo = _committed_profile(
+        tmp_path,
+        {"zebra": "src/zebra.ts", "alpha": "src/alpha.ts", "middle": "src/middle.ts"},
+    )
+    with _trusted(repo):
+        block = skill_context("superpowers:test-driven-development", str(repo))
+    assert "src/alpha.ts" in block
+    assert "src/middle.ts" in block
+    assert "src/zebra.ts" not in block
+
+
+def test_two_matching_archetypes_stay_alphabetical_among_themselves(tmp_path, monkeypatch):
+    """Priority promotes as a group; it does not reorder within the group."""
+    repo = _committed_profile(
+        tmp_path,
+        {"test-zebra": "src/z.test.ts", "test-alpha": "src/a.test.ts", "data": "src/data.ts"},
+    )
+    with _trusted(repo):
+        block = skill_context("superpowers:test-driven-development", str(repo))
+    assert block.index("src/a.test.ts") < block.index("src/z.test.ts")
+    assert block.index("src/z.test.ts") < block.index("src/data.ts")

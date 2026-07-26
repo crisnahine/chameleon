@@ -46,10 +46,13 @@ the Understanding Brief IS the plan, and it is written from a dig this skill
 already performed rather than for an engineer assumed to have no context.
 
 That contract is also stated in the SessionStart routing paragraph, but do not
-rely on reading it there: this skill runs in a worktree, and a worktree carries
-no `CLAUDE.local.md`, so the conventions block cannot dedup against the memory
-channel, the digest is fitted under a tighter budget, and the optional routing
-paragraph is the first thing shed. Stating it here is what makes it reliable.
+rely on reading it there. That paragraph is optional prose appended only to a
+digest that survived its budget fit whole, so it is absent whenever the digest
+was squeezed - and it is squeezed hardest in a session already running inside a
+linked worktree, which carries neither `CLAUDE.local.md` nor the
+`.chameleon/conventions.md` it imports, so the conventions block cannot dedup
+against the memory channel and is charged in full. Shedding it there is
+deliberate. Stating the contract here is what makes it reliable regardless.
 
 ## Input formats
 

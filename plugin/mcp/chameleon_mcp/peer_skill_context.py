@@ -227,8 +227,11 @@ _SKILL_ARCHETYPE_PRIORITY: dict[str, tuple[str, ...]] = {
 def _priority_sort_key(archetype: str, priority: tuple[str, ...]) -> tuple[int, str]:
     """Order archetypes so the ones a skill's brief names survive the cap.
 
-    Stable and deterministic: matches lead, everything else keeps alphabetical
-    order behind them, so a repo under the cap renders exactly as before.
+    Deterministic: matches lead, everything else keeps alphabetical order behind
+    them. The no-change guarantee is narrower than "under the cap" -- a matching
+    archetype moves to the front whether or not anything is truncated. What does
+    hold is that a repo with NO match sorts identically to plain alphabetical,
+    since every element then ranks 1 and ties break on the name.
     """
     lowered = archetype.lower()
     matched = any(token in lowered for token in priority)
