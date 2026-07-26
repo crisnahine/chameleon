@@ -16,14 +16,33 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from chameleon_mcp import review_ledger
 from chameleon_mcp._thresholds import threshold_int
 from chameleon_mcp.core.budget import approx_tokens
 from chameleon_mcp.core.finding import Finding
-from chameleon_mcp.hook_helper import _fit_digest_to_budget, _using_chameleon_digest
+from chameleon_mcp.hook_helper import (
+    _SUPERPOWERS_ROUTING,
+    _fit_digest_to_budget,
+    _using_chameleon_digest,
+)
 from chameleon_mcp.tools import _compute_repo_id
 
 _PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "plugin"
+
+
+@pytest.fixture(autouse=True)
+def _pin_peer_routing(monkeypatch):
+    """Default every test here to the digest as it renders without superpowers.
+
+    _using_chameleon_digest() consults the real plugin registry, so an
+    unpinned assertion would exercise one digest on a developer machine that
+    has superpowers installed and a different one in CI, which has none. The
+    tests that want the composed digest patch superpowers_installed directly,
+    which replaces the function this kill switch lives inside.
+    """
+    monkeypatch.setenv("CHAMELEON_PEER_ROUTING", "0")
 
 
 def test_digest_is_nonempty_and_curated():
@@ -46,8 +65,65 @@ def test_digest_is_nonempty_and_curated():
 
 
 def test_digest_is_stable_across_calls():
-    # A stable constant, not re-derived per call.
+    # Stable for a fixed environment: the body is a constant, and the one
+    # variable part (the peer-routing block) is pinned by the autouse fixture.
     assert _using_chameleon_digest() == _using_chameleon_digest()
+
+
+def test_digest_omits_routing_block_without_superpowers():
+    with patch("chameleon_mcp.peer_plugins.superpowers_installed", return_value=False):
+        digest = _using_chameleon_digest()
+    assert _SUPERPOWERS_ROUTING not in digest
+    assert "Superpowers is installed" not in digest
+
+
+def test_digest_carries_routing_block_with_superpowers():
+    with patch("chameleon_mcp.peer_plugins.superpowers_installed", return_value=True):
+        digest = _using_chameleon_digest()
+    assert _SUPERPOWERS_ROUTING in digest
+    # The load-bearing routing claims, not merely the block's presence.
+    assert "/chameleon-pr-review supersedes" in digest
+    assert "/chameleon-receiving-code-review supersedes" in digest
+    assert "brainstorming is NOT in its path" in digest
+    assert "systematic-debugging" in digest
+    # Still the curated order of magnitude the file's other assertions pin.
+    assert 500 < len(digest) < 6000
+
+
+def test_routing_block_stays_within_its_token_cap():
+    """The block shares SESSION_START_DELIVERY_TOKEN_CEILING with everything
+    else; a later edit must not grow it silently."""
+    assert approx_tokens(_SUPERPOWERS_ROUTING) <= 200
+
+
+def test_routing_block_is_the_final_paragraph():
+    """_fit_digest_to_budget keeps a prefix, so last means shed first."""
+    with patch("chameleon_mcp.peer_plugins.superpowers_installed", return_value=True):
+        digest = _using_chameleon_digest()
+    assert digest.split("\n\n")[-1] == _SUPERPOWERS_ROUTING
+
+
+def test_routing_block_sheds_before_the_rest_of_the_digest():
+    with patch("chameleon_mcp.peer_plugins.superpowers_installed", return_value=True):
+        composed = _using_chameleon_digest()
+    with patch("chameleon_mcp.peer_plugins.superpowers_installed", return_value=False):
+        base = _using_chameleon_digest()
+    # A budget that fits the base digest but not the routing block on top.
+    fitted = _fit_digest_to_budget(composed, approx_tokens(base))
+    assert _SUPERPOWERS_ROUTING not in fitted
+    assert "Hook lifecycle:" in fitted
+
+
+def test_digest_detection_failure_reads_as_absent():
+    """Fail-closed: a raising detector leaves the digest exactly as it is
+    without superpowers, never a half-rendered block or a crashed hook."""
+    with patch(
+        "chameleon_mcp.peer_plugins.superpowers_installed",
+        side_effect=RuntimeError("boom"),
+    ):
+        digest = _using_chameleon_digest()
+    assert _SUPERPOWERS_ROUTING not in digest
+    assert "Hook lifecycle:" in digest
 
 
 def test_fit_returns_full_text_when_budget_is_generous():

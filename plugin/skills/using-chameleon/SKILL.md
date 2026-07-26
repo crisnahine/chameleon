@@ -88,6 +88,19 @@ Honesty: these read committed indexes, not live parses. When a tool reports it c
 
 Chameleon is an output-layer advisory: archetype + canonical + rules shape the code you write. Process-gating skills (brainstorming, planning, TDD) run first if both fire on the same edit. Finish the process gate, then follow chameleon's pattern context for the actual write.
 
+### With the superpowers plugin
+
+When superpowers is also installed, SessionStart appends a compressed routing paragraph to the operational digest. This section is the full version of that contract; the digest is its summary, not a second source of truth. Detection is existence-only (`peer_plugins.superpowers_installed`) and never reads the peer plugin's content; `CHAMELEON_PEER_ROUTING=0` disables it, and any detection error reads as "not installed", so chameleon behaves exactly as it does alone.
+
+Superpowers owns **process** - when to design, plan, test first, review, verify, integrate. Chameleon owns **output and facts** - the shape the code takes, the repo's conventions, what breaks when a signature changes, and the per-edit guardrails. Process gates set the sequence; chameleon supplies the facts each gate needs and guards each write the gate produces.
+
+- **Planning, or dispatching an implementer.** Put the archetype and canonical `file:line` into the plan's Files block or the dispatch brief BEFORE the implementer writes. `superpowers:writing-plans` and `superpowers:subagent-driven-development` both say "follow established patterns" without any way to know what they are; the PreToolUse advisory only arrives after the implementer has already chosen a shape.
+- **Requesting review.** `/chameleon-pr-review` supersedes `superpowers:requesting-code-review`. It inlines that reviewer's discipline and adds grounded cross-file facts. Its BLOCK/FIX/NIT map to Critical/Important/Minor.
+- **Receiving review.** `/chameleon-receiving-code-review` supersedes `superpowers:receiving-code-review`. It is a superset: fixes applied one at a time after per-item approval, replies drafted and never auto-posted.
+- **Debugging.** `superpowers:systematic-debugging` owns the sequence. Its Phase 1 root-cause hunt is `get_callers` / `get_callees` / `search_codebase` work - use the tools inside the process, not instead of it.
+- **`/chameleon-deep-work` is self-contained.** It asks no questions by contract, so `superpowers:brainstorming` - a gate of nothing but questions - is NOT in its path. Its Step 4 brief is the design artifact: it presents rather than asks.
+- **Subagent edits are already guarded.** PreToolUse and PostToolUse fire per tool call, so a superpowers implementer subagent gets archetype context and linting on every edit. The turn-end review job never spawns per subagent (top-level Stop only), so an SDD run pays for it once.
+
 ## Flow
 
     Edit/Write/NotebookEdit called

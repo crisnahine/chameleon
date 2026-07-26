@@ -18,6 +18,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PR = REPO_ROOT / "plugin" / "skills" / "chameleon-pr-review" / "SKILL.md"
 RECV = REPO_ROOT / "plugin" / "skills" / "chameleon-receiving-code-review" / "SKILL.md"
+UC = REPO_ROOT / "plugin" / "skills" / "using-chameleon" / "SKILL.md"
 
 
 def _pr() -> str:
@@ -30,6 +31,42 @@ def _pr() -> str:
 
 def _recv() -> str:
     return " ".join(RECV.read_text(encoding="utf-8").split())
+
+
+def _uc() -> str:
+    return " ".join(UC.read_text(encoding="utf-8").split())
+
+
+# --- using-chameleon carries the peer-routing contract -----------------------
+
+
+def test_using_chameleon_states_process_first_sequencing():
+    """The layering rule the SessionStart routing block compresses: superpowers
+    owns process, chameleon owns output and facts."""
+    t = _uc()
+    assert "superpowers" in t.lower()
+    assert "Process gates set the sequence" in t or "Process-gating skills" in t
+
+
+def test_using_chameleon_names_the_review_supersedes_rules():
+    t = _uc()
+    assert "/chameleon-pr-review" in t
+    assert "requesting-code-review" in t
+    assert "/chameleon-receiving-code-review" in t
+    assert "receiving-code-review" in t
+
+
+def test_using_chameleon_keeps_deep_work_out_of_brainstorming():
+    """deep-work's no-questions contract and brainstorming's HARD-GATE cannot
+    both run; the skill must say which wins."""
+    t = _uc()
+    assert "/chameleon-deep-work" in t
+    assert "brainstorming" in t
+    assert "NOT in its path" in t
+
+
+def test_using_chameleon_documents_the_peer_routing_kill_switch():
+    assert "CHAMELEON_PEER_ROUTING" in _uc()
 
 
 # --- pr-review follows superpowers code-reviewer.md --------------------------

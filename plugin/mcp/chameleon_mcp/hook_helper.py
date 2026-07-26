@@ -1595,12 +1595,51 @@ _USING_CHAMELEON_DIGEST = (
 )
 
 
+# Appended to the digest only when the superpowers plugin is also installed.
+# Superpowers owns process (when to design, plan, test first, review, ship);
+# chameleon owns output and facts. Without this the two plugins inject
+# independent contracts and the model has no rule for sequencing them.
+#
+# ONE paragraph by construction (no blank line inside): _fit_digest_to_budget
+# packs whole paragraphs and keeps a prefix, so a single trailing paragraph is
+# shed atomically, and shed FIRST -- ahead of the conventions block and any
+# pending review findings, which are charged as fixed cost and render whole or
+# not at all. Capped at 200 tokens by its own unit test.
+_SUPERPOWERS_ROUTING = (
+    "Superpowers is installed. Process gates set the sequence; chameleon "
+    "supplies their facts and guards each write.\n"
+    "- Planning, or dispatching an implementer? Put the archetype + canonical "
+    "file:line into the plan/brief BEFORE it writes -- the PreToolUse advisory "
+    "arrives after.\n"
+    "- /chameleon-pr-review supersedes superpowers:requesting-code-review; "
+    "/chameleon-receiving-code-review supersedes "
+    "superpowers:receiving-code-review. Both are supersets. BLOCK/FIX/NIT = "
+    "Critical/Important/Minor.\n"
+    "- systematic-debugging owns the debug sequence; its Phase 1 is "
+    "get_callers/get_callees/search_codebase work.\n"
+    "- /chameleon-deep-work is self-contained and asks no questions -- "
+    "brainstorming is NOT in its path."
+)
+
+
 def _using_chameleon_digest() -> str:
     """Return the curated SessionStart operational digest.
 
     See the module constant above for what it carries and why it replaced
     the old unconditional full-SKILL.md dump.
+
+    With the superpowers plugin also installed, the peer-routing paragraph is
+    appended LAST so the budget trimmer sheds it before anything else in the
+    digest. Fails closed: a detector error renders the digest exactly as it
+    does when superpowers is absent, never a partial block.
     """
+    try:
+        from chameleon_mcp.peer_plugins import superpowers_installed
+
+        if superpowers_installed():
+            return _USING_CHAMELEON_DIGEST + "\n\n" + _SUPERPOWERS_ROUTING
+    except Exception:
+        pass
     return _USING_CHAMELEON_DIGEST
 
 
