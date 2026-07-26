@@ -119,3 +119,89 @@ def test_an_unreadable_existing_file_is_left_alone(repo):
     target.write_bytes(b"\xff\xfe\x00binary")
     _sync_rules_import(_with_mirror(repo))
     assert target.read_bytes() == b"\xff\xfe\x00binary"
+
+
+# --------------------------------------------------------------------------
+# The lifecycle seam. Every test above calls the writer directly, which is
+# precisely why a bootstrap that never called it went unnoticed.
+# --------------------------------------------------------------------------
+
+
+def test_sync_conventions_md_writes_both_halves(repo, monkeypatch):
+    """The documented contract: the mirror and its import are written together.
+
+    _sync_conventions_md is the teach/refresh entry point. If it ever writes one
+    without the other, a repo ends up with a mirror nothing imports, or an
+    import pointing at a file that is gone.
+    """
+    from chameleon_mcp.tools import _sync_conventions_md
+
+    # A preferred-import row is the cheapest shape that renders a non-empty
+    # mirror; an empty render would unlink instead and prove nothing here.
+    conv = {
+        "generation": 1,
+        "conventions": {
+            "imports": {
+                "svc": {
+                    "preferred": [
+                        {
+                            "module": "~/lib/http",
+                            "source": "~/lib/http",
+                            "frequency": 9,
+                            "total": 10,
+                        }
+                    ]
+                }
+            }
+        },
+    }
+    _sync_conventions_md(repo / ".chameleon", conv)
+
+    assert (repo / ".chameleon" / "conventions.md").is_file(), "precondition: mirror rendered"
+    assert (repo / RULES_REL).read_text(encoding="utf-8") == _RULES_IMPORT_BODY
+
+
+def test_sync_conventions_md_removes_both_when_nothing_renders(repo):
+    """An empty render unlinks the mirror; the import must go with it."""
+    from chameleon_mcp.tools import _sync_conventions_md
+
+    _with_mirror(repo)
+    _sync_rules_import(repo / ".chameleon")
+    assert (repo / RULES_REL).is_file()  # precondition
+
+    _sync_conventions_md(repo / ".chameleon", {"generation": 1, "conventions": {}})
+    assert not (repo / ".chameleon" / "conventions.md").exists()
+    assert not (repo / RULES_REL).exists()
+
+
+def test_a_marked_file_with_extra_user_content_is_still_rewritten(repo):
+    """Documented, not accidental: the body is regenerated wholesale, so an
+    appended line does not survive. The file says so in its own second comment,
+    matching the mirror it imports."""
+    target = repo / RULES_REL
+    target.parent.mkdir(parents=True)
+    target.write_text(_RULES_IMPORT_BODY + "@../../extra-notes.md\n", encoding="utf-8")
+    _sync_rules_import(_with_mirror(repo))
+    assert (repo / RULES_REL).read_text(encoding="utf-8") == _RULES_IMPORT_BODY
+    assert "Edits here are lost" in _RULES_IMPORT_BODY
+
+
+def test_a_symlink_at_the_rules_path_is_replaced_not_followed(repo, tmp_path):
+    """Replacing a symlink must not write through it. The outside file has to
+    survive byte-identical -- a committed symlink is a supply-chain shape."""
+    outside = tmp_path / "outside.md"
+    outside.write_text("do not touch\n", encoding="utf-8")
+    target = repo / RULES_REL
+    target.parent.mkdir(parents=True)
+    target.symlink_to(outside)
+
+    _sync_rules_import(_with_mirror(repo))
+    assert outside.read_text(encoding="utf-8") == "do not touch\n"
+
+
+def test_a_directory_at_the_rules_path_is_left_alone(repo):
+    """Fail open rather than try to clear a directory out of the way."""
+    target = repo / RULES_REL
+    target.mkdir(parents=True)
+    _sync_rules_import(_with_mirror(repo))
+    assert target.is_dir()
