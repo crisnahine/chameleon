@@ -466,3 +466,34 @@ def test_malformed_agent_id_reads_as_top_level_for_the_echo(tmp_path, junk):
     assert "hookSpecificOutput" in result, f"hook crashed on agent_id={junk!r}"
     assert "Canonical witness" in ctx or "REQUIRED:" in ctx  # sanity: really Tier-2
     assert _ECHO_REMINDER not in ctx, f"agent_id={junk!r} wrongly read as a subagent"
+
+
+def test_subagent_echo_survives_a_torn_conventions_json(tmp_path):
+    """A corrupt conventions.json must not take the reminder down with it.
+
+    format_conventions_echo appends the anti-hallucination line unconditionally
+    and documents that the echo is therefore never empty. A subagent has no
+    other channel for that line -- no SessionStart reaches it -- so the two
+    artifacts are read independently, exactly as session_start does.
+    """
+    cham = tmp_path / ".chameleon"
+    cham.mkdir(parents=True, exist_ok=True)
+    (cham / "conventions.json").write_text("{ this is not json", encoding="utf-8")
+    (cham / "principles.md").write_text(f"1. {_PRINCIPLE_MARKER} keep functions small\n", "utf-8")
+
+    result = _run_preflight_with_context(tmp_path, "component", agent_id="a680c2d3d2aaa609f")
+    ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
+    assert _ECHO_REMINDER in ctx
+    assert _PRINCIPLE_MARKER in ctx
+
+
+def test_subagent_echo_survives_a_missing_conventions_json(tmp_path):
+    """Same decoupling for an absent artifact, not just an unparseable one."""
+    cham = tmp_path / ".chameleon"
+    cham.mkdir(parents=True, exist_ok=True)
+    (cham / "principles.md").write_text(f"1. {_PRINCIPLE_MARKER} keep functions small\n", "utf-8")
+
+    result = _run_preflight_with_context(tmp_path, "component", agent_id="a680c2d3d2aaa609f")
+    ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
+    assert _ECHO_REMINDER in ctx
+    assert _PRINCIPLE_MARKER in ctx
