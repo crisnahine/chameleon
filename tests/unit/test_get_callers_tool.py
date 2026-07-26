@@ -296,13 +296,15 @@ def test_get_callers_directory_path_found_false(trusted_repo):
     assert data.get("reason") == "path-not-a-file"
 
 
-def test_get_callers_unstattable_path_refuses_rather_than_answering(trusted_repo):
-    """An unreadable parent directory leaves existence UNKNOWN, and an unknown
-    must not surface as a verified zero.
+def test_get_callers_unreadable_parent_refuses_rather_than_answering(trusted_repo):
+    """An unreadable parent directory must not surface as a verified zero.
 
-    is_file() swallows the does-not-exist errnos but RAISES on EACCES, so this
-    is the one path where the guard cannot tell phantom from real. It degrades
-    to path-unresolved instead of falling through to found:true.
+    The refusal comes from find_repo_root, which cannot reach a .git while the
+    directory is unreadable and so returns None -- BEFORE the phantom guard is
+    consulted. The end-to-end property (found:false, never an empty found:true)
+    is what this pins; the guard's own raise-path mapping is pinned directly in
+    test_phantom_path_reason_covers_every_input_class, since no integration
+    input reaches it while the repo-root walk refuses first.
     """
     import os
 

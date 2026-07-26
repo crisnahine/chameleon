@@ -1003,6 +1003,42 @@ def test_query_symbol_importers_no_index_found_false(trusted_repo):
     assert res["data"]["found"] is False
 
 
+def test_phantom_path_reason_covers_every_input_class(tmp_path):
+    """The predicate all six index tools share, pinned once per input class.
+
+    Each tool has its own test that it REACHES this predicate; this pins what
+    the predicate answers, so the raise-path cannot silently start returning
+    None (which would restore the found:true fall-through) for any of them.
+    """
+    import os
+
+    real = tmp_path / "real.ts"
+    real.write_text("export const x = 1;\n", encoding="utf-8")
+    assert tools._phantom_path_reason(real) is None
+    assert tools._phantom_path_reason(tmp_path / "nope.ts") == "path-not-a-file"
+    assert tools._phantom_path_reason(tmp_path) == "path-not-a-file"
+
+    broken_link = tmp_path / "dangling.ts"
+    broken_link.symlink_to(tmp_path / "does_not_exist.ts")
+    assert tools._phantom_path_reason(broken_link) == "path-not-a-file"
+
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    hidden = locked / "svc.ts"
+    hidden.write_text("export const y = 2;\n", encoding="utf-8")
+    os.chmod(locked, 0o000)
+    try:
+        try:
+            hidden.is_file()
+        except OSError:
+            pass
+        else:
+            pytest.skip("parent-directory permissions are not enforced here (running as root?)")
+        assert tools._phantom_path_reason(hidden) == "path-unstattable"
+    finally:
+        os.chmod(locked, 0o755)
+
+
 def test_query_symbol_importers_phantom_path_found_false(trusted_repo):
     """A path that is not on disk must not answer "nothing imports this"."""
     cham = trusted_repo / ".chameleon"

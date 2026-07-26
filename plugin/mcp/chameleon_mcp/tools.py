@@ -389,17 +389,25 @@ def _phantom_path_reason(p: Path) -> str | None:
     answer. A module that is indexed but gone from disk is a DELETION, which the
     existence-break path reports deliberately, so this never gates that.
 
-    Both failure directions refuse rather than answer. `is_file()` swallows the
-    does-not-exist errnos but RAISES on others (an unreadable parent directory,
-    an I/O error), and whether such a path is a real file is simply unknown --
-    reporting an empty result for it would assert the same verified zero this
-    guard exists to prevent, so it degrades to the existing `path-unresolved`
-    rather than claiming the path is not a file.
+    Both failure directions refuse rather than answer, under distinct codes.
+    `is_file()` swallows the does-not-exist errnos but RAISES on others (an
+    unreadable parent directory, an I/O error), and whether such a path is a
+    real file is simply unknown -- reporting an empty result for it would assert
+    the same verified zero this guard exists to prevent. That case is NOT
+    reported as `path-not-a-file`, which would be a claim, and not folded into
+    `path-unresolved`, which already means "no repo contains this path" and
+    carries a different remediation.
+
+    The raise path is defensive rather than routine: every caller runs
+    find_repo_root first, which cannot reach a `.git` under an unreadable
+    directory and already refuses with `path-unresolved`. What is left for this
+    branch is a stat that fails for some other reason, or a file that becomes
+    unreadable between that walk and this check.
     """
     try:
         return None if p.is_file() else "path-not-a-file"
     except OSError:
-        return "path-unresolved"
+        return "path-unstattable"
 
 
 def _effective_profile_dir(repo_root: Path) -> Path:
@@ -3688,13 +3696,12 @@ def _ruby_constant_importers(repo_root: Path, file_path: Path) -> dict:
         # query was for a file that never existed. This gates on an empty result
         # rather than on index membership, so a DELETED Ruby file whose constants
         # have no referencing files is refused here too. That is deliberate: this
-        # branch's importer list is what a deletion would surface, an empty one
-        # carries nothing, and the Ruby path never populates `broken` (which is
-        # why contract-break scoping skips .rb entirely).
-        _phantom = _phantom_path_reason(file_path)
-        if _phantom:
+        # branch's importer list is the only thing a deletion would surface here,
+        # an empty one carries nothing, and this path never populates `broken`.
+        _refusal = _phantom_path_reason(file_path)
+        if _refusal:
             out = dict(empty)
-            out["reason"] = _phantom
+            out["reason"] = _refusal
             return out
     out = dict(empty)
     out["found"] = True
@@ -3722,7 +3729,8 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
       re-exported). ``importers`` is still reported.
 
     Fails open with an empty result (``found: False``) on any ambiguity:
-    unresolvable / untrusted repo, missing index, unreadable module. Never
+    unresolvable / untrusted repo, missing index, unreadable module, and
+    a ``file_path`` that is not a file on disk (``path-not-a-file``) or cannot be stat-ed (``path-unstattable``). Never
     fabricates an importer -- every site is a row the bootstrap recorded.
     """
     from chameleon_mcp.lint_engine import detect_language
@@ -3799,10 +3807,10 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
         # real, so "no importers" would be a verified zero about a file that
         # does not exist. An INDEXED module gone from disk is a deletion, whose
         # existence breaks the branch below reports deliberately.
-        _phantom = _phantom_path_reason(p)
-        if _phantom:
+        _refusal = _phantom_path_reason(p)
+        if _refusal:
             out = dict(empty)
-            out["reason"] = _phantom
+            out["reason"] = _refusal
             return _envelope(out)
         # The module is real but nothing imports it by name; report found with
         # empty lists so a caller can tell "no importers" from "couldn't look".
@@ -4054,7 +4062,8 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
     point; run ``/chameleon-refresh`` to update it.
 
     Fails open with ``found: False`` on any ambiguity: unresolvable / untrusted
-    repo, missing artifact, path outside the repo. Never fabricates a caller.
+    repo, missing artifact, path outside the repo, and
+    a ``file_path`` that is not a file on disk (``path-not-a-file``) or cannot be stat-ed (``path-unstattable``). Never fabricates a caller.
     """
     from chameleon_mcp.calls_index import load_calls_index
     from chameleon_mcp.profile.loader import find_repo_root
@@ -4137,10 +4146,10 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
         # named a file that does not exist, so an empty caller list would read as
         # a verified zero. A deleted file the index still records keeps its
         # known-absent answer below.
-        _phantom = _phantom_path_reason(p)
-        if _phantom:
+        _refusal = _phantom_path_reason(p)
+        if _refusal:
             out = dict(empty)
-            out["reason"] = _phantom
+            out["reason"] = _refusal
             return _envelope(out)
         # The (file, name) pair was not recorded -- a known-absent callee is a
         # real answer (no deterministic callers at derivation time), not an error.
@@ -4260,7 +4269,8 @@ def get_blast_radius(repo: str, file_path: str, function_name: str, depth: int =
     chain. The reach is a grounding fact for review, not a reachability oracle.
 
     Fails open with ``found: False`` on any ambiguity: unresolvable / untrusted
-    repo, missing artifact, path outside the repo. Never fabricates a caller.
+    repo, missing artifact, path outside the repo, and
+    a ``file_path`` that is not a file on disk (``path-not-a-file``) or cannot be stat-ed (``path-unstattable``). Never fabricates a caller.
     """
     from chameleon_mcp._thresholds import threshold_int
     from chameleon_mcp.blast_radius import BLAST_RADIUS_NOTE, compute_blast_radius
@@ -4349,10 +4359,10 @@ def get_blast_radius(repo: str, file_path: str, function_name: str, depth: int =
     # radius is exactly the "safe to change" answer that must not be fabricated.
     # A deleted file the index still records reaches its callers and is kept.
     if not radius["chains"] and not radius["reached"]:
-        _phantom = _phantom_path_reason(p)
-        if _phantom:
+        _refusal = _phantom_path_reason(p)
+        if _refusal:
             out = dict(empty)
-            out["reason"] = _phantom
+            out["reason"] = _refusal
             return _envelope(out)
     clean_chains = []
     for chain in radius["chains"]:
@@ -4776,7 +4786,8 @@ def get_callees(repo: str, file_path: str, function_name: str) -> dict:
     result is ``{callee, file, grade}`` with the same three deterministic grades
     (same_file, import, constant_receiver, typed_property, module_attribute). Absence of a callee is NOT proof the
     function calls nothing: dynamic dispatch and unsupported call paths are
-    invisible. Fails open with ``found: False`` on any ambiguity.
+    invisible. Fails open with ``found: False`` on any ambiguity, including
+    a ``file_path`` that is not a file on disk (``path-not-a-file``) or cannot be stat-ed (``path-unstattable``).
     """
     from chameleon_mcp.calls_index import load_calls_index
     from chameleon_mcp.comprehension import callees_of
@@ -4858,10 +4869,10 @@ def get_callees(repo: str, file_path: str, function_name: str) -> dict:
     # that never existed, not a function that calls nothing. A deleted file the
     # index still records keeps its answer and the absence caveat below.
     if not clean:
-        _phantom = _phantom_path_reason(p)
-        if _phantom:
+        _refusal = _phantom_path_reason(p)
+        if _refusal:
             out = dict(empty)
-            out["reason"] = _phantom
+            out["reason"] = _refusal
             return _envelope(out)
     result = {
         "found": True,
@@ -5568,8 +5579,10 @@ def get_duplication_candidates(
     name/file/shape only -- open each file to judge); default ``"detailed"``
     includes the budgeted excerpts. Fails open with
     ``found: False`` on any ambiguity (unresolvable / untrusted repo, missing
-    catalog, unparsable file). Never fabricates a candidate -- each is a
-    function the bootstrap recorded.
+    catalog, unparsable file, and a ``file_path`` that is not a file on disk
+    (``path-not-a-file``) or cannot be stat-ed (``path-unstattable``)). A file
+    that EXISTS but parses to no functions is a real answer, not an ambiguity.
+    Never fabricates a candidate -- each is a function the bootstrap recorded.
     """
     from chameleon_mcp._thresholds import threshold_int
     from chameleon_mcp.function_catalog import (
@@ -5661,10 +5674,10 @@ def get_duplication_candidates(
         # functions and for a file that cannot be read at all, so the two need
         # separating here: a constants-only module genuinely duplicates nothing,
         # while a path that is not on disk was never a question about this repo.
-        _phantom = _phantom_path_reason(p)
-        if _phantom:
+        _refusal = _phantom_path_reason(p)
+        if _refusal:
             out = dict(empty)
-            out["reason"] = _phantom
+            out["reason"] = _refusal
             return _envelope(out)
         out = dict(empty)
         out["found"] = True
