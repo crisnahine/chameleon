@@ -244,6 +244,19 @@ jobs:
       - name: Fail on hardcoded developer home paths
         run: bash scripts/check-no-personal-paths.sh
 
+  derived-counts:
+    name: derived-counts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Fail when a documented count no longer matches the source
+        run: python3 scripts/check-derived-counts.py
+
   hook-smoke:
     name: hook-smoke (${{ matrix.hook.name }})
     runs-on: ubuntu-latest
