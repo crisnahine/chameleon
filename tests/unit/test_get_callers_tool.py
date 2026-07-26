@@ -299,12 +299,16 @@ def test_get_callers_directory_path_found_false(trusted_repo):
 def test_get_callers_unreadable_parent_refuses_rather_than_answering(trusted_repo):
     """An unreadable parent directory must not surface as a verified zero.
 
-    The refusal comes from find_repo_root, which cannot reach a .git while the
-    directory is unreadable and so returns None -- BEFORE the phantom guard is
-    consulted. The end-to-end property (found:false, never an empty found:true)
-    is what this pins; the guard's own raise-path mapping is pinned directly in
-    test_phantom_path_reason_covers_every_input_class, since no integration
-    input reaches it while the repo-root walk refuses first.
+    The refusal comes from find_repo_root, and earlier than a marker walk: its
+    opening is_file() on this same path raises under the blanket OSError catch,
+    so it returns None and the tool answers path-unresolved BEFORE the phantom
+    guard is consulted. (No marker is reached either way -- this fixture marks
+    the repo with .chameleon, not .git.)
+
+    So the end-to-end property is what this pins: found:false, never an empty
+    found:true. The guard's own raise-path mapping cannot be reached from any
+    tool entry point, since that same stat refuses first, and is pinned
+    directly in test_phantom_path_reason_covers_every_input_class instead.
     """
     import os
 

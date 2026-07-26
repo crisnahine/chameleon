@@ -1004,11 +1004,14 @@ def test_query_symbol_importers_no_index_found_false(trusted_repo):
 
 
 def test_phantom_path_reason_covers_every_input_class(tmp_path):
-    """The predicate all six index tools share, pinned once per input class.
+    """The predicate the index tools share, pinned once per input class.
 
-    Each tool has its own test that it REACHES this predicate; this pins what
-    the predicate answers, so the raise-path cannot silently start returning
-    None (which would restore the found:true fall-through) for any of them.
+    Five public tools consult it across six call sites (the importer query has
+    a separate Ruby branch), and each has its own test that it REACHES the
+    predicate. This pins what the predicate ANSWERS, so the raise path cannot
+    silently start returning None -- which would restore the found:true
+    fall-through -- and it is the only place that path is testable, since every
+    tool's own repo-root walk refuses on the same stat before the guard runs.
     """
     import os
 
