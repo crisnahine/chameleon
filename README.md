@@ -275,7 +275,7 @@ Every number below is checkable in this repo right now:
 | Per-edit hot path | benchmarked cold/warm p50 and p99 | `PYTHONPATH=. plugin/mcp/.venv/bin/python tests/bench_hot_path.py` |
 | Effectiveness harness | paired off-vs-on sessions | `PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.effectiveness.runner --list` |
 
-Beyond unit tests: real-repo QA batteries per language, hook fuzzing against malformed payloads, and a journey harness that drives real `claude -p` editing sessions against seed fixtures before each release. Profile writes are atomic transactions, `.chameleon` merge conflicts get a dedicated git merge driver, the statusline stays under 100ms, and a warm-path advisor daemon keeps per-edit latency in milliseconds.
+Beyond unit tests: real-repo QA batteries per language, hook fuzzing against malformed payloads, and a journey harness that drives real `claude -p` editing sessions against seed fixtures before each release. Profile writes are atomic transactions, `.chameleon` merge conflicts have a dedicated git merge driver (opt-in: copy `.gitattributes-template` and register the driver once — `/chameleon-doctor` tells you whether it is armed), the statusline stays under 100ms, and a warm-path advisor daemon keeps per-edit latency in milliseconds.
 
 ---
 
