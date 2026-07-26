@@ -21,19 +21,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Peer detection answers "will it be active", not "do its files exist."** Existence checks only —
   no byte of the peer plugin's content is ever read or rendered. Claude Code's own registry is
   authoritative when readable, so a leftover cache directory cannot keep the block alive after an
-  uninstall; `enabledPlugins` is honoured, so a disabled plugin reads as absent rather than routing
-  the model at skills that never load. Both rungs are bounded, because SessionStart's wrapper caps
-  the whole Python emission at 3 seconds and loses the entire injection on overrun.
-
-### Fixed
-
-- **Optional prose can no longer cost curated digest content.** The routing block is added only to
-  a digest that survived the budget fit whole, and only if it then fits in what remains. Composing
-  before the fit dropped the digest's trailing paragraph in a deterministic window, because
-  `_fit_digest_to_budget` charges a separator a full token where its early-return path charges
-  half; appending afterwards fixed that but left the block riding on top of a truncated digest,
-  where at a 250-token budget it outlived seven of eight curated paragraphs. Both directions are
-  now closed by construction rather than by window.
+  uninstall; a plugin switched off via `enabledPlugins` in the USER-level `~/.claude/settings.json`
+  reads as absent. That check is user-level only: a plugin disabled in a project's own
+  `.claude/settings.json` still reads as enabled, so the block can appear in a session where
+  superpowers does not load. Both rungs are bounded, because SessionStart's wrapper caps the whole
+  Python emission at 3 seconds and loses the entire injection on overrun.
+- The routing block is added only to a digest that survived the budget fit whole, and only if it
+  then fits in what remains — so optional prose can never cost curated digest content, and can
+  never outlive it either. Both directions are closed by construction rather than by window.
 
 ## [4.5.14] - 2026-07-21
 
