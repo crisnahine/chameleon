@@ -86,7 +86,7 @@ Honesty: these read committed indexes, not live parses. When a tool reports it c
 
 ## Coordination with other skills
 
-Chameleon is an output-layer advisory: archetype + canonical + rules shape the code you write. Process-gating skills (brainstorming, planning, TDD) run first if both fire on the same edit. Finish the process gate, then follow chameleon's pattern context for the actual write.
+Chameleon is an output-layer advisory: archetype + canonical + rules shape the code you write. Process-gating skills (brainstorming, planning, TDD) run first if both fire on the same edit. Finish the process gate, then follow chameleon's pattern context for the actual write. Named exceptions to that ordering, for the superpowers plugin specifically, are in the section below.
 
 ### With the superpowers plugin
 

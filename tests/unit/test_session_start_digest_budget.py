@@ -16,33 +16,20 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from chameleon_mcp import review_ledger
 from chameleon_mcp._thresholds import threshold_int
 from chameleon_mcp.core.budget import approx_tokens
 from chameleon_mcp.core.finding import Finding
 from chameleon_mcp.hook_helper import (
     _SUPERPOWERS_ROUTING,
+    _append_peer_routing,
     _fit_digest_to_budget,
+    _peer_routing_block,
     _using_chameleon_digest,
 )
 from chameleon_mcp.tools import _compute_repo_id
 
 _PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "plugin"
-
-
-@pytest.fixture(autouse=True)
-def _pin_peer_routing(monkeypatch):
-    """Default every test here to the digest as it renders without superpowers.
-
-    _using_chameleon_digest() consults the real plugin registry, so an
-    unpinned assertion would exercise one digest on a developer machine that
-    has superpowers installed and a different one in CI, which has none. The
-    tests that want the composed digest patch superpowers_installed directly,
-    which replaces the function this kill switch lives inside.
-    """
-    monkeypatch.setenv("CHAMELEON_PEER_ROUTING", "0")
 
 
 def test_digest_is_nonempty_and_curated():
@@ -65,29 +52,50 @@ def test_digest_is_nonempty_and_curated():
 
 
 def test_digest_is_stable_across_calls():
-    # Stable for a fixed environment: the body is a constant, and the one
-    # variable part (the peer-routing block) is pinned by the autouse fixture.
+    # A stable constant: the peer-routing block is composed after the budget
+    # fit, in _append_peer_routing, and never inside this function.
     assert _using_chameleon_digest() == _using_chameleon_digest()
 
 
-def test_digest_omits_routing_block_without_superpowers():
+def test_peer_routing_block_empty_without_superpowers():
     with patch("chameleon_mcp.peer_plugins.superpowers_installed", return_value=False):
-        digest = _using_chameleon_digest()
-    assert _SUPERPOWERS_ROUTING not in digest
-    assert "Superpowers is installed" not in digest
+        assert _peer_routing_block() == ""
 
 
-def test_digest_carries_routing_block_with_superpowers():
+def test_peer_routing_block_carries_the_routing_claims():
     with patch("chameleon_mcp.peer_plugins.superpowers_installed", return_value=True):
-        digest = _using_chameleon_digest()
-    assert _SUPERPOWERS_ROUTING in digest
+        block = _peer_routing_block()
+    assert block == _SUPERPOWERS_ROUTING
     # The load-bearing routing claims, not merely the block's presence.
-    assert "/chameleon-pr-review supersedes" in digest
-    assert "/chameleon-receiving-code-review supersedes" in digest
-    assert "brainstorming is NOT in its path" in digest
-    assert "systematic-debugging" in digest
-    # Still the curated order of magnitude the file's other assertions pin.
-    assert 500 < len(digest) < 6000
+    assert "/chameleon-pr-review supersedes superpowers:requesting-code-review" in block
+    assert "/chameleon-receiving-code-review supersedes" in block
+    assert "brainstorming is NOT in its path" in block
+    assert "systematic-debugging" in block
+
+
+def test_kill_switch_suppresses_the_block_on_a_real_install(monkeypatch):
+    """The switch is checked where the block is assembled, so it suppresses the
+    block without lying about whether superpowers is there."""
+    monkeypatch.setenv("CHAMELEON_PEER_ROUTING", "0")
+    with patch("chameleon_mcp.peer_plugins.superpowers_installed", return_value=True):
+        assert _peer_routing_block() == ""
+
+
+def test_default_on_when_the_switch_is_unset(monkeypatch):
+    """Default-ON is pinned with an ABSENT var, never by setting it to '1'."""
+    monkeypatch.delenv("CHAMELEON_PEER_ROUTING", raising=False)
+    with patch("chameleon_mcp.peer_plugins.superpowers_installed", return_value=True):
+        assert _peer_routing_block() == _SUPERPOWERS_ROUTING
+
+
+def test_detector_failure_reads_as_absent():
+    """Fail-closed: a raising detector yields no block, never a partial one and
+    never a crashed hook."""
+    with patch(
+        "chameleon_mcp.peer_plugins.superpowers_installed",
+        side_effect=RuntimeError("boom"),
+    ):
+        assert _peer_routing_block() == ""
 
 
 def test_routing_block_stays_within_its_token_cap():
@@ -96,44 +104,44 @@ def test_routing_block_stays_within_its_token_cap():
     assert approx_tokens(_SUPERPOWERS_ROUTING) <= 200
 
 
-def test_routing_block_is_the_final_paragraph():
-    """_fit_digest_to_budget keeps a prefix, so last means shed first."""
+def test_routing_block_appends_when_the_budget_has_room():
+    base = _using_chameleon_digest()
+    room = approx_tokens(base) + approx_tokens("\n\n") + approx_tokens(_SUPERPOWERS_ROUTING)
     with patch("chameleon_mcp.peer_plugins.superpowers_installed", return_value=True):
-        digest = _using_chameleon_digest()
-    assert digest.split("\n\n")[-1] == _SUPERPOWERS_ROUTING
+        out = _append_peer_routing(base, room)
+    assert out == base + "\n\n" + _SUPERPOWERS_ROUTING
+    # Last paragraph, so a later trim sheds it before anything curated.
+    assert out.split("\n\n")[-1] == _SUPERPOWERS_ROUTING
 
 
-def test_routing_block_sheds_before_the_rest_of_the_digest():
+def test_routing_block_never_displaces_curated_digest_content():
+    """Regression: composing BEFORE the fit dropped the digest's final paragraph
+    along with the block, for any repo whose budget landed in a few-token window
+    (the packer charges a separator a whole token; the whole-text estimate
+    charges half, so a digest that fits whole can fail its own repacking).
+    Appending only onto an already-fitted digest makes that impossible."""
+    base = _using_chameleon_digest()
+    exact = approx_tokens(base)
     with patch("chameleon_mcp.peer_plugins.superpowers_installed", return_value=True):
-        composed = _using_chameleon_digest()
-    with patch("chameleon_mcp.peer_plugins.superpowers_installed", return_value=False):
-        base = _using_chameleon_digest()
-    # Precondition, not decoration: without it this test passes vacuously when
-    # the append is removed, since composed would equal base and a trim to
-    # base's own size would satisfy both assertions below on its own.
-    assert composed != base
-    assert _SUPERPOWERS_ROUTING in composed
-    # A budget that fits the base digest but not the routing block on top.
-    fitted = _fit_digest_to_budget(composed, approx_tokens(base))
-    assert _SUPERPOWERS_ROUTING not in fitted
-    assert "Hook lifecycle:" in fitted
+        out = _append_peer_routing(_fit_digest_to_budget(base, exact), exact)
+    # Nothing curated was lost to make room for the block.
+    assert out == base
+    assert _SUPERPOWERS_ROUTING not in out
+    assert "available on demand" in out  # the paragraph the old shape dropped
 
 
-def test_digest_detection_failure_reads_as_absent():
-    """Fail-closed: a raising detector leaves the digest exactly as it is
-    without superpowers, never a half-rendered block or a crashed hook."""
+def test_routing_block_is_dropped_whole_not_truncated():
+    base = _using_chameleon_digest()
     with patch("chameleon_mcp.peer_plugins.superpowers_installed", return_value=True):
-        composed = _using_chameleon_digest()
-    with patch(
-        "chameleon_mcp.peer_plugins.superpowers_installed",
-        side_effect=RuntimeError("boom"),
-    ):
-        digest = _using_chameleon_digest()
-    # Same precondition: pin that the detector is load-bearing here, so this
-    # cannot pass merely because the feature is absent.
-    assert _SUPERPOWERS_ROUTING in composed
-    assert _SUPERPOWERS_ROUTING not in digest
-    assert "Hook lifecycle:" in digest
+        out = _append_peer_routing(base, approx_tokens(base) + 1)
+    assert out == base
+
+
+def test_append_is_inert_on_an_empty_digest():
+    """Under extreme pressure the digest shrinks to ""; a routing block with no
+    digest under it would be a dangling fragment."""
+    with patch("chameleon_mcp.peer_plugins.superpowers_installed", return_value=True):
+        assert _append_peer_routing("", 10_000) == ""
 
 
 def test_fit_returns_full_text_when_budget_is_generous():

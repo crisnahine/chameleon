@@ -13,8 +13,30 @@ no-spawn; the few tests that assert on the real spawn opt out with
 from __future__ import annotations
 
 import os
+from unittest.mock import patch
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _no_peer_plugin_detection(monkeypatch):
+    """Default every test to "superpowers is not installed".
+
+    The SessionStart digest consults the real ~/.claude plugin registry, so any
+    test reaching _peer_routing_block -- directly or through session_start() --
+    otherwise exercises a 174-token-larger emission on a developer machine that
+    has superpowers than in CI, which does not. Same hazard as the plugin-data
+    dir below, same remedy.
+
+    Tests that want the composed digest patch the same target again; the inner
+    patch wins while active. The kill switch is left unset rather than set to
+    "0" so the test that asserts on it still has a free variable, and so these
+    defaults describe "peer absent" rather than "routing disabled" -- different
+    states that happen to reach the same output.
+    """
+    monkeypatch.delenv("CHAMELEON_PEER_ROUTING", raising=False)
+    with patch("chameleon_mcp.peer_plugins.superpowers_installed", return_value=False):
+        yield
 
 
 @pytest.fixture(autouse=True)

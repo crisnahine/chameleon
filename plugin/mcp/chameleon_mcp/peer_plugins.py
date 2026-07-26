@@ -7,8 +7,15 @@ plugin's files are third-party data, so detection is existence checks only and
 never renders a byte of what it finds.
 
 Detection runs on the SessionStart path, whose wrapper caps the whole Python
-emission at 3 seconds (`plugin/hooks/session-start`), so the lookup is
-bounded: one small JSON read against a known filename, never a recursive walk.
+emission at 3 seconds (`plugin/hooks/session-start`) and loses the ENTIRE
+injection on overrun, so both rungs stay cheap: one small JSON read against a
+known filename, then at most two shallow directory levels against a known path
+shape. Neither rung ever walks a tree recursively.
+
+The question answered is "is superpowers going to be active in this session",
+not merely "do its files exist" -- a plugin present on disk but switched off in
+settings is not composing with anything, and routing the model to skills that
+never load is worse than staying quiet.
 """
 
 from __future__ import annotations
@@ -27,30 +34,87 @@ _PEER_NAME = "superpowers"
 # cannot auto-trigger anything, so routing to it would be a dead pointer.
 _PEER_MARKER = ("skills", "using-superpowers", "SKILL.md")
 
-# Directory entries listed per level before giving up. A real cache holds a
-# handful of marketplaces and versions; the cap keeps a pathological cache from
-# spending a SessionStart budget the wrapper caps at 3 seconds total.
-_MAX_DIR_ENTRIES = 64
+# The plugin cache is the only layout rung 2 understands:
+# <...>/cache/<marketplace>/<plugin>/<version>. Requiring the literal directory
+# name keeps a source-checkout or uvx invocation -- where CLAUDE_PLUGIN_ROOT's
+# third parent is an arbitrary user directory -- from being listed at all.
+_CACHE_DIR_NAME = "cache"
+
+# Registry files run to a few KB. Anything past this is not a registry, and
+# is_file() follows symlinks, so an unbounded read_text() inside a 3-second
+# wrapper is a needless foot-gun.
+_MAX_REGISTRY_BYTES = 4 * 1024 * 1024
 
 
-def _installed_from_registry() -> bool:
-    """True when Claude Code's own plugin registry records superpowers on disk.
+def _max_dir_entries() -> int:
+    """Directory entries CONSIDERED per level of the cache scan.
 
-    Reads `~/.claude/plugins/installed_plugins.json`, the harness's own
-    artifact, and confirms the recorded `installPath` still exists -- a stale
-    record for an uninstalled plugin is not an install. Returns False on a
-    missing, unreadable, or malformed registry.
+    The listing itself is not bounded -- sorting for deterministic order
+    requires draining the iterator first -- so this caps the stat calls fanned
+    out per level, not the read of the directory. Past this many, detection
+    gives up and reads as "not installed", which is the safe direction.
     """
-    registry = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
-    if not registry.is_file():
-        return False
     try:
-        data = json.loads(registry.read_text(encoding="utf-8"))
+        from chameleon_mcp._thresholds import threshold_int
+
+        return threshold_int("PEER_CACHE_MAX_DIR_ENTRIES")
     except Exception:
+        return 64
+
+
+def _read_json(path: Path, max_bytes: int) -> object | None:
+    """Parse `path` as JSON, or None when it is absent, oversize, or malformed."""
+    try:
+        if not path.is_file() or path.stat().st_size > max_bytes:
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _plugin_disabled(plugin_key: str) -> bool:
+    """True only when settings explicitly switch `plugin_key` off.
+
+    `~/.claude/settings.json`'s `enabledPlugins` is keyed the same way as the
+    registry ("<name>@<marketplace>"). A plugin set to false stays installed on
+    disk while its skills never load, so treating it as present would route the
+    model to skills that are not in the session.
+
+    Absence is not a negative: an unreadable settings file, a missing key, or a
+    plugin enabled per-project rather than per-user all read as "not disabled",
+    so this can only ever suppress detection on an explicit false.
+    """
+    data = _read_json(Path.home() / ".claude" / "settings.json", _MAX_REGISTRY_BYTES)
+    if not isinstance(data, dict):
         return False
-    plugins = data.get("plugins") if isinstance(data, dict) else None
+    enabled = data.get("enabledPlugins")
+    if not isinstance(enabled, dict):
+        return False
+    return enabled.get(plugin_key) is False
+
+
+def _registry_verdict() -> bool | None:
+    """Whether Claude Code's registry records superpowers installed on disk.
+
+    Returns True (recorded and the install path still exists), False (the
+    registry parsed and does NOT list it -- an authoritative negative), or None
+    (absent, oversize, or malformed: no information either way).
+
+    The three-way answer matters. A registry that parsed and omits superpowers
+    means the user uninstalled it, and a leftover cache directory must not
+    override that; only a registry that could not be consulted at all lets the
+    cache rung speak.
+    """
+    data = _read_json(
+        Path.home() / ".claude" / "plugins" / "installed_plugins.json", _MAX_REGISTRY_BYTES
+    )
+    if not isinstance(data, dict):
+        return None
+    # A v2 registry nests under "plugins"; tolerate a flat top-level map too,
+    # matching the repo's other reader of this file (scripts/prune-plugin-cache.sh).
+    plugins = data.get("plugins", data)
     if not isinstance(plugins, dict):
-        return False
+        return None
     for key, entries in plugins.items():
         if not isinstance(key, str) or key.split("@", 1)[0] != _PEER_NAME:
             continue
@@ -61,70 +125,74 @@ def _installed_from_registry() -> bool:
                 continue
             install_path = entry.get("installPath")
             if isinstance(install_path, str) and install_path:
-                if Path(install_path).is_dir():
+                if Path(install_path).is_dir() and not _plugin_disabled(key):
                     return True
     return False
 
 
 def _bounded_listing(directory: Path) -> list[Path]:
-    """Up to _MAX_DIR_ENTRIES children, in deterministic order; [] on any error."""
+    """Up to the per-level cap of children, deterministic order; [] on any error."""
     try:
-        return sorted(directory.iterdir())[:_MAX_DIR_ENTRIES]
+        return sorted(directory.iterdir())[: _max_dir_entries()]
     except OSError:
         return []
 
 
 def _installed_from_cache() -> bool:
-    """True when the plugin cache holds a superpowers install beside chameleon's.
+    """True when the plugin cache holds an enabled superpowers install.
 
-    The registry is user-scoped and absent under some install shapes (a
-    project-scoped install, a local marketplace, a dev checkout), so this walks
-    the cache root chameleon itself was installed into, whose layout is
-    ``<cache>/<marketplace>/<plugin>/<version>/``.
+    Consulted only when the registry could not answer, since a cached directory
+    is weaker evidence than the registry: it survives an uninstall.
 
     Deliberately reads the environment rather than calling
     ``plugin_paths.plugin_root()``: that helper falls back to file-relative
-    resolution, which would silently probe the real user cache from a test or
-    a legacy checkout invocation. With no plugin root in the environment there
-    is no cache to walk, and the answer is "not installed".
+    resolution, which would silently probe the real user cache from a test or a
+    legacy checkout invocation. With no plugin root in the environment there is
+    no cache to walk, and the answer is "not installed".
 
-    Two shallow listings, both capped -- never a recursive walk, because this
-    runs inside the SessionStart 3-second wrapper budget.
+    Two shallow listings, both capped, and only under a directory actually named
+    `cache` -- never a recursive walk, because this runs inside the SessionStart
+    3-second wrapper budget.
     """
-    root = os.environ.get("CLAUDE_PLUGIN_ROOT") or os.environ.get("CHAMELEON_PLUGIN_ROOT")
-    if not root or "${" in root:
-        return False
-    parents = Path(root).parents
-    # <version>/<plugin>/<marketplace>/<cache> -- fewer parents than that means
-    # this is not a marketplace-cache install shape.
-    if len(parents) < 3:
-        return False
-    cache_root = parents[2]
-    for marketplace in _bounded_listing(cache_root):
-        peer = marketplace / _PEER_NAME
-        if not peer.is_dir():
+    for var in ("CLAUDE_PLUGIN_ROOT", "CHAMELEON_PLUGIN_ROOT"):
+        root = os.environ.get(var)
+        if not root or "${" in root:
             continue
-        for version in _bounded_listing(peer):
-            if version.joinpath(*_PEER_MARKER).is_file():
-                return True
+        parents = Path(root).parents
+        # <version>/<plugin>/<marketplace>/<cache> -- fewer parents than that,
+        # or a third parent not named `cache`, is not a marketplace install.
+        if len(parents) < 3 or parents[2].name != _CACHE_DIR_NAME:
+            continue
+        for marketplace in _bounded_listing(parents[2]):
+            peer = marketplace / _PEER_NAME
+            if not peer.is_dir() or _plugin_disabled(f"{_PEER_NAME}@{marketplace.name}"):
+                continue
+            for version in _bounded_listing(peer):
+                if version.joinpath(*_PEER_MARKER).is_file():
+                    return True
     return False
 
 
 def superpowers_installed() -> bool:
-    """True when the superpowers core plugin is installed and present on disk.
+    """True when the superpowers core plugin will be active in this session.
 
     Existence checks only -- no byte of the peer plugin's content is read or
     rendered, so a peer install can never inject text into chameleon's own
-    context blocks.
+    context blocks. Local file reads throughout: no network, no repo-code
+    execution.
 
-    Default-ON with a kill switch (``CHAMELEON_PEER_ROUTING=0``): local file
-    reads only, no network and no repo-code execution. Fails CLOSED on any
-    error -- a detection failure is indistinguishable from an absent plugin,
-    and chameleon then behaves exactly as it does when superpowers is absent.
+    Answers only the factual question its name asks. Whether a caller ACTS on
+    the answer is that caller's policy -- the routing block's kill switch is
+    checked where the block is assembled, so a later consumer cannot silently
+    inherit an unrelated feature's off-switch.
+
+    Fails CLOSED on any error: a detection failure is indistinguishable from an
+    absent plugin, so chameleon behaves exactly as it does without superpowers.
     """
-    if os.environ.get("CHAMELEON_PEER_ROUTING") == "0":
-        return False
     try:
-        return _installed_from_registry() or _installed_from_cache()
+        verdict = _registry_verdict()
+        if verdict is not None:
+            return verdict
+        return _installed_from_cache()
     except Exception:
         return False

@@ -81,6 +81,13 @@ DEFAULTS: Final[dict[str, int | float]] = {
     "CALIBRATION_MAX_FILES": 1200,
     "CALIBRATION_MAX_SIBLINGS": 20,
     "CALIBRATION_FP_EPSILON": 0.0005,
+    # Peer-plugin cache scan: directory entries considered per level when
+    # looking for a superpowers install beside chameleon's own. A real cache
+    # holds a handful of marketplaces and versions; past this many the scan
+    # gives up and reads as "not installed". Registered rather than inlined
+    # because the operator reference documents the bound, and a documented
+    # bound with no CHAMELEON_* override is a knob users cannot reach.
+    "PEER_CACHE_MAX_DIR_ENTRIES": 64,
     # Degraded-parse gate: a bootstrap/refresh whose extractor child died
     # mid-run surfaces as mass parse skips. Healthy repos parse at ~100%, so a
     # skip rate past the ratio (with at least the floor of skipped files, to

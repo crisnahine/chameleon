@@ -17,7 +17,16 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from chameleon_mcp.peer_plugins import superpowers_installed
+import pytest
+
+from chameleon_mcp.peer_plugins import _max_dir_entries, superpowers_installed
+
+
+@pytest.fixture(autouse=True)
+def _clear_peer_routing(monkeypatch):
+    """Detection is a fact, not a policy: the routing kill switch is checked at
+    the call site, so a developer exporting it must not steer these results."""
+    monkeypatch.delenv("CHAMELEON_PEER_ROUTING", raising=False)
 
 
 def _write_registry(home: Path, payload: dict) -> None:
@@ -41,6 +50,13 @@ def _empty_cache_root(tmp_path: Path) -> Path:
     root = tmp_path / "cache" / "some-marketplace" / "chameleon" / "0.0.0-fixture"
     root.mkdir(parents=True)
     return root
+
+
+def _plant_superpowers(marketplace: Path, version: str = "6.2.0") -> None:
+    """Install superpowers under one marketplace dir, bootstrap skill included."""
+    skill_dir = marketplace / "superpowers" / version / "skills" / "using-superpowers"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text("x", encoding="utf-8")
 
 
 def _cache_root_with_superpowers(tmp_path: Path, *, with_skill: bool = True) -> Path:
@@ -87,6 +103,7 @@ def test_family_plugins_alone_do_not_count(tmp_path, monkeypatch):
                 "superpowers-dev@mkt": _entry(installed),
                 "superpowers-chrome@mkt": _entry(installed),
                 "superpowers-lab@mkt": _entry(installed),
+                "superpowers-developing-for-claude-code@mkt": _entry(installed),
             },
         },
     )
@@ -96,28 +113,30 @@ def test_family_plugins_alone_do_not_count(tmp_path, monkeypatch):
         assert superpowers_installed() is False
 
 
-def test_kill_switch_suppresses_a_real_install(tmp_path, monkeypatch):
-    home = tmp_path / "home"
-    home.mkdir()
-    installed = tmp_path / "sp"
-    installed.mkdir()
-    _write_registry(home, {"version": 2, "plugins": {"superpowers@mkt": _entry(installed)}})
-    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(_cache_root_with_superpowers(tmp_path)))
-    monkeypatch.setenv("CHAMELEON_PEER_ROUTING", "0")
-
-    with patch("pathlib.Path.home", return_value=home):
-        assert superpowers_installed() is False
-
-
-def test_default_on_with_env_unset(tmp_path, monkeypatch):
-    """The contract is default-ON: never asserted by setting the var to '1'."""
+def test_kill_switch_does_not_reach_the_detector(tmp_path, monkeypatch):
+    """The switch gates the routing block, not the fact. A caller asking
+    whether superpowers is installed gets the truth regardless."""
     home = tmp_path / "home"
     home.mkdir()
     installed = tmp_path / "sp"
     installed.mkdir()
     _write_registry(home, {"version": 2, "plugins": {"superpowers@mkt": _entry(installed)}})
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(_empty_cache_root(tmp_path)))
-    monkeypatch.delenv("CHAMELEON_PEER_ROUTING", raising=False)
+    monkeypatch.setenv("CHAMELEON_PEER_ROUTING", "0")
+
+    with patch("pathlib.Path.home", return_value=home):
+        assert superpowers_installed() is True
+
+
+def test_flat_top_level_registry_is_tolerated(tmp_path, monkeypatch):
+    """scripts/prune-plugin-cache.sh reads this file as data.get('plugins', data);
+    an install shape without the v2 wrapper must resolve the same way here."""
+    home = tmp_path / "home"
+    home.mkdir()
+    installed = tmp_path / "sp"
+    installed.mkdir()
+    _write_registry(home, {"superpowers@mkt": _entry(installed)})
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(_empty_cache_root(tmp_path)))
 
     with patch("pathlib.Path.home", return_value=home):
         assert superpowers_installed() is True
@@ -171,10 +190,13 @@ def test_registry_with_unexpected_shape_fails_closed(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(_empty_cache_root(tmp_path)))
 
+    registry = home / ".claude" / "plugins" / "installed_plugins.json"
     for payload in ({"plugins": []}, {"plugins": {"superpowers@m": "nope"}}, {}, []):
-        _write_registry(home, payload) if isinstance(payload, dict) else (
-            home / ".claude" / "plugins" / "installed_plugins.json"
-        ).write_text(json.dumps(payload), encoding="utf-8")
+        if isinstance(payload, dict):
+            _write_registry(home, payload)
+        else:
+            registry.parent.mkdir(parents=True, exist_ok=True)
+            registry.write_text(json.dumps(payload), encoding="utf-8")
         with patch("pathlib.Path.home", return_value=home):
             assert superpowers_installed() is False, payload
 
@@ -203,16 +225,141 @@ def test_unset_plugin_root_does_not_crash_the_cache_rung(tmp_path, monkeypatch):
         assert superpowers_installed() is False
 
 
-def test_pathological_cache_stays_bounded(tmp_path, monkeypatch):
-    """A cache with many marketplaces must not spend the 3s SessionStart budget."""
+def test_cache_scan_gives_up_past_the_entry_cap(tmp_path, monkeypatch):
+    """The cap is load-bearing, not decorative: an install planted beyond it is
+    not found. Asserting only False on a large cache would pass with no cap at
+    all, which is what the previous version of this test did.
+
+    Giving up reads as "not installed", the safe direction -- a missing routing
+    block costs guidance, where an overrun SessionStart budget costs the whole
+    injection.
+    """
     home = tmp_path / "home"
     home.mkdir()
     cache = tmp_path / "cache"
-    chameleon_root = cache / "mkt-0" / "chameleon" / "0.0.0-fixture"
+    # Zero-padded so lexicographic order matches numeric order.
+    chameleon_root = cache / "mkt-000" / "chameleon" / "0.0.0-fixture"
     chameleon_root.mkdir(parents=True)
-    for i in range(200):
-        (cache / f"mkt-{i}" / "notsuperpowers" / "1.0.0").mkdir(parents=True, exist_ok=True)
+    beyond = _max_dir_entries() + 20
+    for i in range(beyond + 1):
+        (cache / f"mkt-{i:03d}").mkdir(exist_ok=True)
+    _plant_superpowers(cache / f"mkt-{beyond:03d}")
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(chameleon_root))
+
+    with patch("pathlib.Path.home", return_value=home):
+        assert superpowers_installed() is False
+
+    # Control: the identical install INSIDE the cap is found, proving the miss
+    # above is the cap doing its job and not a broken fixture.
+    _plant_superpowers(cache / "mkt-001")
+    with patch("pathlib.Path.home", return_value=home):
+        assert superpowers_installed() is True
+
+
+def _write_settings(home: Path, enabled: dict) -> None:
+    """Materialize ~/.claude/settings.json with an enabledPlugins map."""
+    d = home / ".claude"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "settings.json").write_text(json.dumps({"enabledPlugins": enabled}), encoding="utf-8")
+
+
+def test_authoritative_registry_negative_beats_a_stale_cache(tmp_path, monkeypatch):
+    """Uninstalling drops the registry row but can leave the cache directory.
+    A registry that parsed and omits superpowers is an answer, not a gap, so
+    the cache rung must not overturn it -- otherwise the block would keep
+    routing to skills the user removed."""
+    home = tmp_path / "home"
+    home.mkdir()
+    _write_registry(home, {"version": 2, "plugins": {"chameleon@mkt": _entry(tmp_path)}})
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(_cache_root_with_superpowers(tmp_path)))
+
+    with patch("pathlib.Path.home", return_value=home):
+        assert superpowers_installed() is False
+
+
+def test_disabled_in_settings_reads_as_absent(tmp_path, monkeypatch):
+    """A plugin switched off in settings stays on disk but loads no skills."""
+    home = tmp_path / "home"
+    home.mkdir()
+    installed = tmp_path / "sp"
+    installed.mkdir()
+    _write_registry(home, {"version": 2, "plugins": {"superpowers@mkt": _entry(installed)}})
+    _write_settings(home, {"superpowers@mkt": False})
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(_empty_cache_root(tmp_path)))
+
+    with patch("pathlib.Path.home", return_value=home):
+        assert superpowers_installed() is False
+
+
+def test_enabled_true_and_missing_key_both_count_as_enabled(tmp_path, monkeypatch):
+    """Only an explicit false suppresses: absence is not a negative."""
+    home = tmp_path / "home"
+    home.mkdir()
+    installed = tmp_path / "sp"
+    installed.mkdir()
+    _write_registry(home, {"version": 2, "plugins": {"superpowers@mkt": _entry(installed)}})
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(_empty_cache_root(tmp_path)))
+
+    for enabled in ({"superpowers@mkt": True}, {"other@mkt": False}, {}):
+        _write_settings(home, enabled)
+        with patch("pathlib.Path.home", return_value=home):
+            assert superpowers_installed() is True, enabled
+
+
+def test_cache_rung_honors_the_disable_switch(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()  # no registry, so the cache rung speaks
+    _write_settings(home, {"superpowers@superpowers-marketplace": False})
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(_cache_root_with_superpowers(tmp_path)))
+
+    with patch("pathlib.Path.home", return_value=home):
+        assert superpowers_installed() is False
+
+
+def test_cache_rung_ignores_a_non_cache_layout(tmp_path, monkeypatch):
+    """A source checkout or uvx invocation puts an arbitrary user directory at
+    the third parent. Listing it would be both wasteful and a false-positive
+    surface, so the scan requires a directory literally named `cache`."""
+    home = tmp_path / "home"
+    home.mkdir()
+    fake = tmp_path / "src" / "notcache" / "chameleon" / "0.0.0-fixture"
+    fake.mkdir(parents=True)
+    _plant_superpowers(tmp_path / "src" / "notcache")
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(fake))
+
+    with patch("pathlib.Path.home", return_value=home):
+        assert superpowers_installed() is False
+
+
+def test_cache_rung_rejects_family_plugins(tmp_path, monkeypatch):
+    """AC2 holds on both rungs, not just the registry."""
+    home = tmp_path / "home"
+    home.mkdir()
+    cache = tmp_path / "cache"
+    chameleon_root = cache / "mkt" / "chameleon" / "0.0.0-fixture"
+    chameleon_root.mkdir(parents=True)
+    for name in ("superpowers-dev", "superpowers-chrome", "superpowers-developing-for-claude-code"):
+        skill = cache / "mkt" / name / "1.0.0" / "skills" / "using-superpowers"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("x", encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(chameleon_root))
+
+    with patch("pathlib.Path.home", return_value=home):
+        assert superpowers_installed() is False
+
+
+def test_oversize_registry_is_not_read(tmp_path, monkeypatch):
+    """is_file() follows symlinks, so an unbounded read inside a 3s wrapper is a
+    foot-gun. Past the cap the file is skipped, not parsed."""
+    from chameleon_mcp.peer_plugins import _MAX_REGISTRY_BYTES
+
+    home = tmp_path / "home"
+    d = home / ".claude" / "plugins"
+    d.mkdir(parents=True)
+    payload = {"version": 2, "plugins": {"superpowers@mkt": _entry(tmp_path)}}
+    blob = json.dumps(payload) + " " * (_MAX_REGISTRY_BYTES + 1)
+    (d / "installed_plugins.json").write_text(blob, encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(_empty_cache_root(tmp_path)))
 
     with patch("pathlib.Path.home", return_value=home):
         assert superpowers_installed() is False

@@ -1627,20 +1627,56 @@ def _using_chameleon_digest() -> str:
 
     See the module constant above for what it carries and why it replaced
     the old unconditional full-SKILL.md dump.
+    """
+    return _USING_CHAMELEON_DIGEST
 
-    With the superpowers plugin also installed, the peer-routing paragraph is
-    appended LAST so the budget trimmer sheds it before anything else in the
-    digest. Fails closed: a detector error renders the digest exactly as it
-    does when superpowers is absent, never a partial block.
+
+def _peer_routing_block() -> str:
+    """The superpowers routing paragraph, or "" when it does not apply.
+
+    Kill switch lives here rather than in the detector: superpowers_installed()
+    answers a factual question, and gating it there would hand any later
+    consumer this feature's off-switch. Fails closed -- a detector error yields
+    "", so the digest renders exactly as it does without superpowers.
     """
     try:
         from chameleon_mcp.peer_plugins import superpowers_installed
 
-        if superpowers_installed():
-            return _USING_CHAMELEON_DIGEST + "\n\n" + _SUPERPOWERS_ROUTING
+        if os.environ.get("CHAMELEON_PEER_ROUTING") != "0" and superpowers_installed():
+            return _SUPERPOWERS_ROUTING
     except Exception:
         pass
-    return _USING_CHAMELEON_DIGEST
+    return ""
+
+
+def _append_peer_routing(digest_text: str, budget_tokens: int) -> str:
+    """Append the routing block to an ALREADY-FITTED digest, if it still fits.
+
+    Composing before the fit looks equivalent but is not. `_fit_digest_to_budget`
+    charges each paragraph separator a whole token while its early-return path
+    estimates the joined text at half that, so the packed cost of the same text
+    always exceeds the whole-text estimate. A digest that fits whole can
+    therefore fail to survive its own repacking, and because the packer breaks
+    rather than continues, the routing block would take the digest's trailing
+    paragraphs down with it -- deterministically, for any repo whose budget
+    lands in that few-token window.
+
+    Adding the block only on top of the fitted base makes "sheds first, and only
+    itself" true by construction: the block is either present in full or absent,
+    and it never displaces content that had already earned its place.
+    """
+    block = _peer_routing_block()
+    if not block or not digest_text:
+        return digest_text
+    try:
+        from chameleon_mcp.core.budget import approx_tokens
+
+        cost = approx_tokens(digest_text) + approx_tokens("\n\n") + approx_tokens(block)
+        if cost <= budget_tokens:
+            return digest_text + "\n\n" + block
+    except Exception:
+        pass
+    return digest_text
 
 
 def _fit_digest_to_budget(digest_text: str, budget_tokens: int) -> str:
@@ -2037,9 +2073,11 @@ def session_start() -> int:
             )
             if part
         )
-        digest_text = _fit_digest_to_budget(
-            digest_text, _ss_ceiling - approx_tokens(_non_digest_text)
-        )
+        _digest_budget = _ss_ceiling - approx_tokens(_non_digest_text)
+        digest_text = _fit_digest_to_budget(digest_text, _digest_budget)
+        # After the fit, never before: the routing block is additive headroom,
+        # not a paragraph competing with the curated digest for space.
+        digest_text = _append_peer_routing(digest_text, _digest_budget)
     except Exception:
         pass  # fail-open: keep the full curated digest
 

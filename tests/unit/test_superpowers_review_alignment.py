@@ -49,11 +49,12 @@ def test_using_chameleon_states_process_first_sequencing():
 
 
 def test_using_chameleon_names_the_review_supersedes_rules():
+    """Assert the PAIRING, not the presence of each command name: both appear in
+    the pre-existing command table, so a SKILL.md that inverted the direction
+    would satisfy a presence-only check."""
     t = _uc()
-    assert "/chameleon-pr-review" in t
-    assert "requesting-code-review" in t
-    assert "/chameleon-receiving-code-review" in t
-    assert "receiving-code-review" in t
+    assert "`/chameleon-pr-review` supersedes `superpowers:requesting-code-review`" in t
+    assert "`/chameleon-receiving-code-review` supersedes `superpowers:receiving-code-review`" in t
 
 
 def test_using_chameleon_keeps_deep_work_out_of_brainstorming():
