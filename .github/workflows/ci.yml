@@ -244,6 +244,17 @@ jobs:
       - name: Fail on hardcoded developer home paths
         run: bash scripts/check-no-personal-paths.sh
 
+  import-cycle:
+    name: import-cycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Fail when the largest import cycle grows
+        run: python3 scripts/check-import-cycle.py
+
   hook-smoke:
     name: hook-smoke (${{ matrix.hook.name }})
     runs-on: ubuntu-latest
