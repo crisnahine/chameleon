@@ -182,6 +182,7 @@ def test_summary_all_zero_when_no_sources(monkeypatch, tmp_path: Path):
         "advisor_unavailable": 0,
         "no_interpreter": 0,
         "spawn_failed": 0,
+        "swallowed": 0,
         "total": 0,
         "last_ts": None,
     }

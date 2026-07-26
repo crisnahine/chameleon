@@ -1489,6 +1489,34 @@ def _archetype_seen_key(archetype: str, agent_id: object) -> str:
     return f"{resolved}\x1f{archetype}" if resolved else archetype
 
 
+def _log_swallowed(stage: str, exc: BaseException) -> None:
+    """Record a stage that caught its own exception and returned nothing.
+
+    A swallowed stage is invisible to every other degradation signal: the hook
+    still exits 0 with valid JSON, no interpreter was missing, no spawn failed,
+    and no ``fail_open`` metric is emitted, because from the hook's side nothing
+    went wrong. The stage is just absent, which reads exactly like a repo that
+    had nothing to say. ``degraded_telemetry.count_swallowed`` looks for this
+    marker, so what is written here is what /chameleon-doctor can count.
+
+    Best-effort by construction: this runs INSIDE a failure handler, so it must
+    never raise. ``_hook_error_log_path`` resolves through ``Path.home()``,
+    which raises RuntimeError rather than OSError when HOME is unset.
+    """
+    try:
+        import time as _time
+
+        from chameleon_mcp.degraded_telemetry import SWALLOWED_MARKER
+
+        stamp = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
+        with open(_hook_error_log_path(), "a", encoding="utf-8") as fh:
+            fh.write(
+                f"[{stamp}] chameleon: {SWALLOWED_MARKER}{stage} ({type(exc).__name__}: {exc})\n"
+            )
+    except (OSError, RuntimeError, ImportError):
+        pass
+
+
 def _agent_id_or_none(agent_id: object) -> str | None:
     """The dispatched-subagent id, or None for the top-level agent.
 
@@ -2612,17 +2640,7 @@ def _nearby_signatures_section(file_path: str, repo_root: Path | None) -> str:
         # Fail open, but leave a trace: this section silently vanishing from a
         # Tier-2 block is indistinguishable from "no siblings", so a systematic
         # failure would otherwise never surface in doctor's error-log check.
-        try:
-            import time as _time
-
-            stamp = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
-            with open(_hook_error_log_path(), "a", encoding="utf-8") as fh:
-                fh.write(
-                    f"[{stamp}] chameleon: nearby-signatures section failed "
-                    f"({type(exc).__name__}: {exc})\n"
-                )
-        except (OSError, RuntimeError):
-            pass
+        _log_swallowed("nearby-signatures", exc)
         return ""
 
 
@@ -2938,17 +2956,7 @@ def _conventions_echo_section(archetype: str | None, repo_root: Path | None) -> 
         # anti-hallucination directive a subagent receives, so it vanishing is
         # indistinguishable from a repo with no conventions and would otherwise
         # never surface in doctor's error-log check.
-        try:
-            import time as _time
-
-            stamp = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
-            with open(_hook_error_log_path(), "a", encoding="utf-8") as fh:
-                fh.write(
-                    f"[{stamp}] chameleon: conventions-echo section failed "
-                    f"({type(exc).__name__}: {exc})\n"
-                )
-        except (OSError, RuntimeError):
-            pass
+        _log_swallowed("nearby-signatures", exc)
         return ""
 
 
@@ -5264,8 +5272,11 @@ def _record_bash_write_mutations(
             else:
                 record_clean(fs, now=now)
             save_state(state, repo_data_dir, session_id or "")
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            # Losing this is not cosmetic: the per-file level never advances,
+            # archetypes_with_violations never records, and the Stop backstop
+            # never arms -- all indistinguishable from a clean edit.
+            _log_swallowed("bash-write-enforcement-state", exc)
 
 
 def _record_bash_delete_mutations(command: str, cwd: Path, session_id: str) -> None:
