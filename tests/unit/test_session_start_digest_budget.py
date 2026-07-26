@@ -108,6 +108,11 @@ def test_routing_block_sheds_before_the_rest_of_the_digest():
         composed = _using_chameleon_digest()
     with patch("chameleon_mcp.peer_plugins.superpowers_installed", return_value=False):
         base = _using_chameleon_digest()
+    # Precondition, not decoration: without it this test passes vacuously when
+    # the append is removed, since composed would equal base and a trim to
+    # base's own size would satisfy both assertions below on its own.
+    assert composed != base
+    assert _SUPERPOWERS_ROUTING in composed
     # A budget that fits the base digest but not the routing block on top.
     fitted = _fit_digest_to_budget(composed, approx_tokens(base))
     assert _SUPERPOWERS_ROUTING not in fitted
@@ -117,11 +122,16 @@ def test_routing_block_sheds_before_the_rest_of_the_digest():
 def test_digest_detection_failure_reads_as_absent():
     """Fail-closed: a raising detector leaves the digest exactly as it is
     without superpowers, never a half-rendered block or a crashed hook."""
+    with patch("chameleon_mcp.peer_plugins.superpowers_installed", return_value=True):
+        composed = _using_chameleon_digest()
     with patch(
         "chameleon_mcp.peer_plugins.superpowers_installed",
         side_effect=RuntimeError("boom"),
     ):
         digest = _using_chameleon_digest()
+    # Same precondition: pin that the detector is load-bearing here, so this
+    # cannot pass merely because the feature is absent.
+    assert _SUPERPOWERS_ROUTING in composed
     assert _SUPERPOWERS_ROUTING not in digest
     assert "Hook lifecycle:" in digest
 
