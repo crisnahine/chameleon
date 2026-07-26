@@ -1600,11 +1600,19 @@ _USING_CHAMELEON_DIGEST = (
 # chameleon owns output and facts. Without this the two plugins inject
 # independent contracts and the model has no rule for sequencing them.
 #
-# ONE paragraph by construction (no blank line inside): _fit_digest_to_budget
-# packs whole paragraphs and keeps a prefix, so a single trailing paragraph is
-# shed atomically, and shed FIRST -- ahead of the conventions block and any
-# pending review findings, which are charged as fixed cost and render whole or
-# not at all. Capped at 200 tokens by its own unit test.
+# ONE paragraph by construction (no blank line inside). The block is added
+# after the budget fit and never passes through _fit_digest_to_budget, so
+# nothing sheds it -- when there is no room it is simply not added. The
+# single-paragraph shape is what keeps it a clean unit to append or omit, and
+# what lets the "last paragraph" assertion in the tests mean the whole block.
+# Capped at 200 tokens by its own unit test.
+#
+# The text asserts things about ANOTHER plugin's internals -- skill names and
+# that systematic-debugging's root-cause work is its Phase 1. Detection is
+# existence-only by design, so nothing here can notice if superpowers renames a
+# skill or renumbers its phases, and the alignment tests only read chameleon's
+# own SKILL.md. A peer refactor would leave this confidently stating something
+# false; re-read it against superpowers when bumping a major version of it.
 _SUPERPOWERS_ROUTING = (
     "Superpowers is installed. Process gates set the sequence; chameleon "
     "supplies their facts and guards each write.\n"
@@ -1671,8 +1679,22 @@ def _append_peer_routing(digest_text: str, budget_tokens: int) -> str:
     unconditional: present in full or absent entirely, never displacing curated
     content, and never the last thing standing.
     """
+    # The two free checks first: detection reads the registry, the settings
+    # file, and up to two capped directory scans, and none of that can be used
+    # once the digest is empty or truncated. Under a squeezed budget -- exactly
+    # when the digest IS truncated -- that I/O would be spent inside a wrapper
+    # that hard-kills at three seconds and loses the whole injection.
+    #
+    # Identity against the constant is how "survived the fit whole" is tested.
+    # It holds because the packer's per-paragraph accounting always costs at
+    # least as much as the whole-text estimate, so the only way the untouched
+    # constant comes back is the early return. A second digest source would be
+    # whole yet fail this check and silently never get the block; that is the
+    # fail-closed direction, but it is coupling worth knowing about.
+    if not digest_text or digest_text != _USING_CHAMELEON_DIGEST:
+        return digest_text
     block = _peer_routing_block()
-    if not block or not digest_text or digest_text != _USING_CHAMELEON_DIGEST:
+    if not block:
         return digest_text
     try:
         from chameleon_mcp.core.budget import approx_tokens

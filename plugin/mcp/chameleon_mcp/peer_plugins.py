@@ -75,17 +75,21 @@ def _read_json(path: Path, max_bytes: int) -> object | None:
         return None
 
 
-def _plugin_disabled(plugin_key: str) -> bool:
-    """True only when settings explicitly switch `plugin_key` off.
+def _disabled_plugin_keys() -> frozenset[str]:
+    """The plugin keys settings explicitly switch OFF.
 
     `~/.claude/settings.json`'s `enabledPlugins` is keyed the same way as the
     registry ("<name>@<marketplace>"). A plugin set to false stays installed on
     disk while its skills never load, so treating it as present would route the
     model to skills that are not in the session.
 
-    Absence is not a negative: an unreadable settings file, a missing key, or a
-    plugin enabled per-project rather than per-user all read as "not disabled",
-    so this can only ever suppress detection on an explicit false.
+    Only an explicit false lands in the set: an unreadable settings file, a
+    missing key, or a plugin enabled per-project rather than per-user all read
+    as "not disabled", so this can only ever suppress detection, never cause it.
+
+    Read ONCE per detection and threaded to both rungs. Re-reading per candidate
+    would parse this file up to sixty-four times on a cache scan, inside a hook
+    the wrapper hard-kills at three seconds.
 
     Scope is the USER-level settings file only. A plugin disabled for one
     project via that project's .claude/settings.json still reads as enabled
@@ -95,24 +99,29 @@ def _plugin_disabled(plugin_key: str) -> bool:
     """
     data = _read_json(Path.home() / ".claude" / "settings.json", _MAX_REGISTRY_BYTES)
     if not isinstance(data, dict):
-        return False
+        return frozenset()
     enabled = data.get("enabledPlugins")
     if not isinstance(enabled, dict):
-        return False
-    return enabled.get(plugin_key) is False
+        return frozenset()
+    return frozenset(k for k, v in enabled.items() if isinstance(k, str) and v is False)
 
 
-def _registry_verdict() -> bool | None:
+def _registry_verdict(disabled: frozenset[str]) -> bool | None:
     """Whether Claude Code's registry records superpowers installed on disk.
 
-    Returns True (recorded and the install path still exists), False (the
-    registry parsed and does NOT list it -- an authoritative negative), or None
-    (absent, oversize, or malformed: no information either way).
+    Returns True (recorded, the install path still exists, and not disabled),
+    None (no information: the file is absent, oversize, malformed, or names
+    superpowers in a shape this code cannot parse), or False for every other
+    parsed outcome -- the registry omits superpowers, OR lists it with a path
+    that no longer exists, OR lists it disabled, OR lists it with no entries.
 
-    The three-way answer matters. A registry that parsed and omits superpowers
-    means the user uninstalled it, and a leftover cache directory must not
-    override that; only a registry that could not be consulted at all lets the
-    cache rung speak.
+    False is deliberately wider than "not listed". Each of those cases is a
+    readable registry saying superpowers will not load, which a leftover cache
+    directory must not overturn; only a registry that could not be consulted at
+    all lets the cache rung speak. The practical asymmetry: a stale absolute
+    installPath (a renamed home directory, a relocated install) reads as False
+    and suppresses the block even though the cache holds a live copy. That is
+    the fail-closed direction and intentional, but it is not obvious.
     """
     data = _read_json(
         Path.home() / ".claude" / "plugins" / "installed_plugins.json", _MAX_REGISTRY_BYTES
@@ -141,7 +150,7 @@ def _registry_verdict() -> bool | None:
                 continue
             install_path = entry.get("installPath")
             if isinstance(install_path, str) and install_path:
-                if Path(install_path).is_dir() and not _plugin_disabled(key):
+                if Path(install_path).is_dir() and key not in disabled:
                     return True
             else:
                 unreadable = True
@@ -156,7 +165,7 @@ def _bounded_listing(directory: Path) -> list[Path]:
         return []
 
 
-def _installed_from_cache() -> bool:
+def _installed_from_cache(disabled: frozenset[str]) -> bool:
     """True when the plugin cache holds an enabled superpowers install.
 
     Consulted only when the registry could not answer, since a cached directory
@@ -183,7 +192,7 @@ def _installed_from_cache() -> bool:
             continue
         for marketplace in _bounded_listing(parents[2]):
             peer = marketplace / _PEER_NAME
-            if not peer.is_dir() or _plugin_disabled(f"{_PEER_NAME}@{marketplace.name}"):
+            if not peer.is_dir() or f"{_PEER_NAME}@{marketplace.name}" in disabled:
                 continue
             for version in _bounded_listing(peer):
                 if version.joinpath(*_PEER_MARKER).is_file():
@@ -208,9 +217,10 @@ def superpowers_installed() -> bool:
     absent plugin, so chameleon behaves exactly as it does without superpowers.
     """
     try:
-        verdict = _registry_verdict()
+        disabled = _disabled_plugin_keys()
+        verdict = _registry_verdict(disabled)
         if verdict is not None:
             return verdict
-        return _installed_from_cache()
+        return _installed_from_cache(disabled)
     except Exception:
         return False

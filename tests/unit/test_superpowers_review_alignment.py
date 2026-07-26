@@ -42,10 +42,16 @@ def _uc() -> str:
 
 def test_using_chameleon_states_process_first_sequencing():
     """The layering rule the SessionStart routing block compresses: superpowers
-    owns process, chameleon owns output and facts."""
+    owns process, chameleon owns output and facts.
+
+    Asserts the layering SENTENCE, not the words. "Process-gating skills" and
+    "superpowers" both appear in text that predates this section, so a
+    presence-only check stayed green with the whole section deleted.
+    """
     t = _uc()
-    assert "superpowers" in t.lower()
-    assert "Process gates set the sequence" in t or "Process-gating skills" in t
+    assert "Superpowers owns **process**" in t
+    assert "Chameleon owns **output and facts**" in t
+    assert "Process gates set the sequence" in t
 
 
 def test_using_chameleon_names_the_review_supersedes_rules():
@@ -59,11 +65,15 @@ def test_using_chameleon_names_the_review_supersedes_rules():
 
 def test_using_chameleon_keeps_deep_work_out_of_brainstorming():
     """deep-work's no-questions contract and brainstorming's HARD-GATE cannot
-    both run; the skill must say which wins."""
+    both run; the skill must say which wins.
+
+    Both command names predate this section, so the pairing is what gets
+    asserted -- "NOT in its path" alone would be satisfied by a sentence about
+    some other skill entirely.
+    """
     t = _uc()
-    assert "/chameleon-deep-work" in t
-    assert "brainstorming" in t
-    assert "NOT in its path" in t
+    assert "`superpowers:brainstorming` - a gate of nothing but questions - is NOT in its path" in t
+    assert "`/chameleon-deep-work` is self-contained" in t
 
 
 def test_using_chameleon_documents_the_peer_routing_kill_switch():
