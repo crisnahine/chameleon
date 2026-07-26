@@ -88,6 +88,13 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # because the operator reference documents the bound, and a documented
     # bound with no CHAMELEON_* override is a knob users cannot reach.
     "PEER_CACHE_MAX_DIR_ENTRIES": 64,
+    # Per-skill peer context: rows in the archetype -> canonical witness map
+    # pasted into a superpowers plan or dispatch brief, and the whole block's
+    # character ceiling. The block rides a PreToolUse injection the model reads
+    # in full, so it is sized to be pasteable into a brief rather than skimmed;
+    # past the ceiling the witness map is shed and the directive kept.
+    "PEER_SKILL_MAX_ARCHETYPES": 12,
+    "PEER_SKILL_CONTEXT_MAX_CHARS": 2400,
     # Degraded-parse gate: a bootstrap/refresh whose extractor child died
     # mid-run surfaces as mass parse skips. Healthy repos parse at ~100%, so a
     # skip rate past the ratio (with at least the floor of skipped files, to

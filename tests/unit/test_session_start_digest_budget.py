@@ -67,10 +67,26 @@ def test_peer_routing_block_carries_the_routing_claims():
         block = _peer_routing_block()
     assert block == _SUPERPOWERS_ROUTING
     # The load-bearing routing claims, not merely the block's presence.
-    assert "/chameleon-pr-review supersedes superpowers:requesting-code-review" in block
     assert "/chameleon-receiving-code-review supersedes" in block
-    assert "brainstorming is NOT in its path" in block
-    assert "systematic-debugging" in block
+    assert "brainstorming is not in its path" in block
+    # The digest now points at the per-call injection rather than restating
+    # each skill's contract, so the pointer itself is load-bearing: without it
+    # the paragraph reads as the whole contract instead of its entry point.
+    assert "injects that skill's own chameleon contract at the call" in block
+
+
+def test_pr_review_is_not_claimed_as_a_superset():
+    """v4.5.15 said /chameleon-pr-review "supersedes" requesting-code-review and
+    that "both are supersets". Both halves were false for pr-review: that skill's
+    point is dispatching a reviewer SUBAGENT so the diff never enters the
+    coordinator's window, and its reviewer asks "are all tests passing?" -- a
+    verdict input a static review drops. Only the receiving-side claim survived.
+    The paragraph must not re-acquire the overclaim."""
+    with patch("chameleon_mcp.peer_plugins.superpowers_installed", return_value=True):
+        block = _peer_routing_block()
+    assert "NOT a superset" in block
+    assert "runs no tests" in block
+    assert "supersedes superpowers:requesting-code-review" not in block
 
 
 def test_kill_switch_suppresses_the_block_on_a_real_install(monkeypatch):

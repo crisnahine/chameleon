@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# Kill switch: emit empty output and skip the python spawn entirely when disabled.
+if [ "${CHAMELEON_DISABLE:-}" = "1" ]; then printf '{}\n'; exit 0; fi
+
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-${0%/*}/..}"
+# Git Bash receives a Windows path (C:\...) from run-hook.cmd; normalize the
+# backslashes so the filesystem checks below resolve.
+PLUGIN_ROOT="${PLUGIN_ROOT//\\//}"
+MCP_DIR="${PLUGIN_ROOT}/mcp"
+
+# Log destination is pure shell, computed before interpreter resolution so a
+# resolution failure can still be recorded.
+if [ -n "${CHAMELEON_HOOK_ERROR_LOG:-}" ]; then
+    LOG_FILE="${CHAMELEON_HOOK_ERROR_LOG}"
+    LOG_DIR="$(dirname "${LOG_FILE}")"
+else
+    LOG_DIR="${CHAMELEON_PLUGIN_DATA:-${HOME:-${TMPDIR:-/tmp}}/.local/share/chameleon}"
+    LOG_FILE="${LOG_DIR}/.hook_errors.log"
+fi
+mkdir -p "${LOG_DIR}" 2>/dev/null || true
+# Guard the LOG_FILE the 2>>"${LOG_FILE}" redirects below open. Any of these
+# would break the fail-open contract: an existing non-regular file (a FIFO with
+# no reader BLOCKS the open indefinitely; a socket/device errors) -- never open
+# it, just test its type; a broken symlink (-e is false, so the type test above
+# misses it) or a path whose parent dir is absent -- the redirect then fails to
+# open and the whole command is skipped, so the python never runs and the hook
+# silently no-ops (disabling the backstop / injection). Fall back to /dev/null
+# in every such case so the real hook logic still runs.
+if { [ -e "${LOG_FILE}" ] && [ ! -f "${LOG_FILE}" ]; } \
+   || { [ -L "${LOG_FILE}" ] && [ ! -e "${LOG_FILE}" ]; } \
+   || [ ! -d "$(dirname "${LOG_FILE}")" ]; then
+    LOG_FILE="/dev/null"
+fi
+
+# Resolve a dep-capable Python >=3.11 via the shared ladder (never a blind
+# `python3`, which on macOS is 3.9.x and fail-opens every hook). CHAMELEON_PY
+# is the interpreter argv (a path, or `uv run --project <mcp> python`).
+CHAMELEON_PY=()
+RESOLVER="${PLUGIN_ROOT}/hooks/_resolve-python.sh"
+if [ -r "${RESOLVER}" ]; then
+    # Run the resolver as a subprocess, not `source`: a missing or corrupt
+    # resolver then leaves CHAMELEON_PY empty and degrades cleanly instead of
+    # aborting the hook. On bash 3.2 a syntax error in a sourced file exits 2
+    # (which would BLOCK the edit under PreToolUse) and `source <missing>` exits
+    # 1, neither catchable by `|| true` — so the broken-helper case stays
+    # fail-open by reading the resolver's argv over a pipe instead.
+    # CHAMELEON_RESOLVE_FAST=1: this fires in front of a Skill call the user is
+    # waiting on, so it takes the per-edit budget — the resolver's uv probe is
+    # capped at 5s (30s on the generous SessionStart/doctor path) and bounded
+    # even where no timeout(1) exists. The common case is a cache hit warmed by
+    # SessionStart — no probe at all.
+    while IFS= read -r _tok || [ -n "${_tok}" ]; do
+        if [ -n "${_tok}" ]; then CHAMELEON_PY+=("${_tok}"); fi
+    done < <(CHAMELEON_RESOLVE_FAST=1 "${BASH:-bash}" "${RESOLVER}" "${MCP_DIR}" 2>/dev/null || true)
+fi
+if [ "${#CHAMELEON_PY[@]}" -eq 0 ]; then
+    echo "[$(date -u +%FT%TZ)] peer-skill-advise no-interpreter (no Python >=3.11, uv unavailable)" \
+        >>"${LOG_FILE}" 2>/dev/null || true
+    printf '{}\n'
+    exit 0
+fi
+
+# The hook error log is rotated in-process inside hook_helper (rotate_if_needed
+# at the top of main), so no separate log_rotation interpreter spawns here.
+
+# timeout(1) caps a stuck python; degrade to uncapped if neither timeout nor
+# gtimeout (Homebrew coreutils on macOS) is present, rather than failing the
+# whole hook on exit 127. In-process code self-limits (git 2s, busy_timeout).
+# On Git Bash / MSYS the `timeout` on PATH is Windows' timeout.exe, which
+# takes no command and would break the wrapper; skip it there (in-process
+# code self-limits regardless).
+case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*) TIMEOUT_BIN="" ;;
+    *) TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)" ;;
+esac
+PYTHONPATH="${MCP_DIR}" \
+    ${TIMEOUT_BIN:+"${TIMEOUT_BIN}" 3} "${CHAMELEON_PY[@]}" -m chameleon_mcp.hook_helper peer-skill-advise \
+    2>>"${LOG_FILE}" \
+    || { rc=$?; printf '{}\n'; echo "[$(date -u +%FT%TZ)] peer-skill-advise failed (rc=${rc}, python=${CHAMELEON_PY[*]})" >>"${LOG_FILE}" 2>/dev/null || true; }

@@ -36,6 +36,19 @@ def _write_registry(home: Path, payload: dict) -> None:
     (d / "installed_plugins.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
+def _plant_install(path: Path) -> Path:
+    """A recorded install directory that carries the bootstrap skill.
+
+    Rung 1 tests the same ``skills/using-superpowers/SKILL.md`` marker rung 2
+    does, so a bare directory is not an install. A fixture that only mkdir()s
+    would be asserting about a plugin chameleon deliberately does not recognize.
+    """
+    skill_dir = path / "skills" / "using-superpowers"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text("x", encoding="utf-8")
+    return path
+
+
 def _entry(install_path: Path) -> dict:
     """One registry entry list, shaped like Claude Code's own v2 records."""
     return [{"scope": "user", "installPath": str(install_path), "version": "6.2.0"}]
@@ -81,7 +94,7 @@ def test_registry_hit_when_superpowers_installed_and_on_disk(tmp_path, monkeypat
     home = tmp_path / "home"
     home.mkdir()
     installed = tmp_path / "sp"
-    installed.mkdir()
+    _plant_install(installed)
     _write_registry(home, {"version": 2, "plugins": {"superpowers@mkt": _entry(installed)}})
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(_empty_cache_root(tmp_path)))
 
@@ -94,7 +107,7 @@ def test_family_plugins_alone_do_not_count(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     installed = tmp_path / "sp-dev"
-    installed.mkdir()
+    _plant_install(installed)
     _write_registry(
         home,
         {
@@ -119,7 +132,7 @@ def test_kill_switch_does_not_reach_the_detector(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     installed = tmp_path / "sp"
-    installed.mkdir()
+    _plant_install(installed)
     _write_registry(home, {"version": 2, "plugins": {"superpowers@mkt": _entry(installed)}})
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(_empty_cache_root(tmp_path)))
     monkeypatch.setenv("CHAMELEON_PEER_ROUTING", "0")
@@ -134,7 +147,7 @@ def test_flat_top_level_registry_is_tolerated(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     installed = tmp_path / "sp"
-    installed.mkdir()
+    _plant_install(installed)
     _write_registry(home, {"superpowers@mkt": _entry(installed)})
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(_empty_cache_root(tmp_path)))
 
@@ -282,7 +295,7 @@ def test_disabled_in_settings_reads_as_absent(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     installed = tmp_path / "sp"
-    installed.mkdir()
+    _plant_install(installed)
     _write_registry(home, {"version": 2, "plugins": {"superpowers@mkt": _entry(installed)}})
     _write_settings(home, {"superpowers@mkt": False})
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(_empty_cache_root(tmp_path)))
@@ -296,7 +309,7 @@ def test_enabled_true_and_missing_key_both_count_as_enabled(tmp_path, monkeypatc
     home = tmp_path / "home"
     home.mkdir()
     installed = tmp_path / "sp"
-    installed.mkdir()
+    _plant_install(installed)
     _write_registry(home, {"version": 2, "plugins": {"superpowers@mkt": _entry(installed)}})
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(_empty_cache_root(tmp_path)))
 
@@ -390,3 +403,55 @@ def test_parsed_registry_omitting_superpowers_stays_authoritative(tmp_path, monk
 
     with patch("pathlib.Path.home", return_value=home):
         assert superpowers_installed() is False
+
+
+def test_a_recorded_directory_without_the_bootstrap_skill_is_not_an_install(tmp_path, monkeypatch):
+    """Rung 1 used to accept any directory that merely existed while rung 2
+    demanded the bootstrap skill, so the two rungs disagreed about what counts
+    as superpowers -- and rung 1 is the one that answers on every ordinary
+    install. Any plugin named `superpowers` in any marketplace satisfied it."""
+    home = tmp_path / "home"
+    home.mkdir()
+    bare = tmp_path / "sp"
+    bare.mkdir()  # deliberately NOT _plant_install: no skills/using-superpowers
+    _write_registry(home, {"version": 2, "plugins": {"superpowers@mkt": _entry(bare)}})
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(_empty_cache_root(tmp_path)))
+    with patch("pathlib.Path.home", return_value=home):
+        assert superpowers_installed() is False
+
+
+def test_config_dir_override_is_honored(tmp_path, monkeypatch):
+    """CLAUDE_CONFIG_DIR relocates the whole config directory and the CLI obeys
+    it, so answering from ~/.claude is wrong in both directions: a sandbox with
+    no superpowers would inherit the real user's answer, and a user whose only
+    registry lives in the relocated dir would be vetoed by a ~/.claude that has
+    none. `real_home` here holds NO registry, so a hit can only come from the
+    override."""
+    real_home = tmp_path / "home"
+    real_home.mkdir()
+    relocated = tmp_path / "elsewhere"
+    (relocated / "plugins").mkdir(parents=True)
+    installed = _plant_install(tmp_path / "sp")
+    (relocated / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"version": 2, "plugins": {"superpowers@mkt": _entry(installed)}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(_empty_cache_root(tmp_path)))
+    with patch("pathlib.Path.home", return_value=real_home):
+        assert superpowers_installed() is False  # precondition: nothing in ~/.claude
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(relocated))
+        assert superpowers_installed() is True
+
+
+def test_an_unexpanded_config_dir_placeholder_falls_back_to_home(tmp_path, monkeypatch):
+    """A shell that never expanded ${...} must not send detection to a literal
+    directory of that name -- the same guard the cache rung applies to its own
+    environment reads."""
+    home = tmp_path / "home"
+    home.mkdir()
+    installed = _plant_install(tmp_path / "sp")
+    _write_registry(home, {"version": 2, "plugins": {"superpowers@mkt": _entry(installed)}})
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(_empty_cache_root(tmp_path)))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "${HOME}/.claude")
+    with patch("pathlib.Path.home", return_value=home):
+        assert superpowers_installed() is True

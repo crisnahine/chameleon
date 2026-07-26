@@ -57,10 +57,27 @@ def test_using_chameleon_states_process_first_sequencing():
 def test_using_chameleon_names_the_review_supersedes_rules():
     """Assert the PAIRING, not the presence of each command name: both appear in
     the pre-existing command table, so a SKILL.md that inverted the direction
-    would satisfy a presence-only check."""
+    would satisfy a presence-only check.
+
+    Only the receiving side is a supersede. v4.5.15 claimed both were, and both
+    halves of that were false for pr-review: `superpowers:requesting-code-review`
+    exists to dispatch a reviewer SUBAGENT so the diff never enters the
+    coordinator's window, while pr-review runs its passes in that same context
+    unless fan-out is recommended; and that reviewer's "are all tests passing?"
+    verdict input is out of scope for a static review that runs nothing.
+    """
     t = _uc()
-    assert "`/chameleon-pr-review` supersedes `superpowers:requesting-code-review`" in t
     assert "`/chameleon-receiving-code-review` supersedes `superpowers:receiving-code-review`" in t
+    assert "`/chameleon-pr-review` supersedes `superpowers:requesting-code-review`" not in t
+    assert 'it is NOT a superset, so say "prefer", not "supersedes"' in t
+
+
+def test_using_chameleon_states_what_pr_review_does_not_carry():
+    """Naming the non-supersede is not enough -- a reader needs to know WHICH
+    two things are missing, or "not a superset" is unactionable."""
+    t = _uc()
+    assert "reviewer SUBAGENT" in t
+    assert "are all tests passing?" in t
 
 
 def test_using_chameleon_keeps_deep_work_out_of_brainstorming():

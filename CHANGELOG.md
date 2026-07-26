@@ -4,6 +4,76 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.16] - 2026-07-26
+
+### Added
+
+- **Composing with superpowers is mechanical, not just prose.** v4.5.15 stated the contract
+  in one paragraph at SessionStart. A paragraph read once does not survive twenty turns, and
+  the fact it asks for — put the archetype and canonical witness in the plan — is needed at a
+  moment the per-edit advisory cannot reach: by the time an Edit fires, the shape is already
+  chosen. Invoking a superpowers skill now injects that skill's own contract AT the call.
+  Both invocation paths are covered, because they are different mechanisms: a skill the model
+  picks arrives as a `Skill` tool call (a new PreToolUse hook, matcher `Skill`), while one the
+  user types as `/superpowers:<name>` is expanded inline and emits no tool call at all (caught
+  on UserPromptSubmit). Measured against this machine's own history, 95 of 104 real superpowers
+  invocations took the first path and 9 took the second; covering only one would have made the
+  composition hold for the model's choices and lapse for the user's. Eleven skills carry an
+  entry — a constant directive, plus this repo's archetype → canonical-witness map for the four
+  that author a plan, a dispatch brief, or a first failing test. `CHAMELEON_PEER_ROUTING=0` now
+  disables both surfaces.
+- The per-skill surface needs no detection at all, which makes it the more reliable of the two.
+  Claude Code offers a plugin's skills only when that plugin is loaded, so `superpowers:<name>`
+  arriving from the Skill tool IS proof of installation — none of `peer_plugins`' rungs run, and
+  none of their blind spots (a project-level `enabledPlugins`, an enterprise policy, `--settings`)
+  can produce a wrong answer there.
+
+### Fixed
+
+- **A dispatched subagent gets its own first sight of an archetype.** "Already shown this
+  archetype" is a claim about a context window, and a session stops being one context the moment
+  subagents are dispatched — the normal case under superpowers' subagent-driven execution, which
+  exists precisely so each task starts clean. Every subagent nonetheless shares the coordinator's
+  session id, and the enforcement state holding `archetypes_seen` is keyed by exactly that, so the
+  second and later implementers were told they had seen an archetype they had never seen and got
+  the one-line Tier-1 pointer instead of the canonical excerpt. The tier logic inverted precisely
+  where context was scarcest: the agent with none got the pointer, the coordinator that had seen
+  every excerpt got the full block. The seen-set is now keyed per agent, using the `agent_id` a
+  subagent's tool-call payload carries and the top-level agent's does not. The top-level agent's
+  keys are unchanged, so a session's already-persisted state keeps deduping as before.
+- **Three claims the routing paragraph made about superpowers were false or mis-scoped**, and a
+  paragraph that exists to route the model is exactly the wrong place to be confidently wrong.
+  `/chameleon-pr-review` was said to supersede `superpowers:requesting-code-review`, with "both
+  are supersets": that skill's whole point is dispatching a reviewer SUBAGENT so the diff never
+  enters the coordinator's window, while pr-review runs its passes in that same context unless
+  fan-out is recommended, and its reviewer's "are all tests passing?" is a verdict input a static
+  review drops. It is the stronger reviewer, not a superset — and the peer skill stays the right
+  tool for a subagent-driven run's final whole-branch review, which is dispatched with a
+  review-package path pr-review does not take. Chameleon serves `systematic-debugging`'s Phase 1
+  step 5 and Phase 2, not "Phase 1" (steps 1-4 are error reading, reproduction, recent changes,
+  and instrumentation, none of which chameleon knows anything about); that step's trace is
+  BACKWARD, so it is `get_callers`, while `get_callees` is the forward counterpart. And a
+  canonical witness is a `path`: the record carries no line number, so "canonical `file:line`"
+  promised precision that does not exist. The receiving-review supersede claim was verified and
+  stands.
+- Three contradictions the paragraph was silent on now have a stated resolution, delivered at the
+  skill that hits them. `test-driven-development`'s Iron Law decides WHETHER a test gets written
+  and wins outright; chameleon's derived "skip tests where siblings have none" describes what the
+  repo does today, which is not a licence to skip a test the user asked for first, and it governs
+  SHAPE only. `using-git-worktrees` asks consent before creating a worktree, which is right when
+  the worktree is the model's idea and wrong for `/chameleon-deep-work`, where invoking the
+  command IS the consent. `brainstorming`'s hard gate forbids deep-work as a next skill, the
+  direction v4.5.15 did not cover — it ruled out only deep-work → brainstorming.
+- **Peer detection reads the config directory actually in force.** Both file reads were hardcoded
+  to `~/.claude`, so a session under `CLAUDE_CONFIG_DIR` was answered from the developer's real
+  config — wrong in both directions: a sandbox with no superpowers inherited the block, and a user
+  whose only registry lived in the relocated dir was vetoed by a `~/.claude` that had none. An
+  unexpanded `${...}` placeholder still falls back to `~/.claude`.
+- **Both detection rungs now test the same marker.** Rung 2 required superpowers' bootstrap skill
+  while rung 1 accepted any directory that merely existed — and rung 1 is the one that answers on
+  every ordinary install, so any plugin named `superpowers` in any marketplace satisfied it. One
+  stat call either way.
+
 ## [4.5.15] - 2026-07-26
 
 ### Added

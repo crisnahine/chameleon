@@ -1465,13 +1465,44 @@ def _wire_statusline_settings(project_dir: Path, plugin_root: str | None) -> Non
         pass
 
 
-def _seed_archetype_seen(repo_id: str | None, session_id: str | None, archetype: str) -> None:
+def _archetype_seen_key(archetype: str, agent_id: object) -> str:
+    """The ``archetypes_seen`` key for one agent's sight of one archetype.
+
+    "Already shown this archetype" is a claim about a CONTEXT, and a session is
+    not one context once subagents are in play. A dispatched implementer is
+    given a fresh window on purpose -- superpowers' subagent-driven execution
+    exists precisely so each task starts clean -- yet every subagent shares the
+    parent's session_id, which is what the enforcement state is keyed by. A
+    session-scoped seen-set therefore reads "already shown" for an agent that
+    has been shown nothing, and the tier logic inverts exactly where it costs
+    most: the agent with zero context gets the one-line pointer while the
+    coordinator that has seen every excerpt got the full canonical.
+
+    A subagent's tool-call payload carries ``agent_id`` and the top-level
+    agent's does not (session_id and transcript_path are identical across both,
+    so neither can stand in for it). Scoping the key by it gives each fresh
+    agent its own first sight, and leaves the top-level agent's keys exactly as
+    they were -- a bare archetype name, so an existing session's persisted state
+    keeps deduping the way it always did.
+    """
+    return f"{agent_id}\x1f{archetype}" if isinstance(agent_id, str) and agent_id else archetype
+
+
+def _seed_archetype_seen(
+    repo_id: str | None,
+    session_id: str | None,
+    archetype: str,
+    agent_id: object = None,
+) -> None:
     """Record an archetype in the enforcement state without other side effects.
 
     The PreToolUse deny path returns before the normal advisory flow seeds
     ``archetypes_seen``, so a denied edit would leave the archetype unseen and a
     later successful edit to it would re-trigger the verbose first-in-archetype
     advisory. Seeding here keeps the seen-set accurate across a deny. Fails open.
+
+    Seeds the same agent-scoped key the advisory path reads, so a deny inside
+    one subagent cannot mark the archetype seen for a sibling that never saw it.
     """
     try:
         if not repo_id or not session_id or not archetype:
@@ -1480,9 +1511,10 @@ def _seed_archetype_seen(repo_id: str | None, session_id: str | None, archetype:
 
         repo_data = _plugin_data_dir() / repo_id
         state = enforcement.load_state(repo_data, session_id)
-        if archetype in state.archetypes_seen:
+        key = _archetype_seen_key(archetype, agent_id)
+        if key in state.archetypes_seen:
             return
-        state.archetypes_seen.add(archetype)
+        state.archetypes_seen.add(key)
         enforcement.save_state(state, repo_data, session_id)
     except Exception:
         pass
@@ -1607,26 +1639,33 @@ _USING_CHAMELEON_DIGEST = (
 # what lets the "last paragraph" assertion in the tests mean the whole block.
 # Capped at 200 tokens by its own unit test.
 #
-# The text asserts things about ANOTHER plugin's internals -- skill names and
-# that systematic-debugging's root-cause work is its Phase 1. Detection is
-# existence-only by design, so nothing here can notice if superpowers renames a
-# skill or renumbers its phases, and the alignment tests only read chameleon's
-# own SKILL.md. A peer refactor would leave this confidently stating something
-# false; re-read it against superpowers when bumping a major version of it.
+# The text asserts things about ANOTHER plugin's internals -- two skill names,
+# and what requesting-code-review is FOR (dispatching a reviewer subagent, and
+# asking whether tests pass). Detection is existence-only by design, so nothing
+# here can notice if superpowers renames a skill or changes what one does, and
+# the alignment tests only read chameleon's own SKILL.md. A peer refactor would
+# leave this confidently stating something false; re-read it against superpowers
+# when bumping a major version of it.
+#
+# Per-skill claims live in peer_skill_context.py instead, delivered at the
+# invocation. That is deliberate: this paragraph is emitted whether or not the
+# skill it describes is ever used, so every sentence here is a standing bet on
+# the peer plugin, while a claim made at the call is at least scoped to a skill
+# the model just chose. Keep new peer assertions over there.
 _SUPERPOWERS_ROUTING = (
     "Superpowers is installed. Process gates set the sequence; chameleon "
-    "supplies their facts and guards each write.\n"
-    "- Planning, or dispatching an implementer? Put the archetype + canonical "
-    "file:line into the plan/brief BEFORE it writes -- the PreToolUse advisory "
-    "arrives after.\n"
-    "- /chameleon-pr-review supersedes superpowers:requesting-code-review; "
-    "/chameleon-receiving-code-review supersedes "
-    "superpowers:receiving-code-review. Both are supersets. BLOCK/FIX/NIT = "
+    "supplies their facts and guards each write. Invoking a superpowers skill "
+    "injects that skill's own chameleon contract at the call -- the per-skill "
+    "detail lives there.\n"
+    "- Planning or dispatching? Archetype + canonical witness go IN the plan or "
+    "brief; the per-edit advisory lands after the shape is chosen.\n"
+    "- /chameleon-receiving-code-review supersedes "
+    "superpowers:receiving-code-review, a genuine superset. /chameleon-pr-review "
+    "is the stronger reviewer but NOT a superset: it runs inline rather than in "
+    "a reviewer subagent, and it runs no tests. BLOCK/FIX/NIT = "
     "Critical/Important/Minor.\n"
-    "- systematic-debugging owns the debug sequence; its Phase 1 is "
-    "get_callers/get_callees/search_codebase work.\n"
-    "- /chameleon-deep-work is self-contained and asks no questions -- "
-    "brainstorming is NOT in its path."
+    "- /chameleon-deep-work is self-contained and asks no questions, so "
+    "brainstorming is not in its path -- in either direction."
 )
 
 
@@ -3735,7 +3774,9 @@ def preflight_and_advise() -> int:
                                 # Same re-show rationale as the import deny: the
                                 # normal seen-set seeding below is skipped by this
                                 # early return.
-                                _seed_archetype_seen(repo_id, session_id, archetype_name)
+                                _seed_archetype_seen(
+                                    repo_id, session_id, archetype_name, payload.get("agent_id")
+                                )
                             parts = []
                             for v in hard[:3]:
                                 kind = v.get("secret_kind") or "credential"
@@ -3823,7 +3864,9 @@ def preflight_and_advise() -> int:
                                 )
                         if mode == "enforce":
                             if archetype_name:
-                                _seed_archetype_seen(repo_id, session_id, archetype_name)
+                                _seed_archetype_seen(
+                                    repo_id, session_id, archetype_name, payload.get("agent_id")
+                                )
                             from chameleon_mcp.sanitization import (
                                 sanitize_for_chameleon_context,
                             )
@@ -4240,7 +4283,9 @@ def preflight_and_advise() -> int:
                             # early return, and without it a later successful edit
                             # to the same archetype would re-show the verbose
                             # first-in-archetype advisory.
-                            _seed_archetype_seen(repo_id, session_id, archetype_name)
+                            _seed_archetype_seen(
+                                repo_id, session_id, archetype_name, payload.get("agent_id")
+                            )
                             _emit_pretool_deny(
                                 f"chameleon: {msg}. This is a recorded team decision; "
                                 "files still importing the old module are mid-migration — "
@@ -4307,9 +4352,13 @@ def preflight_and_advise() -> int:
     first_in_archetype = True
     has_violations = False
     if enforcement_state is not None:
-        first_in_archetype = archetype_name not in enforcement_state.archetypes_seen
+        # Agent-scoped: a dispatched subagent starts with an empty window, so it
+        # must get its own first-in-archetype rather than inheriting the
+        # coordinator's. See _archetype_seen_key.
+        _seen_key = _archetype_seen_key(archetype_name, payload.get("agent_id"))
+        first_in_archetype = _seen_key not in enforcement_state.archetypes_seen
         has_violations = archetype_name in enforcement_state.archetypes_with_violations
-        enforcement_state.archetypes_seen.add(archetype_name)
+        enforcement_state.archetypes_seen.add(_seen_key)
         # Resolve the idiom TITLES this Tier-2 block actually rendered (surviving
         # the SAME witness-dedup + char-cap shaping `_shape_idioms_for_block`
         # applies) to their store slugs, and record those on
@@ -7416,6 +7465,21 @@ def callout_detector() -> int:
     except Exception:
         pass
 
+    # The slash half of peer composition. A superpowers skill the MODEL chooses
+    # arrives as a Skill tool call and peer_skill_advise handles it; one the
+    # USER types is expanded inline with no tool call at all, so this hook is
+    # the only place that path can be seen. Reads the raw prompt, not
+    # scan_prompt: the leading "/superpowers:<name>" is exactly what the
+    # machine-block strip would leave alone, and anchoring matters.
+    try:
+        from chameleon_mcp.peer_skill_context import slash_skill_context
+
+        peer_block = slash_skill_context(user_prompt, payload.get("cwd"))
+        if peer_block:
+            context_blocks.append(peer_block)
+    except Exception:
+        pass
+
     if not context_blocks:
         _emit({})
         return 0
@@ -9201,6 +9265,35 @@ def stop_backstop() -> int:
         return 0
 
 
+def peer_skill_advise() -> int:
+    """PreToolUse Skill: hand a superpowers skill the chameleon facts it needs.
+
+    The SessionStart routing block states the contract once; this delivers the
+    operative half of it at the moment the skill actually fires, which is where
+    a plan's file table, a dispatch brief, or a first failing test is authored.
+
+    Silent for every skill that is not superpowers', which is the overwhelming
+    majority of Skill calls -- the check is one string comparison against the
+    fully-qualified name, before any filesystem access. Never denies, never
+    asks: the strongest thing this hook can do is add context.
+    """
+    payload = _read_payload_dict()
+    if payload is None:
+        _emit({})
+        return 0
+    try:
+        from chameleon_mcp.peer_skill_context import skill_context
+
+        block = skill_context(_as_dict(payload.get("tool_input")).get("skill"), payload.get("cwd"))
+    except Exception:
+        block = ""
+    if not block:
+        _emit({})
+        return 0
+    _emit_chameleon_context(block)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
     if not args:
@@ -9222,6 +9315,8 @@ def main(argv: list[str] | None = None) -> int:
             return session_start()
         if command == "preflight-and-advise":
             return preflight_and_advise()
+        if command == "peer-skill-advise":
+            return peer_skill_advise()
         if command == "posttool-recorder":
             return posttool_recorder()
         if command == "posttool-verify":

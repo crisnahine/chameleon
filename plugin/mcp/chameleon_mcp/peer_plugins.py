@@ -66,6 +66,22 @@ def _max_dir_entries() -> int:
         return 64
 
 
+def _config_dir() -> Path:
+    """The Claude Code config directory actually in force for this session.
+
+    ``CLAUDE_CONFIG_DIR`` relocates it, and the CLI honors it -- a session under
+    a relocated config answered from the developer's real ``~/.claude`` gets the
+    wrong answer in BOTH directions: a sandbox with no superpowers inherits the
+    block from the default config, and a user whose only registry lives in the
+    relocated dir is vetoed by a ``~/.claude`` that has none. The same non-empty
+    / unexpanded-placeholder guard the cache rung uses on its own env reads.
+    """
+    value = os.environ.get("CLAUDE_CONFIG_DIR")
+    if value and "${" not in value:
+        return Path(value)
+    return Path.home() / ".claude"
+
+
 def _read_json(path: Path, max_bytes: int) -> object | None:
     """Parse `path` as JSON, or None when it is absent, oversize, or malformed."""
     try:
@@ -79,10 +95,11 @@ def _read_json(path: Path, max_bytes: int) -> object | None:
 def _disabled_plugin_keys() -> frozenset[str]:
     """The plugin keys settings explicitly switch OFF.
 
-    `~/.claude/settings.json`'s `enabledPlugins` is keyed the same way as the
-    registry ("<name>@<marketplace>"). A plugin set to false stays installed on
-    disk while its skills never load, so treating it as present would route the
-    model to skills that are not in the session.
+    The config directory's `settings.json` (`~/.claude` unless
+    `CLAUDE_CONFIG_DIR` relocates it) carries `enabledPlugins`, keyed the same
+    way as the registry ("<name>@<marketplace>"). A plugin set to false stays
+    installed on disk while its skills never load, so treating it as present
+    would route the model to skills that are not in the session.
 
     Only an explicit false lands in the set: an unreadable settings file, a
     missing key, or a plugin enabled per-project rather than per-user all read
@@ -98,7 +115,7 @@ def _disabled_plugin_keys() -> frozenset[str]:
     not load. Closing that needs the project root threaded in plus the full
     settings precedence chain; the boundary is stated rather than half-covered.
     """
-    data = _read_json(Path.home() / ".claude" / "settings.json", _MAX_REGISTRY_BYTES)
+    data = _read_json(_config_dir() / "settings.json", _MAX_REGISTRY_BYTES)
     if not isinstance(data, dict):
         return frozenset()
     enabled = data.get("enabledPlugins")
@@ -110,11 +127,17 @@ def _disabled_plugin_keys() -> frozenset[str]:
 def _registry_verdict(disabled: frozenset[str]) -> bool | None:
     """Whether Claude Code's registry records superpowers installed on disk.
 
-    Returns True (recorded, the install path still exists, and not disabled),
-    None (no information: the file is absent, oversize, malformed, or names
-    superpowers in a shape this code cannot parse), or False for every other
-    parsed outcome -- the registry omits superpowers, OR lists it with a path
-    that no longer exists, OR lists it disabled, OR lists it with no entries.
+    Returns True (recorded, the recorded install still carries the bootstrap
+    skill, and not disabled), None (no information: the file is absent,
+    oversize, malformed, or names superpowers in a shape this code cannot
+    parse), or False for every other parsed outcome -- the registry omits
+    superpowers, OR lists it at a path that no longer holds the bootstrap skill,
+    OR lists it disabled, OR lists it with no entries.
+
+    Both rungs test the SAME marker. Accepting a bare directory here while the
+    cache rung demanded the bootstrap skill meant the two disagreed about what
+    counts as superpowers, and this is the rung that answers on every ordinary
+    install -- so any plugin named `superpowers` in any marketplace satisfied it.
 
     False is deliberately wider than "not listed". Each of those cases is a
     readable registry saying superpowers will not load, which a leftover cache
@@ -124,9 +147,7 @@ def _registry_verdict(disabled: frozenset[str]) -> bool | None:
     and suppresses the block even though the cache holds a live copy. That is
     the fail-closed direction and intentional, but it is not obvious.
     """
-    data = _read_json(
-        Path.home() / ".claude" / "plugins" / "installed_plugins.json", _MAX_REGISTRY_BYTES
-    )
+    data = _read_json(_config_dir() / "plugins" / "installed_plugins.json", _MAX_REGISTRY_BYTES)
     if not isinstance(data, dict):
         return None
     # A v2 registry nests under "plugins"; tolerate a flat top-level map too,
@@ -151,7 +172,11 @@ def _registry_verdict(disabled: frozenset[str]) -> bool | None:
                 continue
             install_path = entry.get("installPath")
             if isinstance(install_path, str) and install_path:
-                if Path(install_path).is_dir() and key not in disabled:
+                # The same bootstrap-skill marker rung 2 requires. Rung 1 used to
+                # accept any directory that merely existed, so the two rungs
+                # disagreed about what counts as superpowers -- and rung 1 is the
+                # one that answers on every normal install. One stat either way.
+                if Path(install_path).joinpath(*_PEER_MARKER).is_file() and key not in disabled:
                     return True
             else:
                 unreadable = True

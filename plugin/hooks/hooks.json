@@ -22,6 +22,16 @@
             "timeout": 45
           }
         ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" peer-skill-advise",
+            "timeout": 45
+          }
+        ]
       }
     ],
     "PostToolUse": [
