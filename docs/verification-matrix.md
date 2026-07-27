@@ -1,20 +1,24 @@
 # Verification Matrix — subsystem × cell sign-off tracker
 
 > This file is the source of truth for "all" in the Chameleon correctness goal
-> (`docs/chameleon-goal.md`). It is a **human sign-off tracker**: a cell is "done"
+> (`docs/chameleon-goal.md`). It is a **sign-off tracker**: a Tier-1 cell is "done"
 > only when a person has driven the golden repo for that cell through a real Claude
-> Code session and recorded a pass via the Verification Protocol. It is distinct
+> Code session and recorded a pass via the Verification Protocol; a Tier-2 cell may
+> be closed by automation (`PASS-AUTO`) per the 2026-07-27 goal amendment. It is distinct
 > from `docs/language-support-matrix.md`, which is a per-dimension capability-parity
 > reference and is an *input* to this tracker.
 >
-> **No automated test result closes a cell.** Linters, the `qa_*.py` batteries, the
-> journey harness, and `bench_hot_path.py` are developer scaffolding — they find bugs
-> faster, but they earn zero "done" credit. Every sign-off below starts `PENDING` and
-> only a human flips it.
+> **No automated test result closes a TIER-1 cell.** Linters and `bench_hot_path.py`
+> are developer scaffolding everywhere — they find bugs faster and earn zero "done"
+> credit. Since the 2026-07-27 goal amendment, the `qa_*.py` batteries and the
+> journey harness MAY close a Tier-2 cell, recorded as `PASS-AUTO` with the run
+> artifact. Tier-1 (C1, C5, C7, E1) and subsystem #12 remain human-only: those
+> sign-offs start `PENDING` and only a human flips them.
 
-Status legend: `PENDING` (not yet human-verified) · `PASS` (human-signed, incl. the
-negative/off-state check) · `FAIL` (opens a gap in `docs/gap-log.md`) · `N/A`
-(subsystem does not apply to this cell).
+Status legend: `PENDING` (not yet verified) · `PASS` (human-signed, incl. the
+negative/off-state check) · `PASS-AUTO` (Tier-2 only: closed by the journey harness
+or a `qa_*.py` battery, run artifact recorded) · `FAIL` (opens a gap in
+`docs/gap-log.md`) · `N/A` (subsystem does not apply to this cell).
 
 ---
 
@@ -96,9 +100,10 @@ Dimension notes (scoping):
   in-progress merge, stale `.tmp`); resilience verified (no crash, dominant-language
   detection, per-file isolation). E2 is now drivable.
 
-These assets unblock the cells for human verification; building+bootstrapping them is
-scaffolding (zero done-credit). The sign-offs below stay `PENDING` until a human
-drives them.
+These assets unblock the cells for verification; building+bootstrapping them is
+scaffolding (zero done-credit). A Tier-1 sign-off stays `PENDING` until a HUMAN drives
+it; a Tier-2 cell may be closed `PASS-AUTO` by the journey harness or a `qa_*.py`
+battery, per the 2026-07-27 amendment.
 
 ---
 
@@ -107,13 +112,14 @@ drives them.
 - **Tier 1** = fully human-verified for every relevant subsystem. Chosen as the
   deepest, most-exercised cell per language, each with a mature golden repo:
   **C1 (TS-agnostic), C5 (Ruby-Rails), C7 (Python-Django)**, plus **E1** for size.
-- **Tier 2** = human spot-check on the subsystems most likely to vary by language
+- **Tier 2** = spot-check (human OR automated, per the 2026-07-27 amendment) on the
+  subsystems most likely to vary by language
   (the language pipeline, generated artifacts, cross-cutting engines, enforcement):
   C2, C3, C4, C6, C8, C9, C10, S2, S3, E2.
 
 This keeps hand-verification finite while covering every language and every
 framework-aware family at least at spot-check depth, per the goal's philosophy
-(Tier-1 always human; Tier-2 human spot-check).
+(Tier-1 always human; Tier-2 spot-check, automatable since the 2026-07-27 amendment).
 
 ---
 
@@ -155,9 +161,10 @@ exhibits it, which is why the tracker table carries #13 on all ten Tier-2 cells.
 
 ## D. Sign-off tracker
 
-Every cell below is `PENDING` until a human runs the Verification Protocol
+Every Tier-1 cell below is `PENDING` until a human runs the Verification Protocol
 (`docs/chameleon-goal.md` § Verification protocol) and records the result here,
-including the step-4 negative/off-state check. **Turnkey per-cell steps (action →
+including the step-4 negative/off-state check. A Tier-2 cell may instead be recorded
+`PASS-AUTO` with the run artifact that closed it. **Turnkey per-cell steps (action →
 pass signal → negative check) are in `docs/verification-runbook.md`** — run those and
 mark each cell. Automated scaffolding has been run as a bug-finder (see
 `docs/gap-log.md`); it does not populate this table.
@@ -194,8 +201,15 @@ mark each cell. Automated scaffolding has been run as a bug-finder (see
 | 13. Config + kill switches | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
 
 All cells are now drivable (the three previously-blocking golden repos are built and
-bootstrapped). Every cell is `PENDING` until a human drives it through the
-Verification Protocol and records the result.
+bootstrapped).
+
+**Sign-off authority differs by tier since the 2026-07-27 goal amendment.** A
+Tier-1 cell (C1, C5, C7, E1) and subsystem #12 are `PENDING` until a HUMAN drives
+them through the Verification Protocol. A Tier-2 cell may be closed by automation
+— the journey harness plus the `qa_*.py` batteries — recorded with the run
+artifact that closed it, using status `PASS-AUTO` so the grid never conflates the
+two grades of evidence. See "Amendment 2026-07-27" in `docs/chameleon-goal.md` for
+the reasoning and the accepted cost.
 
 ---
 
@@ -206,7 +220,10 @@ This tracker reflects reality on the date it was generated:
 - The cell grid and the framework family list are derived from code (`lint_engine.py`,
   `extractors/registry.py`, `bootstrap/orchestrator.py`) — not from memory.
 - No cell is marked `PASS`. Per the goal, only a human running a real session may do
-  that, and that has not happened yet.
+  that, and that has not happened yet. Since the 2026-07-27 amendment a Tier-2 cell
+  may instead be marked `PASS-AUTO` by the journey harness or a `qa_*.py` battery;
+  no cell carries that yet either, because taking the relaxation and running the
+  campaign are two separate acts and only the first has happened.
 - The three golden-repo gaps (G-001 NestJS, G-002 Python plain, G-003 messy repo) are
   now closed at the asset level — the repos are built and bootstrapped — so every cell
   is drivable. They remain `FIX-STAGED` in `docs/gap-log.md` (asset created; human

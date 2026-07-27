@@ -195,7 +195,7 @@ by `check_idiom_candidates`.
 
 A second source sits alongside the AST mining above: the self-learning miner
 (`stop/miner.py`) that runs as the last stage of the async turn-end review job.
-It watches three usage signals over real sessions - a correctness/duplication
+It watches four usage signals over real sessions - a correctness/duplication
 finding recurring across sessions, a rule the team keeps overriding, and an
 idiom-lens finding that reached `addressed` - and writes each as a proposal
 under `.chameleon/idiom-candidates/`. These never touch the live idiom store on

@@ -205,13 +205,13 @@ class TestDispatchers:
                 "the dispatcher cannot turn into a function is a dead model-facing API"
             )
 
-    def test_action_sets_are_disjoint_and_total_34(self):
+    def test_action_sets_are_disjoint_and_total_35(self):
         all_actions = (
             list(server._LIFECYCLE_ACTIONS)
             + list(server._REVIEW_ACTIONS)
             + list(server._TELEMETRY_ACTIONS)
         )
-        assert len(all_actions) == len(set(all_actions)) == 34
+        assert len(all_actions) == len(set(all_actions)) == 35
 
     def test_dispatcher_docstrings_name_every_action(self):
         for tool_fn, actions in (

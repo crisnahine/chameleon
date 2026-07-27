@@ -560,7 +560,7 @@ def _profile_languages(loaded) -> set[str]:
     return langs
 
 
-def calibrate_block_rules(repo_root: Path, loaded) -> dict:
+def calibrate_block_rules(repo_root: Path, loaded, *, conformance_out: dict | None = None) -> dict:
     """Measure each block-eligible rule against the repo's own committed files.
 
     A rule that flags more than CALIBRATION_FP_EPSILON of sampled files is
@@ -581,6 +581,11 @@ def calibrate_block_rules(repo_root: Path, loaded) -> dict:
     n = len(sample)
     baselines = _archetype_baselines(repo_root, loaded)
     flagged: dict[str, set[str]] = {r: set() for r in BLOCK_ELIGIBLE_RULES}
+    # (archetype, path, rule) for every deviation this pass sees. The verdict
+    # only needs the counts, but the rows answer "which files in this archetype
+    # still deviate, and how" -- the migration-progress question -- for free,
+    # since they are already in hand here and discarded a few lines later.
+    conformance_rows: list[dict[str, str]] = []
     for rel, archetype in sample:
         for v in _violations_for_file(repo_root, rel, archetype, loaded, baselines.get(archetype)):
             rule = v.get("rule")
@@ -589,6 +594,19 @@ def calibrate_block_rules(repo_root: Path, loaded) -> dict:
                 if rule == "jsx-presence-mismatch" and v.get("severity") != "error":
                     continue
                 flagged[rule].add(rel)
+                if conformance_out is not None:
+                    conformance_rows.append({"archetype": archetype, "path": rel, "rule": rule})
+    if conformance_out is not None:
+        # Sorted so the artifact is byte-stable across runs: the sample order is
+        # deterministic but a set's is not, and a churning artifact would show
+        # up as spurious profile drift on every refresh.
+        conformance_out["rows"] = sorted(
+            conformance_rows, key=lambda r: (r["archetype"], r["path"], r["rule"])
+        )
+        conformance_out["sampled"] = n
+        # The sample is bounded, so an absent path means "not scanned" as often
+        # as it means "clean". Say so in the artifact rather than in a doc.
+        conformance_out["truncated"] = n >= threshold_int("CALIBRATION_MAX_FILES")
 
     langs = _profile_languages(loaded)
     conventions_doc = getattr(loaded, "conventions", {}) or {}

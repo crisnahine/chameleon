@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from chameleon_mcp.function_catalog import ParsedFn
     from chameleon_mcp.profile.loader import LoadedProfile
 
@@ -7392,6 +7394,93 @@ def get_shelved_findings(repo: str) -> dict:
     return _envelope({"status": "ok", "repo_id": repo_id, "count": len(rows), "findings": rows})
 
 
+def get_conformance_map(repo: str) -> dict:
+    """Which committed files still deviate from the repo's own block-eligible rules.
+
+    Written by the calibration pass that already runs on every bootstrap and
+    refresh: it lints a bounded sample of real committed files against each
+    archetype's recalibrated baseline, and this is the per-file detail behind
+    the counts in ``enforcement.json``. Rows are ``{archetype, path, rule}``.
+
+    The migration view the shadow report cannot give: ``get_shadow_report``
+    counts would-blocks on edits actually MADE, while this is a standing scan of
+    the committed tree, so it answers "14 of 22 files in this archetype still
+    import the old module" and tracks that number down as a migration lands.
+
+    The sample is bounded (``CALIBRATION_MAX_FILES``), so ``truncated`` marks a
+    run that hit the cap -- an absent path then means "not scanned" as readily
+    as "clean". Fail-open: a missing or corrupt artifact reads as no rows, and
+    ``scanned`` distinguishes that from a scan that genuinely found nothing.
+    """
+    if not isinstance(repo, str) or not repo:
+        return _envelope({"status": "failed", "error": "expected repo path or repo_id hex digest"})
+    _repo_path, repo_id = _resolve_repo_arg(repo)
+    if repo_id is None:
+        return _envelope({"status": "no_repo", "repo_id": None, "scanned": False, "rows": []})
+    data: dict = {}
+    try:
+        from chameleon_mcp.hook_helper import _plugin_data_dir
+
+        path = _plugin_data_dir() / repo_id / CONFORMANCE_MAP_FILENAME
+        if path.is_file():
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+    except Exception:
+        data = {}
+    rows = data.get("rows")
+    if not isinstance(rows, list):
+        rows = []
+    # Repo-derived paths and archetype names crossing into a tool response, so
+    # they pass the model-surface boundary like every sibling read does.
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+    safe_rows = [
+        {
+            "archetype": sanitize_for_chameleon_context(str(r.get("archetype", ""))),
+            "path": sanitize_for_chameleon_context(str(r.get("path", ""))),
+            "rule": sanitize_for_chameleon_context(str(r.get("rule", ""))),
+        }
+        for r in rows
+        if isinstance(r, dict)
+    ]
+    # Bounded like every other browsing surface: the scan samples up to
+    # CALIBRATION_MAX_FILES files and each can contribute a row per rule, so an
+    # uncapped dump would put thousands of rows in the model's context.
+    from chameleon_mcp._thresholds import threshold_int
+
+    cap = threshold_int("CONFORMANCE_MAP_MAX_ROWS")
+    shown = safe_rows[:cap] if cap else safe_rows
+    # A calibration failure leaves the previous file in place, so freshness is
+    # reported rather than assumed: a map whose recorded profile hash no longer
+    # matches describes a tree that has since moved.
+    stale = None
+    if data and _repo_path is not None:
+        try:
+            from chameleon_mcp.profile.trust import hash_profile
+            from chameleon_mcp.worktree import resolve_profile_root
+
+            recorded = data.get("profile_sha256")
+            current = hash_profile(resolve_profile_root(Path(_repo_path)) / ".chameleon")
+            stale = bool(recorded) and bool(current) and recorded != current
+        except Exception:
+            stale = None
+    out = {
+        "status": "ok",
+        "repo_id": repo_id,
+        "scanned": bool(data),
+        "sampled": data.get("sampled", 0),
+        "scan_truncated": bool(data.get("truncated")),
+        "count": len(shown),
+        "total": len(safe_rows),
+        "rows_truncated": len(shown) < len(safe_rows),
+        "rows": shown,
+    }
+    if stale is not None:
+        out["stale"] = stale
+    return _envelope(out)
+
+
 def list_idiom_candidates(repo: str) -> dict:
     """Idiom candidates the self-learning miner has proposed for a repo.
 
@@ -10352,6 +10441,46 @@ def _override_rates_for_demotion(repo_id: str | None, window_days: int | None = 
     return out
 
 
+CONFORMANCE_MAP_FILENAME = "conformance_map.json"
+
+
+def _write_conformance_map(repo_root: Path, conformance: dict) -> None:
+    """Persist the calibration pass's per-file deviations to the PLUGIN DATA DIR.
+
+    Off the trust-hashed profile surface, mirroring the co-change index and the
+    cross-workspace index: this is an observation about what the committed tree
+    currently looks like, not a convention anyone reviewed, so hashing it would
+    arm the trust gate every time ordinary code moved.
+
+    Fail-open and best-effort -- calibration must not fail because a read-only
+    data dir could not take an advisory artifact.
+    """
+    if not conformance:
+        return
+    try:
+        from chameleon_mcp.hook_helper import _plugin_data_dir
+        from chameleon_mcp.profile.trust import hash_profile
+        from chameleon_mcp.worktree import resolve_profile_root
+
+        # Stamp the profile the scan ran against. Calibration is best-effort, so
+        # a failing run leaves the PREVIOUS file on disk; without this a reader
+        # cannot tell a current map from one describing a profile two refreshes
+        # ago, and would report already-migrated files as still deviating.
+        try:
+            conformance["profile_sha256"] = hash_profile(
+                resolve_profile_root(repo_root) / ".chameleon"
+            )
+        except Exception:
+            conformance.pop("profile_sha256", None)
+        out_dir = _plugin_data_dir() / _compute_repo_id(repo_root)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / CONFORMANCE_MAP_FILENAME).write_text(
+            json.dumps(conformance, separators=(",", ":")), encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+
 def _calibrate_block_rules_for_repo(repo_root: Path) -> None:
     """Measure block-eligible rules against the repo's own files and persist the
     verdict to ``.chameleon/enforcement.json``.
@@ -10371,7 +10500,13 @@ def _calibrate_block_rules_for_repo(repo_root: Path) -> None:
 
         profile_dir = repo_root / ".chameleon"
         loaded = load_profile_dir(profile_dir)
-        verdicts = calibrate_block_rules(repo_root, loaded)
+        conformance: dict = {}
+        verdicts = calibrate_block_rules(repo_root, loaded, conformance_out=conformance)
+        # Which committed files still deviate, from the scan that just ran. Off
+        # the trust-hashed surface: it is an observation about the repo's current
+        # state, not a convention anyone approved, and hashing it would arm the
+        # trust gate on ordinary code movement.
+        _write_conformance_map(repo_root, conformance)
         # Feed the team's lived override behavior back into the verdict: a rule the
         # team keeps overriding in practice drops to advisory. Isolated so an
         # unreadable override stream leaves the structural calibration untouched.
@@ -10694,13 +10829,6 @@ def _bootstrap_repo_unlocked(
             # of profile_sha256 consistent with the hash a later trust grant
             # captures (otherwise the repo would read stale by one artifact).
             _calibrate_block_rules_for_repo(repo_root)
-            # Bootstrap writes conventions.md straight into the profile
-            # transaction, so it never passes through _sync_conventions_md and
-            # would leave the mirror with nothing importing it. Every full
-            # re-derive lands here -- force, engine upgrade, schema change,
-            # repair -- not just first init, and the session right after init is
-            # the one the memory channel exists to win.
-            _sync_rules_import(repo_root / ".chameleon")
             index_db.upsert_repo(
                 repo_id,
                 str(repo_root),
@@ -10780,6 +10908,27 @@ def _bootstrap_repo_unlocked(
             ws.pop("analysis_root", None)
     finally:
         _release_production_derivation(repo_root, prod_state)
+
+    # Wire the memory channel LAST, once every workspace mirror that is going to
+    # exist does. Bootstrap writes each conventions.md straight into its profile
+    # transaction, so none of them passes through _sync_conventions_md and all
+    # would be left with nothing importing them. Every full re-derive lands here
+    # -- force, engine upgrade, schema change, repair -- not just first init,
+    # and the session right after init is the one the memory channel exists to
+    # win. Runs for a coordinator-only root too: that root has no profile and
+    # therefore no SessionStart conventions block, so its workspaces' mirrors
+    # are the only conventions content any channel can carry there.
+    try:
+        _sync_rules_import(
+            repo_root / ".chameleon",
+            workspace_roots=[
+                Path(ws["repo_root"])
+                for ws in (report.workspace_reports or [])
+                if ws.get("status") == "success" and ws.get("repo_root")
+            ],
+        )
+    except Exception:
+        pass
 
     _notify_daemon_cache_invalidation()
     report_dict = report.to_dict()
@@ -13419,16 +13568,56 @@ def _package_json_dependency_names(repo_path: Path) -> set[str] | None:
 # The identity check. Kept byte-stable on purpose: change it and every file
 # already carrying the old marker reads as someone else's and is stranded.
 _RULES_IMPORT_MARKER = "<!-- generated by chameleon; safe to delete -->"
-_RULES_IMPORT_BODY = (
-    f"{_RULES_IMPORT_MARKER}\n"
-    "<!-- Rewritten on every refresh and teach, like the file it imports.\n"
-    "     Edits here are lost; change .chameleon/ or delete this file. -->\n"
-    "@../../.chameleon/conventions.md\n"
-)
+
+# The rules file lives at <repo>/.claude/rules/, so every import is two levels
+# up from there and then down to the mirror.
+_RULES_IMPORT_PREFIX = "../../"
+_ROOT_MIRROR_REL = f"{_RULES_IMPORT_PREFIX}.chameleon/conventions.md"
 
 
-def _sync_rules_import(profile_dir: Path) -> None:
-    """Wire the conventions mirror into the memory channel, in code.
+# A rules-file import target, in full. Anchored and deliberately narrow: this
+# file loads at CLAUDE.md priority, so anything written into it is an
+# instruction. A workspace directory is a repo-controlled string, and a name
+# carrying a newline would otherwise close the `@` line and inject arbitrary
+# prose into the highest-authority channel chameleon has. Only a literal
+# `../../<segments>/.chameleon/conventions.md` can be written or carried
+# forward -- no `..` segments beyond the fixed prefix, so a target can never
+# escape the repo either.
+_RULES_TARGET_RE = re.compile(r"^\.\./\.\./(?:[A-Za-z0-9._-]+/)*\.chameleon/conventions\.md$")
+
+
+def _is_safe_rules_target(target: str) -> bool:
+    """True when the target is a mirror path safe to write into the rules file."""
+    if not _RULES_TARGET_RE.match(target):
+        return False
+    # `[A-Za-z0-9._-]+` admits a bare `..` segment; reject it explicitly rather
+    # than relying on the character class to imply containment.
+    return ".." not in target.split("/")[2:]
+
+
+def _rules_import_body(rel_targets: list[str]) -> str:
+    """The rules file's content for the mirrors it should import.
+
+    One ``@`` line per mirror. A monorepo wires every workspace from this single
+    ROOT file rather than one nested rules file per workspace: root-level rule
+    files are the layout whose load behavior is established, and a nested one
+    that failed to load would still make the mirror read as wired to the dedup
+    path -- suppressing the SessionStart injection and leaving the workspace
+    with no channel at all instead of the hook one it had.
+    """
+    return (
+        f"{_RULES_IMPORT_MARKER}\n"
+        "<!-- Rewritten on every refresh and teach, like the file it imports.\n"
+        "     Edits here are lost; change .chameleon/ or delete this file. -->\n"
+        + "".join(f"@{rel}\n" for rel in rel_targets)
+    )
+
+
+_RULES_IMPORT_BODY = _rules_import_body([_ROOT_MIRROR_REL])
+
+
+def _sync_rules_import(profile_dir: Path, workspace_roots: Sequence[Path] = ()) -> None:
+    """Wire the conventions mirror(s) into the memory channel, in code.
 
     The mirror is only worth rendering if something imports it, and content
     delivered through the memory channel measurably outranks the same content
@@ -13441,13 +13630,19 @@ def _sync_rules_import(profile_dir: Path) -> None:
     carrier; path-scoped rules load when a matching file is READ, so they cannot
     stand in for guidance that has to arrive before a write.
 
+    ``workspace_roots`` names a monorepo's bootstrapped workspaces, each of
+    which writes its own mirror inside its own profile transaction. They are
+    imported from this one root file, so a coordinator root -- which has no
+    profile of its own, and therefore no SessionStart conventions block -- still
+    delivers its workspaces' conventions instead of nothing.
+
     Writes only a file carrying its own marker: an unmarked file is left exactly
     as-is, the same posture the statusline wiring takes toward a statusLine the
     user already configured. A marked file is rewritten only when its content
-    drifted, and removed when the mirror itself is gone. The marker read and the
-    replace are not one atomic step, so a file swapped in between them would
-    still be overwritten -- the same check-then-act shape the mirror write next
-    to it has, on a local path written only by teach and refresh.
+    drifted, and removed when NO mirror remains for it to point at. The marker
+    read and the replace are not one atomic step, so a file swapped in between
+    them would still be overwritten -- the same check-then-act shape the mirror
+    write next to it has, on a local path written only by teach and refresh.
     """
     if os.environ.get("CHAMELEON_CONVENTIONS_MD") == "0":
         return
@@ -13457,7 +13652,23 @@ def _sync_rules_import(profile_dir: Path) -> None:
         repo_root = profile_dir.parent
         rules_rel = ".claude/rules/chameleon-conventions.md"
         rules_path = repo_root / rules_rel
-        mirror_present = (profile_dir / "conventions.md").is_file()
+
+        targets: list[str] = []
+        if (profile_dir / "conventions.md").is_file():
+            targets.append(_ROOT_MIRROR_REL)
+        for ws_root in workspace_roots:
+            try:
+                ws_mirror = Path(ws_root) / ".chameleon" / "conventions.md"
+                if not ws_mirror.is_file():
+                    continue
+                # Relative to the repo root, so the import resolves the same way
+                # from the rules file regardless of where the repo is checked out.
+                rel = ws_mirror.relative_to(repo_root).as_posix()
+            except (OSError, ValueError):
+                continue
+            target = f"{_RULES_IMPORT_PREFIX}{rel}"
+            if _is_safe_rules_target(target) and target not in targets:
+                targets.append(target)
 
         existing: str | None = None
         if rules_path.is_file():
@@ -13473,20 +13684,50 @@ def _sync_rules_import(profile_dir: Path) -> None:
                 return
             if _RULES_IMPORT_MARKER not in existing:
                 return
+            # Carry forward the workspace imports this file already holds, when
+            # they still resolve. Only bootstrap/refresh knows the workspace
+            # list; teach and a noop refresh reach here with none, and
+            # recomputing from the root profile alone would silently drop every
+            # workspace's memory channel until the next full re-derive. Keeping
+            # what is on disk makes every call site safe rather than only the
+            # one that happens to pass the list.
+            # The file is repo-committed and teammate-writable, so a carried line
+            # is untrusted input, not chameleon's own prior output: it must clear
+            # the same shape check a freshly-computed target does. Without that,
+            # a marked file could name any resolvable path and this would keep
+            # re-blessing it on every teach.
+            for line in existing.splitlines():
+                stripped = line.strip()
+                if not stripped.startswith("@"):
+                    continue
+                target = stripped[1:].strip()
+                if target in targets or not _is_safe_rules_target(target):
+                    continue
+                if (rules_path.parent / target).is_file():
+                    targets.append(target)
 
-        if not mirror_present:
-            # The mirror was removed (no derivable conventions), so the import
-            # now points at nothing. Only ever removes chameleon's own file --
-            # `existing` is None or marked by the guard above.
+        # SessionStart re-reads every import inside a 3s budget, so the fan-out
+        # is bounded here rather than left to grow with the workspace count.
+        from chameleon_mcp._thresholds import threshold_int
+
+        _cap = threshold_int("RULES_IMPORT_MAX_TARGETS")
+        if _cap and len(targets) > _cap:
+            targets = targets[:_cap]
+
+        if not targets:
+            # Every mirror was removed (no derivable conventions anywhere), so
+            # the import now points at nothing. Only ever removes chameleon's own
+            # file -- `existing` is None or marked by the guard above.
             if existing is not None:
                 rules_path.unlink(missing_ok=True)
             return
 
-        if existing == _RULES_IMPORT_BODY:
+        body = _rules_import_body(targets)
+        if existing == body:
             return
         rules_path.parent.mkdir(parents=True, exist_ok=True)
         _tmp = rules_path.with_suffix(".md.tmp")
-        _tmp.write_text(_RULES_IMPORT_BODY, encoding="utf-8")
+        _tmp.write_text(body, encoding="utf-8")
         _tmp.replace(rules_path)
     except Exception:
         pass

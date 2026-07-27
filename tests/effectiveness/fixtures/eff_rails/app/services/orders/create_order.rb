@@ -1,5 +1,5 @@
 module Orders
-  class CreateOrder
+  class CreateOrder < ApplicationService
     def initialize(user:, product:, quantity:)
       @user = user
       @product = product

@@ -445,6 +445,14 @@ not chameleon bugs — each was re-tested against the real artifact shape and pa
 
 _(none yet — closing requires human re-sign-off per the protocol)_
 
+> **Sign-off authority changed 2026-07-27.** The goal's pre-authorized Tier-2
+> relaxation has been taken (see "Amendment 2026-07-27" in `docs/chameleon-goal.md`).
+> A FIX-STAGED entry whose fix is exercised ONLY by Tier-2 cells may now be closed on
+> automated evidence — the journey harness or a `qa_*.py` battery — with the run
+> artifact recorded on the entry. An entry a Tier-1 cell exercises still needs a
+> human. Nothing below has been re-graded yet: taking the relaxation and running the
+> campaign are separate acts, and only the first has happened.
+
 ## Addendum — 2026-07-11 (effectiveness campaign finding → next-feature spec)
 
 The first real-harness causal campaign (results-published/effectiveness_20260710T184905Z)

@@ -17,6 +17,17 @@ if TYPE_CHECKING:
 
 CONVENTIONS_SCHEMA_VERSION = 1
 
+# The two import headers, kept as constants because the memory-channel dedup
+# matches a section by its header line and the effectiveness arms assert on it.
+# Only the taught form is enforced, so only the taught form gets the enforcement
+# framing; a frequency observation under that header would claim an authority
+# the lint engine does not back.
+ENFORCED_IMPORTS_HEADER = (
+    "IMPORTS (enforce — team decision; files still using the discouraged form "
+    "are mid-migration, do not imitate them):"
+)
+ADVISORY_IMPORTS_HEADER = "COMMON IMPORTS (advisory, observed frequency):"
+
 
 def _int_env(name: str, default: int) -> int:
     """Read a positive-int env override; else the default.
@@ -208,22 +219,66 @@ def extract_import_conventions(
 _REPO_WIDE_PREFERRED_SHARE = 0.60
 
 
-def extract_repo_wide_import_conventions(files: list[ParsedFile]) -> dict:
-    """Repo-wide preferred imports over the WHOLE parsed corpus.
+def _production_corpus(files: list[ParsedFile], repo_root: Path | None) -> list[ParsedFile]:
+    """``files`` minus its test files, or ``files`` when that leaves too few.
+
+    A repo-wide line speaks for every archetype at once, so it has to be derived
+    from the code the repo ships. On a test-heavy repo the raw corpus is mostly
+    tests -- chameleon's own profile carries 507 test files against 120
+    production ones -- and the majority pass then promotes the test harness:
+    ``pytest``, ``unittest.mock``, ``tests.journey.harness.checkpoints``, each
+    rendered as a preference for files that will never import them.
+
+    Needs ``repo_root`` to classify: ``_is_test_path`` matches path COMPONENTS,
+    so an absolute path would read a checkout living under any directory named
+    ``tests`` as all-tests. Without a root, or when the repo genuinely has no
+    production code (a harness or fixture pack), the full corpus stands --
+    deriving from tests beats deriving nothing.
+    """
+    if repo_root is None:
+        return files
+    production: list[ParsedFile] = []
+    for f in files:
+        path = getattr(f, "path", None)
+        if path is None:
+            production.append(f)
+            continue
+        try:
+            rel = Path(path).relative_to(repo_root).as_posix()
+        except (ValueError, TypeError):
+            # Outside the root: unclassifiable, so it keeps its vote rather than
+            # being dropped on a guess.
+            production.append(f)
+            continue
+        if not any(_is_test_path(rel, language=lang) for lang in ("ruby", "typescript", "python")):
+            production.append(f)
+    return production if len(production) >= MIN_SAMPLE_SIZE else files
+
+
+def extract_repo_wide_import_conventions(
+    files: list[ParsedFile], *, repo_root: Path | None = None
+) -> dict:
+    """Repo-wide preferred imports over the parsed PRODUCTION corpus.
 
     The per-archetype pass (:func:`extract_import_conventions`) is cluster
     scoped, so a repo whose every cluster sits under ``MIN_SAMPLE_SIZE`` derives
     no imports entry at all -- even when nearly every file imports the same
     module (``__future__`` in a from-scratch Python repo). This pass runs over
-    all parsed files and keeps only modules imported by a strong majority
+    the parsed files and keeps only modules imported by a strong majority
     (``_REPO_WIDE_PREFERRED_SHARE``) of the files that import anything, with the
     same framework-noise skip the cluster pass applies. Returns
     ``{"preferred": [...]}``; ADVISORY ONLY -- the result renders into the
     conventions block marked repo-wide and never feeds the archetype-scoped
     import-preference enforcement rule.
+
+    Test files are excluded when ``repo_root`` allows classifying them: a
+    repo-wide line speaks for every archetype, and a module only the tests
+    import is not a repo-wide convention. Test archetypes still derive their own
+    imports through the per-archetype pass, which is where that signal belongs.
     """
     if len(files) < MIN_SAMPLE_SIZE:
         return {"preferred": []}
+    files = _production_corpus(files, repo_root)
 
     module_counts: Counter[str] = Counter()
     files_with_imports = 0
@@ -2454,7 +2509,7 @@ def extract_all_conventions(
                     continue
                 seen_corpus_paths.add(key)
                 corpus.append(f)
-    repo_wide = extract_repo_wide_import_conventions(corpus)
+    repo_wide = extract_repo_wide_import_conventions(corpus, repo_root=repo_root)
     if repo_wide["preferred"]:
         conventions["conventions"]["repo_imports"] = repo_wide
     for archetype, files in files_by_archetype.items():
@@ -2739,7 +2794,13 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
     lines: list[str] = []
     conv = conventions.get("conventions", {})
 
+    # Two lists, because the two kinds of import line have different standing.
+    # `import_lines` holds taught competing pairs, the only form the lint engine
+    # enforces; `common_import_lines` holds derived frequency, which
+    # extract_repo_wide_import_conventions documents as advisory and which never
+    # reaches the enforcement rule.
     import_lines: list[str] = []
+    common_import_lines: list[str] = []
     # A taught competing import is stored and ENFORCED per archetype, so render
     # its archetype scope (like NAMING lines do) rather than presenting it as a
     # repo-wide rule -- otherwise the model avoids a legitimate stdlib import
@@ -2767,6 +2828,12 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
 
     seen_preferred: set[str] = set()
     all_preferred: list[tuple[int, str, bool]] = []
+    # Which archetypes each derived preference actually came from. A preferred
+    # entry is per-archetype data, and rendering it unscoped told every file in
+    # the repo to prefer a module only one cohort uses -- on a test-heavy repo
+    # that surfaced `pytest` and `unittest.mock` as advice for production code.
+    # The taught competing lines above already carry their scope this way.
+    preferred_scopes: dict[str, list[str]] = {}
     for _arch, data in conv.get("imports", {}).items():
         if not isinstance(data, dict):
             continue
@@ -2774,12 +2841,16 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
             if not isinstance(p, dict) or not p.get("module"):
                 continue
             mod = p["module"]
+            if isinstance(_arch, str) and _arch:
+                archs = preferred_scopes.setdefault(mod, [])
+                if _arch not in archs:
+                    archs.append(_arch)
             if mod not in seen_preferred:
                 seen_preferred.add(mod)
                 all_preferred.append((p.get("frequency", 0), mod, False))
     # Repo-wide preferred imports (the whole-corpus majority pass) render into
-    # the same IMPORTS section marked repo-wide; a module already carried by an
-    # archetype-scoped entry keeps its unmarked line.
+    # the same COMMON IMPORTS section marked repo-wide; a module already carried
+    # by an archetype-scoped entry keeps that entry's archetype scope instead.
     _repo_wide_data = conv.get("repo_imports", {})
     if isinstance(_repo_wide_data, dict):
         for p in _repo_wide_data.get("preferred", []):
@@ -2796,11 +2867,15 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
         if len(basename) > 2 and basename not in ("index", "types", "utils"):
             _pref_total += 1
             if _pref_shown < _MAX_CONVENTION_ITEMS:
-                suffix = " (repo-wide)" if _repo_wide else ""
-                import_lines.append(f"- Prefer {mod}{suffix}")
+                if _repo_wide:
+                    suffix = " (repo-wide)"
+                else:
+                    _scope = ", ".join(sorted(a for a in preferred_scopes.get(mod, []) if a))
+                    suffix = f" ({_scope} files)" if _scope else ""
+                common_import_lines.append(f"- Prefer {mod}{suffix}")
                 _pref_shown += 1
     if _pref_total > _pref_shown:
-        import_lines.append(f"- (+{_pref_total - _pref_shown} more preferred modules)")
+        common_import_lines.append(f"- (+{_pref_total - _pref_shown} more preferred modules)")
 
     naming_lines: list[str] = []
     seen_naming: set[str] = set()
@@ -2979,6 +3054,7 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
 
     if (
         not import_lines
+        and not common_import_lines
         and not naming_lines
         and not inheritance_lines
         and not contract_lines
@@ -3007,11 +3083,12 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
     )
     lines.append("")
     if import_lines:
-        lines.append(
-            "IMPORTS (enforce — team decision; files still using the discouraged form "
-            "are mid-migration, do not imitate them):"
-        )
+        lines.append(ENFORCED_IMPORTS_HEADER)
         lines.extend(import_lines)
+        lines.append("")
+    if common_import_lines:
+        lines.append(ADVISORY_IMPORTS_HEADER)
+        lines.extend(common_import_lines)
         lines.append("")
     if naming_lines:
         lines.append("NAMING:")

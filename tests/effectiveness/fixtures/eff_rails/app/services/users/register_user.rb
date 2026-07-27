@@ -1,6 +1,6 @@
 module Users
-  class RegisterUser
-    def initialize(params)
+  class RegisterUser < ApplicationService
+    def initialize(params:)
       @params = params
     end
 

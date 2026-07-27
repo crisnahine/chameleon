@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from chameleon_mcp._thresholds import threshold_int
 from chameleon_mcp.repo_id import _compute_repo_id
 from chameleon_mcp.tools import _envelope, daemon_status, list_profiles
 
@@ -55,6 +56,38 @@ def _conflict_marked_artifacts(profile_dir: Path) -> list[str]:
         if b"\n<<<<<<< " in anchored and b"\n>>>>>>> " in anchored:
             found.append(name)
     return found
+
+
+def _recent_preflight_rows(repo_id: str | None, *, keep=None) -> list[dict]:
+    """The tail of this repo's PreToolUse metric rows, newest last.
+
+    Shared by the two dead-install checks that read the same stream and differ
+    only in which rows they keep: advisory_emission asks whether archetype
+    resolution works (trusted source-file rows), advisory_suppressed asks
+    whether anything was injected at all (every row). One window, one place to
+    fix if the row source or the bound ever changes.
+    """
+    rows: list[dict] = []
+    if not repo_id:
+        return rows
+    # Deferred like every other non-stdlib import in this module: doctor runs on
+    # a broken install, so a module that will not import must degrade to an
+    # empty window rather than take the whole report down.
+    from chameleon_mcp.metrics import _metrics_path
+    from chameleon_mcp.shadow_report import _iter_rows
+
+    window = threshold_int("DOCTOR_PREFLIGHT_WINDOW_ROWS")
+    for row in _iter_rows(_metrics_path()):
+        if row.get("hook") != "preflight-and-advise":
+            continue
+        if row.get("repo_id") != repo_id:
+            continue
+        if keep is not None and not keep(row):
+            continue
+        rows.append(row)
+        if len(rows) > window:
+            rows.pop(0)
+    return rows
 
 
 def doctor(repo: str | None = None) -> dict:
@@ -1023,9 +1056,6 @@ def doctor(repo: str | None = None) -> dict:
         )
 
     try:
-        from chameleon_mcp.metrics import _metrics_path
-        from chameleon_mcp.shadow_report import _iter_rows
-
         # Rows usually carry file_rel=None (it is only attributed at the block
         # gates); when present, a non-source attribution (README edits) is a
         # normal null-archetype row, so it is excluded rather than counted.
@@ -1042,21 +1072,14 @@ def doctor(repo: str | None = None) -> dict:
             ".py",
             ".pyi",
         )
-        recent_rows: list[dict] = []
-        if cwd_repo_id:
-            for _row in _iter_rows(_metrics_path()):
-                if _row.get("hook") != "preflight-and-advise":
-                    continue
-                if _row.get("repo_id") != cwd_repo_id:
-                    continue
-                if _row.get("trust_state") != "trusted":
-                    continue
-                _fr = _row.get("file_rel")
-                if isinstance(_fr, str) and not _fr.endswith(_source_exts):
-                    continue
-                recent_rows.append(_row)
-                if len(recent_rows) > 30:
-                    recent_rows.pop(0)
+
+        def _keep(row: dict) -> bool:
+            if row.get("trust_state") != "trusted":
+                return False
+            _fr = row.get("file_rel")
+            return not (isinstance(_fr, str) and not _fr.endswith(_source_exts))
+
+        recent_rows = _recent_preflight_rows(cwd_repo_id, keep=_keep)
         null_count = sum(1 for r in recent_rows if r.get("archetype") is None)
         if len(recent_rows) >= 5 and null_count == len(recent_rows):
             checks.append(
@@ -1087,6 +1110,61 @@ def doctor(repo: str | None = None) -> dict:
         checks.append(
             {
                 "name": "advisory_emission",
+                "status": "ok",
+                "detail": f"could not inspect: {type(exc).__name__}: {exc}",
+            }
+        )
+
+    # advisory_emission above asks whether archetype resolution works, so it
+    # reads trusted rows only. That leaves the deadest install of all reporting
+    # green: an untrusted repo injects nothing on every edit, produces zero
+    # trusted rows, and lands in that check's empty-window "ok" branch. This is
+    # the second diagnosis, with a different remedy -- a grant, not a re-derive.
+    try:
+        _sup_rows = _recent_preflight_rows(cwd_repo_id)
+        # Only states where nothing was actually injected. A deliberate pause is
+        # the user's own decision and must not read as breakage, and a STALE
+        # grant still delivers the whole advisory block (plus its own banner) --
+        # counting it here would report a working install as silent.
+        _blocked = [
+            r
+            for r in _sup_rows
+            if r.get("trust_state") == "untrusted"
+            or r.get("suppression_reason") == "trust_prompt_dedup"
+        ]
+        from chameleon_mcp._thresholds import threshold_int
+
+        _min_rows = threshold_int("ADVISORY_SUPPRESSED_MIN_ROWS")
+        if len(_sup_rows) >= _min_rows and len(_blocked) > len(_sup_rows) / 2:
+            checks.append(
+                {
+                    "name": "advisory_suppressed",
+                    "status": "warn",
+                    "detail": (
+                        f"{len(_blocked)} of the last {len(_sup_rows)} edits in this repo "
+                        "injected nothing because the profile is not trusted here; a moved "
+                        "or re-cloned checkout does this, since a grant records an absolute "
+                        "repo root. Run /chameleon-trust."
+                    ),
+                }
+            )
+        else:
+            checks.append(
+                {
+                    "name": "advisory_suppressed",
+                    "status": "ok",
+                    "detail": (
+                        "no preflight rows recorded for this repo"
+                        if not _sup_rows
+                        else f"{len(_sup_rows) - len(_blocked)}/{len(_sup_rows)} recent edits "
+                        "ran against a trusted profile"
+                    ),
+                }
+            )
+    except Exception as exc:
+        checks.append(
+            {
+                "name": "advisory_suppressed",
                 "status": "ok",
                 "detail": f"could not inspect: {type(exc).__name__}: {exc}",
             }

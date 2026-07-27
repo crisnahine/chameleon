@@ -326,7 +326,7 @@ def test_refresh_wires_demotion_into_enforcement_json(tmp_path, monkeypatch):
     monkeypatch.setattr(
         ec,
         "calibrate_block_rules",
-        lambda repo_root, loaded: {
+        lambda repo_root, loaded, **_kw: {
             "import-preference-violation": {
                 "active": True,
                 "fp_rate": 0.0,
@@ -367,7 +367,7 @@ def test_refresh_persists_single_session_proposal(tmp_path, monkeypatch):
     monkeypatch.setattr(
         ec,
         "calibrate_block_rules",
-        lambda repo_root, loaded: {
+        lambda repo_root, loaded, **_kw: {
             "import-preference-violation": {
                 "active": True,
                 "fp_rate": 0.0,
@@ -409,7 +409,7 @@ def test_refresh_persists_security_proposal_and_keeps_blocking(tmp_path, monkeyp
     monkeypatch.setattr(
         ec,
         "calibrate_block_rules",
-        lambda repo_root, loaded: {
+        lambda repo_root, loaded, **_kw: {
             "eval-call": {"active": True, "fp_rate": 0.0, "sampled": 100, "flagged": 0},
         },
     )
@@ -446,7 +446,7 @@ def test_refresh_without_override_data_preserves_calibration(tmp_path, monkeypat
     monkeypatch.setattr(
         ec,
         "calibrate_block_rules",
-        lambda repo_root, loaded: {
+        lambda repo_root, loaded, **_kw: {
             "phantom-import": {"active": True, "fp_rate": 0.0, "sampled": 100, "flagged": 0},
         },
     )

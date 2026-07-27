@@ -1,5 +1,5 @@
 module Orders
-  class RefundOrder
+  class RefundOrder < ApplicationService
     def initialize(order:, days_since_purchase:)
       @order = order
       @days_since_purchase = days_since_purchase

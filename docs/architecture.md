@@ -899,7 +899,7 @@ The review-gate workflow — 7 actions. All read-only except
 
 ### `chameleon_telemetry` dispatcher
 
-Observability and health — 14 actions, all read-only.
+Observability and health — 15 actions, all read-only.
 
 | Action | Purpose |
 |---|---|
@@ -1256,7 +1256,7 @@ block stays inside the model's attention window.
 
 As of v3.6.0 a miner (`stop/miner.py::run_miner`, kill switch
 `CHAMELEON_IDIOM_MINER=0`) runs at the **tail of the detached review job**, so
-it adds zero Stop-time cost. It reads three usage signals the rest of Stop
+it adds zero Stop-time cost. It reads four usage signals the rest of Stop
 already writes — recurring correctness/duplication findings, over-overridden
 rules, and reinforced idioms — and writes never-auto-adopted proposals to
 `.chameleon/idiom-candidates/<slug>.json` (`core/idiom_candidates.py`, atomic
@@ -1306,6 +1306,29 @@ does not verify goes to a human regardless of gate color.
   the supported envelope. The lead watches the review ledger
   (`get_review_history`) for any merged-despite-BLOCK, the longitudinal panel,
   and the recovery loop (`explain_edit`).
+
+  The mechanism is `chameleon-gate` (`chameleon_mcp/gate.py`), a headless
+  diff-scoped lint over a revision range. It exists for writes the PreToolUse
+  path never saw — a hand-authored commit, a session with chameleon disabled,
+  paused or untrusted, another agent — and is a backstop, not a better arrival
+  time: guidance before the write stays strictly preferable.
+
+  Three properties, each load-bearing. It counts only what a diff INTRODUCED,
+  through the same `commit_scope` module the effectiveness studies use, so the
+  gate and any measurement of it cannot diverge; whole-file counting was
+  measured at 5.2–5.7x the introduced count on the dogfood repos and would fail
+  authors for inherited violations. It is ADVISORY by default (`--strict` opts
+  into a non-zero exit), because `lint_file` is heuristic regex extraction
+  rather than a parser and CI here stays a build/lint pipeline, not a
+  correctness gate. And an untrusted profile exits **2**, never 0: `lint_file`
+  returns no convention findings without a grant, so a silent pass would be
+  indistinguishable from a clean diff — the worst failure a CI check can have.
+
+  Granting trust inside CI is a deliberate decision with a real cost, not an
+  implementation detail of running the gate. It machine-stamps the human read
+  the trust model asks for, and it lets a PR that edits `.chameleon/` feed its
+  own strings into the gate's output. Decide it explicitly per repo; the gate
+  will not decide it for you.
 
 ### Evidence surfaces
 

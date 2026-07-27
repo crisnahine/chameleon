@@ -4,6 +4,88 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.6.0] - 2026-07-27
+
+### Added
+
+- **A headless, diff-scoped conventions gate (`chameleon-gate`).** Every enforcement
+  surface ran inside an interactive session, so a write that never passed a PreToolUse
+  hook was ungoverned: a hand-authored commit, a session with chameleon disabled,
+  paused or untrusted, another agent. The gate lints a revision range and counts only
+  what the diff INTRODUCED, through the same `commit_scope` module the effectiveness
+  studies use, so the gate and any measurement of it cannot disagree — whole-file
+  counting measured 5.2-5.7x the introduced count on the dogfood repos and would fail
+  an author for inherited violations. Advisory by default (`--strict` opts into a
+  non-zero exit). Anything that stops it from actually linting — an untrusted profile,
+  a stubbed lint, a bad base revision, a shallow clone — exits 2, never 0: a gate that
+  could not run must never be mistaken for a gate that ran and found nothing.
+- **`get_conformance_map`**, the standing-scan counterpart to `get_shadow_report`.
+  Calibration already lints a bounded sample of committed files on every refresh and
+  discarded the per-file detail; it is now persisted off the trust-hashed surface and
+  readable, answering "which files in this archetype still deviate" — the
+  migration-progress view the shadow report cannot give, since that counts would-blocks
+  on edits actually made.
+- **A fourth miner signal.** An idiom the team keeps declining now earns a retirement
+  proposal. Override-driven demotion already existed for BLOCK rules; the idiom half had
+  no counterpart, so an idiom nobody acted on fired forever while the evidence sat unread
+  in the ledger. Proposal only — nothing auto-adopts.
+- **Three missing superpowers skill contracts**: `dispatching-parallel-agents` is now
+  fact-bearing (its own brief demands a self-contained map it was never given),
+  plus directive-only entries for `using-superpowers` and `executing-plans`.
+
+### Fixed
+
+- **Derived import frequency shipped under an enforcement header.** The conventions
+  mirror rendered `- Prefer json` under "IMPORTS (enforce — team decision)", but that
+  list is documented advisory and never reaches the enforcement rule, so every such
+  line claimed an authority the lint engine does not back — on the channel measured as
+  the highest-authority one chameleon has. Taught competing pairs keep the enforce
+  header; derived frequency moves to "COMMON IMPORTS (advisory, observed frequency)".
+- **The repo-wide import pass was set by the test corpus.** It ran over every parsed
+  file, so on a repo with more tests than sources the "strong majority" was the test
+  suite: `pytest` and `unittest.mock` were advertised as repo-wide preferences to files
+  that will never import them. Test files are now excluded when a repo root allows
+  classifying them, and derived preference lines carry their archetype scope
+  (`- Prefer pytest (test files)`) the way taught lines always have.
+- **A monorepo's workspace mirrors were written but never imported.** Each workspace
+  bootstrap writes its own `conventions.md`, and only the root was ever wired — so a
+  fanned-out monorepo held N inert mirrors, and a coordinator root (no profile of its
+  own, hence no SessionStart conventions block) delivered nothing at all. One
+  root-level rules file now imports every workspace mirror, and the import survives a
+  later teach or noop refresh instead of being recomputed away.
+- **The memory-channel delivery probe stopped at the first file that resolved.** With
+  both a CLAUDE.md import and a rules file present — the common monorepo shape — only
+  the root mirror was seen, so the idiom-dedup path re-showed idioms the channel had
+  already delivered.
+- **doctor reported the deadest install as healthy.** `advisory_emission` reads trusted
+  rows to diagnose archetype resolution, so an untrusted repo — which injects nothing on
+  every edit — produced zero rows and fell into its "ok" branch. A second check,
+  `advisory_suppressed`, names that state and prescribes `/chameleon-trust`.
+- **A silent PreToolUse left the statusline reading like a live one.** The two paths
+  that inject nothing now mark the segment, so a dead session stops rendering
+  identically to an idle one. Scoped to source files: a README resolving no archetype is
+  the healthy answer, not a fault.
+- **The TDD peer-skill brief promoted the wrong witnesses.** Promotion substring-matched
+  a derived cluster NAME, and a cluster earns a `test-*` name from a path token while
+  keeping a source witness — filling 11 of 12 rendered rows with non-tests on one real
+  profile. It now classifies the witness path.
+
+### Changed
+
+- **The goal's pre-authorized Tier-2 verification relaxation is taken**, deliberately
+  and in writing. After 259 releases the tracker held 111 PENDING cells, zero PASS and
+  zero closed gaps: it was not measuring verification, it was recording that the
+  sign-off step never started. Tier-2 cells may now be closed by the journey harness or
+  a `qa_*.py` battery as `PASS-AUTO`; Tier-1 (C1, C5, C7, E1) and subsystem #12 stay
+  human-only.
+- **The turn-depth eval fixture has teeth.** The first run scored zero violations in
+  both arms on every cell — the same number a perfect run produces and the opposite
+  conclusion — because the tasks asked for work the fixtures did not constrain. The TS
+  cell now routes through a taught competing-import pair, verified to flag the drifted
+  form and pass the conforming one. The Rails cell's teeth are weaker and the task file
+  says so: a base-less class is exempt by design, so the drift that actually happens
+  cannot fire a rule there.
+
 ## [4.5.18] - 2026-07-27
 
 ### Fixed

@@ -514,6 +514,7 @@ _TELEMETRY_ACTIONS = (
     "get_longitudinal_signals",
     "get_finding_fate_stats",
     "get_shelved_findings",
+    "get_conformance_map",
     "get_idiom_coverage",
     "check_idiom_candidates",
     "list_idiom_candidates",
@@ -709,6 +710,9 @@ def chameleon_telemetry(action: str, params: dict | None = None) -> dict:
     - get_finding_fate_stats(repo): per-lens precision from the finding-fate ledger.
     - get_shelved_findings(repo): below-bar findings currently shelved
       (recurrence counts toward auto-promotion).
+    - get_conformance_map(repo): which committed files still deviate, per
+      archetype and rule, from the calibration scan (migration progress; the
+      standing-scan counterpart to get_shadow_report's per-edit counts).
     - get_idiom_coverage(repo): guidance chameleon ALREADY captures.
     - check_idiom_candidates(repo, candidates): novelty gate before teaching; at
       most 32 candidates per call, each {slug, rationale, example?,

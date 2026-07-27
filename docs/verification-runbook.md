@@ -20,6 +20,10 @@
 3. Run the negative check (kill switch off, or a should-NOT-fire request).
 4. Mark the (subsystem × cell) cell `PASS` or `FAIL` in `docs/verification-matrix.md`.
 
+Steps 1-3 are the TIER-1 protocol and stay human-driven. Since the 2026-07-27 goal
+amendment a Tier-2 cell may instead be closed by the journey harness or a `qa_*.py`
+battery, recorded as `PASS-AUTO` with the run artifact in place of a human signature.
+
 Golden repos (all under `~/Documents/Projects/Testing Apps/`, all bootstrapped):
 C1 `excalidraw` · C4 `ef-api` · C5 `forem` · C7/C8 `py-django-readthedocs` ·
 E1 `gitlabhq` · C2 `golden-ts-nextjs` · C3 `golden-ts-nestjs` ·

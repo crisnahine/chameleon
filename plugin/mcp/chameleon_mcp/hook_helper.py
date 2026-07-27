@@ -4171,6 +4171,29 @@ def preflight_and_advise() -> int:
                 _emit_chameleon_context(_UNTRUSTED_PROFILE_PROMPT)
             return 0
         _metric(advisory_emitted=False, repo_id=repo_id, trust_state=trust_state)
+        # Silence is the whole output here, so the statusline is the only place
+        # a user can see it happened. Without this the segment holds the last
+        # successful advisory until it decays, and a fully dead session reads
+        # exactly like an idle one.
+        #
+        # Only for SOURCE files. A README or a JSON config resolving no
+        # archetype is the normal, healthy answer, and surfacing it would make a
+        # working install read as broken every time the model touches a doc --
+        # the same reason the doctor check filters these rows by extension.
+        _is_source = False
+        try:
+            from chameleon_mcp.conventions import _SOURCE_EXTENSIONS
+
+            _is_source = Path(file_path).suffix in _SOURCE_EXTENSIONS
+        except Exception:
+            _is_source = False
+        if _is_source:
+            _update_statusline(
+                "no archetype",
+                repo_name=repo_root_path.name if repo_root_path else None,
+                trust_state=trust_state,
+                repo_root=repo_root_path,
+            )
         _emit({})
         return 0
 
@@ -4215,6 +4238,15 @@ def preflight_and_advise() -> int:
             trust_state="untrusted",
             archetype=archetype_name,
             confidence=confidence_band,
+        )
+        # The prompt fires once per session; every edit after it lands here and
+        # injects nothing. That is the bulk of an untrusted session, so it needs
+        # a standing signal rather than a single early message.
+        _update_statusline(
+            "untrusted - no guidance",
+            repo_name=repo_root_path.name if repo_root_path else None,
+            trust_state="untrusted",
+            repo_root=repo_root_path,
         )
         _emit({})
         return 0
@@ -7864,9 +7896,15 @@ def _wired_mirror_text(repo_root: Path) -> str:
     expanded, relative paths against the CONTAINING file's directory — so a
     linked worktree whose import points at a file that is not materialized
     there correctly reads as undelivered, even when the main checkout has a
-    mirror. Returns the first resolved target's injection-scanned text, or ""
-    (fail-closed: no wiring / missing target / any error), so callers keep
+    mirror. Returns EVERY resolved target's injection-scanned text joined, or
+    "" (fail-closed: no wiring / missing target / any error), so callers keep
     their push-based delivery.
+
+    A monorepo's rules file names one mirror per workspace, and the channel
+    delivers all of them. Reading only the first would under-report what the
+    model already holds, which costs the dedup path nothing worse than a
+    re-injection but makes ``_record_mirror_idiom_slugs`` re-show an idiom the
+    mirror really did deliver.
     """
     key = str(repo_root)
     if key in _WIRED_MIRROR_CACHE:
@@ -7888,6 +7926,13 @@ def _wired_mirror_text(repo_root: Path) -> str:
                 candidates.extend(rules[: threshold_int("MEMORY_CHANNEL_RULES_FILE_CAP")])
             except OSError:
                 pass
+        # Accumulated ACROSS candidate files, not per file: a monorepo root
+        # commonly carries the CLAUDE.md import AND the rules file that names
+        # every workspace mirror, and stopping at the first file that resolved
+        # anything would return only the root mirror -- the exact under-report
+        # this union exists to prevent.
+        delivered_parts: list[str] = []
+        seen_targets: set[str] = set()
         for path in candidates:
             try:
                 if not path.is_file():
@@ -7904,14 +7949,16 @@ def _wired_mirror_text(repo_root: Path) -> str:
                         target = path.parent / target
                     if not target.is_file():
                         continue
+                    key_t = str(target.resolve())
+                    if key_t in seen_targets:
+                        continue
+                    seen_targets.add(key_t)
                     delivered = safe_prose_text(target)
                     if delivered.strip():
-                        text_out = delivered
-                        break
+                        delivered_parts.append(delivered)
                 except OSError:
                     continue
-            if text_out:
-                break
+        text_out = "\n".join(delivered_parts)
     except Exception:
         text_out = ""
     _WIRED_MIRROR_CACHE[key] = text_out
@@ -8061,7 +8108,13 @@ def _mirror_delivered_idiom_titles(mirror_text: str) -> set[str]:
                 continue  # the "+N more" overflow tail is not a name
             names.add(ln[2:].split(":", 1)[0].strip())
         elif ln.strip():
-            break  # next section header ends the idiom list
+            # Next section header ends THIS idiom list, not the scan: the
+            # delivered text is the union of every imported mirror, so a
+            # monorepo's later workspaces each contribute their own TEAM IDIOMS
+            # section further down. Breaking here would leave their idioms out
+            # of the shown set and re-show them at Stop -- the exact dedup this
+            # feeds.
+            in_section = False
     return {n for n in names if n}
 
 

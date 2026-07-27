@@ -88,7 +88,7 @@ Real output from the bundled `golden-ts-nestjs` fixture, so you can reproduce it
 
 We ship a Rails + TypeScript codebase at [Empire Flippers](https://empireflippers.com/), and we review every AI PR that touches it. The failure mode was always the same: the code worked, and it read wrong. `axios` where the team standardized on our HTTP wrapper, a hand-rolled date formatter next to the one we already had, a new service that skipped the base class every other service extends. We wrote CLAUDE.md rules for all of it, and they rotted in a week, because prose about code goes stale the moment the code moves and nobody's job is rewriting the style guide after every refactor. Then we noticed when the model DID conform: exactly when a real file from our repo happened to be sitting in its context. It needs to see one of our files at the moment it writes, not read prose about them. So we built the thing that shows it one, automatically, derived from the repo itself.
 
-That was 260 releases ago. We still run it daily on the code that pays our salaries.
+That was 261 releases ago. We still run it daily on the code that pays our salaries.
 
 ## Why the rule-file approach fails
 

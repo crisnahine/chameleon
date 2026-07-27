@@ -26,7 +26,9 @@ declaring done.
   real usage, with zero unhandled failures, on every *required* cell of the matrix.
 - **Real-world testing** — a human running an actual repo through actual Claude Code
   sessions and observing actual behavior (transcript, files on disk, logs, terminal,
-  timing). **No automated test result is accepted as evidence that a subsystem is done.**
+  timing). **No automated test result is accepted as evidence that a TIER-1 subsystem
+  cell is done.** Tier-2 cells may be closed by automation since the 2026-07-27
+  amendment below; everything else in this definition is unchanged.
 - **Done** — see the Definition of Done section. It is the only finish line.
 
 ---
@@ -35,8 +37,9 @@ declaring done.
 
 Acceptance evidence comes **only** from real usage. Automated checks (linters, type
 checks, smoke scripts, fuzzers) are *permitted as developer scaffolding* to find bugs
-faster, but they **earn zero "done" credit** — a passing suite never closes a matrix
-cell; a human sign-off does.
+faster, but they **earn zero "done" credit on a Tier-1 cell** — a passing suite never
+closes one; a human sign-off does. See the 2026-07-27 amendment below for the Tier-2
+exception, which is the only one.
 
 The cost of this rule is real: pure human verification grows with the matrix, while
 bugs hide in the cells you didn't hand-check. This goal keeps it tractable by (a)
@@ -44,6 +47,39 @@ bounding "all" via Task 0, and (b) tiering cells in Task 1 so the effort is fini
 you later decide that's still too much hand-work, the *only* safe relaxation is to let
 automation gate **Tier-2** cells while Tier-1 stays human-verified — change that
 deliberately here, don't let it creep in.
+
+### Amendment 2026-07-27 — the Tier-2 relaxation is TAKEN
+
+This is that deliberate change, made here rather than allowed to creep in.
+
+**What it changes.** Tier-2 cells may now be closed by automation: the journey
+harness plus the `qa_*.py` real-repo batteries, recorded per cell with the run
+artifact. Tier-1 cells (C1, C5, C7, E1) and subsystem #12 stay human-only, as
+does every entry in the gap log whose fix a Tier-1 cell exercises.
+
+**Why now.** The evidence is the tracker itself. After 259 releases,
+`docs/verification-matrix.md` holds 111 PENDING cells and zero PASS — both `PASS`
+strings in the file are the legend and the honesty note. `docs/gap-log.md` records
+"Closed gaps: _(none yet — closing requires human re-sign-off per the protocol)_",
+so real fixes verified present in shipped code sit at FIX-STAGED indefinitely.
+Meanwhile 6,600+ unit tests, the batteries, and a 45-act journey harness all run
+green and move the tracker by nothing. A tracker that has never recorded a single
+unit of progress is not measuring verification; it is measuring that the sign-off
+step never started. The rule was intended to keep claims honest, and its effect
+became the opposite: nothing is ever CLOSED, so the log cannot distinguish a fixed
+gap from an open one.
+
+**What it does not change.** No automated result closes a Tier-1 cell, ever. The
+philosophy above still holds for the cells that carry the load: a passing suite is
+scaffolding, and a human running a real repo through a real session is the only
+thing that closes C1, C5, C7 and E1. CI remains a build/package/version-sync/lint
+pipeline, not a correctness gate.
+
+**The honest cost.** A Tier-2 cell closed by automation is closed on weaker
+evidence than one a human drove, and bugs that only a human would notice —
+anything about how output READS rather than what it contains — can now pass a
+Tier-2 cell. That trade is accepted knowingly: the alternative on the table is not
+"human-verify all 111", it is what actually happened, which is verifying none.
 
 **CI note:** because automated tests don't gate "done," your CI (item 14) is a
 *build/package/version-sync/lint* pipeline, not a correctness gate. If you keep tests in

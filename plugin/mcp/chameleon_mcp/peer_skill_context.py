@@ -24,8 +24,9 @@ cost. A DIRECTIVE is a constant: an ordering rule, a named contradiction and its
 resolution, or a pointer to the tool that answers a question the peer skill asks
 without supplying one. A FACT-BEARING entry additionally renders this repo's
 archetype-to-canonical map, which costs a trust check and one cached profile
-read. Only the skills that author a plan, a dispatch brief, or a test carry
-facts; everything else stays constant-time.
+read. Only the skills that author something outliving their own session -- a
+committed spec, a plan, a dispatch brief, a test -- carry facts; everything else
+stays constant-time.
 
 Nothing here reads a byte of the peer plugin's content. The skill NAME arrives
 as model input and is never echoed back -- a matched entry is looked up by exact
@@ -52,13 +53,17 @@ _KILL_SWITCH = "CHAMELEON_PEER_ROUTING"
 _HEADER = "[🦎 chameleon: composing with superpowers:{name}]"
 
 # Skills whose brief also carries the repo's archetype -> canonical map. They
-# author something a later writer treats as authoritative -- a plan's file
-# table, a dispatch brief, a first failing test -- so the shape decision is made
-# HERE, before any Edit fires and before the per-edit advisory can reach it.
+# author something a later writer treats as authoritative -- a committed spec, a
+# plan's file table, a dispatch brief, a first failing test -- so the shape
+# decision is made HERE, before any Edit fires and before the per-edit advisory
+# can reach it. The membership is this literal set rather than a rule: each
+# entry is here because a specific artifact it produces outlives the session
+# that wrote it, and no single phrase covers a spec and a test at once.
 _FACT_BEARING = frozenset(
     {
         "writing-plans",
         "subagent-driven-development",
+        "dispatching-parallel-agents",
         "brainstorming",
         "test-driven-development",
     }
@@ -66,10 +71,20 @@ _FACT_BEARING = frozenset(
 
 # Each entry answers one question: what would this skill do differently if it
 # knew what chameleon knows? A skill that would do nothing differently is absent
-# -- executing-plans reads whatever the plan already carries (fix writing-plans
-# instead), verification-before-completion needs command output rather than repo
+# -- verification-before-completion needs command output rather than repo
 # knowledge, and writing-skills authors markdown outside any archetype.
 _BRIEFS: dict[str, str] = {
+    "using-superpowers": (
+        "Ownership split, stated once because this skill opens the conversation.\n"
+        "- Superpowers owns PROCESS: when to design, plan, test first, review, integrate. "
+        "Chameleon owns OUTPUT and FACTS: the shape the code takes, this repo's "
+        "conventions, and what breaks when a signature changes. Process gates set the "
+        "sequence; chameleon supplies the facts each gate needs.\n"
+        "- This skill's Red Flags table routes 'let me explore the codebase first' to "
+        "'skills tell you HOW to explore' without naming a tool. The tools are "
+        "describe_codebase to orient and search_codebase to find a symbol -- cheaper and "
+        "more precise than grep, and they answer before the first file is opened."
+    ),
     "writing-plans": (
         "This plan is written for an engineer assumed to have zero context on the repo, "
         "and it says to follow established patterns without any way to know what they "
@@ -94,6 +109,17 @@ _BRIEFS: dict[str, str] = {
         "forbidden to do.\n"
         "Per-edit guardrails still fire inside every subagent. The turn-end review job "
         "does not run per subagent, so a run pays for it once."
+    ),
+    "executing-plans": (
+        "The plan was written in a different session, and its facts can be older than "
+        "this checkout.\n"
+        "- When the plan's named archetype or canonical witness contradicts the "
+        "<chameleon-context> block that arrives at the edit, the live block wins: it is "
+        "derived from the profile as it stands now, while the plan's line was true when "
+        "it was written. Say so rather than silently following one -- a disagreement "
+        "means the plan predates a refresh, a teammate's merge, or another checkout.\n"
+        "- The per-edit advisory carries the shape facts on every Edit, so nothing here "
+        "needs to be looked up in advance."
     ),
     "dispatching-parallel-agents": (
         "A brief must be self-contained, and a subagent inherits none of this session's "
@@ -211,31 +237,39 @@ def _skill_key(skill: object) -> str | None:
     return key if key in _BRIEFS else None
 
 
-# Archetype-name substrings a given skill's brief actually points AT, used to
-# order the witness map before the cap truncates it. Only skills whose directive
-# names a specific kind of file need an entry: test-driven-development tells the
-# reader "the canonical witness below is the file to imitate" while writing a
-# FAILING TEST, so a repo whose test archetypes sort late alphabetically handed
-# it a map with every witness except the one it was told to imitate. The other
-# fact-bearing skills author plans and dispatch briefs across the whole repo and
-# want breadth, so they keep the plain alphabetical order.
-_SKILL_ARCHETYPE_PRIORITY: dict[str, tuple[str, ...]] = {
-    "test-driven-development": ("test", "spec"),
-}
+# Skills whose brief points at a specific KIND of file, and so want the witness
+# map ordered rather than alphabetical. test-driven-development tells the reader
+# "the canonical witness below is the file to imitate" while writing a FAILING
+# TEST, so a repo whose test archetypes sort late handed it a map with every
+# witness except the one it was told to imitate. The other fact-bearing skills
+# author plans and dispatch briefs across the whole repo and want breadth.
+_WITNESS_PRIORITY_SKILLS = frozenset({"test-driven-development"})
 
 
-def _priority_sort_key(archetype: str, priority: tuple[str, ...]) -> tuple[int, str]:
-    """Order archetypes so the ones a skill's brief names survive the cap.
+def _witness_sort_key(archetype: str, witness_path: str) -> tuple[int, str]:
+    """Order archetypes so the ones carrying a test WITNESS survive the cap.
 
-    Deterministic: matches lead, everything else keeps alphabetical order behind
-    them. The no-change guarantee is narrower than "under the cap" -- a matching
-    archetype moves to the front whether or not anything is truncated. What does
-    hold is that a repo with NO match sorts identically to plain alphabetical,
-    since every element then ranks 1 and ties break on the name.
+    Classifies the witness path, not the archetype name. A cluster earns a
+    ``test-*`` name from any path token while keeping a source witness --
+    canonical selection re-admits test files to the witness pool only for an
+    all-test cluster -- so the name says nothing about what the row actually
+    points at. gitlabhq's ``test-gitlab-http`` witnesses a library patch file.
+
+    Probes all three languages because this module has no language in hand and
+    the map spans a whole repo, matching how the auto-pass gate classifies a
+    test file. Deterministic: tests lead, everything else keeps alphabetical
+    order behind them, and a repo with NO test witness sorts identically to
+    plain alphabetical since every element then ranks 1 and ties break on name.
     """
-    lowered = archetype.lower()
-    matched = any(token in lowered for token in priority)
-    return (0 if matched else 1, archetype)
+    try:
+        from chameleon_mcp.conventions import _is_test_path
+
+        is_test = any(
+            _is_test_path(witness_path, language=lang) for lang in ("ruby", "typescript", "python")
+        )
+    except Exception:
+        is_test = False
+    return (0 if is_test else 1, archetype)
 
 
 def _pattern_facts(cwd: object, skill_key: str | None = None) -> str:
@@ -280,13 +314,7 @@ def _pattern_facts(cwd: object, skill_key: str | None = None) -> str:
         if not isinstance(canonicals, dict):
             return ""
         rows: list[tuple[str, str]] = []
-        priority = _SKILL_ARCHETYPE_PRIORITY.get(skill_key or "", ())
-        ordered = (
-            sorted(canonicals, key=lambda a: _priority_sort_key(a, priority))
-            if priority
-            else sorted(canonicals)
-        )
-        for archetype in ordered:
+        for archetype in sorted(canonicals):
             entry = canonicals[archetype]
             # Schema stores a list of witnesses per archetype; tolerate the bare
             # dict a hand-edited or older profile can still hold.
@@ -297,6 +325,10 @@ def _pattern_facts(cwd: object, skill_key: str | None = None) -> str:
                 rows.append((archetype, path))
         if not rows:
             return ""
+        # Ordering needs the witness, so it runs over built rows rather than
+        # over the archetype names.
+        if skill_key in _WITNESS_PRIORITY_SKILLS:
+            rows.sort(key=lambda r: _witness_sort_key(r[0], r[1]))
         cap = _threshold("PEER_SKILL_MAX_ARCHETYPES", 12)
         shown, dropped = rows[:cap], max(0, len(rows) - cap)
         width = max(len(a) for a, _ in shown)

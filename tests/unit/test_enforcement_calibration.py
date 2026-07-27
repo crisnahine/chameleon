@@ -1208,7 +1208,9 @@ def test_calibration_auto_demote_false_skips_demotion(tmp_path, monkeypatch):
         "chameleon_mcp.profile.loader.load_profile_dir", lambda profile_dir: object()
     )
     monkeypatch.setattr(
-        ec, "calibrate_block_rules", lambda root, loaded: {"phantom-import": {"active": True}}
+        ec,
+        "calibrate_block_rules",
+        lambda root, loaded, **_kw: {"phantom-import": {"active": True}},
     )
     demote_calls: list = []
     monkeypatch.setattr(
@@ -1261,7 +1263,9 @@ def test_calibration_custom_thresholds_forwarded(tmp_path, monkeypatch):
         "chameleon_mcp.profile.loader.load_profile_dir", lambda profile_dir: object()
     )
     monkeypatch.setattr(
-        ec, "calibrate_block_rules", lambda root, loaded: {"phantom-import": {"active": True}}
+        ec,
+        "calibrate_block_rules",
+        lambda root, loaded, **_kw: {"phantom-import": {"active": True}},
     )
     calls: list = []
 
@@ -1304,7 +1308,9 @@ def test_calibration_defaults_match_thresholds_when_no_config(tmp_path, monkeypa
         "chameleon_mcp.profile.loader.load_profile_dir", lambda profile_dir: object()
     )
     monkeypatch.setattr(
-        ec, "calibrate_block_rules", lambda root, loaded: {"phantom-import": {"active": True}}
+        ec,
+        "calibrate_block_rules",
+        lambda root, loaded, **_kw: {"phantom-import": {"active": True}},
     )
     calls: list = []
 

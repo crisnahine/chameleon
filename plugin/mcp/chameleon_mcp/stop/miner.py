@@ -3,7 +3,7 @@ job's END-of-run tail stage, run from ``stop/job.py::_run`` after every other
 stage. Zero Stop-time cost -- it only ever executes inside the detached job,
 never on a hook hot path.
 
-Mines three usage signals out of artifacts the rest of Stop already writes
+Mines four usage signals out of artifacts the rest of Stop already writes
 (the finding-lifecycle ledger and the override audit) into
 ``.chameleon/idiom-candidates/<slug>.json`` proposals via
 ``core.idiom_candidates.write_candidate``. NOTHING here auto-adopts: a
@@ -185,10 +185,89 @@ def _mine_reinforcement(request: JobRequest, profile_dir: Path) -> None:
         _checkpoint(request, "miner_error", reason=f"reinforcement:{repr(exc)[:200]}")
 
 
+def _mine_ignored_idioms(request: JobRequest, profile_dir: Path) -> None:
+    """Signal 4: an idiom the team never acts on becomes a retirement candidate.
+
+    The symmetric counterpart to ``apply_override_feedback_demotion``, which
+    already drops a calibrated BLOCK rule to advisory when the team keeps
+    overriding it. An idiom has no such path: it is deprecated only by a human
+    /chameleon-teach, so one nobody acts on keeps firing indefinitely while the
+    evidence that it should stop sits unread in the ledger.
+
+    ``resurfaced`` is the signal. It is terminal and reached only after the
+    finding was delivered and the cited file went UNCHANGED, so it means the
+    team saw the idiom and declined it -- unlike ``addressed``, which signal 1
+    already reads as reinforcement. Gated on the same distinct-session floor the
+    block-rule demotion uses, so one person's afternoon cannot retire a rule.
+
+    Proposal only: nothing here touches the idiom store.
+    """
+    try:
+        from collections import defaultdict
+
+        from chameleon_mcp._thresholds import threshold_int
+        from chameleon_mcp.core import idiom_candidates
+        from chameleon_mcp.core.idiom_store import slug_for_title
+        from chameleon_mcp.review_ledger import _read_findings_rows
+
+        # Count DECLINE EVENTS, not the sessions a row was seen in. A ledger
+        # row accumulates every session it appeared in, so a finding delivered
+        # in session A and left unchanged in session B carries two ids from ONE
+        # decline -- which would clear a floor of two on a single event and make
+        # the "not one person's afternoon" guarantee vacuous. Each row is a
+        # distinct match_key, so distinct resurfaced rows are distinct declines.
+        declined: dict[str, set[str]] = defaultdict(set)
+        acted: dict[str, bool] = defaultdict(bool)
+        for key, row in _read_findings_rows(request.repo_id).items():
+            if not isinstance(row, dict) or row.get("kind") != "idiom":
+                continue
+            status = row.get("status")
+            if status not in ("resurfaced", "addressed"):
+                continue
+            match = _IDIOM_SLUG_CLAIM_RE.search(str(row.get("claim") or ""))
+            if not match:
+                continue
+            slug = match.group(1)
+            if status == "addressed":
+                acted[slug] = True
+            else:
+                declined[slug].add(str(row.get("match_key") or key))
+
+        min_declines = threshold_int("OVERRIDE_DEMOTION_MIN_SESSIONS")
+        count = 0
+        for slug, declines in sorted(declined.items()):
+            # Any evidence the team DOES act on this idiom disqualifies it: the
+            # question is whether the idiom is dead, not whether it was ever
+            # missed, and a mixed record is a live idiom with a bad week.
+            if acted.get(slug):
+                continue
+            if len(declines) < min_declines:
+                continue
+            idiom_candidates.write_candidate(
+                profile_dir,
+                slug=slug_for_title(f"retire {slug}"),
+                title=f"Retire or loosen the '{slug}' idiom",
+                rationale=(
+                    f"The '{slug}' idiom was surfaced and left unaddressed "
+                    f"{len(declines)} separate time(s) and never acted on: the cited "
+                    "file was unchanged each time it came back. Either the idiom no "
+                    "longer reflects how the team works, or it is worded so it cannot "
+                    "be acted on. Consider retiring or loosening it."
+                )[:1000],
+                source="learned",
+                evidence=(f"idiom={slug} declined_findings={len(declines)}")[:500],
+                occurrences=len(declines),
+            )
+            count += 1
+        _checkpoint(request, "miner_ignored_idioms", reason=f"count={count}")
+    except Exception as exc:  # noqa: BLE001 -- this signal must never crash the job
+        _checkpoint(request, "miner_error", reason=f"ignored_idioms:{repr(exc)[:200]}")
+
+
 def run_miner(request: JobRequest, budget: TurnBudget) -> None:
     """End-of-job tail stage. Fail-open and NEVER raises into ``_run``: the
     only code here that can raise (the env read and the budget/profile-dir
-    resolution) is trivial and guarded; each of the three mining passes
+    resolution) is trivial and guarded; each of the four mining passes
     already wraps its own body.
 
     Guarded by ``CHAMELEON_IDIOM_MINER=0`` (default ON -- offline, no repo-code
@@ -220,3 +299,4 @@ def run_miner(request: JobRequest, budget: TurnBudget) -> None:
     _mine_new_candidates(request, profile_dir)
     _mine_deprecation(request, profile_dir)
     _mine_reinforcement(request, profile_dir)
+    _mine_ignored_idioms(request, profile_dir)

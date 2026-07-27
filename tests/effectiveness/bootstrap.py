@@ -50,12 +50,58 @@ def _bootstrap_repo(path: str) -> dict:
     return bootstrap_repo(path)
 
 
+# Competing imports each fixture's team has "taught", by archetype. Derivation
+# cannot infer these -- `competing` is populated solely by teaching -- and
+# without them the fixtures have no rule with teeth: a straightforward new file
+# conforms trivially, which is precisely why the first turn-depth run measured
+# zero violations in BOTH arms and could not have produced a signal in either
+# direction (results-published/depth-arm-2026-07-27.md).
+#
+# Each pair names a real wrapper the fixture already uses and a plausible
+# alternative a drifting model reaches for once early context stops steering.
+_TAUGHT_COMPETING: dict[str, tuple[tuple[str, str, str], ...]] = {
+    "eff_ts": (("component", "../utils/cx", "classnames"),),
+}
+
+
+def _teach_fixture_conventions(work_dir: Path) -> None:
+    """Seed the taught competing imports for this fixture, if it has any.
+
+    NOT best-effort. A pair that fails to bind -- a drifted archetype key after a
+    clustering change, a corrupt profile -- leaves the fixture with no rule that
+    has teeth, and the arm then scores zero violations in BOTH arms. That is the
+    same number a perfect run produces and the opposite conclusion, and it is
+    exactly the non-result the depth arm published on its first attempt. Failing
+    the run is the only outcome that cannot be mistaken for a measurement.
+    """
+    pairs = _TAUGHT_COMPETING.get(work_dir.name)
+    if not pairs:
+        return
+    from chameleon_mcp.tools import _compute_repo_id, teach_competing_import
+
+    repo_id = _compute_repo_id(work_dir)
+    for archetype, preferred, over in pairs:
+        resp = teach_competing_import(
+            repo_id, archetype=archetype, preferred=preferred, over=over
+        )
+        status = (resp.get("data") or {}).get("status")
+        if status != "success":
+            raise EffBootstrapError(
+                f"teaching {preferred!r} over {over!r} on archetype {archetype!r} in "
+                f"{work_dir.name} returned status {status!r}; the fixture would have no "
+                "rule with teeth and the arm would score a meaningless zero"
+            )
+
+
 def bootstrap_fixture(work_dir: Path) -> None:
     """Derive the profile in-process and commit .chameleon into the fixture repo."""
     resp = _bootstrap_repo(str(work_dir))
     status = (resp.get("data") or {}).get("status")
     if status not in _OK_STATUSES:
         raise EffBootstrapError(f"bootstrap of {work_dir} returned status {status!r}")
+    # Teach BEFORE the commit so the taught pair rides the committed profile the
+    # worktrees read, exactly as it would in a real repo.
+    _teach_fixture_conventions(work_dir)
     ident = "-c user.name=effectiveness -c user.email=eff@local"
     r = run_bash(
         f"git {ident} add .chameleon && git {ident} commit -q -m 'chameleon profile'",

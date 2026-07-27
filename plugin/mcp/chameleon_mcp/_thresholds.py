@@ -23,6 +23,26 @@ DEFAULTS: Final[dict[str, int | float]] = {
     "WARNING_SAMPLE_PATHS": 3,
     "SPARSE_WARNING_LIMIT": 50,
     "MAX_EXTENDS_HOPS": 8,
+    # Recent preflight rows doctor needs before it will call a repo's silence a
+    # trust problem. Low enough that a short session still surfaces a dead
+    # install, high enough that one stray row cannot.
+    "ADVISORY_SUPPRESSED_MIN_ROWS": 5,
+    # Recent PreToolUse rows the dead-install checks read. Long enough to
+    # describe a session, short enough that a repo fixed an hour ago stops
+    # being reported as broken.
+    "DOCTOR_PREFLIGHT_WINDOW_ROWS": 30,
+    # Largest blob the headless gate will lint per file/revision. A generated
+    # bundle past this is skipped rather than read into memory; raise it for a
+    # repo whose real sources are legitimately large.
+    "GATE_MAX_FILE_BYTES": 2_000_000,
+    # Mirrors the rules file may import. SessionStart re-reads every one of them
+    # inside its 3s budget, so a monorepo with hundreds of workspaces bounds the
+    # fan-out here rather than paying it on every session load.
+    "RULES_IMPORT_MAX_TARGETS": 32,
+    # Conformance-map rows one get_conformance_map response may carry. The
+    # scan itself is bounded by CALIBRATION_MAX_FILES; this bounds the model
+    # surface, which is a different budget.
+    "CONFORMANCE_MAP_MAX_ROWS": 200,
     "EDIT_OBS_HARD_CAP": 50_000,
     "EDIT_OBS_SOFT_CAP": 10_000,
     "EDIT_OBS_AGE_DAYS": 90,
