@@ -1485,7 +1485,54 @@ def _archetype_seen_key(archetype: str, agent_id: object) -> str:
     they were -- a bare archetype name, so an existing session's persisted state
     keeps deduping the way it always did.
     """
-    return f"{agent_id}\x1f{archetype}" if isinstance(agent_id, str) and agent_id else archetype
+    resolved = _agent_id_or_none(agent_id)
+    return f"{resolved}\x1f{archetype}" if resolved else archetype
+
+
+def _log_swallowed(stage: str, exc: BaseException) -> None:
+    """Record a stage that caught its own exception and returned nothing.
+
+    A swallowed stage is invisible to every other degradation signal: the hook
+    still exits 0 with valid JSON, no interpreter was missing, no spawn failed,
+    and no ``fail_open`` metric is emitted, because from the hook's side nothing
+    went wrong. The stage is just absent, which reads exactly like a repo that
+    had nothing to say. ``degraded_telemetry.count_swallowed`` looks for this
+    marker, so what is written here is what /chameleon-doctor can count.
+
+    Best-effort by construction: this runs INSIDE a failure handler, so it must
+    never raise. ``_hook_error_log_path`` resolves through ``Path.home()``,
+    which raises RuntimeError rather than OSError when HOME is unset.
+    """
+    try:
+        import time as _time
+
+        from chameleon_mcp.degraded_telemetry import SWALLOWED_MARKER
+
+        stamp = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
+        with open(_hook_error_log_path(), "a", encoding="utf-8") as fh:
+            fh.write(
+                f"[{stamp}] chameleon: {SWALLOWED_MARKER}{stage} ({type(exc).__name__}: {exc})\n"
+            )
+    except (OSError, RuntimeError, ImportError):
+        pass
+
+
+def _agent_id_or_none(agent_id: object) -> str | None:
+    """The dispatched-subagent id, or None for the top-level agent.
+
+    ONE spelling of a contract two callers must agree on: the tier decision keys
+    its seen-set by this, and the conventions echo gates on it. A divergence
+    would hand an agent Tier-2 without the context Tier-2 exists to carry for
+    it, silently. Only a non-empty string marks a subagent -- payload fields are
+    harness input, so a missing, empty, or malformed value degrades to top-level
+    rather than crashing the per-edit hook.
+    """
+    return agent_id if isinstance(agent_id, str) and agent_id else None
+
+
+def _is_subagent_payload(payload: dict) -> bool:
+    """True when this tool call came from a dispatched subagent."""
+    return _agent_id_or_none(payload.get("agent_id")) is not None
 
 
 def _seed_archetype_seen(
@@ -1557,8 +1604,9 @@ def _ss_profile_loadable(profile_dir: Path) -> bool:
 # which stay available in the full skill on demand.
 _USING_CHAMELEON_DIGEST = (
     "`<chameleon-context>` blocks inject automatically -- conformance needs "
-    "no tool calls. Subagent on one task: skip this digest, your parent "
-    "already has the pattern context.\n"
+    "no tool calls. Subagent on one task: skip this digest -- the per-edit "
+    "hooks give you your OWN pattern context, scoped to you, not the "
+    "parent's.\n"
     "\n"
     "Hook lifecycle:\n"
     "- SessionStart: this digest + conventions + drift/production banners. "
@@ -2592,17 +2640,7 @@ def _nearby_signatures_section(file_path: str, repo_root: Path | None) -> str:
         # Fail open, but leave a trace: this section silently vanishing from a
         # Tier-2 block is indistinguishable from "no siblings", so a systematic
         # failure would otherwise never surface in doctor's error-log check.
-        try:
-            import time as _time
-
-            stamp = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
-            with open(_hook_error_log_path(), "a", encoding="utf-8") as fh:
-                fh.write(
-                    f"[{stamp}] chameleon: nearby-signatures section failed "
-                    f"({type(exc).__name__}: {exc})\n"
-                )
-        except OSError:
-            pass
+        _log_swallowed("nearby-signatures", exc)
         return ""
 
 
@@ -2850,6 +2888,76 @@ _ARCH_FACTS_STRONG_BASE_FREQ = 0.60
 # punctuation. The allowlist is lossless for real profiles (verified against every
 # bootstrapped repo) and closes the class the denylist cannot fully cover.
 _ARCH_FACTS_TOKEN_RE = re.compile(r"^[\w$.:<>@?!]{1,80}$")
+
+
+def _conventions_echo_section(archetype: str | None, repo_root: Path | None) -> str:
+    """The edited archetype's convention summary, one principle, and the reminder.
+
+    What `format_conventions_echo` renders: the archetype's imports / naming /
+    inheritance / class-contract summary, ONE principle rotated by archetype, and
+    the fixed "verify symbols exist before using them" line. Profile-derived
+    values in chameleon's own voice, so the caller renders it OUTSIDE the
+    imitate-spotlight, next to the archetype facts it shares an artifact with.
+
+    A missing or unreadable conventions.json still renders: the reminder is
+    appended unconditionally downstream and a subagent has no other channel for
+    it. Only a failure of the render itself falls through to "".
+    """
+    if repo_root is None or not archetype:
+        return ""
+    try:
+        from chameleon_mcp.conventions import format_conventions_echo
+        from chameleon_mcp.profile.loader import safe_prose_text, scrub_conventions_prose
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+        profile_dir = _enf_profile_dir(repo_root)
+        # principles.md is an INDEPENDENT artifact, read first and kept separate
+        # from the conventions parse -- the same decoupling session_start does,
+        # and for the same reason: a corrupt or absent conventions.json must not
+        # collaterally drop the anti-hallucination reminder, which
+        # format_conventions_echo appends unconditionally and which a subagent
+        # has no other channel to receive.
+        pr_text = safe_prose_text(profile_dir / "principles.md")
+        # Read straight from disk (not via load_profile_dir), so screen the
+        # conventions prose values for injection here: render sanitization does
+        # not neutralize injection prose, and trust persists across changes so
+        # the staleness gate no longer covers this echo path.
+        #
+        # The echo renders only the edited archetype's four dimensions; slice to
+        # that subset BEFORE the O(size) scrub so a multi-MB conventions.json
+        # doesn't cost the whole hot-path budget per edit (see
+        # _conventions_echo_subset).
+        conv_subset: dict = {}
+        try:
+            conventions_path = profile_dir / "conventions.json"
+            if conventions_path.is_file():
+                _parsed = json.loads(conventions_path.read_text(encoding="utf-8"))
+                if isinstance(_parsed, dict):
+                    conv_subset = _conventions_echo_subset(_parsed, archetype)
+                    scrub_conventions_prose(conv_subset)
+        except Exception:  # noqa: BLE001
+            # Bare, and the scrub sits inside it, so this mirrors session_start
+            # literally rather than approximately. A narrower (OSError,
+            # ValueError) would let RecursionError through -- deeply nested JSON
+            # subclasses RuntimeError, as _read_payload_dict already documents --
+            # and would leave a scrub failure able to drop the reminder, which is
+            # the one outcome this decoupling exists to prevent.
+            conv_subset = {}
+        # Sanitize attacker-controllable inputs at the boundary, for parity with
+        # the SessionStart path (the assembled echo carries a
+        # <chameleon-conventions> wrapper the output-sanitizer would mangle).
+        return format_conventions_echo(
+            _sanitize_profile_obj(conv_subset),
+            archetype=archetype,
+            principles_text=sanitize_for_chameleon_context(pr_text),
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Fail open, but leave a trace: this section carries the only
+        # anti-hallucination directive a subagent receives, so it vanishing is
+        # indistinguishable from a repo with no conventions and would otherwise
+        # never surface in doctor's error-log check.
+        _log_swallowed("nearby-signatures", exc)
+        return ""
 
 
 def _archetype_facts_section(archetype: str | None, repo_root: Path | None) -> str:
@@ -4421,38 +4529,7 @@ def preflight_and_advise() -> int:
             block += _STALE_TRUST_BANNER
         if summary:
             block += f"{sanitize_for_chameleon_context(summary)}\n"
-        conv_echo = ""
-        try:
-            from chameleon_mcp.conventions import format_conventions_echo
-
-            conventions_path = (
-                _enf_profile_dir(repo_root_path) / "conventions.json" if repo_root_path else None
-            )
-            if conventions_path and conventions_path.is_file():
-                conv_data = json.loads(conventions_path.read_text(encoding="utf-8"))
-                # Read straight from disk (not via load_profile_dir), so screen the
-                # conventions prose values + principles.md for injection here: render
-                # sanitization does not neutralize injection prose, and trust persists
-                # across changes so the staleness gate no longer covers this echo path.
-                from chameleon_mcp.profile.loader import safe_prose_text, scrub_conventions_prose
-
-                # The echo renders only the edited archetype's four dimensions;
-                # slice to that subset BEFORE the O(size) scrub/sanitize so a
-                # multi-MB conventions.json doesn't cost the whole hot-path budget
-                # per edit (see _conventions_echo_subset).
-                conv_subset = _conventions_echo_subset(conv_data, archetype_name)
-                scrub_conventions_prose(conv_subset)
-                pr_text = safe_prose_text(_enf_profile_dir(repo_root_path) / "principles.md")
-                # Sanitize attacker-controllable inputs at the boundary, for
-                # parity with the SessionStart path (the assembled echo carries a
-                # <chameleon-conventions> wrapper the output-sanitizer would mangle).
-                conv_echo = format_conventions_echo(
-                    _sanitize_profile_obj(conv_subset),
-                    archetype=archetype_name,
-                    principles_text=sanitize_for_chameleon_context(pr_text),
-                )
-        except Exception:
-            pass
+        conv_echo = _conventions_echo_section(archetype_name, repo_root_path)
         if conv_echo:
             block += f"{conv_echo}\n"
         block += "</chameleon-context>"
@@ -4493,6 +4570,18 @@ def preflight_and_advise() -> int:
     facts = _archetype_facts_section(archetype_name, repo_root_path)
     if facts:
         block += facts + "\n\n"
+    # A dispatched subagent gets no SessionStart (its matcher is
+    # startup|resume|clear|compact), so the conventions block and its
+    # verify-before-you-invent reminder never reach it through that channel. Its
+    # first edit in an archetype is Tier-2 by construction -- _archetype_seen_key
+    # gives each agent its own first sight -- and Tier-2 is the one branch that
+    # never carried the echo, so a fresh implementer wrote its first file with no
+    # convention summary at all. A top-level agent already has this from
+    # SessionStart, so it stays on the Tier-1-only path and pays nothing.
+    if _is_subagent_payload(payload):
+        subagent_echo = _conventions_echo_section(archetype_name, repo_root_path)
+        if subagent_echo:
+            block += subagent_echo + "\n\n"
     # Gather the sibling listing first, then emit the whole verbatim repo-derived
     # region (canonical witness + team idioms + sibling listing) as ONE
     # spotlighted block. The marker gives the model a provenance signal that this
@@ -5183,8 +5272,11 @@ def _record_bash_write_mutations(
             else:
                 record_clean(fs, now=now)
             save_state(state, repo_data_dir, session_id or "")
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            # Losing this is not cosmetic: the per-file level never advances,
+            # archetypes_with_violations never records, and the Stop backstop
+            # never arms -- all indistinguishable from a clean edit.
+            _log_swallowed("bash-write-enforcement-state", exc)
 
 
 def _record_bash_delete_mutations(command: str, cwd: Path, session_id: str) -> None:

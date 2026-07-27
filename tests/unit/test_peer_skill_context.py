@@ -347,3 +347,82 @@ class _patch_stack:
         for p in reversed(self._patches):
             p.stop()
         return False
+
+
+# --------------------------------------------------------------------------
+# The cap must not drop the witness the brief points AT
+# --------------------------------------------------------------------------
+
+
+def test_tdd_keeps_its_test_witness_when_the_cap_truncates(tmp_path, monkeypatch):
+    """The TDD brief says the canonical witness below is the file to imitate,
+    while writing a failing test. Alphabetical truncation dropped exactly that
+    witness on a real 18-archetype repo, so the block contradicted itself: a
+    directive pointing at data the same block had omitted.
+    """
+    monkeypatch.setenv("CHAMELEON_PEER_SKILL_MAX_ARCHETYPES", "2")
+    repo = _committed_profile(
+        tmp_path,
+        {
+            "component": "src/Component.tsx",
+            "data": "src/data.ts",
+            "test": "src/__tests__/thing.test.ts",
+        },
+    )
+    with _trusted(repo):
+        block = skill_context("superpowers:test-driven-development", str(repo))
+    assert "src/__tests__/thing.test.ts" in block
+    assert "(+1 more archetypes)" in block
+
+
+def test_other_fact_bearing_skills_keep_alphabetical_order(tmp_path, monkeypatch):
+    """Only a skill whose directive names a kind of file gets a preference. The
+    rest author across the whole repo and want breadth, so their ordering is
+    unchanged -- a repo under the cap renders identically either way.
+    """
+    monkeypatch.setenv("CHAMELEON_PEER_SKILL_MAX_ARCHETYPES", "2")
+    repo = _committed_profile(
+        tmp_path,
+        {
+            "component": "src/Component.tsx",
+            "data": "src/data.ts",
+            "test": "src/__tests__/thing.test.ts",
+        },
+    )
+    with _trusted(repo):
+        block = skill_context("superpowers:writing-plans", str(repo))
+    assert "src/Component.tsx" in block
+    assert "src/data.ts" in block
+    assert "src/__tests__/thing.test.ts" not in block
+
+
+def test_tdd_on_a_repo_with_no_test_archetype_orders_alphabetically(tmp_path, monkeypatch):
+    """The byte-identical guarantee, on the branch that actually computes a key.
+
+    The other ordering test uses a skill with no priority entry, which takes the
+    plain-sorted branch and so cannot detect a broken key function. This one
+    invokes TDD -- priority set, zero matches -- so every archetype ranks equal
+    and ties must break on the name.
+    """
+    monkeypatch.setenv("CHAMELEON_PEER_SKILL_MAX_ARCHETYPES", "2")
+    repo = _committed_profile(
+        tmp_path,
+        {"zebra": "src/zebra.ts", "alpha": "src/alpha.ts", "middle": "src/middle.ts"},
+    )
+    with _trusted(repo):
+        block = skill_context("superpowers:test-driven-development", str(repo))
+    assert "src/alpha.ts" in block
+    assert "src/middle.ts" in block
+    assert "src/zebra.ts" not in block
+
+
+def test_two_matching_archetypes_stay_alphabetical_among_themselves(tmp_path, monkeypatch):
+    """Priority promotes as a group; it does not reorder within the group."""
+    repo = _committed_profile(
+        tmp_path,
+        {"test-zebra": "src/z.test.ts", "test-alpha": "src/a.test.ts", "data": "src/data.ts"},
+    )
+    with _trusted(repo):
+        block = skill_context("superpowers:test-driven-development", str(repo))
+    assert block.index("src/a.test.ts") < block.index("src/z.test.ts")
+    assert block.index("src/z.test.ts") < block.index("src/data.ts")

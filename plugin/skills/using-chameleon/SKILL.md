@@ -6,7 +6,7 @@ description: "Active when .chameleon/ profile directory exists. Explains hook-in
 ---
 
 <SUBAGENT-STOP>
-If you were dispatched as a subagent to execute a specific task, skip this skill - your parent has already established the pattern context.
+If you were dispatched as a subagent to execute a specific task, skip this skill - the per-edit hooks inject your own pattern context directly, scoped to you rather than inherited from the parent.
 </SUBAGENT-STOP>
 
 # How chameleon works

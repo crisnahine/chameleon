@@ -211,7 +211,34 @@ def _skill_key(skill: object) -> str | None:
     return key if key in _BRIEFS else None
 
 
-def _pattern_facts(cwd: object) -> str:
+# Archetype-name substrings a given skill's brief actually points AT, used to
+# order the witness map before the cap truncates it. Only skills whose directive
+# names a specific kind of file need an entry: test-driven-development tells the
+# reader "the canonical witness below is the file to imitate" while writing a
+# FAILING TEST, so a repo whose test archetypes sort late alphabetically handed
+# it a map with every witness except the one it was told to imitate. The other
+# fact-bearing skills author plans and dispatch briefs across the whole repo and
+# want breadth, so they keep the plain alphabetical order.
+_SKILL_ARCHETYPE_PRIORITY: dict[str, tuple[str, ...]] = {
+    "test-driven-development": ("test", "spec"),
+}
+
+
+def _priority_sort_key(archetype: str, priority: tuple[str, ...]) -> tuple[int, str]:
+    """Order archetypes so the ones a skill's brief names survive the cap.
+
+    Deterministic: matches lead, everything else keeps alphabetical order behind
+    them. The no-change guarantee is narrower than "under the cap" -- a matching
+    archetype moves to the front whether or not anything is truncated. What does
+    hold is that a repo with NO match sorts identically to plain alphabetical,
+    since every element then ranks 1 and ties break on the name.
+    """
+    lowered = archetype.lower()
+    matched = any(token in lowered for token in priority)
+    return (0 if matched else 1, archetype)
+
+
+def _pattern_facts(cwd: object, skill_key: str | None = None) -> str:
     """The repo's archetype -> canonical-witness map, or "" when unavailable.
 
     Trust-gated exactly like every other profile-derived injection: an
@@ -253,7 +280,13 @@ def _pattern_facts(cwd: object) -> str:
         if not isinstance(canonicals, dict):
             return ""
         rows: list[tuple[str, str]] = []
-        for archetype in sorted(canonicals):
+        priority = _SKILL_ARCHETYPE_PRIORITY.get(skill_key or "", ())
+        ordered = (
+            sorted(canonicals, key=lambda a: _priority_sort_key(a, priority))
+            if priority
+            else sorted(canonicals)
+        )
+        for archetype in ordered:
             entry = canonicals[archetype]
             # Schema stores a list of witnesses per archetype; tolerate the bare
             # dict a hand-edited or older profile can still hold.
@@ -290,7 +323,7 @@ def skill_context(skill: object, cwd: object) -> str:
         return ""
     parts = [_HEADER.format(name=key), _BRIEFS[key]]
     if key in _FACT_BEARING:
-        facts = _pattern_facts(cwd)
+        facts = _pattern_facts(cwd, key)
         if facts:
             parts.append(facts)
     block = "\n".join(parts)

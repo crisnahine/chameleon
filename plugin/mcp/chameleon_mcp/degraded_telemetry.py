@@ -158,6 +158,54 @@ def parse_degradations(text: str, since_epoch: float) -> tuple[int, int, str | N
     return no_interpreter, spawn_failed, last_ts
 
 
+SWALLOWED_MARKER = "swallowed="
+
+
+def count_swallowed(text: str, since_epoch: float) -> tuple[int, str | None]:
+    """Count swallowed-stage fail-opens in ``text``.
+
+    The third source, and the one the other two cannot see. A hook stage that
+    catches its own exception and returns an empty section leaves the hook
+    exiting 0 with valid JSON: no spawn failed, no interpreter was missing, and
+    no ``fail_open`` metric is emitted, because from the hook's point of view
+    nothing went wrong. The stage is simply absent, which is indistinguishable
+    from a repo that had nothing to say -- so a systematically broken stage
+    reports as a quiet repo forever.
+
+    ``parse_degradations`` cannot be extended to cover this: it keys on two
+    fixed substrings and returns a 3-tuple the interpreter banner unpacks
+    positionally. A sibling counter, shaped like ``count_failopen_metrics``,
+    leaves both contracts alone.
+
+    Same windowing and same burst collapsing as ``parse_degradations``: one
+    broken session writes the same line many times in a second, and counting
+    each raw line would read as chronic.
+    """
+    count = 0
+    last_when = -1.0
+    last_ts: str | None = None
+    prev_counted: str | None = None
+    for line in text.splitlines():
+        m = _TS_RE.match(line)
+        if not m:
+            continue
+        ts = m.group(1)
+        try:
+            when = calendar.timegm(time.strptime(ts, "%Y-%m-%dT%H:%M:%SZ"))
+        except ValueError:
+            continue
+        if when < since_epoch or SWALLOWED_MARKER not in line:
+            continue
+        if line == prev_counted:
+            continue
+        prev_counted = line
+        count += 1
+        if when > last_when:
+            last_when = when
+            last_ts = ts
+    return count, last_ts
+
+
 def _read_log_tail(path: Path, max_bytes: int) -> str:
     """Last ``max_bytes`` of ``path`` decoded as utf-8 (errors replaced).
 
@@ -199,16 +247,18 @@ def read_degraded_summary(window_days: int) -> dict:
         since = time.time() - max(0, int(window_days)) * 86400.0
         log_text = _read_log_tail(hook_error_log_path(), _LOG_TAIL_BYTES)
         no_interpreter, spawn_failed, log_last = parse_degradations(log_text, since)
+        swallowed, swallowed_last = count_swallowed(log_text, since)
         advisor_unavailable, metrics_last = count_failopen_metrics(since)
-        total = advisor_unavailable + no_interpreter + spawn_failed
+        total = advisor_unavailable + no_interpreter + spawn_failed + swallowed
         return {
             "window_days": int(window_days),
             "scope": "user-global",
             "advisor_unavailable": advisor_unavailable,
             "no_interpreter": no_interpreter,
             "spawn_failed": spawn_failed,
+            "swallowed": swallowed,
             "total": total,
-            "last_ts": _max_ts(log_last, metrics_last),
+            "last_ts": _max_ts(_max_ts(log_last, metrics_last), swallowed_last),
         }
     except Exception:
         return {
@@ -217,6 +267,7 @@ def read_degraded_summary(window_days: int) -> dict:
             "advisor_unavailable": 0,
             "no_interpreter": 0,
             "spawn_failed": 0,
+            "swallowed": 0,
             "total": 0,
             "last_ts": None,
         }
