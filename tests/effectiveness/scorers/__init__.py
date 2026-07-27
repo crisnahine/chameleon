@@ -10,6 +10,7 @@ from __future__ import annotations
 from tests.effectiveness.scorers.convention import score as _convention
 from tests.effectiveness.scorers.cost import score as _cost
 from tests.effectiveness.scorers.crossfile import score as _crossfile
+from tests.effectiveness.scorers.depth import score as _depth
 from tests.effectiveness.scorers.duplication import score as _duplication
 from tests.effectiveness.scorers.verification import score as _verification
 
@@ -18,6 +19,7 @@ PANEL_SCORER = "judge_panel"
 SCORERS = {
     "convention": _convention,
     "crossfile": _crossfile,
+    "depth": _depth,
     "duplication": _duplication,
     "verification": _verification,
     "cost": _cost,
