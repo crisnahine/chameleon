@@ -4960,6 +4960,18 @@ def _contract_base_tail(name: str) -> str:
     return name.rsplit("::", 1)[-1].rsplit(".", 1)[-1]
 
 
+# A top-level TS/JS class with an `extends` clause. Anchored at line start
+# (optionally through `export`/`export default`/`abstract`) so a class expression
+# nested inside a function body is not read as the archetype's own class. The
+# superclass may be qualified (`Base.Thing`) or generic (`Base<T>`), and only the
+# name before any type argument is captured.
+_TS_TOPLEVEL_CLASS_RE = re.compile(
+    r"^(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)"
+    r"[^{]*?\bextends\s+([A-Za-z_$][\w$.]*)",
+    re.MULTILINE,
+)
+
+
 def _defines_method(scan_content: str, method: str, language: str) -> bool:
     """True when ``method`` is defined ANYWHERE in the file. File-level on purpose:
     if the method exists on any class in the file, the contract nag is suppressed --
@@ -4969,6 +4981,13 @@ def _defines_method(scan_content: str, method: str, language: str) -> bool:
         # `def perform` / `def self.perform`. A Ruby method name may end in ? or !,
         # so the required name must be a WHOLE name, not a prefix (`call` != `caller`).
         return re.search(rf"\bdef\s+(?:self\.)?{esc}(?![A-Za-z0-9_?!])", scan_content) is not None
+    if language == "typescript":
+        # TS/JS methods carry no `def` keyword, so the anchor is the call-shaped
+        # declaration itself: `canActivate(ctx) {`, `async intercept(...)`,
+        # `public transform(...)`. Deliberately loose -- this predicate only ever
+        # SUPPRESSES the advisory, so an over-match costs a missed nag while an
+        # under-match would invent one against code that defines the method.
+        return re.search(rf"\b{esc}\s*[(<]", scan_content) is not None
     return re.search(rf"\bdef\s+{esc}\s*\(", scan_content) is not None
 
 
@@ -4976,18 +4995,19 @@ def _required_method_violations(
     scan_content: str, class_contract: dict, language: str | None
 ) -> list[Violation]:
     """Advisory when a class extending the archetype's dominant base omits a method
-    the cohort defines at >= 95% frequency (an ApplicationJob without ``perform``, a
+    the cohort defines UNIVERSALLY (the gate is 1.0, not a high-but-partial
+    majority) (an ApplicationJob without ``perform``, a
     BaseService without ``call``). This is the post-edit consumer of the
     ``class_contract`` artifact, which the pre-edit block already advertises but no
     lint verified before.
 
     False-positive-safe by construction: only a top-level class DIRECTLY extending
     the dominant base is in the cohort (a helper, or a subclass of a sibling that
-    inherits the method, is not); the base class itself is exempt; only a >= 95%
-    method is enforced (a 66%-common one is a legitimate option); and the method is
-    flagged only when it is defined nowhere in the file. Ruby + Python only. Never
-    block-eligible."""
-    if language not in ("ruby", "python") or not isinstance(class_contract, dict):
+    inherits the method, is not); the base class itself is exempt; only a method every
+    cohort member defines is enforced (a 66%-common one is a legitimate option); and the method is
+    flagged only when it is defined nowhere in the file. Ruby, Python, and
+    TypeScript. Never block-eligible."""
+    if language not in ("ruby", "python", "typescript") or not isinstance(class_contract, dict):
         return []
     required = class_contract.get("required_methods")
     base = class_contract.get("base")
@@ -5025,6 +5045,14 @@ def _required_method_violations(
     def _extends_base() -> bool:
         if language == "ruby":
             for m in _RUBY_TOPLEVEL_CLASS_RE.finditer(scan_content):
+                cls, sup = m.group(1), m.group(2)
+                if _contract_base_tail(cls) == base_tail:
+                    continue  # the base class itself
+                if _sup_is_base(sup):
+                    return True
+            return False
+        if language == "typescript":
+            for m in _TS_TOPLEVEL_CLASS_RE.finditer(scan_content):
                 cls, sup = m.group(1), m.group(2)
                 if _contract_base_tail(cls) == base_tail:
                     continue  # the base class itself
