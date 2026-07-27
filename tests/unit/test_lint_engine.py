@@ -1635,3 +1635,76 @@ class TestFrozenStringLiteralLint:
         from chameleon_mcp.violation_class import BLOCK_ELIGIBLE_RULES
 
         assert "content-signal-mismatch" not in BLOCK_ELIGIBLE_RULES
+
+
+class TestTypeScriptClassContract:
+    """TS derives class_contract (base, decorators, interfaces) and the pre-edit
+    block advertises it, but nothing verified it post-edit -- the same asymmetry
+    the Ruby/Python consumer was added to close.
+
+    The inheritance SECTION stays Ruby/Python-only by design (TS heritage rides
+    class_contract instead); these cover the contract path, not that one.
+    """
+
+    CONTRACT = {
+        "svc": {
+            "base": "BaseService",
+            "required_methods": ["execute"],
+            "frequencies": {"execute": 1.0},
+            "sample_size": 40,
+        }
+    }
+
+    def _lint(self, content):
+        return lint_conventions(
+            content,
+            {"class_contract": self.CONTRACT["svc"]},
+            language="typescript",
+        )
+
+    def test_missing_required_method_is_flagged(self):
+        v = self._lint("class OrderService extends BaseService {\n  helper() {}\n}\n")
+        assert [x for x in v if x.rule == "missing-required-method"]
+
+    def test_present_method_is_not_flagged(self):
+        v = self._lint("class OrderService extends BaseService {\n  execute() {}\n}\n")
+        assert not [x for x in v if x.rule == "missing-required-method"]
+
+    def test_async_and_modifiers_still_count_as_defined(self):
+        for decl in ("async execute() {}", "public async execute(): Promise<void> {}"):
+            v = self._lint(f"class S extends BaseService {{\n  {decl}\n}}\n")
+            assert not [x for x in v if x.rule == "missing-required-method"], decl
+
+    def test_export_and_abstract_forms_are_in_the_cohort(self):
+        for head in (
+            "export class S extends BaseService",
+            "export default class S extends BaseService",
+            "abstract class S extends BaseService",
+        ):
+            v = self._lint(head + " {\n  helper() {}\n}\n")
+            assert [x for x in v if x.rule == "missing-required-method"], head
+
+    def test_class_not_extending_the_base_is_out_of_cohort(self):
+        v = self._lint("class Loose {\n  helper() {}\n}\n")
+        assert not [x for x in v if x.rule == "missing-required-method"]
+
+    def test_subclass_of_a_sibling_is_not_flagged(self):
+        """It inherits execute through the sibling; only a DIRECT extend is governed."""
+        v = self._lint("class Special extends OrderService {\n  helper() {}\n}\n")
+        assert not [x for x in v if x.rule == "missing-required-method"]
+
+    def test_the_base_class_itself_is_exempt(self):
+        v = self._lint("class BaseService extends Framework {\n  helper() {}\n}\n")
+        assert not [x for x in v if x.rule == "missing-required-method"]
+
+    def test_generic_base_is_matched(self):
+        v = self._lint("class S extends BaseService<Order> {\n  helper() {}\n}\n")
+        assert [x for x in v if x.rule == "missing-required-method"]
+
+    def test_below_frequency_gate_is_not_enforced(self):
+        v = lint_conventions(
+            "class S extends BaseService {\n  helper() {}\n}\n",
+            {"class_contract": {**self.CONTRACT["svc"], "frequencies": {"execute": 0.5}}},
+            language="typescript",
+        )
+        assert not [x for x in v if x.rule == "missing-required-method"]
