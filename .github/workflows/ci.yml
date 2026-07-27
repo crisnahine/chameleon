@@ -252,10 +252,23 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
+          # Load-bearing: the release-count check derives its number from
+          # `git tag`, and a shallow checkout fetches no tags.
           fetch-depth: 0
 
       - name: Fail when a documented count no longer matches the source
         run: python3 scripts/check-derived-counts.py
+
+  import-cycle:
+    name: import-cycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Fail when the largest import cycle grows
+        run: python3 scripts/check-import-cycle.py
 
   hook-smoke:
     name: hook-smoke (${{ matrix.hook.name }})
