@@ -111,7 +111,14 @@ def score(ctx: ScoreContext) -> dict:
     counts: list[int] = []
     for _turn, path, body in ordered:
         try:
-            arch = (_pattern_context(str(path)).get("data") or {}).get("archetype") or "none"
+            # get_pattern_context nests the name one level deeper than it looks:
+            # data.archetype is an envelope whose own .archetype is the string.
+            # Passing the envelope makes lint_file stub out with "archetype must
+            # be a string", which reads as "nothing to score" rather than as the
+            # type error it is -- so every cell came back unscored.
+            arch = ((_pattern_context(str(path)).get("data") or {}).get("archetype") or {}).get(
+                "archetype"
+            ) or "none"
             data = (
                 _lint(
                     repo=str(ctx.worktree), archetype=arch, content=body, file_path=str(path)
@@ -139,4 +146,10 @@ def score(ctx: ScoreContext) -> dict:
         "depth_late_viol": round(late_mean, 4),
         "depth_decay": round(late_mean - early_mean, 4),
         "depth_last_turn": ordered[-1][0],
+        # A cell where nothing was ever flagged has no range for decay to show
+        # up in, so its 0.0 means "the task tripped no rules", not "conformance
+        # held". Those read identically in a scoreboard and mean opposite things
+        # about the instrument, so the distinction is carried in the row rather
+        # than left for a reader to infer.
+        "depth_floor": bool(sum(counts) == 0),
     }

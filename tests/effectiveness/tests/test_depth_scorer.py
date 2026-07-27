@@ -56,7 +56,12 @@ def _ctx(tmp_path, transcript):
 
 
 def _patch_lint(monkeypatch, per_path):
-    monkeypatch.setattr(depth, "_pattern_context", lambda p: {"data": {"archetype": "c"}})
+    # Real shape: data.archetype is an ENVELOPE whose own .archetype is the
+    # string. Mocking it flat is what let the scorer's single unwrap pass tests
+    # and then stub out on every real cell.
+    monkeypatch.setattr(
+        depth, "_pattern_context", lambda p: {"data": {"archetype": {"archetype": "c"}}}
+    )
     monkeypatch.setattr(
         depth,
         "_lint",
@@ -145,7 +150,53 @@ def test_unreadable_transcript_is_unscored(tmp_path):
 
 def test_lint_exception_does_not_crash_the_run(tmp_path, monkeypatch):
     writes = [(f"/r/a{i}.ts", "x") for i in range(6)]
-    monkeypatch.setattr(depth, "_pattern_context", lambda p: {"data": {"archetype": "c"}})
+    monkeypatch.setattr(
+        depth, "_pattern_context", lambda p: {"data": {"archetype": {"archetype": "c"}}}
+    )
     monkeypatch.setattr(depth, "_lint", lambda **k: (_ for _ in ()).throw(RuntimeError("boom")))
     out = depth.score(_ctx(tmp_path, _transcript(tmp_path, writes)))
     assert "unscored" in out  # degrades to unscored, never a fabricated number
+
+
+def test_archetype_is_unwrapped_to_the_string_lint_expects(tmp_path, monkeypatch):
+    """get_pattern_context nests the name one level deeper than it looks.
+
+    Passing the envelope made lint_file stub with "archetype must be a string",
+    which surfaced as "nothing to score" rather than as the type error it was --
+    every cell in the first real run came back unscored for this reason.
+    """
+    seen = []
+    monkeypatch.setattr(
+        depth,
+        "_pattern_context",
+        lambda p: {"data": {"archetype": {"archetype": "component", "confidence_band": "high"}}},
+    )
+
+    def _fake_lint(*, repo, archetype, content, file_path):
+        seen.append(archetype)
+        if not isinstance(archetype, str):
+            return {"data": {"stub": True, "stub_reason": "archetype must be a string"}}
+        return {"data": {"violations": []}}
+
+    monkeypatch.setattr(depth, "_lint", _fake_lint)
+    out = depth.score(
+        _ctx(tmp_path, _transcript(tmp_path, [(f"/r/a{i}.ts", "x") for i in range(4)]))
+    )
+    assert seen and all(a == "component" for a in seen)
+    assert "unscored" not in out
+
+
+def test_all_zero_cell_is_flagged_as_a_floor(tmp_path, monkeypatch):
+    """0.0 decay because nothing was ever flagged means the task had no range,
+    not that conformance held. Those must not read identically."""
+    writes = [(f"/r/a{i}.ts", "x") for i in range(6)]
+    _patch_lint(monkeypatch, {f"/r/a{i}.ts": 0 for i in range(6)})
+    out = depth.score(_ctx(tmp_path, _transcript(tmp_path, writes)))
+    assert out["depth_decay"] == 0.0 and out["depth_floor"] is True
+
+
+def test_real_flat_conformance_is_not_a_floor(tmp_path, monkeypatch):
+    writes = [(f"/r/a{i}.ts", "x") for i in range(6)]
+    _patch_lint(monkeypatch, {f"/r/a{i}.ts": 2 for i in range(6)})
+    out = depth.score(_ctx(tmp_path, _transcript(tmp_path, writes)))
+    assert out["depth_decay"] == 0.0 and out["depth_floor"] is False
