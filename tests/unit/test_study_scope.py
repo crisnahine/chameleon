@@ -10,7 +10,6 @@ from __future__ import annotations
 import subprocess
 
 import pytest
-
 from tests.study_scope import (
     PER_EDIT_SUPPRESSED,
     actionable,

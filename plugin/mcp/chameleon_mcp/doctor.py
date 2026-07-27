@@ -513,6 +513,8 @@ def doctor(repo: str | None = None) -> dict:
     # git honors merge=chameleon, finds no driver, and falls back to the plain
     # text merge the attributes existed to avoid.
     try:
+        import subprocess
+
         _ga = _doctor_root / ".gitattributes"
         _ga_armed = _ga.is_file() and "merge=chameleon" in _ga.read_text(
             encoding="utf-8", errors="replace"
