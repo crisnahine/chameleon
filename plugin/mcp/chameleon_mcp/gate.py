@@ -130,8 +130,24 @@ def _changed_source_files(repo: Path, base: str, head: str) -> list[str]:
 
     from chameleon_mcp.lint_engine import detect_language
 
+    # core.quotePath=false: git otherwise C-quotes a path holding a non-ASCII
+    # byte, a backslash, a quote or a newline, and detect_language is a plain
+    # endswith -- so `"caf\303\251/sub/plain.ts"` resolves to no language and the
+    # file leaves the change set silently. That is this module's one forbidden
+    # outcome, a clean report for a file nothing linted, and unlike a failed diff
+    # it raises no GateUnusable. One accented DIRECTORY component un-gates every
+    # ordinary file beneath it.
     r = subprocess.run(
-        ["git", "-C", str(repo), "diff", "--name-only", f"{base}...{head}"],
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--name-only",
+            f"{base}...{head}",
+        ],
         capture_output=True,
         text=True,
     )

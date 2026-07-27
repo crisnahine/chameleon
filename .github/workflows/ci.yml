@@ -15,12 +15,14 @@
 #                        python) and a bootstrap/trust/refresh lifecycle on real
 #                        Windows -- the full runtime the import smoke can't cover.
 #   - lint:             ruff check + ruff format --check on MCP package +
-#                        unit tests + journey tests.
+#                        unit tests + journey tests + plugin/scripts.
 #   - version-sync:     bash scripts/bump-version.sh --check (fails CI on drift).
 #   - no-personal-paths: fails CI if a tracked file hardcodes a developer
 #                        home path (/Users/<name> or /home/<name>).
-#   - hook-smoke:       matrix over all 5 hooks with synthetic stdin,
-#                        asserting each emits valid JSON.
+#   - hook-smoke:       matrix over all 7 hook wrappers in hooks.json with
+#                        synthetic stdin, asserting each emits valid JSON.
+#                        Keep in step with hooks.json: a wrapper missing here
+#                        reads as covered because the job name says "all".
 #   - security:         pip-audit + npm audit on dependencies.
 #   - shellcheck:       static analysis on hook scripts + shell scripts.
 #   - hooks-manifest:   validates hooks.json references + skill directories.
@@ -207,7 +209,7 @@ jobs:
         # Use uvx so we don't need a full `uv sync` just to lint. Ruff
         # config (line-length, target-version, select) lives in
         # plugin/mcp/pyproject.toml -- uvx picks it up from the working directory.
-        run: uvx ruff@0.15.13 check chameleon_mcp/ ../../tests/unit/ ../../tests/journey/
+        run: uvx ruff@0.15.13 check chameleon_mcp/ ../../tests/unit/ ../../tests/journey/ ../scripts/
 
       - name: Ruff format check (MCP package + tests)
         working-directory: plugin/mcp
@@ -215,7 +217,7 @@ jobs:
         # so the local venv (uv.lock pins ruff 0.15.13) and CI agree
         # byte-for-byte. Run `uvx ruff@0.15.13 format chameleon_mcp/ ../../tests/`
         # to fix locally.
-        run: uvx ruff@0.15.13 format --check chameleon_mcp/ ../../tests/unit/ ../../tests/journey/
+        run: uvx ruff@0.15.13 format --check chameleon_mcp/ ../../tests/unit/ ../../tests/journey/ ../scripts/
 
   version-sync:
     name: version-sync (bump-version.sh --check)
@@ -288,6 +290,15 @@ jobs:
             stdin: '{"tool_name":"Edit","tool_input":{"file_path":"/tmp/test.ts"},"tool_response":{"content":"const x = 1;","success":true},"session_id":"ci-test"}'
           - name: callout-detector
             stdin: '{"user_prompt":"hello world","session_id":"ci-test"}'
+          # A live PreToolUse hook on the Skill matcher (hooks.json). It was in no
+          # gate at all -- not here, not shellcheck, not the Windows driver -- while
+          # this job's header called itself a matrix over every hook.
+          - name: peer-skill-advise
+            stdin: '{"tool_name":"Skill","tool_input":{"skill":"superpowers:brainstorming"},"session_id":"ci-test"}'
+          # The one hook that can BLOCK turn end, and the one with the widest
+          # internal budget. It had shellcheck but nothing ever executed it.
+          - name: stop-backstop
+            stdin: '{"session_id":"ci-test","hook_event_name":"Stop"}'
 
     steps:
       - name: Check out repository
@@ -362,7 +373,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Lint hook scripts
-        run: shellcheck -S warning plugin/hooks/_resolve-python.sh plugin/hooks/session-start plugin/hooks/preflight-and-advise plugin/hooks/posttool-recorder plugin/hooks/posttool-verify plugin/hooks/callout-detector plugin/hooks/stop-backstop plugin/scripts/*.sh scripts/*.sh
+        run: shellcheck -S warning plugin/hooks/_resolve-python.sh plugin/hooks/session-start plugin/hooks/preflight-and-advise plugin/hooks/peer-skill-advise plugin/hooks/posttool-recorder plugin/hooks/posttool-verify plugin/hooks/callout-detector plugin/hooks/stop-backstop plugin/scripts/*.sh scripts/*.sh
 
   hooks-manifest:
     name: hooks-manifest-check

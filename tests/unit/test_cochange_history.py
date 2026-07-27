@@ -380,3 +380,83 @@ def test_miner_keys_are_top_relative_from_a_subdir(tmp_path):
     # Keys are top-relative (packages/a/...), globally unique across workspaces.
     assert "packages/a/x.py" in index["partners"]
     assert "packages/a/x_test.py" in {p["partner"] for p in index["partners"]["packages/a/x.py"]}
+
+
+# --- "untouched" means unmodified on disk, not merely unrecorded --------------
+
+
+def _git_consumer_repo(tmp_path, monkeypatch) -> Path:
+    """A committed git work tree carrying the same a.py -> test_a.py pairing."""
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "pd"))
+    repo = tmp_path / "repo"
+    _init(repo)
+    (repo / "app").mkdir(parents=True)
+    (repo / "app" / "a.py").write_text("x")
+    (repo / "app" / "test_a.py").write_text("t")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "seed")
+    index = {
+        "schema": 2,
+        "root": str(repo),
+        "partners": {"app/a.py": [{"partner": "app/test_a.py", "co": 5, "of": 6, "ratio": 0.833}]},
+    }
+    pd = tmp_path / "pd" / _RID
+    pd.mkdir(parents=True)
+    (pd / COCHANGE_HISTORY_FILENAME).write_text(json.dumps(index))
+    return repo
+
+
+def _advisory(repo) -> str:
+    return "\n".join(
+        hook_helper._cochange_history_advisory_lines(
+            repo_root=repo,
+            repo_id=_RID,
+            state=_state(repo, "app/a.py"),
+            cfg=SimpleNamespace(mode="shadow"),
+        )
+    )
+
+
+@_GIT
+def test_partner_dirty_in_worktree_is_not_nudged(tmp_path, monkeypatch):
+    """The version-bump shape: a SCRIPT rewrote the partner, so it never entered
+    the recorder's edit set (that parses the Bash command string, and a script's
+    own writes leave no trace there) -- but it IS changed, so there is nothing to
+    nudge about."""
+    repo = _git_consumer_repo(tmp_path, monkeypatch)
+    (repo / "app" / "test_a.py").write_text("t modified by a script")
+    assert _advisory(repo) == ""
+
+
+@_GIT
+def test_partner_clean_in_worktree_is_still_nudged(tmp_path, monkeypatch):
+    """The control: an untouched partner must still be surfaced, or the guard
+    above has simply silenced the advisory."""
+    repo = _git_consumer_repo(tmp_path, monkeypatch)
+    text = _advisory(repo)
+    assert "app/a.py usually changes with app/test_a.py" in text
+
+
+@_GIT
+def test_staged_partner_counts_as_touched(tmp_path, monkeypatch):
+    repo = _git_consumer_repo(tmp_path, monkeypatch)
+    (repo / "app" / "test_a.py").write_text("t staged")
+    _git(repo, "add", "app/test_a.py")
+    assert _advisory(repo) == ""
+
+
+def test_non_git_tree_keeps_nudging_rather_than_going_quiet(tmp_path, monkeypatch):
+    """Fail OPEN, not closed. git cannot answer outside a work tree, and a
+    suppressed nudge is the omission this check exists to catch -- so an
+    unanswerable check must not read as 'nothing to report'."""
+    repo = _consumer_repo(tmp_path, monkeypatch)
+    assert "app/a.py usually changes with app/test_a.py" in _advisory(repo)
+
+
+def test_worktree_modified_rels_returns_none_not_empty_when_git_cannot_answer(tmp_path):
+    """None and set() must stay distinguishable: set() would mean 'nothing is
+    modified' and suppress nothing, but only by accident. The caller branches on
+    `is not None`, so the two are not interchangeable."""
+    from chameleon_mcp.stop.advisories import _worktree_modified_rels
+
+    assert _worktree_modified_rels(tmp_path) is None

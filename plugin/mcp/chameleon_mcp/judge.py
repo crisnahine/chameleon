@@ -202,10 +202,20 @@ def _run_git(args: list[str], *, cwd: Path):
 
     Returns None on any failure (timeout, git not on PATH, OSError). Callers
     treat None as "git is unavailable here" and fall back to whole-file content.
+
+    ``core.quotePath=false`` is set here rather than per call site. By default git
+    C-quotes any path carrying a non-ASCII byte, a backslash, a quote or a newline
+    (``"caf\\303\\251/sub/plain.ts"``), and every consumer that parses path output
+    then fails to match it -- ``detect_language`` is a plain ``endswith``, so a
+    quoted name returns None and the file is dropped with nothing recorded. One
+    accented DIRECTORY component silently un-gates every ordinary file beneath it.
+    Putting the flag in the shared helper means a new call site cannot forget it;
+    it only affects how paths are RENDERED, so commands that emit none are
+    unchanged.
     """
     try:
         return subprocess.run(
-            ["git", "-C", str(cwd), *args],
+            ["git", "-C", str(cwd), "-c", "core.quotePath=false", *args],
             capture_output=True,
             text=True,
             timeout=_GIT_TIMEOUT_SECONDS,

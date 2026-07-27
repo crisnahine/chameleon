@@ -171,6 +171,39 @@ def _new_files_in_changeset(repo_root: Path, edited_abs: set[str]) -> set[str]:
         return set()
 
 
+def _worktree_modified_rels(git_top: Path) -> set[str] | None:
+    """Work-tree-top-relative paths with uncommitted changes, or None if git cannot say.
+
+    "Untouched" has to mean unmodified on disk, not merely absent from the
+    recorded edit set. A partner rewritten by a SCRIPT the turn ran -- a version
+    bump rewriting every manifest -- never enters that set: the recorder parses
+    the Bash command string, and a script's own writes leave no trace in it, so
+    the nudge named files the turn had in fact already changed.
+
+    Returns None -- never an empty set -- when git cannot answer, so the caller
+    keeps nudging rather than going quiet on a signal it could not check. For
+    this advisory silence is the costlier failure: an extra nudge for work
+    already done is noise a reader dismisses, while a suppressed one is the
+    omission the whole check exists to catch.
+
+    ``git diff`` names paths relative to the work-tree top, the same space the
+    co-change index is keyed in, so the two sets compare directly.
+    """
+    try:
+        from chameleon_mcp.judge import _git_available, _run_git
+
+        if not _git_available(git_top):
+            return None
+        # Staged and unstaged alike: `git diff HEAD` is the full uncommitted
+        # delta. An unborn HEAD (no commits) exits non-zero and degrades to None.
+        res = _run_git(["diff", "--name-only", "HEAD"], cwd=git_top)
+        if res is None or res.returncode != 0:
+            return None
+        return {ln.strip() for ln in (res.stdout or "").splitlines() if ln.strip()}
+    except Exception:
+        return None
+
+
 def _cochange_history_advisory_lines(
     *, repo_root: Path, repo_id: str | None, state, cfg, persist=None
 ) -> list[str]:
@@ -237,12 +270,20 @@ def _cochange_history_advisory_lines(
         # ones -- the same guard the sibling _pending_findings_block applies.
         from chameleon_mcp.safe_open import contained_rel
 
+        # None when git cannot answer, which keeps the pre-check behavior.
+        modified_rels = _worktree_modified_rels(git_top)
+
         items = []
         for it in missing_partners(index, changed_rels):
             partner = it.get("partner")
             safe = contained_rel(git_top, partner) if isinstance(partner, str) else None
-            if safe is not None and (git_top / safe).is_file():
-                items.append(it)
+            if safe is None or not (git_top / safe).is_file():
+                continue
+            # Already changed in the work tree, whoever wrote it. The nudge is
+            # "you forgot this file"; a file that is not forgotten needs none.
+            if modified_rels is not None and safe in modified_rels:
+                continue
+            items.append(it)
 
         # Once per session per (source -> partner); reuse the sibling advisory's
         # dedup set with a namespaced key so the same pairing does not re-render

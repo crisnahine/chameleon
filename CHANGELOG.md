@@ -4,6 +4,86 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.6.2] - 2026-07-27
+
+### Fixed
+
+- **A path git C-quotes no longer leaves the gate silently.** `git` escapes any path
+  carrying a non-ASCII byte, a backslash, a quote or a newline
+  (`"caf\303\251/sub/plain.ts"`) unless `core.quotePath=false` is set. `gate.py`'s
+  `_changed_source_files` did not set it, and `detect_language` is a plain `endswith`,
+  so the quoted name resolved to no language and the file left the change set — no
+  `GateUnusable`, no warning, nothing in `by_rule`. The gate then printed "no new
+  convention violations introduced by this diff" at exit 0 for a file it never linted,
+  the one outcome the module's docstring says it refuses. The blast radius is not
+  limited to exotic filenames: a single accented, CJK or Cyrillic DIRECTORY component
+  un-gates every ordinary ASCII-named source file beneath it, in the headless backstop
+  that exists precisely for writes no interactive hook governed. The flag now also sits
+  inside `judge._run_git`, the shared spawn helper, rather than at each call site —
+  three consumers parse path output through it (the co-change dirty-partner guard, the
+  contract-break `--numstat` read, `reconstruct_diff`) and each would have failed to
+  match a quoted name. `bootstrap/canonical.py` and `cochange_history.py` already set
+  it; the repo knew the rule and two call sites missed it.
+
+- **Three CI gates that claimed to cover every hook covered five of seven.**
+  `peer-skill-advise` is a live PreToolUse hook on the `Skill` matcher and appeared in
+  none of them — not shellcheck, not the hook-smoke matrix, not the native-Windows
+  runtime driver — while the job header read "matrix over all 5 hooks". `stop-backstop`
+  had shellcheck but nothing ever executed it, despite being the one hook that can
+  block turn end. Both are now in the smoke matrix and the shellcheck list, and the
+  header states the real count with a note to keep it in step with `hooks.json`: a
+  wrapper missing from a gate whose name says "all" reads as covered.
+
+- **`plugin/scripts/` is now in CI's ruff scope.** The lint job enumerated
+  `chameleon_mcp/`, `tests/unit/` and `tests/journey/`, so a Python file under
+  `plugin/scripts/` passed CI unlinted regardless of its state.
+
+## [4.6.1] - 2026-07-27
+
+### Fixed
+
+- **The co-change advisory no longer calls a modified file untouched.** It decided
+  "untouched" from the turn's RECORDED edit set, but a partner rewritten by a script
+  the turn ran never enters that set — the recorder parses the Bash command string,
+  and a script's own writes leave no trace in it. Running `bump-version.sh` and then
+  editing `CHANGELOG.md` produced "CHANGELOG.md usually changes with package.json;
+  package.json is untouched" about a file the same turn had just rewritten. The
+  consume-time re-check now also asks git which paths carry uncommitted changes
+  (`git diff --name-only HEAD`, one call, staged and unstaged alike, work-tree-top
+  relative so it compares directly against the index's key space) and drops a partner
+  that is already dirty. Fails OPEN: when git cannot answer — no work tree, unborn
+  HEAD, git absent — it returns `None` rather than an empty set and every partner is
+  nudged exactly as before, because for this advisory a suppressed nudge is the
+  omission the check exists to catch, while an extra one is noise a reader dismisses.
+  An mtime-based version of this guard was tried first and rejected: a fresh clone
+  gives every file the clone's mtime, which would have silenced the advisory
+  permanently — the same uniform-mtime hazard that moved canonical selection to git
+  commit time.
+
+- **A read no longer records as a write.** `_extract_bash_write_targets` matched
+  `open(path)` in an interpreter one-liner regardless of mode, but both Python's
+  `open` and Ruby's `File.open` default to READING, so `python -c "print(open('a.ts').read())"`
+  armed `a.ts` in enforcement state. The comment above the sink list held the faulty
+  premise — that over-matching is free because `is_file`/`detect_language` drop the
+  extras. A source path the command only read passes both filters exactly as cleanly
+  as one it wrote, so nothing downstream could tell them apart. The armed file was
+  re-linted, the Stop backstop was armed for it, it was written into the session
+  attestation's `governed_files`, and the co-change advisory then reported "this turn
+  edited files whose usual partner is untouched" naming a file the turn never opened
+  for writing. Directional sinks (`writeFileSync`, `File.write`, `IO.write`,
+  `write_text`, …) are unchanged; `open`/`File.open` now require a mode naming
+  `w`/`a`/`x`/`+`, including the `mode=` keyword form and the `gzip.open`/`codecs.open`
+  variants.
+
+- **A path segment ending in a command name is no longer read as that command.**
+  `_MOVE_CMD_RE` carried a word boundary on its right side only, so `plugin/mcp`
+  matched `cp`. `PYTHONPATH=plugin/mcp <cmd>` then satisfied `_iter_move_copy_tails`'
+  env-assignment prefix rule, and an ordinary interpreter invocation was parsed as a
+  copy whose script body was harvested for operands — a repo whose own module path
+  ends in `mcp` tripped it on nearly every command. Real `mv`/`cp`/`git mv`/`ln`/
+  `install`/`rsync`/`scp` detection, including the `sudo`/`env`/assignment/subshell
+  prefixes and `-t DEST`, is unchanged.
+
 ## [4.6.0] - 2026-07-27
 
 ### Added

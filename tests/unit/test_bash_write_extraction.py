@@ -243,3 +243,61 @@ class TestMoveCopyDestArming:
     def test_gnu_target_directory_flag(self):
         assert "destdir/leaked.ts" in extract("mv -t destdir leaked.ts")
         assert "destdir/leaked.ts" in extract("mv --target-directory=destdir leaked.ts")
+
+
+# --- interpreter one-liners: read vs write -----------------------------------
+
+
+def test_bare_open_is_a_read_and_does_not_arm():
+    # Both python's open() and ruby's File.open default to reading, so the
+    # one-argument form inspects a file rather than writing it. Arming it put
+    # untouched source into enforcement state, which re-lints the file, arms the
+    # Stop backstop for it, and lists it among the turn's edited files.
+    assert extract("python3 -c \"print(open('src/app.ts').read())\"") == []
+    assert extract("ruby -e \"File.open('app/models/user.rb') { |f| f.read }\"") == []
+
+
+def test_explicit_read_modes_do_not_arm():
+    assert extract("python3 -c \"open('src/app.ts', 'r').read()\"") == []
+    assert extract("python3 -c \"open('src/app.ts', 'rb').read()\"") == []
+
+
+def test_write_modes_still_arm():
+    for mode in ("'w'", "'a'", "'x'", "'wb'", "'r+'", 'mode="w"'):
+        cmd = f"python -c \"open('src/app.ts', {mode}).write(s)\""
+        assert extract(cmd) == ["src/app.ts"], cmd
+
+
+def test_directional_sinks_need_no_mode():
+    assert extract("node -e \"require('fs').writeFileSync('lib/c.ts', d)\"") == ["lib/c.ts"]
+    assert extract("node -e \"fs.appendFileSync('lib/c.ts', d)\"") == ["lib/c.ts"]
+    assert extract("ruby -e \"File.write('app/x.rb', s)\"") == ["app/x.rb"]
+    assert extract("ruby -e \"IO.write('app/x.rb', s)\"") == ["app/x.rb"]
+
+
+def test_prefixed_open_variants_keep_mode_semantics():
+    assert extract("python -c \"gzip.open('a.gz','wb').write(b)\"") == ["a.gz"]
+    assert extract("python -c \"codecs.open('a.txt','w','utf8')\"") == ["a.txt"]
+    assert extract("python -c \"gzip.open('a.gz').read()\"") == []
+
+
+# --- a path segment ending in a command name is not that command -------------
+
+
+def test_path_containing_command_name_does_not_arm():
+    # `plugin/mcp` ends in `cp`. With a word boundary on the right only, that
+    # read as a copy, and `PYTHONPATH=plugin/mcp <cmd>` then satisfied the
+    # env-assignment prefix rule, so an ordinary interpreter invocation had its
+    # script body harvested for operands.
+    assert extract("rg foo plugin/mcp/x.py") == []
+    assert extract('PYTHONPATH=plugin/mcp python -c "import x"') == []
+    assert extract("cat src/scp_util.ts") == []
+    assert extract("ls a/myln.txt") == []
+    assert extract("grep -r q lib/install_notes.md") == []
+
+
+def test_real_move_commands_still_arm_after_boundary_fix():
+    assert "ok.ts" in extract("mv leaked.ts ok.ts")
+    assert "b/ok.rb" in extract("cp a/secret.rb b/ok.rb")
+    assert "y.ts" in extract("git mv x.ts y.ts")
+    assert "b.ts" in extract("rsync a.ts b.ts")

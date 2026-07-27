@@ -4807,7 +4807,13 @@ _SED_OPERAND_RE = re.compile(
 # otherwise a secret file already blocked at its original path is laundered past
 # the turn-end gate (`mv leaked.ts ok.ts`). ln makes a hard link (same bytes at
 # both paths) and install copies, so both launder exactly like mv/cp.
-_MOVE_CMD_RE = re.compile(r"(?:git\s+)?(?:mv|cp|ln|install|rsync|scp)\b")
+#
+# The name needs a boundary on BOTH sides. With one only on the right, every
+# path segment ENDING in a command name matched -- `plugin/mcp` reads as `cp`,
+# and `PYTHONPATH=plugin/mcp <cmd>` then clears the env-assignment prefix rule
+# in _iter_move_copy_tails, so an ordinary interpreter invocation was parsed as
+# a copy and its script body harvested for operands.
+_MOVE_CMD_RE = re.compile(r"(?:git\s+)?\b(?:mv|cp|ln|install|rsync|scp)\b")
 # dd copies through `of=DEST` operands (not a positional last-operand), so the
 # generic move tail logic would mis-read `of=dest` as the literal target; its
 # destination is extracted separately.
@@ -4817,14 +4823,31 @@ _DD_OF_RE = re.compile(r"""\bof=("[^"]*"|'[^']*'|[^\s;&|)}]+)""")
 # `python -c "open('x','w').write(secret)"` launders a fresh secret to disk that
 # nothing arms. Detect the one-liner form and pull quoted path literals out of
 # the common write sinks so the destination is armed and re-scanned on disk, the
-# same as `echo secret > x`. Over-matching a read-sink path is harmless (the
-# recorder's is_file/detect_language filter drops non-source targets).
+# same as `echo secret > x`.
+#
+# Over-matching is NOT free here, which is why the two sink families are split.
+# Arming a path enters it into enforcement state, which re-lints it, arms the
+# Stop backstop for it, and lists it among the turn's edited files in the
+# co-change advisory -- all of which read as "this turn wrote that file". A
+# source path the command only READ passes the is_file/detect_language filter
+# just as cleanly as one it wrote, so that filter cannot be the thing that keeps
+# a read out.
 _INTERP_ONELINER_RE = re.compile(
     r"\b(?:python[0-9.]*|node|nodejs|ruby|perl|deno|bun|php)\b[^\n]*?\s-(?:c|e)\b"
 )
+# Sinks that name their own direction: reaching one at all means a write.
 _INTERP_WRITE_SINK_RE = re.compile(
-    r"""(?:open|writeFileSync|writeFile|appendFileSync|createWriteStream|write_text|"""
-    r"""write_bytes|File\.write|File\.open|IO\.write)\s*\(\s*("[^"]*"|'[^']*')"""
+    r"""(?:writeFileSync|writeFile|appendFileSync|createWriteStream|write_text|"""
+    r"""write_bytes|File\.write|IO\.write)\s*\(\s*("[^"]*"|'[^']*')"""
+)
+# `open`/`File.open` are mode-dependent, and BOTH default to reading when the
+# mode is omitted -- so the one-argument form is a read and must not arm. Only a
+# mode naming w/a/x (write, append, exclusive-create) or `+` (r+ opens for
+# update) mutates the file; r and rb do not. Covers the keyword form
+# (`mode="w"`) and the prefixed variants (`gzip.open`, `codecs.open`).
+_INTERP_OPEN_WRITE_RE = re.compile(
+    r"""(?:\bopen|File\.open)\s*\(\s*("[^"]*"|'[^']*')\s*,\s*"""
+    r"""(?:mode\s*=\s*)?['"][^'"]*[waxWAX+][^'"]*['"]"""
 )
 # A file DELETED via `rm`/`unlink`/`git rm` at a command position. A deleted
 # module whose importers still reference it is the strongest cross-file existence
@@ -5071,8 +5094,11 @@ def _extract_bash_write_targets(command: str) -> list[str]:
 
     # Interpreter one-liner writes (`python -c "open('x','w')..."`): pull the
     # quoted path out of the write sink so the file is armed and re-scanned on disk.
+    # A mode-less `open(p)` is a read and is deliberately not armed.
     if _INTERP_ONELINER_RE.search(command):
         for m in _INTERP_WRITE_SINK_RE.finditer(command):
+            _add(_unquote_target(m.group(1)))
+        for m in _INTERP_OPEN_WRITE_RE.finditer(command):
             _add(_unquote_target(m.group(1)))
 
     return targets

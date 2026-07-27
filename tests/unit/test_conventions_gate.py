@@ -21,6 +21,9 @@ the write is strictly better, and this only covers writes that never got it.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+
 import pytest
 
 from chameleon_mcp.gate import GateResult, decide
@@ -118,3 +121,64 @@ class TestUnusable:
         (tmp_path / "f.ts").write_text("export const a = 1;\n", encoding="utf-8")
         code = main(["--repo", str(tmp_path), "--base", "no-such-ref", "--strict"])
         assert code == 2
+
+
+# --- a path git C-quotes must not leave the change set silently ---------------
+
+
+_HAS_GIT = shutil.which("git") is not None
+_GIT = pytest.mark.skipif(not _HAS_GIT, reason="git not on PATH")
+
+
+def _repo_with_non_ascii_dir(tmp_path):
+    """A committed repo whose .ts file sits under an accented DIRECTORY."""
+    repo = tmp_path / "r"
+    (repo / "café" / "sub").mkdir(parents=True)
+    (repo / "café" / "sub" / "plain.ts").write_text("export const a = 1;\n", encoding="utf-8")
+    (repo / "plain2.ts").write_text("export const b = 2;\n", encoding="utf-8")
+    for args in (
+        ["init", "-q"],
+        ["config", "user.email", "t@t.t"],
+        ["config", "user.name", "t"],
+        ["add", "-A"],
+        ["commit", "-qm", "one"],
+    ):
+        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+    (repo / "café" / "sub" / "plain.ts").write_text("export const a = 2;\n", encoding="utf-8")
+    (repo / "plain2.ts").write_text("export const b = 3;\n", encoding="utf-8")
+    for args in (["add", "-A"], ["commit", "-qm", "two"]):
+        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+    return repo
+
+
+@_GIT
+def test_non_ascii_path_still_reaches_the_gate(tmp_path):
+    """Without core.quotePath=false git emits `"caf\\303\\251/sub/plain.ts"`, and
+    detect_language is a plain endswith -- the quoted name ends in `"`, resolves to
+    no language, and the file leaves the change set. Nothing raises, nothing is
+    recorded, and the gate prints "no new convention violations" at exit 0: a green
+    build for a file it never linted, which is the one outcome this module refuses.
+    One accented DIRECTORY component un-gates every ordinary file beneath it.
+    """
+    from chameleon_mcp.gate import _changed_source_files
+
+    files = _changed_source_files(_repo_with_non_ascii_dir(tmp_path), "HEAD~1", "HEAD")
+    assert "café/sub/plain.ts" in files
+    assert "plain2.ts" in files
+    assert not any(f.startswith('"') for f in files)
+
+
+@_GIT
+def test_run_git_does_not_c_quote_paths(tmp_path):
+    """The shared helper carries the flag so no call site can forget it. Three
+    consumers parse path output through it (the co-change dirty-partner guard, the
+    contract-break numstat read, reconstruct_diff), and each would silently fail to
+    match a quoted name."""
+    from chameleon_mcp.judge import _run_git
+
+    repo = _repo_with_non_ascii_dir(tmp_path)
+    res = _run_git(["diff", "--name-only", "HEAD~1...HEAD"], cwd=repo)
+    assert res is not None and res.returncode == 0
+    lines = [ln for ln in (res.stdout or "").splitlines() if ln.strip()]
+    assert "café/sub/plain.ts" in lines
+    assert not any(ln.startswith('"') for ln in lines)
