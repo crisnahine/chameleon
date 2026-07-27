@@ -23,7 +23,9 @@ import dataclasses
 import importlib
 from collections.abc import Callable
 
-VALID_TIERS = ("ci", "full", "dup")
+# "depth": long multi-file sessions scored by authoring position rather than
+# by final tree; uses the committed ci fixtures, so it needs no env repos.
+VALID_TIERS = ("ci", "full", "dup", "depth")
 VALID_FIXTURES = ("ts", "rails", "py", "env-ts", "env-ruby", "env-py")
 # tier "dup" reuses the env-pointed real repos (same fixtures as full); it is a
 # separate tier so the large duplication-reuse corpus runs in isolation from the
@@ -32,6 +34,7 @@ TIER_FIXTURES = {
     "ci": ("ts", "rails", "py"),
     "full": ("env-ts", "env-ruby", "env-py"),
     "dup": ("env-ts", "env-ruby"),
+    "depth": ("ts", "rails", "py"),
 }
 VALID_CATEGORIES = ("convention", "crossfile", "duplication", "verification")
 
@@ -44,6 +47,7 @@ _PACK_MODULES = (
     "tests.effectiveness.tasks.tier2_python",
     "tests.effectiveness.tasks.tier3_dup_ts",
     "tests.effectiveness.tasks.tier3_dup_rb",
+    "tests.effectiveness.tasks.tier4_depth",
 )
 
 

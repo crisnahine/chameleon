@@ -86,7 +86,14 @@ def test_mixed_unscored_and_metrics_collapses_to_unscored(tmp_path, monkeypatch)
 
 
 def test_registry_names_match_spec():
-    assert set(SCORERS) == {"convention", "crossfile", "duplication", "verification", "cost"}
+    assert set(SCORERS) == {
+        "convention",
+        "crossfile",
+        "depth",
+        "duplication",
+        "verification",
+        "cost",
+    }
     assert PANEL_SCORER == "judge_panel"
 
 
