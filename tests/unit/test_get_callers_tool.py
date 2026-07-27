@@ -258,6 +258,85 @@ def test_get_callers_callee_absent_empty(trusted_repo):
     assert data["callers"] == []
 
 
+# ---------------------------------------------------------------------------
+# Path not on disk -> found False, reason path-not-a-file
+# ---------------------------------------------------------------------------
+
+
+def test_get_callers_phantom_path_found_false(trusted_repo):
+    """A path that is not on disk must not answer "no callers".
+
+    module_key_for_path is pure path arithmetic, so a typo'd path yields a
+    perfectly valid key the index simply has no row for -- indistinguishable
+    from a real file nothing calls unless existence is checked.
+    """
+    cham = trusted_repo / ".chameleon"
+    _write_calls_index(
+        cham, {"other.ts": {"otherFn": {"callers": [], "total": 0, "truncated": False}}}
+    )
+    res = tools.get_callers(str(trusted_repo), str(trusted_repo / "nope.ts"), "makeService")
+    _assert_envelope(res)
+    data = res["data"]
+    assert data["found"] is False
+    assert data.get("reason") == "path-not-a-file"
+
+
+def test_get_callers_directory_path_found_false(trusted_repo):
+    """A directory is not a file: the reason code names the condition exactly."""
+    cham = trusted_repo / ".chameleon"
+    _write_calls_index(
+        cham, {"other.ts": {"otherFn": {"callers": [], "total": 0, "truncated": False}}}
+    )
+    subdir = trusted_repo / "src"
+    subdir.mkdir()
+    res = tools.get_callers(str(trusted_repo), str(subdir), "makeService")
+    _assert_envelope(res)
+    data = res["data"]
+    assert data["found"] is False
+    assert data.get("reason") == "path-not-a-file"
+
+
+def test_get_callers_unreadable_parent_refuses_rather_than_answering(trusted_repo):
+    """An unreadable parent directory must not surface as a verified zero.
+
+    The refusal comes from find_repo_root, and earlier than a marker walk: its
+    opening is_file() on this same path raises under the blanket OSError catch,
+    so it returns None and the tool answers path-unresolved BEFORE the phantom
+    guard is consulted. (No marker is reached either way -- this fixture marks
+    the repo with .chameleon, not .git.)
+
+    So the end-to-end property is what this pins: found:false, never an empty
+    found:true. The guard's own raise-path mapping cannot be reached from any
+    tool entry point, since that same stat refuses first, and is pinned
+    directly in test_phantom_path_reason_covers_every_input_class instead.
+    """
+    import os
+
+    cham = trusted_repo / ".chameleon"
+    _write_calls_index(
+        cham, {"other.ts": {"otherFn": {"callers": [], "total": 0, "truncated": False}}}
+    )
+    locked = trusted_repo / "locked"
+    locked.mkdir()
+    target = locked / "svc.ts"
+    target.write_text("export function makeService() {}\n", encoding="utf-8")
+    os.chmod(locked, 0o000)
+    try:
+        try:
+            target.is_file()
+        except OSError:
+            pass
+        else:
+            pytest.skip("parent-directory permissions are not enforced here (running as root?)")
+        res = tools.get_callers(str(trusted_repo), str(target), "makeService")
+        _assert_envelope(res)
+        data = res["data"]
+        assert data["found"] is False
+        assert data.get("reason") == "path-unresolved"
+    finally:
+        os.chmod(locked, 0o755)
+
+
 def test_get_callers_unknown_name_suggests_nearest_recorded(trusted_repo):
     """A near-miss name (typo/case drift) gets the closest recorded names back
     so the caller can self-correct without a search_codebase detour."""

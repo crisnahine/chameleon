@@ -424,7 +424,9 @@ def get_duplication_candidates(
 
     Returns {found, file, matches: [{function, candidates: [...]}]}. Fails open
     with found=False on any ambiguity (unresolvable/untrusted repo, missing
-    catalog, unparsable file). Never fabricates a candidate.
+    catalog, a file_path that is not a file on disk). A file that EXISTS but
+    parses to no functions, including one the extractor cannot read, is a real
+    answer with empty matches. Never fabricates a candidate.
     """
     return tools.get_duplication_candidates(repo, file_path, response_format)
 

@@ -1003,6 +1003,129 @@ def test_query_symbol_importers_no_index_found_false(trusted_repo):
     assert res["data"]["found"] is False
 
 
+def test_phantom_path_reason_covers_every_input_class(tmp_path):
+    """The predicate the index tools share, pinned once per input class.
+
+    Five public tools consult it across six call sites (the importer query has
+    a separate Ruby branch), and each has its own test that it REACHES the
+    predicate. This pins what the predicate ANSWERS, so the raise path cannot
+    silently start returning None -- which would restore the found:true
+    fall-through -- and it is the only place that path is testable, since every
+    tool's own repo-root walk refuses on the same stat before the guard runs.
+    """
+    import os
+
+    real = tmp_path / "real.ts"
+    real.write_text("export const x = 1;\n", encoding="utf-8")
+    assert tools._phantom_path_reason(real) is None
+    assert tools._phantom_path_reason(tmp_path / "nope.ts") == "path-not-a-file"
+    assert tools._phantom_path_reason(tmp_path) == "path-not-a-file"
+
+    broken_link = tmp_path / "dangling.ts"
+    broken_link.symlink_to(tmp_path / "does_not_exist.ts")
+    assert tools._phantom_path_reason(broken_link) == "path-not-a-file"
+
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    hidden = locked / "svc.ts"
+    hidden.write_text("export const y = 2;\n", encoding="utf-8")
+    os.chmod(locked, 0o000)
+    try:
+        try:
+            hidden.is_file()
+        except OSError:
+            pass
+        else:
+            pytest.skip("parent-directory permissions are not enforced here (running as root?)")
+        assert tools._phantom_path_reason(hidden) == "path-unstattable"
+    finally:
+        os.chmod(locked, 0o755)
+
+
+def test_query_symbol_importers_phantom_path_found_false(trusted_repo):
+    """A path that is not on disk must not answer "nothing imports this"."""
+    cham = trusted_repo / ".chameleon"
+    _write_reverse_index(cham, {"pricing.ts": {"x": [{"path": "a.ts", "line": 1}]}})
+    res = tools.query_symbol_importers(str(trusted_repo), str(trusted_repo / "nope.ts"))
+    _assert_envelope(res)
+    data = res["data"]
+    assert data["found"] is False
+    assert data.get("reason") == "path-not-a-file"
+
+
+def test_query_symbol_importers_real_file_no_importers_found_true(trusted_repo):
+    """A file that exists but nothing imports is a real answer, not a phantom."""
+    cham = trusted_repo / ".chameleon"
+    (trusted_repo / "lonely.ts").write_text("export const y = 2;\n", encoding="utf-8")
+    _write_reverse_index(cham, {"pricing.ts": {"x": [{"path": "a.ts", "line": 1}]}})
+    res = tools.query_symbol_importers(str(trusted_repo), str(trusted_repo / "lonely.ts"))
+    _assert_envelope(res)
+    data = res["data"]
+    assert data["found"] is True
+    assert data["importers"] == []
+
+
+def test_query_symbol_importers_deleted_but_indexed_still_reports_breaks(trusted_repo):
+    """A DELETED module is absent from disk yet still answerable.
+
+    The existence-break path depends on it: a module the index records but that
+    is gone exports nothing, so every importer still naming a binding is a real
+    break. An existence guard placed at the top of the tool instead of in the
+    miss branch would silently destroy this, and it is what feeds
+    _compute_contract_breaks.
+    """
+    cham = trusted_repo / ".chameleon"
+    (trusted_repo / "user.ts").write_text("import { oldExport } from './gone';\n", encoding="utf-8")
+    _write_reverse_index(cham, {"gone.ts": {"oldExport": [{"path": "user.ts", "line": 1}]}})
+    res = tools.query_symbol_importers(str(trusted_repo), str(trusted_repo / "gone.ts"))
+    _assert_envelope(res)
+    data = res["data"]
+    assert data["found"] is True
+    assert {row["name"] for row in data["broken"]} == {"oldExport"}
+
+
+def _write_constant_index(cham, constants):
+    from chameleon_mcp.constant_index import SCHEMA_VERSION as _CI_SCHEMA
+
+    (cham / "constant_index.json").write_text(
+        json.dumps({"schema_version": _CI_SCHEMA, "language": "ruby", "constants": constants}),
+        encoding="utf-8",
+    )
+    # Re-grant trust so the rewritten profile surface (constant_index.json is
+    # hashed into the trust SHA) is still trusted.
+    grant_trust(tools._compute_repo_id(cham.parent), cham)
+
+
+_RUBY_CONSTANTS = {"User": {"defined_in": ["app/user.rb"], "referenced_by": ["app/admin.rb"]}}
+
+
+def test_query_symbol_importers_ruby_phantom_path_found_false(trusted_repo):
+    """Ruby routes to the constant graph BEFORE the reverse-index miss branch,
+    so it needs its own guard: a fix placed only in the TS path would leave .rb
+    answering "nothing references this" about a file that does not exist."""
+    cham = trusted_repo / ".chameleon"
+    _write_constant_index(cham, _RUBY_CONSTANTS)
+    res = tools.query_symbol_importers(str(trusted_repo), str(trusted_repo / "app" / "nope.rb"))
+    _assert_envelope(res)
+    data = res["data"]
+    assert data["found"] is False
+    assert data.get("reason") == "path-not-a-file"
+
+
+def test_query_symbol_importers_ruby_real_file_no_constants_found_true(trusted_repo):
+    """A real Ruby file defining no referenced constant is a genuine empty answer."""
+    cham = trusted_repo / ".chameleon"
+    app = trusted_repo / "app"
+    app.mkdir()
+    (app / "plain.rb").write_text("puts 1\n", encoding="utf-8")
+    _write_constant_index(cham, _RUBY_CONSTANTS)
+    res = tools.query_symbol_importers(str(trusted_repo), str(app / "plain.rb"))
+    _assert_envelope(res)
+    data = res["data"]
+    assert data["found"] is True
+    assert data["importers"] == []
+
+
 def test_query_symbol_importers_untrusted(trusted_repo):
     from chameleon_mcp.profile.trust import repo_data_dir
 
@@ -1336,6 +1459,42 @@ def test_get_duplication_candidates_no_catalog_found_false(trusted_repo):
     res = tools.get_duplication_candidates(str(trusted_repo), str(new_file))
     _assert_envelope(res)
     assert res["data"]["found"] is False
+
+
+def test_get_duplication_candidates_phantom_path_found_false(trusted_repo):
+    """parse_edited_functions returns [] for an unreadable file and for a file
+    with no functions alike, so the empty branch must separate the two.
+
+    No extractor stub here: a path that is not on disk returns [] at the
+    read_bytes guard, before an extractor is ever resolved.
+    """
+    cham = trusted_repo / ".chameleon"
+    _write_function_catalog(
+        cham,
+        {"fmt.ts": [{"name": "formatDate", "kind": "function", "arity": 1, "required": 1}]},
+    )
+    missing = trusted_repo / "nope.ts"
+    res = tools.get_duplication_candidates(str(trusted_repo), str(missing))
+    _assert_envelope(res)
+    assert res["data"]["found"] is False
+    assert res["data"].get("reason") == "path-not-a-file"
+
+
+def test_get_duplication_candidates_real_file_no_functions_found_true(trusted_repo, monkeypatch):
+    """A constants-only module parses to zero functions and duplicates nothing:
+    still a real answer, and it must not be swept up by the phantom guard."""
+    cham = trusted_repo / ".chameleon"
+    _write_function_catalog(
+        cham,
+        {"fmt.ts": [{"name": "formatDate", "kind": "function", "arity": 1, "required": 1}]},
+    )
+    consts = trusted_repo / "constants.ts"
+    consts.write_text("export const MAX = 10;\n", encoding="utf-8")
+    _stub_extractor(monkeypatch, consts, [])
+    res = tools.get_duplication_candidates(str(trusted_repo), str(consts))
+    _assert_envelope(res)
+    assert res["data"]["found"] is True
+    assert res["data"]["file"] == "constants.ts"
 
 
 def test_get_duplication_candidates_untrusted(trusted_repo):

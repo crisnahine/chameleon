@@ -54,7 +54,7 @@
   <text class="l d7 warn" x="26" y="300">⚠  Known off-pattern in this repo. Do NOT write it this way:</text>
   <text class="l d8" x="26" y="326"><tspan class="kw">     import </tspan><tspan class="fg">axios</tspan><tspan class="kw"> from </tspan><tspan class="str">"axios"</tspan></text>
 
-  <text class="l d9 ok" x="26" y="366">✓  Use @/lib/wrapper instead of axios.</text>
+  <text class="l d9 ok" x="26" y="366">✓  Use request() from ~/queries/request instead of axios.</text>
   <text class="l d10 mut" x="26" y="390">   The canonical witness above is the conforming form.</text>
 
   <rect class="cur" x="26" y="420" width="9" height="16"/>
