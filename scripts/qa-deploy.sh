@@ -38,10 +38,18 @@ version() {
 # Files whose content decides whether the running plugin is the dev plugin.
 # Compared as a tree rather than by git SHA: the cache is a plain copy with no
 # git metadata of its own, so a SHA has nothing to compare against there.
+#
+# .chameleon is excluded for the same reason as .claude: dogfooding leaves a
+# local, git-ignored profile under plugin/ that the marketplace clone never
+# carries, so the cache legitimately lacks it. Counting that as drift makes
+# verify FAIL on a byte-correct deploy -- and a gate that cries wolf is one a
+# developer learns to wave through, which is the failure this script exists
+# to prevent.
 tree_differs() {
     ! diff -rq --exclude='__pycache__' --exclude='.venv' --exclude='node_modules' \
         --exclude='.in_use' --exclude='.pytest_cache' --exclude='.ruff_cache' \
-        --exclude='.claude' --exclude='.orphaned_at' --exclude='.in_use' \
+        --exclude='.claude' --exclude='.chameleon' \
+        --exclude='.orphaned_at' --exclude='.in_use' \
         "$1" "$2" >/dev/null 2>&1
 }
 
@@ -134,7 +142,8 @@ cmd_verify() {
         echo "    FAIL: running copy differs from the dev tree. Offending paths:" >&2
         diff -rq --exclude='__pycache__' --exclude='.venv' --exclude='node_modules' \
             --exclude='.in_use' --exclude='.pytest_cache' --exclude='.ruff_cache' \
-            --exclude='.claude' --exclude='.orphaned_at' --exclude='.in_use' \
+            --exclude='.claude' --exclude='.chameleon' \
+        --exclude='.orphaned_at' --exclude='.in_use' \
             "${DEV_ROOT}/plugin" "${cache_dir}" 2>&1 | head -20 >&2
         rc=1
     else
