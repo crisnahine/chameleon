@@ -53,7 +53,7 @@ import { fmtMoney } from "@/lib/format";
 const res = await http.get(`/api/orders/${id}`);
 ```
 
-The first version compiles, passes tests, and dies in review, where you have been catching it by hand every single time. Duplication up and reuse down is AI's biggest measured maintainability regression. Chameleon attacks it twice: at write time (show the wrapper and the existing helper first) and at turn end (a semantic duplication catch grounded in your real call graph: "this already exists, called from 7 sites").
+The first version compiles, passes tests, and dies in review, where you have been catching it by hand every single time. Duplication up and reuse down is the largest maintainability regression anyone has put numbers on: GitClear reports copy-paste blocks rising and moved (refactored) code falling sharply across a corpus of hundreds of millions of changed lines. That is vendor-published research rather than peer-reviewed, so weigh it accordingly — but it matches what review actually feels like, and it is the same direction Wang et al. measure for style. Chameleon attacks it twice: at write time (show the wrapper and the existing helper first) and at turn end (a semantic duplication catch grounded in your real call graph: "this already exists, called from 7 sites").
 
 ### 3. When the turn ends, a second reviewer reads the diff
 
@@ -98,7 +98,17 @@ You have tried this: a conventions section in `CLAUDE.md`, a `.cursorrules`, an 
 2. **They rot.** Someone refactors the HTTP wrapper; the rule file still names the old one; the model follows the stale rule with full confidence. Rot is invisible until it bites.
 3. **Prose loses.** "Please use our wrapper" competes with everything else in context. A concrete file to imitate is how in-context learning actually works.
 
+This is not a problem newer models grow out of. Measuring style consistency against the human code in the same repositories, Wang et al. found 90.1% of GPT-4's samples diverged from the surrounding style — the *worst* of the five models tested, not the best ([arXiv:2407.00456](https://arxiv.org/abs/2407.00456), PACM SE / FSE 2025). Capability went up; conformance did not follow.
+
 Chameleon inverts all three. Conventions are derived by parsing the code itself: the official TypeScript Compiler API for TS/JS, Prism for Ruby, bundled libcst for Python. The profile derives from the production branch tip through a clean git worktree, never your dirty checkout, so a half-finished experiment cannot poison the team's norms. It refreshes automatically on drift. The rules cannot rot, because they are recomputed from the thing they describe.
+
+**Automatic derivation is no longer unique, so here is the honest line.** Qodo shipped a Custom Rules Miner in June 2026 that discovers rules from codebase patterns and PR history without manual authorship, and exposes them to Claude Code as a slash command. Greptile builds a repo graph on day one. CodeRabbit imports a standards file. Three things still separate chameleon, and none of them is "we derive rules and they don't":
+
+- **Where the evidence comes from.** Chameleon reads parser output — the TypeScript AST, Prism, libcst — not review telemetry or PR history. A convention here is what the committed code structurally *is*, on a repo with no review history at all.
+- **When it arrives.** The guidance lands in the PreToolUse hook, before the first token of the edit is written. A rule mined into a review bot arrives before *merge*, which is after the code exists and after you have read it.
+- **Where it runs.** Everything is local: no account, no bot install, no repo contents leaving the machine. The one network call in the product is an opt-in dependency audit.
+
+For codebase comprehension specifically — `search_codebase`, `get_callers`, `get_callees` — treat chameleon as plumbing, not a differentiator. [Serena](https://github.com/oraios/serena) (MIT, 40+ languages) and [Codanna](https://github.com/bartolli/codanna) (Apache-2.0) do that job well and are worth using on their own terms. What is harder to get elsewhere is the derived-archetype layer on top: blast radius scoped to an archetype cohort, semantic duplication grounded in a real call graph, and deterministic contract breaks.
 
 And chameleon writes the rule file for you, in the one channel models actually obey: `.chameleon/conventions.md` is the derived conventions rendered for Claude's memory channel, kept fresh by every refresh and teach. Wire it once — a one-line `.claude/rules/chameleon-conventions.md` covers the whole team without touching your `CLAUDE.md` (or use `CLAUDE.local.md` to keep it personal). Measured, not asserted: the identical rules were followed 100% of the time through this channel versus 40% as hook-injected advice, across TypeScript, Ruby, and Python, on two models (`tests/effectiveness/results-published/multiconv-ab-2026-07-11.md`).
 
