@@ -2530,6 +2530,24 @@ def _resolve_repo_root_by_id(repo_id: str, repo_root_hint: str | None = None) ->
     return p.resolve() if p.is_dir() else None
 
 
+def _witness_file_exists(repo_root: Path, rel_path: str) -> bool:
+    """True when ``rel_path`` names an existing file inside ``repo_root``.
+
+    Used only to order canonical candidates, never to authorize a read: the
+    path comes from the committed (attacker-controllable) canonicals.json, so a
+    traversal segment is rejected lexically here and the real containment check
+    still happens in ``safe_read_text``. Never raises.
+    """
+    try:
+        root = os.path.realpath(repo_root)
+        target = os.path.realpath(os.path.join(root, rel_path))
+        if os.path.commonpath([root, target]) != root:
+            return False
+        return os.path.isfile(target)
+    except (OSError, ValueError):
+        return False
+
+
 def get_canonical_excerpt(repo: str, archetype: str) -> dict:
     """Return the annotated canonical excerpt for an archetype.
 
@@ -2781,6 +2799,28 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
                 "sha_hint": None,
             }
         )
+
+    # canonicals[archetype] is an ORDERED CANDIDATE LIST, not a single choice.
+    # Taking candidate 0 unconditionally blanks the excerpt for the whole
+    # archetype when that one file has moved since derivation, even though later
+    # candidates are still on disk -- and the largest, longest-lived clusters are
+    # exactly the ones whose witness is most likely to have moved. Prefer the
+    # first candidate that still exists; when none do, keep candidate 0 so the
+    # `missing: True` branch below still reports the witness the profile names.
+    # Existence only ORDERS the candidates here; safe_read_text below remains the
+    # authoritative containment check, and it runs after the trust gate.
+    for _cand in canonicals:
+        if not isinstance(_cand, dict):
+            continue
+        _cand_witness = _cand.get("witness")
+        if not isinstance(_cand_witness, dict):
+            continue
+        _cand_rel = _cand_witness.get("path")
+        if not _cand_rel or not isinstance(_cand_rel, str):
+            continue
+        if _witness_file_exists(repo_root, _cand_rel):
+            witness_rel, witness = _cand_rel, _cand_witness
+            break
 
     try:
         from chameleon_mcp.safe_open import (
@@ -3879,7 +3919,22 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
             sites = [_qsi_site(imp) for imp in module_rows]
             importers_out.append({"name": name, "count": len(module_rows), "sites": sites})
         symbol_rows = [imp for imp in importers if getattr(imp, "kind", None) != "module"]
-        if symbol_rows and not open_set:
+        if symbol_rows and open_set:
+            # `export * from` makes the export set unenumerable, so this name
+            # cannot be judged present-or-absent and must not be called broken.
+            # The import EDGE is still recorded and still real, though, and it is
+            # the rename blast radius a caller asks this tool for -- dropping it
+            # reports a barrel with hundreds of dependents as having none, which
+            # is the one answer worse than saying nothing. Suppress `broken`,
+            # report the importer, exactly as the contract states.
+            importers_out.append(
+                {
+                    "name": name,
+                    "count": len(symbol_rows),
+                    "sites": [_qsi_site(imp) for imp in symbol_rows],
+                }
+            )
+        elif symbol_rows and not open_set:
             # Re-verify each recorded importer still references `name` FROM this
             # module on disk before calling it broken: the index is a snapshot, so
             # a fully-migrated importer (reference dropped, or import repointed to a
@@ -3981,6 +4036,53 @@ EMPTY_CALLERS_NOTE = (
     "too. Before renaming, deleting, or changing this signature, confirm with a "
     "grep; run /chameleon-refresh if the snapshot may be stale."
 )
+
+# React "calls" a component by writing `<Component/>`, which is a JSX element and
+# not a call expression, so no call edge is recorded. Explaining that zero with
+# instance dispatch sends a React developer hunting for a `this.` that does not
+# exist, and to /chameleon-refresh, which cannot help -- on the largest archetype
+# in most React repos. The IMPORT edge is indexed, so name the tool that has the
+# answer instead of sending the reader to grep.
+EMPTY_CALLERS_NOTE_JSX = (
+    "No caller in the committed calls snapshot. Absence is NOT evidence of dead "
+    "code. In a JSX file a component is used by writing <Component/>, which is a "
+    "JSX element rather than a call expression, so it is NOT indexed as a call "
+    "edge -- a component rendered in many places legitimately reports zero here. "
+    "query_symbol_importers on this file returns those usages. Dynamic dispatch "
+    "and callers added since the last refresh are invisible too. Before renaming, "
+    "deleting, or changing this signature, check query_symbol_importers or grep; "
+    "run /chameleon-refresh if the snapshot may be stale."
+)
+
+
+# A symbol re-exported through a barrel has its caller edges filed under the
+# BARREL's key, not the defining file's -- so the definition-site query, which is
+# exactly the one a rename runs, can answer zero while the barrel holds every
+# edge (measured: 0 at the definition vs 19 at the barrel for one excalidraw
+# symbol). Until the index files that edge under both keys, a zero on a
+# JS/TS-family file must not read as "safe to rename".
+_BARREL_CALLERS_NOTE = (
+    " This file is JavaScript/TypeScript: if this symbol is re-exported through a "
+    "barrel (export { x } from ...), its callers are recorded under the BARREL's "
+    "path, not this one, and this query cannot see them. Check "
+    "query_symbol_importers on this file, or get_callers on the barrel, before "
+    "treating zero as safe to rename."
+)
+
+
+def _empty_callers_note(rel_path: object) -> str:
+    """The empty-callers note matched to the file's language.
+
+    A zero means three different things in a JSX file, a barrelled JS/TS module,
+    and an OO one, and the generic note's remediation is wrong for the first two.
+    """
+    if not isinstance(rel_path, str):
+        return EMPTY_CALLERS_NOTE
+    base = EMPTY_CALLERS_NOTE_JSX if rel_path.endswith((".tsx", ".jsx")) else EMPTY_CALLERS_NOTE
+    if rel_path.endswith((".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")):
+        return base + _BARREL_CALLERS_NOTE
+    return base
+
 
 EMPTY_CALLEES_NOTE = (
     "No callee in the committed calls snapshot. Absence is NOT evidence that this "
@@ -4168,7 +4270,7 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
             "callers": [],
             "total": 0,
             "truncated": False,
-            "note": EMPTY_CALLERS_NOTE + (DUMP_CAPPED_NOTE if _capped else ""),
+            "note": _empty_callers_note(rel) + (DUMP_CAPPED_NOTE if _capped else ""),
         }
         if _capped:
             result["dump_capped_files"] = _capped
@@ -4184,7 +4286,7 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
             near = difflib.get_close_matches(function_name, index.names_for(rel), n=3, cutoff=0.6)
             if near:
                 result["recorded_names_nearby"] = [_sanitize(n) for n in near]
-                result["note"] = EMPTY_CALLERS_NOTE + (
+                result["note"] = _empty_callers_note(rel) + (
                     " No entry exists for this exact name in this module; the closest"
                     " names the index DOES record are in recorded_names_nearby -- if"
                     " one of those is the symbol you meant, re-call with it."
@@ -4243,9 +4345,13 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
     # caller" answer; carry the same absence-is-not-dead-code caveat the
     # known-absent branch and get_blast_radius already return.
     if not clean_callers:
-        result["note"] = EMPTY_CALLERS_NOTE + (DUMP_CAPPED_NOTE if _capped else "")
+        result["note"] = _empty_callers_note(rel) + (DUMP_CAPPED_NOTE if _capped else "")
     if _capped:
         result["dump_capped_files"] = _capped
+    # Caller paths are repo-relative and identical across two checkouts of one
+    # remote, so name the tree when the caller addressed the repo by id.
+    if _repo_arg_was_id(repo):
+        result["repo_root"] = str(repo_root)
     return _envelope(result)
 
 
@@ -4527,11 +4633,20 @@ def search_codebase(
     from chameleon_mcp.comprehension import search_symbols
     from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
 
-    empty = {"found": False, "query": "", "results": []}
+    # Echo the caller's own query back rather than a blank. A bad repo argument
+    # and a blank query used to produce byte-identical envelopes, so the caller
+    # could not tell which mistake it made -- and the documented reading of
+    # found:false ("refresh or trust the profile") is the wrong move for both.
+    _q_echo = query if isinstance(query, str) else ""
+    empty = {"found": False, "query": _q_echo, "results": []}
 
     resolved_path, repo_id = _resolve_repo_arg(repo)
     if repo_id is None or resolved_path is None:
-        return _envelope(dict(empty))
+        # Matches describe_codebase's reason for the same mistake: without it a
+        # caller reads found:false as "no profile" and retries the wrong fix.
+        out = dict(empty)
+        out["reason"] = "repo-arg-unresolved: pass the absolute repo root or the repo_id"
+        return _envelope(out)
     repo_root = Path(resolved_path)
 
     gate = _trust_state_for(repo_id)
@@ -4544,7 +4659,9 @@ def search_codebase(
     # (so a caller can branch on `found` to detect it) rather than found:True with
     # an empty result list.
     if not isinstance(query, str) or not query.strip():
-        return _envelope(dict(empty))
+        out = dict(empty)
+        out["reason"] = "empty-query: pass a symbol name, partial name, or file path"
+        return _envelope(out)
 
     cap = threshold_int("COMPREHEND_SEARCH_MAX_RESULTS")
     if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
@@ -4580,6 +4697,10 @@ def search_codebase(
             row["kind"] = _ss(r.get("kind"))
         results.append(row)
     out = {"found": True, "query": _ss(query), "results": results}
+    # These results name repo-relative paths that look identical across two
+    # checkouts of one remote, so disclose the root when the arg was an id.
+    if _repo_arg_was_id(repo):
+        out["repo_root"] = str(repo_root)
     if offset:
         out["offset"] = offset
     if fmt_note:
@@ -4730,6 +4851,21 @@ def describe_codebase(repo: str, response_format: str = "detailed") -> dict:
 
     fmt, fmt_note = _resolve_response_format(response_format)
     d = _describe(repo_root)
+
+    # The stored summary reads its "inherits X" off the canonical WITNESS, one
+    # file, while `size` counts the whole archetype -- so a 334-controller layer
+    # was described by the base class of a 12-file sub-bucket, true for 3% of it.
+    # Bootstrap cannot fix this in place (conventions are derived after the
+    # summary is written), but the derived plurality is already committed in
+    # conventions.json, so correct it here: this repairs profiles that already
+    # exist instead of only ones re-derived after an upgrade.
+    _dominant = _archetype_dominant_bases(repo_root)
+    if _dominant:
+        for _a in d.get("archetypes", []):
+            _fixed = _summary_with_archetype_base(_a.get("summary"), _dominant.get(_a.get("name")))
+            if _fixed is not None:
+                _a["summary"] = _fixed
+
     if fmt == "concise":
         archetypes = [
             {"name": _ss(a.get("name")), "size": a.get("size"), "witness": _ss(a.get("witness"))}
@@ -4754,8 +4890,12 @@ def describe_codebase(repo: str, response_format: str = "detailed") -> dict:
         row = {"name": _ss(g.get("name")), "file": _ss(g.get("file")), "callers": g.get("callers")}
         if g.get("capped"):
             # The per-callee row cap bounded the stored caller list, so this
-            # count is a floor, not an exact production-caller total.
+            # count is a floor, not an exact production-caller total. `total`
+            # carries the index's uncapped inbound count so the floor can be
+            # read against the real magnitude instead of a saturated constant.
             row["capped"] = True
+            if g.get("total") is not None:
+                row["total"] = g.get("total")
         god.append(row)
     out = {
         "found": True,
@@ -4768,11 +4908,34 @@ def describe_codebase(repo: str, response_format: str = "detailed") -> dict:
     }
     if fmt_note:
         out["note"] = fmt_note
+    # Name the checkout answered from, but only when the caller addressed the
+    # repo by id and therefore cannot already know which one it got.
+    if _repo_arg_was_id(repo):
+        out["repo_root"] = str(repo_root)
+    # This overview covers the ROOT profile only. On a coordinator root that is a
+    # fraction of the repo, so say the members exist rather than let the fraction
+    # read as the whole codebase.
+    _ws = _workspace_disclosure(repo_root)
+    if _ws:
+        out["workspaces"] = _ws
+        _n = _ws["count"]
+        _members = "1 member workspace carries" if _n == 1 else f"{_n} member workspaces carry"
+        out["note"] = ((out.get("note", "") + " ") if out.get("note") else "") + (
+            f"This is a workspace coordinator: the overview above describes the ROOT "
+            f"profile only. {_members} their own profile and language; address one "
+            f"directly to describe it."
+        )
     # The profile bundle failed cross-artifact validation but the independent
     # symbol index was still read; flag it so a consumer knows the archetype /
     # language fields may be partial and can suggest /chameleon-refresh.
     if d.get("degraded"):
         out["degraded"] = True
+        # Name WHICH artifact is blind. `degraded` alone cannot separate a repo
+        # whose call graph is unreadable from one whose overview is merely
+        # partial, so an empty god_symbols list reads as a verified finding.
+        _reasons = d.get("degraded_reasons")
+        if isinstance(_reasons, list) and _reasons:
+            out["degraded_reasons"] = [_ss(r) for r in _reasons]
     # file_count sits at the signatures-artifact cap, so it is a floor on a repo
     # above the cap, not the true total; forward the flag so the count is not
     # read as ground truth.
@@ -5090,6 +5253,146 @@ def _ruby_constant_existence_breaks(repo_root: Path) -> dict:
     }
 
 
+def _workspace_disclosure(repo_root: Path, cap: int = 12) -> dict | None:
+    """``{count, paths}`` when this root is a workspace coordinator, else None.
+
+    A coordinator root's own profile covers only what sits AT the root, so a
+    monorepo whose members hold most of the code answers "what is this codebase"
+    with a fraction of it -- plane's root reports 378 Python files while its
+    sibling workspaces hold thousands of TypeScript ones. The root is the git
+    root, the editor root and the default cwd, so that fraction is what a
+    newcomer sees first. The workspace list is already recorded at bootstrap;
+    surfacing it does not change which profile answers, only whether the reader
+    learns the rest exists.
+    """
+    try:
+        import json as _json
+
+        prof = _json.loads(
+            (_effective_profile_dir(repo_root) / "profile.json").read_text(encoding="utf-8")
+        )
+        ws_block = prof.get("workspace") or {}
+        if not ws_block.get("is_workspace"):
+            return None
+        rows = prof.get("workspaces") or ws_block.get("workspaces") or []
+        paths = []
+        for row in rows:
+            p = row.get("workspace_path") if isinstance(row, dict) else None
+            if not isinstance(p, str):
+                continue
+            try:
+                paths.append(str(Path(p).relative_to(repo_root)))
+            except ValueError:
+                paths.append(p)
+        count = int(ws_block.get("workspace_count") or len(paths) or 0)
+        if not count:
+            return None
+        out: dict = {"count": count}
+        if paths:
+            out["paths"] = sorted(paths)[:cap]
+        return out
+    except Exception:
+        return None
+
+
+def _repo_arg_was_id(repo: object) -> bool:
+    """True when the caller addressed the repo by id rather than by path.
+
+    Only then is echoing the resolved root worth its bytes: a repo_id shared by
+    two checkouts of one remote resolves deterministically but silently, while a
+    caller who passed a path already knows which tree it meant. Echoing
+    unconditionally is duplication the wire budget correctly refuses.
+    """
+    return isinstance(repo, str) and len(repo) == 64 and all(c in "0123456789abcdef" for c in repo)
+
+
+def _archetype_dominant_bases(repo_root: Path) -> dict[str, dict]:
+    """``{archetype: {dominant_base, frequency, sample_size}}`` from conventions.
+
+    The inheritance plurality the bootstrap already derived per archetype. Empty
+    on any read problem -- this only ever improves a summary, so an unreadable
+    artifact must leave the stored one alone rather than blank it.
+    """
+    out: dict[str, dict] = {}
+    try:
+        import json as _json
+
+        path = _effective_profile_dir(repo_root) / "conventions.json"
+        body = _json.loads(path.read_text(encoding="utf-8"))
+        inh = (body.get("conventions") or body).get("inheritance") or {}
+        for arch, row in inh.items():
+            if isinstance(row, dict) and row.get("dominant_base"):
+                out[arch] = row
+    except Exception:
+        return {}
+    return out
+
+
+def _summary_with_archetype_base(summary: object, dominant: dict | None) -> str | None:
+    """``summary`` with its witness-derived "inherits X" replaced by the
+    archetype-wide plurality, or None when nothing should change.
+
+    Carries the frequency so the claim is checkable rather than merely swapped:
+    a 74%-dominant base and a 30%-dominant one are different facts, and a reader
+    deciding what to imitate needs to tell them apart.
+    """
+    if not isinstance(summary, str) or not summary or not isinstance(dominant, dict):
+        return None
+    base = dominant.get("dominant_base")
+    if not isinstance(base, str) or not base:
+        return None
+    import re as _re
+
+    m = _re.search(r"inherits ([\w:.]+)", summary)
+    if not m:
+        return None
+    try:
+        pct = round(float(dominant.get("frequency") or 0) * 100)
+    except (TypeError, ValueError):
+        pct = 0
+    n = dominant.get("sample_size")
+    detail = f"inherits {base}"
+    if pct and isinstance(n, int) and n > 0:
+        detail += f" ({pct}% of {n})"
+    if m.group(1) == base and not pct:
+        return None
+    return summary[: m.start()] + detail + summary[m.end() :]
+
+
+def _derivation_skew(repo_root: Path) -> dict | None:
+    """``{derived_sha, head_sha}`` when the profile was derived off a different
+    commit than the checkout, else None.
+
+    Every stored line number is an offset into the DERIVED tree. When a profile
+    is pinned to a production ref the checkout routinely sits elsewhere, and
+    nothing in a read envelope says so -- a line number then points at whatever
+    happens to occupy that offset today. That is survivable for an advisory, but
+    not for a finding a consumer is told to relay verbatim, so the callers that
+    assert high confidence check this first. Never raises: an unknown sha yields
+    None, because an unproven skew must not downgrade a good answer either.
+    """
+    try:
+        recorded = _recorded_derivation_sha(repo_root / ".chameleon")
+        if not recorded:
+            return None
+        import subprocess
+
+        head = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if head.returncode != 0:
+            return None
+        head_sha = (head.stdout or "").strip()
+        if not head_sha or head_sha == recorded:
+            return None
+        return {"derived_sha": recorded[:12], "head_sha": head_sha[:12]}
+    except Exception:
+        return None
+
+
 def get_crossfile_context(repo: str) -> dict:
     """Cross-file existence breaks across a repo (TS/JS + Python via the
     reverse index; Ruby via the constant graph), for PR review.
@@ -5155,6 +5458,9 @@ def get_crossfile_context(repo: str) -> dict:
         out = dict(empty)
         out["status"] = "untrusted"
         return _envelope(out)
+
+    # Resolved once per call (it shells git), then read by every finding below.
+    _skew = _derivation_skew(repo_root)
 
     index = load_reverse_index(repo_root)
     if index is None:
@@ -5272,7 +5578,13 @@ def get_crossfile_context(repo: str) -> dict:
                     _xf_resolver_for(_xf_lang),
                 )
             ]
-            high_confidence = (not open_set) and bool(live_sites)
+            # `_skew` is resolved once per call below. A stored line is an offset
+            # into the DERIVED tree, so under skew a "still references this" site
+            # can name a line that holds unrelated code today -- or a file that no
+            # longer exists. The consumer contract says relay high_confidence
+            # verbatim as a FIX, so demote rather than ship a fabricated one; the
+            # finding still surfaces as low confidence with the skew disclosed.
+            high_confidence = (not open_set) and bool(live_sites) and _skew is None
             # When the export set is closed, the still-referencing sites are the
             # broken call sites; when it is open, no site is asserted broken, so
             # report the recorded importers for transparency only.
@@ -5297,10 +5609,17 @@ def get_crossfile_context(repo: str) -> dict:
             else:
                 low_dropped += 1
 
-    return _envelope(
-        {"found": True, "findings": high + low, "low_confidence_dropped": low_dropped},
-        truncated=truncated,
-    )
+    _out = {"found": True, "findings": high + low, "low_confidence_dropped": low_dropped}
+    if _skew is not None:
+        # Disclose the skew even when no finding was demoted: every line number in
+        # this response is an offset into derived_sha, not into the checkout.
+        _out["derivation_skew"] = _skew
+        _out["note"] = (
+            f"Line numbers are offsets into the derived commit {_skew['derived_sha']}, "
+            f"not the checkout at {_skew['head_sha']}. high_confidence is withheld "
+            "while the two differ; run /chameleon-refresh to re-derive."
+        )
+    return _envelope(_out, truncated=truncated)
 
 
 def refute_finding(repo: str, findings: list, base_ref: str = "main") -> dict:
@@ -7113,13 +7432,19 @@ def list_idiom_candidates(repo: str) -> dict:
     return _envelope({"status": "ok", "count": len(rows), "candidates": rows})
 
 
-def _normalize_decision_rel_path(repo_path: Path | None, file_path: str) -> str:
-    """Repo-relative posix path for a decision_log lookup.
+def _normalize_decision_rel_path(repo_path: Path | None, file_path: str) -> str | None:
+    """Repo-relative posix path for a decision_log lookup, or None on mismatch.
 
     Mirrors how the hook keys the row (``relative_to`` the repo root, posix
-    form). Accepts an absolute path, a ``~`` path, or an already-relative path;
-    falls back to the basename when the path resolves outside the repo, and to
-    the input as-is when no repo root is known.
+    form). Accepts an absolute path, a ``~`` path, or an already-relative path.
+
+    An ABSOLUTE path that resolves outside the repo returns None rather than
+    falling back to its basename. This is the post-incident replay read, and a
+    basename fallback answers a question about one file with a DIFFERENT file's
+    enforcement history -- a root-level name like ``Gemfile`` or ``CLAUDE.md``
+    exists in most repos, so the wrong answer is both confident and plausible.
+    Attributing the wrong file's decision is the one error this tool must never
+    make.
     """
     raw = (file_path or "").strip()
     try:
@@ -7131,12 +7456,11 @@ def _normalize_decision_rel_path(repo_path: Path | None, file_path: str) -> str:
             return p.resolve().relative_to(repo_path.resolve()).as_posix()
         except (ValueError, OSError):
             pass
-        if not p.is_absolute():
-            # An already-relative argument is taken verbatim — the hook stores
-            # the posix repo-relative form, so a caller passing that form matches.
-            return Path(raw).as_posix()
-        return p.name
-    return Path(raw).as_posix() if not p.is_absolute() else p.name
+    if not p.is_absolute():
+        # An already-relative argument is taken verbatim — the hook stores
+        # the posix repo-relative form, so a caller passing that form matches.
+        return Path(raw).as_posix()
+    return None
 
 
 def explain_edit(repo: str, file_path: str) -> dict:
@@ -7203,7 +7527,26 @@ def explain_edit(repo: str, file_path: str) -> dict:
                 }
             )
 
-    rel_path = _normalize_decision_rel_path(repo_path, file_path)
+    # A bare repo_id leaves repo_path unset, so resolve the physical root before
+    # normalizing -- otherwise an absolute path could not be checked against the
+    # repo it is supposed to belong to, and the containment test below would be
+    # skipped for exactly the argument form that most needs it.
+    _root_for_rel = repo_path if repo_path is not None else _resolve_repo_root_by_id(repo_id)
+    rel_path = _normalize_decision_rel_path(_root_for_rel, file_path)
+    if rel_path is None:
+        return _envelope(
+            {
+                "status": "failed",
+                "error": (
+                    "file_path is absolute but does not resolve inside this repo; "
+                    "pass a path under the repo root or its repo-relative form"
+                ),
+                "repo_id": repo_id,
+                "found": False,
+                "decision": None,
+                "classification": None,
+            }
+        )
 
     try:
         from chameleon_mcp.drift.observations import latest_decision

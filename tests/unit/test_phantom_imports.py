@@ -644,6 +644,38 @@ def test_relative_dangling_is_flagged(tmp_path):
     assert any(v.rule == "phantom-import" for v in out)
 
 
+def test_import_from_a_not_yet_created_directory_is_not_phantom(tmp_path):
+    # Writing the FIRST file into a new directory is the ordinary new-feature
+    # flow. `..` is only traversable through a directory that exists, so a
+    # filesystem-resolved join reports every cross-directory import in that file
+    # as resolving to nothing.
+    (tmp_path / "lib").mkdir(parents=True)
+    (tmp_path / "lib" / "api-client.ts").write_text("export const f = 1\n", encoding="utf-8")
+    out = _run(tmp_path, "app/blog/page.tsx", "import { f } from '../../lib/api-client'\n")
+    assert not any(v.rule == "phantom-import" for v in out), (
+        f"target exists; the importer's own directory need not: {[v.expected for v in out]}"
+    )
+
+
+def test_real_typo_from_a_not_yet_created_directory_is_still_flagged(tmp_path):
+    # The fix must not become a blanket amnesty for new directories: a genuine
+    # bad path whose parent exists is still a phantom import.
+    (tmp_path / "lib").mkdir(parents=True)
+    (tmp_path / "lib" / "api-client.ts").write_text("export const f = 1\n", encoding="utf-8")
+    out = _run(tmp_path, "app/blog/page.tsx", "import { f } from '../../lib/api-clientt'\n")
+    assert any(v.rule == "phantom-import" for v in out), "a real typo must still be caught"
+
+
+def test_phantom_import_expected_path_is_collapsed(tmp_path):
+    # The reported path is user-facing; an uncollapsed `app/blog/../../lib` reads
+    # as a chameleon bug rather than as the directory it actually searched.
+    (tmp_path / "lib").mkdir(parents=True)
+    out = _run(tmp_path, "app/blog/page.tsx", "import { f } from '../../lib/nope'\n")
+    flagged = [v for v in out if v.rule == "phantom-import"]
+    assert flagged, "precondition: the missing target must be flagged"
+    assert ".." not in flagged[0].expected, f"uncollapsed path leaked: {flagged[0].expected!r}"
+
+
 def test_tsconfig_alias_not_flagged(tmp_path):
     (tmp_path / "tsconfig.json").write_text(
         '{"compilerOptions":{"baseUrl":".","paths":{"@app/*":["src/*"]}}}', encoding="utf-8"

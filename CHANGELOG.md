@@ -4,6 +4,121 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.18] - 2026-07-27
+
+### Fixed
+
+- **A Python repo whose packaging sits below the root was profiled as TypeScript.** The
+  language tiebreak looked for a Python project marker only at the repo root, so a tree of
+  629 `.py` files whose `pyproject.toml` lives one package deep lost to two stray build
+  scripts that satisfied the plain-JavaScript fallback — and the guard written to prevent
+  exactly this (`pyproject.toml` is already in the competing-backend list) could not see the
+  manifest. The marker lookup now searches the root and its non-vendored descendants two
+  levels down, still behind the existing minimum-file-count and file-count-majority guards,
+  so a small vendored Python tool cannot flip a JavaScript-dominant repo. Dot-directories are
+  skipped, so a linked worktree holding a copy of the repo cannot answer for the repo itself.
+- **`paths_glob` naming another language's extension fed every matched file to the wrong
+  dumper.** The glob narrows discovery but has no say in extractor selection, and the
+  TypeScript dumper parses an unknown extension as JavaScript rather than refusing it, so a
+  Python tree came back as mass parse failures — or, on a small tree, as a profile clustered
+  from garbage that reported success. Files the selected extractor cannot own are now dropped
+  before anything reaches the subprocess, and a glob matching only foreign files fails as
+  `failed_glob_language_mismatch`, naming the selected language and the dropped extensions.
+  The discovery glob and the ownership check derive from one extension table so the two
+  cannot drift.
+- **Every degraded parse run blamed a subprocess that had not died.** The error advised
+  re-running once the toolchain was healthy even when the child exited cleanly after
+  rejecting each file on its own merits, pointing the reader at their interpreter while the
+  real cause sat in language selection. The message now reads the actual skip reasons and
+  reports a dead child only for an extractor timeout or a non-zero exit.
+- **`phantom-import` fired on every cross-directory import in the first file written into a
+  new directory.** The relative target was joined without collapsing `..`, and the kernel can
+  only walk a `..` through a directory that already exists — so writing `app/blog/page.tsx`
+  before `app/blog` existed reported a perfectly good `../../lib/api-client` as resolving to
+  nothing, on a rule that is block-eligible. Creating a feature folder is the ordinary flow
+  this most affects. The join is now collapsed lexically, which also stops an uncollapsed
+  `app/blog/../../lib` from leaking into the reported path, and still catches a genuine bad
+  target: that one misses on its own merits once the traversal is out of the way.
+- **`sql-string-interpolation` reported an injection for Redis calls.** `exists?`, `select`
+  and `execute` are not SQL-specific verbs, and the rule anchored on the verb with no regard
+  for the receiver, so `redis.exists?("subscribed:timeline:#{id}")` was flagged — on nine of
+  a real Rails app's committed files, including the canonical witness of the archetype it was
+  linting, with zero genuine hits in the same tree. Following the suggested bind-parameter fix
+  would have broken the call. A receiver known not to be a query builder is now skipped, while
+  a real query builder interpolating into the same verb still reports.
+- **An archetype's summary described its canonical witness, not the archetype.** The
+  "inherits X" clause was regexed out of the one witness file while `size` counted the whole
+  cluster, so a 334-controller layer was characterized by the base class of a 12-file
+  sub-bucket — true for 3% of it — and a newcomer's first orientation read was wrong about
+  the largest layer in the repo. The inheritance plurality was already derived and committed
+  in `conventions.json`; the summary now uses it, with the frequency attached so a
+  74%-dominant base and a 30%-dominant one stay distinguishable. Applied when the overview is
+  read rather than when the profile is written, so profiles that already exist are corrected
+  without waiting for a re-derive.
+- **`get_crossfile_context` asserted high confidence on line numbers from a different commit.**
+  A production-pinned profile derives against its locked ref while the checkout sits
+  elsewhere, and every stored line is an offset into the DERIVED tree — so a "still references
+  this" site could name a line holding unrelated code today, or a file absent from the
+  checkout entirely. Nothing in the response disclosed the skew, and the documented consumer
+  contract is to relay `high_confidence` findings verbatim as a fix, which turned a stale
+  offset into a fabricated review comment. `high_confidence` is now withheld while the derived
+  commit and HEAD differ, and the response names both shas. A repo whose checkout sits at its
+  derived commit is unaffected, and an unknown sha changes nothing — an unproven skew must not
+  downgrade a good answer either.
+- **`get_callers` explained a React component's zero callers with object-oriented instance
+  dispatch.** A component is used by writing `<Component/>`, which is a JSX element and not a
+  call expression, so no call edge is recorded and the count is legitimately zero — but the
+  note blamed `obj.method()` type inference and sent the reader to grep and
+  `/chameleon-refresh`, neither of which helps, on what is the largest archetype in most React
+  repos. The import edge was indexed the whole time and `query_symbol_importers` answers it
+  exactly. A `.tsx`/`.jsx` file now gets a note that says what a zero there actually means and
+  names the tool that has the answer; `.ts`, `.rb` and `.py` keep the original wording.
+- **`search_codebase` returned the same envelope for two opposite mistakes.** An
+  unresolvable repo argument and a blank query both produced `{found: false, query: "",
+  results: []}`, byte for byte, with the caller's own query blanked out — so neither could be
+  told apart, and the documented reading of `found: false` (refresh or trust the profile) was
+  the wrong move for both. The query is now echoed back as passed, and each case carries the
+  reason naming it, reusing the `repo-arg-unresolved` wording `describe_codebase` already used
+  for the identical mistake.
+- **`describe_codebase` flagged itself degraded without saying what was blind.** An
+  unreadable call graph produced an empty `god_symbols` list beside a bare `degraded: true`,
+  which reads as "this repo has no heavily-called functions" — the opposite of what it means —
+  while a merely-truncated symbol index produced the same flag. The overview now names the
+  blind artifact, so a stale call index is distinguishable from a capped symbol index and from
+  a genuine finding.
+- **`explain_edit` answered for a file it was not asked about.** An absolute path that
+  resolved outside the repo fell back to its basename, so asking about another checkout's
+  `Gemfile` returned this repo's `Gemfile` decision row with `found: true`. Root-level names
+  like `Gemfile` or `CLAUDE.md` exist in most repos, which made the wrong answer both
+  confident and plausible — in the post-incident replay read, where attributing one file's
+  enforcement history to another is the single worst thing it can do. An out-of-repo absolute
+  path is now a typed failure naming the mismatch; the relative and in-repo absolute forms are
+  unchanged. A bare repo_id argument resolves its physical root first, so the containment
+  check covers the argument form that previously skipped it entirely.
+- **`describe_codebase` ranked god symbols on a counter that saturates.** Production callers
+  were counted from the stored caller list, which is capped per callee, so on a large repo
+  every heavily-called symbol tied at the cap and the ordering degenerated to the path
+  tiebreak — listing a symbol with 172 inbound edges while omitting ones with 529, 344 and
+  235. Ranking now uses the index's own uncapped `total` scaled by the production ratio the
+  sample does show, and a capped row carries that `total` alongside the floor, so the number
+  can be read against the real magnitude instead of a constant.
+- **`query_symbol_importers` reported no importers for a module using `export * from`.** Its
+  own contract says an unenumerable export set suppresses `broken` but still reports
+  importers; instead every symbol importer was dropped, so a barrel that hundreds of files
+  depend on answered a definitive `found: true` with an empty list — the one answer worse
+  than declining to answer, since the caller asking is usually measuring a rename's blast
+  radius. The import edges were recorded the whole time. `broken` stays suppressed, because
+  an unenumerable set genuinely cannot say whether a name is still exported; the importers
+  are now reported as documented.
+- **`get_canonical_excerpt` gave up when the first witness candidate had moved.**
+  `canonicals.json` stores an ordered candidate list, but the tool took entry zero
+  unconditionally and returned an empty excerpt, so an archetype whose witness had been
+  renamed since derivation lost its example entirely even with live candidates behind it —
+  and the largest, longest-lived clusters are the ones whose witness most often moves. It now
+  falls through to the first candidate still on disk, and reports the witness as missing only
+  when none of them survive. Existence merely orders the candidates; the containment check
+  that authorizes the read is unchanged and still runs after the trust gate.
+
 ## [4.5.17] - 2026-07-27
 
 ### Fixed

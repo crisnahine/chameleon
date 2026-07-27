@@ -317,6 +317,20 @@ def _strip_ts_noise(content: str) -> tuple[str, list[bool]]:
     return "".join(out), mask
 
 
+def _join_normalized(base_dir: Path, spec: str) -> Path:
+    """``base_dir / spec`` with ``..`` collapsed lexically, never via the disk.
+
+    ``Path`` keeps ``..`` as a literal segment, and the kernel can only walk one
+    through a directory that already exists. Resolving an import that way makes
+    the FIRST file written into a new directory report every cross-directory
+    import as resolving to nothing -- the ordinary new-feature flow, on a rule
+    that is block-eligible. Collapsing lexically also keeps the reported path
+    readable, and still catches a genuine bad target: that one misses on its own
+    merits once the traversal is out of the way.
+    """
+    return Path(os.path.normpath(base_dir / spec))
+
+
 def _violation(spec: str, search_dir: Path, root: Path | None) -> Violation:
     try:
         disp = str(search_dir.relative_to(root)) if root is not None else str(search_dir)
@@ -785,7 +799,7 @@ def lint_phantom_imports(
             # carries its own named bindings, so symbol-check it before skipping.
             if spec in seen:
                 if spec.startswith("."):
-                    base = file_dir / spec
+                    base = _join_normalized(file_dir, spec)
                     if _under_repo(base, root) and _exists_cached(base):
                         _symbol_check(m, base, spec)
                 continue
@@ -795,7 +809,7 @@ def lint_phantom_imports(
             if _PLUS_SEGMENT_RE.search(spec):
                 continue  # framework-generated typegen (e.g. ./+types/page)
             if spec.startswith("."):
-                base = file_dir / spec
+                base = _join_normalized(file_dir, spec)
                 if not _under_repo(base, root):
                     continue  # escapes the repo -> don't stat outside, don't flag
                 if not _exists_cached(base):
@@ -861,7 +875,7 @@ def lint_phantom_imports(
             seen_rb.add(spec)
             if spec.startswith("/") or "#{" in spec:
                 continue  # absolute path or string interpolation -> can't verify
-            base = file_dir / spec
+            base = _join_normalized(file_dir, spec)
             if not _under_repo(base, root):
                 continue
             if _ruby_resolves(base):

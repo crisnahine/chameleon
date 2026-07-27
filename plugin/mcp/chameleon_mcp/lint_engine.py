@@ -2024,6 +2024,39 @@ _RUBY_SQL_INTERP_BARE_RE = re.compile(
 )
 
 
+# Receivers that share verb names with the query builder but speak no SQL.
+# `exists?`, `select`, `execute` and `keys` all exist on Redis and on the Rails
+# cache, so anchoring on the verb alone reports an injection for a cache key and
+# prescribes a bind parameter that would break the call.
+_NON_QUERY_RECEIVERS = frozenset(
+    {
+        "redis",
+        "kredis",
+        "cache",
+        "session",
+        "cookies",
+        "flash",
+        "headers",
+        "logger",
+        "memcached",
+        "dalli",
+    }
+)
+
+
+def _ruby_receiver_chain(content: str, dot_pos: int) -> set[str]:
+    """Lowercased segments of the receiver expression ending at ``dot_pos``.
+
+    ``Redis.current.exists?`` yields {redis, current} and ``@redis.exists?``
+    yields {redis}, so a namespaced or ivar-held client is recognized the same
+    way a bare local is.
+    """
+    i = dot_pos
+    while i > 0 and (content[i - 1].isalnum() or content[i - 1] in "_.:@"):
+        i -= 1
+    return {seg for seg in re.split(r"[.:@]+", content[i:dot_pos].lower()) if seg}
+
+
 def _sink_security_context(content: str, start: int, end: int, *, window: int = 200) -> bool:
     """Return True if a crypto-relevant keyword sits within ±window chars."""
     lo = max(0, start - window)
@@ -2434,6 +2467,12 @@ def scan_dangerous_sinks(content: str, *, language: str | None) -> list[Violatio
             for m in pat.finditer(content):
                 span = (m.start(), m.end())
                 if span in seen_spans or _in_comment(m.start()):
+                    continue
+                # The receiver form starts at the `.`; a client that is not a
+                # query builder never splices SQL, whatever the verb is called.
+                if content[m.start()] == "." and (
+                    _ruby_receiver_chain(content, m.start()) & _NON_QUERY_RECEIVERS
+                ):
                     continue
                 seen_spans.add(span)
                 line = _position_to_line(content, m.start())

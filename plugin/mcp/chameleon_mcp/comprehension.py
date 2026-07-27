@@ -243,28 +243,37 @@ def god_symbols(repo_root, *, limit: int, exclude_tests: bool = True) -> list[di
         for name, entry in names.items():
             if not isinstance(entry, dict):
                 continue
+            entry_total = int(entry.get("total") or 0)
+            truncated = bool(entry.get("truncated"))
+            sample = [c for c in (entry.get("callers") or []) if isinstance(c, dict)]
             if exclude_tests:
                 # Count only production callers, so a symbol used mostly by tests
                 # is not ranked as production-central. The stored caller rows are
-                # capped per callee, so on a truncated entry this count is a
-                # floor; `capped` rides out with the row so the displayed number
-                # is not read as exact (search_codebase reports the uncapped
-                # total for the same symbol).
-                count = sum(
-                    1
-                    for c in (entry.get("callers") or [])
-                    if isinstance(c, dict) and not _is_test_path(str(c.get("path") or ""))
-                )
+                # capped per callee, so on a truncated entry this count saturates
+                # at the cap: every heavily-called symbol ties there, the sort
+                # degenerates to the path tiebreak, and genuinely bigger symbols
+                # fall out of the top N while smaller ones stay. Rank instead on
+                # the true `total` scaled by the production ratio the sample does
+                # show, and keep reporting the exact figures rather than that
+                # estimate -- ordering needs a magnitude, the caller does not
+                # need a number nobody measured.
+                count = sum(1 for c in sample if not _is_test_path(str(c.get("path") or "")))
+                rank = (entry_total * count / len(sample)) if (truncated and sample) else count
             else:
-                count = entry.get("total", 0)
+                count = entry_total
+                rank = entry_total
             if count > 0:
-                ranked.append((count, rel, name, bool(entry.get("truncated"))))
-    ranked.sort(key=lambda r: (-r[0], r[1], r[2]))
+                ranked.append((rank, count, entry_total, rel, name, truncated))
+    ranked.sort(key=lambda r: (-r[0], r[3], r[4]))
     out = []
-    for total, rel, name, capped in ranked[: max(0, int(limit))]:
-        row = {"name": name, "file": rel, "callers": total}
+    for _rank, count, entry_total, rel, name, capped in ranked[: max(0, int(limit))]:
+        row = {"name": name, "file": rel, "callers": count}
         if capped:
+            # `capped` means the stored caller LIST was truncated, so `callers`
+            # is a floor. `total` is the index's own uncapped inbound count
+            # (tests included), which is what makes the floor readable.
             row["capped"] = True
+            row["total"] = entry_total
         out.append(row)
     return out
 
@@ -355,6 +364,7 @@ def describe_codebase(repo_root) -> dict:
         if len(sigs) >= threshold_int("DUPLICATION_CATALOG_MAX_FILES"):
             out["truncated"] = True
             out["degraded"] = True
+            out.setdefault("degraded_reasons", []).append("symbol-index-truncated")
     else:
         # load_symbol_signatures returns None for absent, corrupt, AND
         # schema-stale (a profile built before this artifact, or one whose
@@ -364,6 +374,7 @@ def describe_codebase(repo_root) -> dict:
         # never built the artifact) is the common one after an upgrade; without
         # this it reported clean zeros next to populated archetypes.
         out["degraded"] = True
+        out.setdefault("degraded_reasons", []).append("symbol-index-unavailable")
     out["god_symbols"] = god_symbols(repo_root, limit=threshold_int("COMPREHEND_GOD_SYMBOLS"))
     if load_calls_index(profile_root) is None:
         # Same honesty posture as the symbol_signatures branch: an absent,
@@ -371,8 +382,12 @@ def describe_codebase(repo_root) -> dict:
         # [] (and zeroes every caller count search_codebase surfaces), so mark
         # the overview degraded rather than reporting a verified call-graph-free
         # repo. Absent-vs-damaged is not distinguished here; both leave the
-        # call-graph reads blind.
+        # call-graph reads blind. Name the blind artifact, though: an empty
+        # god_symbols list beside a bare `degraded` flag reads as "this repo has
+        # no heavily-called functions", the opposite of what it means, and every
+        # sibling call-graph read already reports its own stale-index reason.
         out["degraded"] = True
+        out.setdefault("degraded_reasons", []).append("calls-index-unavailable")
     return out
 
 

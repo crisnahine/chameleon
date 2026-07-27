@@ -315,11 +315,28 @@ def _js_frontend_dir(repo_root: Path) -> Path | None:
     return None
 
 
+_PYTHON_PROJECT_MARKERS = (
+    "manage.py",
+    "pyproject.toml",
+    "requirements.txt",
+    "setup.py",
+    "Pipfile",
+)
+
+
 def _has_python_backend_marker(repo_root: Path) -> bool:
-    """True when the root carries a Python-project marker (not stray scripts)."""
+    """True when the repo carries a Python-project marker (not stray scripts).
+
+    Looks below the root as well: a monorepo commonly keeps its packaging in a
+    member package (``plugin/mcp/pyproject.toml``), and a root-only lookup lets
+    a couple of build scripts decide the language for the whole tree. Every
+    caller pairs this with its own file-count dominance check, so finding a
+    marker deep in a small vendored tool cannot flip a JS-dominant repo.
+    """
     return any(
-        (repo_root / m).is_file()
-        for m in ("manage.py", "pyproject.toml", "requirements.txt", "setup.py", "Pipfile")
+        (directory / m).is_file()
+        for directory in _marker_search_dirs(repo_root)
+        for m in _PYTHON_PROJECT_MARKERS
     )
 
 
@@ -335,6 +352,45 @@ def _read_marker_text(path: Path, cap: int = 50_000) -> str:
 _MANIFEST_SKIP_DIRS = frozenset(
     {"node_modules", "vendor", "venv", ".venv", "dist", "build", "__pycache__", "site-packages"}
 )
+
+
+# How far below the root a project marker still counts. Two levels reaches the
+# common monorepo shapes (``backend/pyproject.toml``, ``plugin/mcp/pyproject.toml``)
+# without walking a deep tree on every root selection.
+_MARKER_SEARCH_MAX_DEPTH = 2
+
+
+def _marker_search_dirs(
+    repo_root: Path, max_depth: int = _MARKER_SEARCH_MAX_DEPTH, cap: int = 200
+) -> list[Path]:
+    """The repo root plus its non-vendored descendants down to ``max_depth``.
+
+    Wider than ``_candidate_manifest_dirs`` (root + direct children) because a
+    packaging manifest often sits one level deeper than a framework dependency
+    does. Dot-directories are skipped so a linked worktree or an editor cache
+    holding a copy of the repo cannot answer for the repo itself.
+    """
+    dirs = [repo_root]
+    frontier = [repo_root]
+    for _ in range(max_depth):
+        next_frontier: list[Path] = []
+        for parent in frontier:
+            try:
+                children = sorted(parent.iterdir())
+            except OSError:
+                continue
+            for child in children:
+                if len(dirs) >= cap:
+                    return dirs
+                if (
+                    child.is_dir()
+                    and not child.name.startswith(".")
+                    and child.name not in _MANIFEST_SKIP_DIRS
+                ):
+                    dirs.append(child)
+                    next_frontier.append(child)
+        frontier = next_frontier
+    return dirs
 
 
 def _candidate_manifest_dirs(repo_root: Path, cap: int = 40) -> list[Path]:
@@ -712,6 +768,41 @@ def _is_ts_workspace(workspace_dir: Path) -> bool:
     return any(token in content for token in ("typescript", '"ts-node"', '"vite"'))
 
 
+# Skip reasons an extractor synthesizes when the dumper child itself died, as
+# opposed to a reason the dumper reported per file it could not parse. Only the
+# former is fixed by re-running.
+_DEAD_CHILD_SKIP_REASONS = ("extractor_timeout", "extractor_exit_")
+
+
+def _degraded_parse_error(
+    *,
+    files_skipped: int,
+    attempted: int,
+    skipped: list[tuple[Path, str]],
+    language: str,
+) -> str:
+    """The error body for a parse run too damaged to build a profile from.
+
+    A crashed dumper and a dumper that rejected every file need opposite advice:
+    re-running fixes the first and can never fix the second. The skip reasons
+    already tell them apart, so read them instead of blaming the subprocess for
+    both -- a language mispick reported as a toolchain outage sends the reader
+    to their interpreter while the real cause sits in root selection.
+    """
+    sample = "; ".join(f"{path.name}: {reason}" for path, reason in skipped[:3])
+    head = f"{files_skipped} of {attempted} files failed to parse ({sample}). "
+    if any(reason.startswith(_DEAD_CHILD_SKIP_REASONS) for _path, reason in skipped):
+        return head + (
+            "The extractor subprocess died mid-run; the existing profile was "
+            "left untouched. Re-run once the toolchain is healthy."
+        )
+    return head + (
+        f"The {language} extractor rejected them one by one and its subprocess ran "
+        f"to completion, so re-running will not help. Check that {language} is the "
+        "right language for these files; the existing profile was left untouched."
+    )
+
+
 def _parse_looks_degraded(files_parsed: int, files_skipped: int) -> bool:
     """True when a parse run is too damaged to commit a profile from.
 
@@ -754,12 +845,26 @@ def resolve_extractor(repo_root: Path) -> Extractor | None:
     return None
 
 
+# One source of truth for what each extractor can parse. The discovery glob and
+# the pre-parse ownership check are derived from the same tuple so they cannot
+# drift: a divergence would either drop a file the glob invited or, worse, hand
+# the dumper an extension it silently misreads as its own language.
+_EXTENSIONS_BY_LANGUAGE: dict[str, tuple[str, ...]] = {
+    "ruby": (".rb",),
+    "python": (".py",),
+    "typescript": (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"),
+}
+
+
+def _extensions_for_extractor(extractor: Extractor) -> tuple[str, ...]:
+    return _EXTENSIONS_BY_LANGUAGE.get(extractor.language, _EXTENSIONS_BY_LANGUAGE["typescript"])
+
+
 def _glob_for_extractor(extractor: Extractor) -> str:
-    if extractor.language == "ruby":
-        return "**/*.rb"
-    if extractor.language == "python":
-        return "**/*.py"
-    return "**/*.{ts,tsx,js,jsx,mjs,cjs}"
+    suffixes = _extensions_for_extractor(extractor)
+    if len(suffixes) == 1:
+        return f"**/*{suffixes[0]}"
+    return "**/*.{" + ",".join(s.lstrip(".") for s in suffixes) + "}"
 
 
 # Must track profile.schema.CURRENT_SCHEMA_VERSION — this is the version stamped
@@ -2454,6 +2559,43 @@ def _bootstrap_single(
             discovered_files_post_exclusion=post_exclusion_count,
         )
 
+    # paths_glob narrows discovery but has no say in extractor selection, so a
+    # glob naming another language's extension would route every matched file
+    # into a dumper that cannot read it. ts_dump.mjs parses an unknown extension
+    # as JavaScript rather than refusing, so those files come back as parse
+    # errors -- or, on a small tree, as a profile clustered from garbage. Drop
+    # what this extractor does not own before anything reaches the subprocess.
+    owned_suffixes = _extensions_for_extractor(extractor)
+    foreign = [p for p in candidates if not p.name.endswith(owned_suffixes)]
+    if foreign:
+        candidates = [p for p in candidates if p.name.endswith(owned_suffixes)]
+        if not candidates:
+            dropped = sorted({f".{p.name.rsplit('.', 1)[-1]}" for p in foreign if "." in p.name})
+            return BootstrapReport(
+                status="failed_glob_language_mismatch",
+                archetypes_detected=0,
+                rules_extracted=0,
+                idioms_collected=0,
+                canonicals_skipped_failed_scans=0,
+                files_processed=0,
+                files_skipped_generated=0,
+                files_skipped_parse=0,
+                duration_ms=int((time.time() - started_at) * 1000),
+                profile_path=None,
+                error=(
+                    f"paths_glob {paths_glob!r} matched {len(foreign)} files "
+                    f"({', '.join(dropped)}) that this repo's {extractor.language} "
+                    f"extractor cannot parse. paths_glob narrows discovery but does not "
+                    f"choose the extractor, which is selected from the repo root "
+                    f"({extractor.language} here). Bootstrap a subtree whose own root "
+                    f"selects the language you want instead."
+                ),
+                workspace_roots=list(workspace_roots),
+                fanout_capped=fanout_capped,
+                discovered_files_pre_exclusion=pre_exclusion_count,
+                discovered_files_post_exclusion=post_exclusion_count,
+            )
+
     if not candidates:
         if paths_glob:
             err_msg = (
@@ -2523,7 +2665,6 @@ def _bootstrap_single(
     files_parsed = len(parse_result.files)
     attempted = files_parsed + files_skipped_parse
     if _parse_looks_degraded(files_parsed, files_skipped_parse):
-        sample = "; ".join(f"{path.name}: {reason}" for path, reason in parse_result.skipped[:3])
         return BootstrapReport(
             status="failed_extractor_degraded",
             archetypes_detected=0,
@@ -2535,11 +2676,11 @@ def _bootstrap_single(
             files_skipped_parse=files_skipped_parse,
             duration_ms=int((time.time() - started_at) * 1000),
             profile_path=None,
-            error=(
-                f"{files_skipped_parse} of {attempted} files failed to parse "
-                f"({sample}). The extractor subprocess likely died mid-run; "
-                "the existing profile was left untouched. Re-run once the "
-                "toolchain is healthy."
+            error=_degraded_parse_error(
+                files_skipped=files_skipped_parse,
+                attempted=attempted,
+                skipped=list(parse_result.skipped),
+                language=extractor.language,
             ),
             workspace_roots=list(workspace_roots),
             fanout_capped=fanout_capped,

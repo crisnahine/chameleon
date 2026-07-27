@@ -390,6 +390,20 @@ def select_canonicals(
             rels.append((pf, rel))
 
         eligible = [pf for pf, rel in rels if is_eligible_as_canonical(rel)]
+        # A cluster the strict pool barely covers is not represented by what
+        # survives it. The pool drops tests so nobody imitates one while writing
+        # source, but a test-MAJORITY cluster then gets witnessed by its handful
+        # of non-test members -- readthedocs' `test-proxito` was witnessed by
+        # production middleware, and `test-embed` by a utils module, neither
+        # containing a single test. The empty-pool retry below never fired for
+        # those because the minority was eligible. When the strict pool speaks
+        # for less than half the cluster, re-admit the test-reason exclusions so
+        # the cluster's own shape can win typicality. Legacy/deprecated/generated
+        # stay excluded either way, so a legacy-heavy cluster is unaffected.
+        if eligible and len(eligible) * 2 < len(rels):
+            permissive = [pf for pf, rel in rels if is_eligible_as_canonical(rel, allow_tests=True)]
+            if len(permissive) > len(eligible):
+                eligible = permissive
         if not eligible:
             # An empty pool means every member was excluded, and for a TEST
             # cluster that is by construction: the pool drops tests so the model

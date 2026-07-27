@@ -90,3 +90,57 @@ def test_weak_ts_without_backend_marker_stays_typescript(tmp_path: Path) -> None
 
     o.bootstrap_repo(repo)
     assert _persisted_language(repo) == "typescript", "no backend marker -> stay typescript"
+
+
+def _write_py_package(pkg_dir: Path, count: int) -> None:
+    pkg_dir.mkdir(parents=True, exist_ok=True)
+    for i in range(count):
+        (pkg_dir / f"m{i}.py").write_text(
+            f"class M{i}:\n    def run(self):\n        return {i}\n", encoding="utf-8"
+        )
+
+
+def test_python_manifest_below_the_root_still_wins_the_tiebreak(tmp_path: Path) -> None:
+    # A plugin-shaped repo: the root carries only a package.json and a build
+    # script, while the real source is a Python package whose pyproject.toml
+    # sits two levels down. A root-only marker lookup misses that manifest, so
+    # two stray .js-family files decide the language for hundreds of .py files.
+    repo = tmp_path / "nested"
+    repo.mkdir(parents=True)
+    (repo / "package.json").write_text('{"name":"x","version":"1.0.0"}', encoding="utf-8")
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "scripts" / "build.js").write_text("console.log(1);\n", encoding="utf-8")
+    (repo / "plugin" / "scripts").mkdir(parents=True)
+    (repo / "plugin" / "scripts" / "dump.mjs").write_text("export const a = 1;\n", encoding="utf-8")
+    (repo / "plugin" / "mcp").mkdir(parents=True)
+    (repo / "plugin" / "mcp" / "pyproject.toml").write_text(
+        '[project]\nname = "x"\n', encoding="utf-8"
+    )
+    _write_py_package(repo / "plugin" / "mcp" / "pkg", 40)
+
+    report = o.bootstrap_repo(repo)
+    assert _persisted_language(repo) == "python", (
+        "a Python package manifest below the root must still beat two stray .js files"
+    )
+    assert report.archetypes_detected > 0, "the dominant Python tree must yield archetypes"
+
+
+def test_nested_python_manifest_does_not_flip_a_js_dominant_repo(tmp_path: Path) -> None:
+    # The widened lookup must stay behind the file-count dominance guard: a real
+    # JS project that vendors a small Python tool keeps its own language.
+    repo = tmp_path / "jsdominant"
+    repo.mkdir(parents=True)
+    (repo / "package.json").write_text('{"name":"x","version":"1.0.0"}', encoding="utf-8")
+    (repo / "src").mkdir(parents=True)
+    for i in range(30):
+        (repo / "src" / f"c{i}.js").write_text(f"export const v{i} = {i};\n", encoding="utf-8")
+    (repo / "tooling" / "gen").mkdir(parents=True)
+    (repo / "tooling" / "gen" / "pyproject.toml").write_text(
+        '[project]\nname = "gen"\n', encoding="utf-8"
+    )
+    _write_py_package(repo / "tooling" / "gen" / "gen", 5)
+
+    o.bootstrap_repo(repo)
+    assert _persisted_language(repo) == "typescript", (
+        "a JS-dominant repo must not be flipped by a small vendored Python tool"
+    )

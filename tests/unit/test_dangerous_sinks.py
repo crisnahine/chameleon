@@ -368,6 +368,35 @@ def test_ruby_bare_query_in_scope_flagged():
     assert "sql-string-interpolation" in _rules(violations)
 
 
+def test_ruby_redis_exists_is_not_sql():
+    # `exists?` and `select` are not SQL-specific verbs; Redis exposes them too.
+    # Matching on the verb alone tells the reader to turn a cache key into a bind
+    # parameter, which breaks the call if followed.
+    violations = scan_dangerous_sinks(
+        'redis.publish("timeline:#{account.id}", payload) if '
+        'redis.exists?("subscribed:timeline:#{account.id}")',
+        language="ruby",
+    )
+    assert _rules(violations) == [], f"Redis is not a query builder: {_rules(violations)}"
+
+
+def test_ruby_namespaced_redis_receiver_is_not_sql():
+    violations = scan_dangerous_sinks('Redis.current.exists?("subscribed:#{id}")', language="ruby")
+    assert _rules(violations) == []
+
+
+def test_ruby_ivar_redis_receiver_is_not_sql():
+    violations = scan_dangerous_sinks('@redis.exists?("key:#{id}")', language="ruby")
+    assert _rules(violations) == []
+
+
+def test_ruby_model_exists_interpolation_still_flagged():
+    # The suppression is receiver-scoped, not verb-scoped: a real query builder
+    # interpolating into `exists?` is still an injection.
+    violations = scan_dangerous_sinks('User.exists?("name = #{name}")', language="ruby")
+    assert "sql-string-interpolation" in _rules(violations)
+
+
 def test_ruby_parameterized_query_clean():
     violations = scan_dangerous_sinks('User.where("name = ?", name)', language="ruby")
     assert _rules(violations) == []
