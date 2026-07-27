@@ -4,6 +4,62 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.17] - 2026-07-27
+
+### Fixed
+
+- **Six comprehension tools reported `found: true` for paths that do not exist.** The
+  envelope's own contract says only `found: true` is a real answer, so a phantom path
+  answering affirmatively is the one failure the contract cannot absorb. A shared predicate
+  now distinguishes a path that is not a file from one that cannot be stat'd, placed in the
+  miss branches only — a deleted-but-indexed file must still surface as a contract break
+  rather than vanish.
+- **`help` rendered nothing for an action whose implementation moved out of tools.py.**
+  `_dispatch` and `_action_help` each carried their own `getattr(tools, action)`, so
+  relocating `doctor` fixed the call path and silently left a dead signature in a
+  model-facing API. Both now resolve through one `_resolve_action`.
+- **Fixture prep died under any checkout path containing a space.** An unquoted path
+  interpolated into `git clone --bare . <dest>` made git read one destination as several
+  arguments, so every effectiveness and journey run failed in preparation rather than in
+  the work it was meant to measure.
+- **TypeScript class contracts were advertised before an edit and verified after it by
+  nothing.** TS derives `class_contract` (base class, decorators, implemented interfaces)
+  and the pre-edit block shows it, but the post-edit consumer added to close exactly that
+  asymmetry was gated to Ruby and Python. TypeScript now runs the same check, keeping every
+  false-positive guard; the rule stays advisory and never block-eligible.
+- Hook failures that fail open are counted instead of vanishing, so `doctor` can report
+  degradation that previously left no trace.
+
+### Added
+
+- **`doctor` lives in its own module.** Its 1,096 lines were the tail of tools.py, and the
+  dependency only ever ran one way: doctor consumes the tool surface, nothing consumes
+  doctor. Re-exporting it would have formed a two-module import cycle, so the dispatcher
+  reaches the new module directly and tools.py stays free of an import back into it.
+- **Two CI gates that cannot be argued with.** One derives every enumerated count in the
+  docs from source and fails when a claim drifts; the other records the largest import
+  cycle and fails if it grows — converting an unbounded refactor into a one-way ratchet.
+- **A `doctor` check for the profile merge driver.** The profile is committed, so parallel
+  refreshes collide in generated JSON. A half-armed setup is the worst state — git honors
+  `merge=chameleon`, finds no driver, and falls back to the plain text merge the attributes
+  existed to avoid — so it reports as an error, not a warning.
+- Conventions are also emitted as a `.claude/rules` import, delivering them through the
+  higher-authority memory channel rather than hook injection alone.
+
+### Changed
+
+- **The effectiveness study measures what a commit introduced, not what its files contain.**
+  Both arms linted whole blobs, so a file carrying pre-existing violations scored them again
+  on every commit that touched it. Each file is now linted at the commit and at its baseline
+  and the earlier rows subtracted. The correction is not marginal: inherited load was 5.2x
+  and 5.7x the introduced count on the two dogfood repos. Corrected results publish under
+  `results-published/` per the registration's publish-verbatim commitment, and they do not
+  support the study's hypotheses.
+- **The README no longer claims automatic convention derivation is unique.** It is not, as of
+  mid-2026. The lines that do hold are named instead: evidence from parser output rather than
+  review telemetry, timing before the first token rather than before merge, and fully local
+  operation.
+
 ## [4.5.16] - 2026-07-26
 
 ### Added
