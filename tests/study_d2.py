@@ -8,8 +8,12 @@ same post-adoption weeks, the files chameleon governed (from session
 attestations) against the files it did not, on the same repo, with the same lint
 engine — so the temporal confound cancels.
 
-Metric: new-violation rate per file (lint_file violations on the file's content
-at the production tip). Unit of resampling: the file. Two-sample cluster
+Metric: violations INTRODUCED per file during the window -- the file is linted
+at the production tip and at the last commit before adoption, and the earlier
+rows are subtracted, so neither arm scores the load it walked in with (see
+tests/study_scope.py). Rows the per-edit path suppresses are excluded, since a
+rule the model never sees cannot be one chameleon moved. Unit of resampling: the
+file. Two-sample cluster
 bootstrap CI on (ungoverned_rate - governed_rate); a POSITIVE lower bound means
 governed files carry fewer violations (an improvement).
 
@@ -35,6 +39,8 @@ from pathlib import Path
 from tests.study_analyze import two_sample_boot
 
 from chameleon_mcp.tools import _compute_repo_id, get_archetype, lint_file
+
+from tests.study_scope import actionable, net_new
 
 _ADOPTION = "2026-06-01"
 _DEFAULT_REF = "origin/production"
@@ -100,14 +106,43 @@ def _blob_at_tip(repo: Path, ref: str, rel: str) -> str | None:
     return r.stdout.decode("utf-8", errors="replace")
 
 
-def _violations_for(repo: Path, rid: str, ref: str, rel: str) -> int | None:
+def _window_base_rev(repo: Path, ref: str) -> str | None:
+    """The commit the window opens at -- last mainline commit before adoption.
+
+    Both arms are measured against their OWN state at this commit, so what the
+    study compares is what each file accumulated during the window, not the load
+    it walked in with. Without this, an old crufty file scores its entire history
+    against whichever arm it lands in, and since governed files are the ones a
+    developer chose to work on (D2's declared selection bias), that history is
+    exactly what differs between arms for reasons unrelated to chameleon.
+    """
+    r = subprocess.run(
+        ["git", "-C", str(repo), "rev-list", "-1", f"--before={_ADOPTION}", ref],
+        capture_output=True,
+        text=True,
+    )
+    out = r.stdout.strip()
+    return out or None
+
+
+def _violations_for(repo: Path, rid: str, ref: str, rel: str, base_rev: str | None) -> int | None:
     content = _blob_at_tip(repo, ref, rel)
     if content is None:
         return None
     try:
         arch = (get_archetype(rid, str(repo / rel)).get("data") or {}).get("archetype") or "none"
         out = lint_file(rid, arch, content, str(repo / rel)).get("data") or {}
-        return len(out.get("violations") or [])
+        current = actionable(out.get("violations") or [])
+        # A file absent at base_rev was created inside the window; its empty
+        # baseline is correct, every row in it was introduced during the window.
+        base_rows: list[dict] = []
+        if base_rev:
+            prior = _blob_at_tip(repo, base_rev, rel)
+            if prior is not None:
+                prior_out = lint_file(rid, arch, prior, str(repo / rel)).get("data") or {}
+                base_rows = actionable(prior_out.get("violations") or [])
+        introduced, _carried = net_new(current, base_rows)
+        return len(introduced)
     except Exception:
         return None
 
@@ -118,13 +153,14 @@ def measure(repo_path: str, data_dir: Path) -> dict:
     ref = _resolve_ref(repo)
     governed = _governed_files(data_dir, rid)
     merged = _merged_src_files(repo, ref)
+    base_rev = _window_base_rev(repo, ref)
     gov_merged = sorted(governed & merged)
     ungov_merged = sorted(merged - governed)
 
     def arm_units(files):
         units = []
         for rel in files:
-            v = _violations_for(repo, rid, ref, rel)
+            v = _violations_for(repo, rid, ref, rel, base_rev)
             if v is not None:
                 units.append((v, 1.0))  # violations per file
         return units
@@ -137,6 +173,7 @@ def measure(repo_path: str, data_dir: Path) -> dict:
     return {
         "repo": str(repo),
         "ref": ref,
+        "window_base": (base_rev or "")[:12] or None,
         "governed_merged_files": len(gov_merged),
         "ungoverned_merged_files": len(ungov_merged),
         "governed_scored": len(gov_units),

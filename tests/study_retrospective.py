@@ -3,14 +3,21 @@
 Pre-registered in docs/effectiveness-study.md. For each calendar month of a
 dogfood repo's mainline history, replays chameleon's own lint_file over the
 source files each first-parent commit changed, and reports the month's
-new-violation rate (violations flagged in the current file / files scored)
-against the 2026-06-01 chameleon-adoption line. No LLM spawns, no spend.
+introduced-violation rate (violations the commit ADDED / files scored) against
+the 2026-06-01 chameleon-adoption line. No LLM spawns, no spend.
 
-The lint is run against the file's CURRENT content at each historical commit
-(git-show of the blob), scored under the repo's committed profile — the same
-deterministic engine tests/effectiveness/scorers/convention.py uses. This is a
-STRUCTURAL-conformance signal (the dimension lint_file measures); the study doc
-records that idiom-level conformance is not lint-scored without taught rules.
+Each file is linted TWICE -- at the commit and at its first parent -- and the
+parent's rows are subtracted by multiset match, so a violation the commit
+inherited does not score against it (see tests/study_scope.py for why the
+earlier whole-blob count could not answer the registered question). Rows the
+per-edit path suppresses are excluded for the same reason. The per-month
+`carried` field reports how much pre-existing load was subtracted; when it
+dwarfs `violations`, that gap IS the old measurement's error.
+
+Lints run against the git-show blob under the repo's committed profile -- the
+same deterministic engine tests/effectiveness/scorers/convention.py uses. This
+is a STRUCTURAL-conformance signal (the dimension lint_file measures); the study
+doc records that idiom-level conformance is not lint-scored without taught rules.
 
 Usage:
     CHAMELEON_TEST_TS_REPO=/abs/ef-client CHAMELEON_TEST_RUBY_REPO=/abs/ef-api \\
@@ -29,6 +36,8 @@ from collections import defaultdict
 from pathlib import Path
 
 from chameleon_mcp.tools import _compute_repo_id, get_archetype, lint_file
+
+from tests.study_scope import actionable, first_parent, net_new
 
 _ADOPTION = "2026-06-01"
 _SINCE = "2026-01-01"  # study window start; pre-adoption arm is _SINCE.._ADOPTION
@@ -78,7 +87,9 @@ def measure(repo_path: str, n_commits: int) -> dict:
     # first-parent mainline commits on the production ref, since the window
     # start, newest first, with commit date
     log = _git(repo, "log", "--first-parent", "--format=%H|%cs", "--since", _SINCE, ref)
-    per_month: dict[str, dict] = defaultdict(lambda: {"files": 0, "violations": 0, "commits": 0})
+    per_month: dict[str, dict] = defaultdict(
+        lambda: {"files": 0, "violations": 0, "commits": 0, "carried": 0}
+    )
     # per-commit rows are the bootstrap unit: each carries (files, violations)
     # under its pre/post-adoption arm, so stats can resample over commits.
     commits: list[dict] = []
@@ -91,8 +102,10 @@ def measure(repo_path: str, n_commits: int) -> dict:
         if not srcs:
             continue
         per_month[month]["commits"] += 1
+        parent = first_parent(repo, sha)
         c_files = 0
         c_viol = 0
+        c_carried = 0
         for rel in srcs[:50]:  # bound huge commits
             content = _blob_at(repo, sha, rel)
             if content is None:
@@ -102,12 +115,25 @@ def measure(repo_path: str, n_commits: int) -> dict:
                     "archetype"
                 ) or "none"
                 out = lint_file(rid, arch, content, str(repo / rel)).get("data") or {}
+                current = actionable(out.get("violations") or [])
+                # The same file one commit earlier. Absent parent (root commit) or
+                # absent blob (the commit added the file) both mean an empty
+                # baseline, which is correct: every row in a new file is introduced.
+                base_rows: list[dict] = []
+                if parent:
+                    prior = _blob_at(repo, parent, rel)
+                    if prior is not None:
+                        prior_out = lint_file(rid, arch, prior, str(repo / rel)).get("data") or {}
+                        base_rows = actionable(prior_out.get("violations") or [])
+                introduced, carried = net_new(current, base_rows)
                 c_files += 1
-                c_viol += len(out.get("violations") or [])
+                c_viol += len(introduced)
+                c_carried += carried
             except Exception:
                 continue
         per_month[month]["files"] += c_files
         per_month[month]["violations"] += c_viol
+        per_month[month]["carried"] += c_carried
         if c_files:
             commits.append(
                 {
