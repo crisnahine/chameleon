@@ -51,9 +51,14 @@ tests/dogfood/results/dogfood_*.json
 tests/dogfood/results/dogfood_*.md
 
 # Local Claude Code state (worktrees, session caches, agent transcripts).
-# .claude/rules/ is the exception: committed rule files that lazy-load by path.
+# The exceptions are the authored, committed surfaces: rule files that lazy-load
+# by path, and the /loop audit command with the agent and skill it dispatches.
+# .claude/loop/ stays ignored -- that is per-run output, not source.
 .claude/*
 !.claude/rules/
+!.claude/commands/
+!.claude/agents/
+!.claude/skills/
 
 # Journey harness run output (per-run ephemeral dirs)
 tests/journey/results/

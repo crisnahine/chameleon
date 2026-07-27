@@ -1,0 +1,37 @@
+rule                              declared               ty   ru   py   gap
+--------------------------------------------------------------------------------------------
+assertion-free-test               not-block-eligible      Y  Y  Y   
+command-injection                 not-block-eligible      .  Y  Y   
+content-signal-mismatch           not-block-eligible      Y  .  .   
+cross-file-importers              not-block-eligible      Y  Y  Y   
+default-export-kind-mismatch      not-block-eligible      Y  .  .   
+eval-call                         language-independent    Y  Y  Y   
+file-naming-convention-violation  language-independent    Y  Y  Y   
+import-preference-violation       language-independent    Y  Y  Y   
+inheritance-convention-violation  python,ruby             .  Y  Y   
+insecure-deserialization          not-block-eligible      .  Y  Y   
+insecure-random                   not-block-eligible      Y  Y  Y   
+jsx-presence-mismatch             typescript              Y  .  .   
+missing-required-method           not-block-eligible      Y  Y  Y   
+named-export-count-bucket-mismatchnot-block-eligible      Y  .  .   
+naming-convention-violation       python,ruby,typescri    Y  Y  Y   
+phantom-import                    python,ruby,typescri    Y  Y  Y   
+phantom-symbol                    not-block-eligible      Y  Y  Y   
+random-in-test                    not-block-eligible      Y  Y  Y   
+real-sleep-in-test                not-block-eligible      Y  Y  Y   
+removed-export-breaks-importers   not-block-eligible      Y  Y  Y   
+required-guard-convention         not-block-eligible      .  Y  Y   
+secret-detected-in-content        language-independent    A  A  A   
+skipped-test                      not-block-eligible      Y  Y  Y   
+sql-string-interpolation          not-block-eligible      .  Y  .   
+style-rule-violation              not-block-eligible      Y  Y  Y   
+tautological-assertion            not-block-eligible      Y  Y  Y   
+then-without-catch                not-block-eligible      Y  .  .   
+top-level-node-kinds-mismatch     not-block-eligible      Y  .  .   
+unfrozen-clock                    not-block-eligible      Y  Y  Y   
+unstubbed-network                 not-block-eligible      Y  Y  Y   
+weak-hash                         not-block-eligible      Y  Y  Y   
+
+Y evidence found   A language-agnostic by construction   ? declared but NO evidence (READ IT -- not proven absent)   - justified   . not declared
+
+No declared/observed divergence. (Absence of evidence for a `.` cell is not checked -- only DECLARED rules are audited here.)
