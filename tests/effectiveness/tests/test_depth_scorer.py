@@ -12,7 +12,6 @@ import json
 import types
 
 import pytest
-
 from tests.effectiveness.scorers import depth
 
 
