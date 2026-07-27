@@ -41,11 +41,24 @@ if [[ "${1:-}" == "--apply" ]]; then
 fi
 
 removed=0
+held=0
 for dir in "${CACHE_DIR}"/*/; do
     [[ -d "${dir}" ]] || continue
     version=$(basename "${dir}")
     if [[ "${version}" == "${current_version}" ]]; then
         echo "  keep ${version} (current)"
+        continue
+    fi
+    # Claude Code marks the build a session loaded with .in_use, and a session
+    # keeps running the version it STARTED on -- installing a new one re-pins
+    # the registry for future sessions without moving the live one. Deleting by
+    # registry version alone therefore rm -rf's the plugin a running session is
+    # executing from, taking its hooks and MCP server out mid-turn. A marker
+    # left by a dead session only makes this conservative, which is the right
+    # direction: reclaiming disk is never worth breaking a live session.
+    if [[ -e "${dir}.in_use" ]]; then
+        echo "  keep ${version} (.in_use -- a session may still be running it)"
+        held=$((held + 1))
         continue
     fi
     if (( apply == 1 )); then
@@ -56,6 +69,13 @@ for dir in "${CACHE_DIR}"/*/; do
     fi
     removed=$((removed + 1))
 done
+
+if (( held > 0 )); then
+    echo
+    echo "chameleon: kept ${held} version(s) marked .in_use. If no session is"
+    echo "           running them, the markers are stale -- close those sessions"
+    echo "           (or remove the marker files) and re-run to reclaim them."
+fi
 
 if (( removed == 0 )); then
     echo "chameleon: no stale versions to prune."
