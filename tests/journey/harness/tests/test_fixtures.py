@@ -48,3 +48,26 @@ def test_setup_fixture_origin_is_bare(tmp_path: Path) -> None:
     assert origin_dir.name.endswith(".git")
     assert not (origin_dir / "file.txt").exists()
     assert (origin_dir / "HEAD").exists()
+
+
+def test_setup_fixture_survives_spaces_in_the_working_root(tmp_path):
+    """The checkout path is the caller's, not ours, and may contain spaces.
+
+    An unquoted interpolation made `git clone --bare . <dest>` read one
+    destination as several arguments, so every eval and journey run died in
+    fixture prep with "Too many arguments" the moment the repo lived under a
+    directory like "Chameleon + Superpowers".
+    """
+    seed = tmp_path / "seed"
+    (seed / "src").mkdir(parents=True)
+    (seed / "src" / "a.ts").write_text("export const a = 1;\n")
+
+    working_root = tmp_path / "work root with spaces"
+    working_root.mkdir()
+
+    work_dir, origin_dir = setup_fixture("fx", seed, working_root)
+
+    assert (work_dir / "src" / "a.ts").is_file()
+    assert origin_dir.is_dir()
+    # the loopback origin must really be wired, not just created
+    assert "origin" in run_bash("git remote", cwd=work_dir).stdout

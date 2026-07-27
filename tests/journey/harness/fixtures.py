@@ -8,6 +8,7 @@ This module initializes them as git repos with a bare loopback origin so
 from __future__ import annotations
 
 import re
+import shlex
 import shutil
 from pathlib import Path
 
@@ -60,11 +61,14 @@ def setup_fixture(name: str, seed: Path, working_root: Path) -> tuple[Path, Path
         if r.returncode != 0:
             raise RuntimeError(f"fixture setup failed at {cmd!r}: {r.stderr}")
 
-    r = run_bash(f"git clone --bare . {origin_dir}", cwd=work_dir)
+    # Quoted: these paths come from the caller's checkout location, which is
+    # allowed to contain spaces. Interpolating one raw made git read a single
+    # destination as several arguments and fail the whole fixture prep.
+    r = run_bash(f"git clone --bare . {shlex.quote(str(origin_dir))}", cwd=work_dir)
     if r.returncode != 0:
         raise RuntimeError(f"bare clone failed: {r.stderr}")
 
-    r = run_bash(f"git remote add origin {origin_dir}", cwd=work_dir)
+    r = run_bash(f"git remote add origin {shlex.quote(str(origin_dir))}", cwd=work_dir)
     if r.returncode != 0:
         raise RuntimeError(f"remote add failed: {r.stderr}")
     r = run_bash("git fetch -q origin", cwd=work_dir)
