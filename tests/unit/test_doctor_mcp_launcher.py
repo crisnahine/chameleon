@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import shutil
 
-from chameleon_mcp import tools
+from chameleon_mcp import doctor as doctor_mod
 
 
 def _launcher_check(monkeypatch, *, uvx: bool, uv: bool) -> dict:
@@ -27,7 +27,7 @@ def _launcher_check(monkeypatch, *, uvx: bool, uv: bool) -> dict:
         return real_which(name, *args, **kwargs)
 
     monkeypatch.setattr(shutil, "which", fake_which)
-    checks = tools.doctor().get("data", {}).get("checks", [])
+    checks = doctor_mod.doctor().get("data", {}).get("checks", [])
     check = next((c for c in checks if c.get("name") == "mcp_server_launcher"), None)
     assert check is not None, "doctor did not emit the mcp_server_launcher check"
     return check
@@ -63,5 +63,5 @@ def test_launcher_error_flips_overall(monkeypatch):
         return real_which(name, *args, **kwargs)
 
     monkeypatch.setattr(shutil, "which", fake_which)
-    env = tools.doctor().get("data", {})
+    env = doctor_mod.doctor().get("data", {})
     assert env.get("overall") == "error"

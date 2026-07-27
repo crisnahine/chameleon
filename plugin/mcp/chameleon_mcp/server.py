@@ -26,7 +26,7 @@ untouched), so in-process callers and tests see dicts, while the model-facing
 wire pays no formatting overhead. Dispatcher descriptions are kept under the
 2KB ceiling Claude Code truncates tool descriptions at; the full per-action
 signatures are available on demand via `action="help"` (generated from the
-live tools.py signatures, so they can never drift).
+live function signatures `_resolve_action` returns, so they can never drift).
 
 Known limitation (upstream): a ``tools/call`` whose arguments are nested past
 pydantic-core's recursion cap (~200 levels) gets no JSON-RPC response — the
@@ -43,6 +43,23 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from chameleon_mcp import __version__, tools
+from chameleon_mcp import doctor as doctor_mod
+
+# Actions whose implementation lives outside tools.py. doctor was moved out to
+# keep the dependency one-way (see chameleon_mcp/doctor.py); resolving it here
+# is what lets tools.py stay free of an import back into it.
+_ACTION_MODULES = {"doctor": doctor_mod}
+
+
+def _resolve_action(action: str):
+    """The one place an action name becomes a function.
+
+    Both the dispatcher and the help generator resolve through here. When they
+    each carried their own getattr(tools, ...), moving an action out of tools.py
+    fixed the call path and silently left help rendering nothing for it.
+    """
+    return getattr(_ACTION_MODULES.get(action, tools), action, None)
+
 
 # The only server text guaranteed in model context at session start once the
 # client defers tool schemas (Claude Code defers MCP tools by default and
@@ -458,8 +475,8 @@ def explain_edit(repo: str, file_path: str) -> dict:
 #
 # Description budget: Claude Code truncates each tool description at 2KB, so
 # each dispatcher docstring stays under that with one line per action; the
-# full signatures come from `action="help"`, generated from tools.py at call
-# time so they can never drift from the code.
+# full signatures come from `action="help"`, read at call time from whatever
+# `_resolve_action` returns, so they can never drift from the code.
 # ---------------------------------------------------------------------------
 
 _LIFECYCLE_ACTIONS = (
@@ -522,7 +539,7 @@ def _action_help(dispatcher: str, valid_actions: tuple[str, ...]) -> dict:
     """
     entries = []
     for action in valid_actions:
-        fn = getattr(tools, action, None)
+        fn = _resolve_action(action)
         if not callable(fn):
             continue
         try:
@@ -577,7 +594,7 @@ def _dispatch(
                 "valid_actions": [*valid_actions, "help"],
             }
         )
-    fn = getattr(tools, action)
+    fn = _resolve_action(action)
     if params is None:
         kwargs: dict = {}
     elif isinstance(params, dict):

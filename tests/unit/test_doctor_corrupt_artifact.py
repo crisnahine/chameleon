@@ -13,6 +13,7 @@ import json
 
 import pytest
 
+from chameleon_mcp import doctor as doctor_mod
 from chameleon_mcp import index_db, tools
 
 
@@ -48,7 +49,7 @@ def _register_committed_repo(repo, *, canonicals: str) -> None:
 
 
 def _known_repo_state(repo):
-    checks = tools.doctor().get("data", {}).get("checks", [])
+    checks = doctor_mod.doctor().get("data", {}).get("checks", [])
     kr = next(c for c in checks if c["name"] == "known_repos")
     state = next((s for s in kr["detail"] if s["repo_root"] == str(repo)), None)
     return kr, state
@@ -79,14 +80,14 @@ class TestConflictMarkedArtifacts:
             encoding="utf-8",
         )
         (pd / "idioms.md").write_text("# Team idioms\n\n## active\n", encoding="utf-8")
-        assert tools._conflict_marked_artifacts(pd) == ["principles.md"]
+        assert doctor_mod._conflict_marked_artifacts(pd) == ["principles.md"]
 
     def test_clean_artifacts_report_nothing(self, tmp_path):
         pd = tmp_path / ".chameleon"
         pd.mkdir()
         (pd / "COMMITTED").write_text("committed-at=1.0\npid=1\n", encoding="utf-8")
         (pd / "profile.summary.md").write_text("# Summary\n", encoding="utf-8")
-        assert tools._conflict_marked_artifacts(pd) == []
+        assert doctor_mod._conflict_marked_artifacts(pd) == []
 
     def test_marker_like_text_without_close_is_not_flagged(self, tmp_path):
         # A lone <<<<<<< (e.g. inside a quoted example) is not an unresolved
@@ -97,7 +98,7 @@ class TestConflictMarkedArtifacts:
             "# Team idioms\n\n## active\n\n### x\n\nbody with\n<<<<<<< sample\n",
             encoding="utf-8",
         )
-        assert tools._conflict_marked_artifacts(pd) == []
+        assert doctor_mod._conflict_marked_artifacts(pd) == []
 
 
 # --------------------------------------------------------------------------
@@ -134,7 +135,7 @@ class TestIndexDbSelfHeal:
 
     def test_doctor_reports_index_db(self, tmp_path, monkeypatch):
         monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
-        result = tools.doctor()["data"]
+        result = doctor_mod.doctor()["data"]
         by_name = {c["name"]: c for c in result["checks"]}
         assert "index_db" in by_name
         assert by_name["index_db"]["status"] == "ok"

@@ -90,9 +90,9 @@ def section(title: str):
     print(f"{'=' * 60}")
 
 
+from chameleon_mcp.doctor import doctor  # noqa: E402
 from chameleon_mcp.tools import (  # noqa: E402
     detect_repo,
-    doctor,
     get_archetype,
     get_drift_status,
     get_pattern_context,

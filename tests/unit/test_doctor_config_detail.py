@@ -5,7 +5,7 @@ default — and misled /chameleon-status into reporting 'v0.6.0 features off'.""
 
 from __future__ import annotations
 
-from chameleon_mcp import tools
+from chameleon_mcp import doctor as doctor_mod
 
 
 def test_doctor_no_config_detail_states_auto_refresh_on(tmp_path, monkeypatch):
@@ -13,7 +13,7 @@ def test_doctor_no_config_detail_states_auto_refresh_on(tmp_path, monkeypatch):
     (repo / ".chameleon").mkdir(parents=True)  # no config.json present
     monkeypatch.chdir(repo)
 
-    checks = tools.doctor().get("data", {}).get("checks", [])
+    checks = doctor_mod.doctor().get("data", {}).get("checks", [])
     cj = next((c for c in checks if c.get("name") == "config_json"), None)
     assert cj is not None
     detail = str(cj["detail"]).lower()
@@ -38,7 +38,7 @@ def test_doctor_config_found_from_subdirectory(tmp_path, monkeypatch):
     sub.mkdir(parents=True)
     monkeypatch.chdir(sub)
 
-    checks = tools.doctor().get("data", {}).get("checks", [])
+    checks = doctor_mod.doctor().get("data", {}).get("checks", [])
     cj = next((c for c in checks if c.get("name") == "config_json"), None)
     assert cj is not None and cj["status"] == "ok"
     assert cj["detail"]["production_ref"] == "main"
