@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pytest
 
+from chameleon_mcp import doctor as doctor_mod
 from chameleon_mcp import index_db, tools
 
 
@@ -93,7 +94,7 @@ def _make_profile(repo: Path, *, language: str = "typescript", artifacts=_ALL_TS
 
 
 def _check(name: str) -> dict:
-    checks = tools.doctor()["data"]["checks"]
+    checks = doctor_mod.doctor()["data"]["checks"]
     return next(c for c in checks if c["name"] == name)
 
 
@@ -497,7 +498,7 @@ class TestDoctorChecksEveryWiredHook:
             script.chmod(0o755)
         monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(plugin_root))
 
-        checks = tools.doctor()["data"]["checks"]
+        checks = doctor_mod.doctor()["data"]["checks"]
         names = {c["name"] for c in checks}
         for name in self._ALL_HOOKS:
             assert f"hook_{name}" in names, f"doctor did not check hook {name}"

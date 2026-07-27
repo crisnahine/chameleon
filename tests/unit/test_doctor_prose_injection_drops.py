@@ -12,7 +12,7 @@ the one diagnostic tool meant to surface a live poisoning event stayed silent.
 
 from __future__ import annotations
 
-from chameleon_mcp import tools
+from chameleon_mcp import doctor as doctor_mod
 
 
 def _checks(tmp_path, monkeypatch, log_text: str) -> list[dict]:
@@ -21,7 +21,7 @@ def _checks(tmp_path, monkeypatch, log_text: str) -> list[dict]:
     (data_dir / ".hook_errors.log").write_text(log_text, encoding="utf-8")
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(data_dir))
     monkeypatch.delenv("CHAMELEON_HOOK_ERROR_LOG", raising=False)
-    return tools.doctor().get("data", {}).get("checks", [])
+    return doctor_mod.doctor().get("data", {}).get("checks", [])
 
 
 def test_doctor_surfaces_orphaned_injection_drop_with_no_anchor(tmp_path, monkeypatch):

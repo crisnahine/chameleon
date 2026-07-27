@@ -44,9 +44,9 @@ TEST_TS_FILES = _ts_files[:2]
 TEST_FILES = TEST_TSX_FILES + TEST_TS_FILES
 
 
+from chameleon_mcp.doctor import doctor  # noqa: E402
 from chameleon_mcp.tools import (  # noqa: E402
     detect_repo,
-    doctor,
     get_archetype,
     get_callers,
     get_canonical_excerpt,

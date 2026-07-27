@@ -17,6 +17,7 @@ import json
 
 import pytest
 
+from chameleon_mcp import doctor as doctor_mod
 from chameleon_mcp import server, tools
 from chameleon_mcp.profile.trust import grant_trust
 
@@ -198,8 +199,11 @@ class TestDispatchers:
             *server._REVIEW_ACTIONS,
             *server._TELEMETRY_ACTIONS,
         ):
-            fn = getattr(tools, action, None)
-            assert callable(fn), f"dispatcher action {action!r} has no tools.{action}"
+            fn = server._resolve_action(action)
+            assert callable(fn), (
+                f"dispatcher action {action!r} resolves to nothing; an action name "
+                "the dispatcher cannot turn into a function is a dead model-facing API"
+            )
 
     def test_action_sets_are_disjoint_and_total_34(self):
         all_actions = (
@@ -776,7 +780,7 @@ def test_detect_repo_no_repo(tmp_path, monkeypatch):
 
 def test_doctor(tmp_path, monkeypatch):
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
-    _assert_envelope(tools.doctor())
+    _assert_envelope(doctor_mod.doctor())
 
 
 def test_daemon_status(tmp_path, monkeypatch):

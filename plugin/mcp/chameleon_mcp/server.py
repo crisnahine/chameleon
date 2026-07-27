@@ -43,6 +43,22 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from chameleon_mcp import __version__, tools
+from chameleon_mcp import doctor as doctor_mod
+
+# Actions whose implementation lives outside tools.py. doctor was moved out to
+# keep the dependency one-way (see chameleon_mcp/doctor.py); resolving it here
+# is what lets tools.py stay free of an import back into it.
+_ACTION_MODULES = {"doctor": doctor_mod}
+
+
+def _resolve_action(action: str):
+    """The one place an action name becomes a function.
+
+    Both the dispatcher and the help generator resolve through here. When they
+    each carried their own getattr(tools, ...), moving an action out of tools.py
+    fixed the call path and silently left help rendering nothing for it.
+    """
+    return getattr(_ACTION_MODULES.get(action, tools), action, None)
 
 # The only server text guaranteed in model context at session start once the
 # client defers tool schemas (Claude Code defers MCP tools by default and
@@ -520,7 +536,7 @@ def _action_help(dispatcher: str, valid_actions: tuple[str, ...]) -> dict:
     """
     entries = []
     for action in valid_actions:
-        fn = getattr(tools, action, None)
+        fn = _resolve_action(action)
         if not callable(fn):
             continue
         try:
@@ -575,7 +591,7 @@ def _dispatch(
                 "valid_actions": [*valid_actions, "help"],
             }
         )
-    fn = getattr(tools, action)
+    fn = _resolve_action(action)
     if params is None:
         kwargs: dict = {}
     elif isinstance(params, dict):
