@@ -14939,6 +14939,58 @@ def doctor(repo: str | None = None) -> dict:
     from chameleon_mcp.worktree import resolve_profile_root
 
     _doctor_root = resolve_profile_root(_doctor_root)
+
+    # The profile is committed, so two developers refreshing on parallel branches
+    # collide in generated JSON. A merge driver exists for exactly that, but
+    # arming it takes a .gitattributes AND a `git config` registration nothing
+    # performs -- so a repo can sit for months believing it is covered. Neither
+    # half is checked anywhere else, and a half-armed setup is the worst state:
+    # git honors merge=chameleon, finds no driver, and falls back to the plain
+    # text merge the attributes existed to avoid.
+    try:
+        _ga = _doctor_root / ".gitattributes"
+        _ga_armed = _ga.is_file() and "merge=chameleon" in _ga.read_text(
+            encoding="utf-8", errors="replace"
+        )
+        _drv = subprocess.run(
+            ["git", "config", "--get", "merge.chameleon.driver"],
+            cwd=str(_doctor_root),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        _drv_armed = _drv.returncode == 0 and bool(_drv.stdout.strip())
+        if _ga_armed and _drv_armed:
+            checks.append(
+                {"name": "profile_merge_driver", "status": "ok", "detail": "attributes + driver"}
+            )
+        elif not _ga_armed and not _drv_armed:
+            checks.append(
+                {
+                    "name": "profile_merge_driver",
+                    "status": "warn",
+                    "detail": (
+                        "not set up; two branches that both refresh will conflict in "
+                        ".chameleon JSON. See .gitattributes-template"
+                    ),
+                }
+            )
+        else:
+            checks.append(
+                {
+                    "name": "profile_merge_driver",
+                    "status": "error",
+                    "detail": (
+                        f"half-armed (.gitattributes={_ga_armed}, driver registered="
+                        f"{_drv_armed}); git will fall back to a plain text merge"
+                    ),
+                }
+            )
+    except Exception:
+        checks.append(
+            {"name": "profile_merge_driver", "status": "warn", "detail": "could not determine"}
+        )
+
     cwd_config = _doctor_root / ".chameleon" / "config.json"
     if cwd_config.is_file():
         try:
