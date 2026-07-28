@@ -765,7 +765,7 @@ DEFAULTS: Final[dict[str, int | float]] = {
     "JOB_LENS_BUDGET_SECONDS": 150,
     "JOB_VERIFY_BUDGET_SECONDS": 60,
     # The self-learning idiom miner's own share of the job's remaining budget
-    # (the reserved remainder after lenses/VERIFY/render): it runs LAST, after
+    # (the reserved remainder after lenses/VERIFY): it runs LAST, after
     # every other stage, so this is a ceiling on its own window rather than a
     # slice reserved up front.
     "JOB_MINER_BUDGET_SECONDS": 20,
