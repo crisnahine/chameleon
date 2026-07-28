@@ -52,20 +52,38 @@ def _cache(tmp_path: Path, versions: dict[str, list[int] | None]) -> tuple[Path,
     return cache_dir, installed
 
 
-def _run(cache_dir: Path, installed: Path, *args: str) -> str:
+def _run(cache_dir: Path, installed: Path, *args: str, path: str | None = None) -> str:
+    env = {
+        **os.environ,
+        "CHAMELEON_PLUGIN_CACHE_DIR": str(cache_dir),
+        "CHAMELEON_INSTALLED_PLUGINS_JSON": str(installed),
+    }
+    if path is not None:
+        env["PATH"] = path
     res = subprocess.run(
         [BASH, str(SCRIPT), *args],
         capture_output=True,
         text=True,
         timeout=60,
-        env={
-            **os.environ,
-            "CHAMELEON_PLUGIN_CACHE_DIR": str(cache_dir),
-            "CHAMELEON_INSTALLED_PLUGINS_JSON": str(installed),
-        },
+        env=env,
     )
     assert res.returncode == 0, res.stderr
     return res.stdout
+
+
+# Everything the script forks EXCEPT ps, so a PATH built from these exercises
+# the no-ps branch without breaking the script itself.
+_TOOLS_WITHOUT_PS = ("python3", "basename", "find", "rm", "dirname", "cat", "uname")
+
+
+def _bin_without_ps(tmp_path: Path) -> str:
+    binp = tmp_path / "bin_no_ps"
+    binp.mkdir()
+    for tool in _TOOLS_WITHOUT_PS:
+        src = shutil.which(tool)
+        if src:
+            (binp / tool).symlink_to(src)
+    return str(binp)
 
 
 # A pid that is certainly not running. The kernel caps pids well below this on
@@ -133,6 +151,37 @@ def test_current_version_is_kept_even_with_dead_markers(tmp_path):
     out = _run(cache_dir, installed, "--apply")
     assert "keep 9.9.9 (current)" in out
     assert (cache_dir / "9.9.9").is_dir()
+
+
+def test_without_ps_every_marked_version_is_kept(tmp_path):
+    """`ps` is how a recorded session is checked for liveness. Without it
+    nothing can be proven dead, so a marked build must be kept -- pruning
+    when the answer is unknowable is how a live session loses its plugin."""
+    cache_dir, installed = _cache(tmp_path, {"1.0.0": [_DEAD_PID]})
+    out = _run(cache_dir, installed, "--apply", path=_bin_without_ps(tmp_path))
+    assert "keep 1.0.0" in out
+    assert (cache_dir / "1.0.0").is_dir()
+
+
+def test_without_ps_an_unmarked_version_is_still_prunable(tmp_path):
+    """The no-ps fail-safe covers only the liveness question. A version no
+    session ever loaded has no marker to be uncertain about."""
+    cache_dir, installed = _cache(tmp_path, {"1.0.0": None})
+    out = _run(cache_dir, installed, "--apply", path=_bin_without_ps(tmp_path))
+    assert "prune 1.0.0" in out
+    assert not (cache_dir / "1.0.0").exists()
+
+
+def test_unreadable_marker_directory_is_kept(tmp_path):
+    cache_dir, installed = _cache(tmp_path, {"1.0.0": [_DEAD_PID]})
+    marker = cache_dir / "1.0.0" / ".in_use"
+    marker.chmod(0o000)
+    try:
+        out = _run(cache_dir, installed, "--apply")
+    finally:
+        marker.chmod(0o755)
+    assert "keep 1.0.0" in out
+    assert (cache_dir / "1.0.0").is_dir()
 
 
 def test_dry_run_is_the_default_and_deletes_nothing(tmp_path):

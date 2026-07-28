@@ -226,6 +226,32 @@ def test_safe_prose_text_emits_a_line_doctor_matches(tmp_path, capsys):
     assert _ANCHOR_RE.match(line), line
 
 
+def test_load_profile_dir_emits_a_line_doctor_matches(tmp_path, capsys):
+    """The third writer. load_profile_dir's whole-artifact idioms.md guard is a
+    separate print from safe_prose_text's, with its own anchor, so covering it
+    by literal alone leaves exactly the decoupling this file exists to close."""
+    from chameleon_mcp.profile.loader import load_profile_dir
+
+    profile_dir = tmp_path / "repo" / ".chameleon"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "COMMITTED").write_text("committed-at=1.0\npid=1\n", encoding="utf-8")
+    (profile_dir / "profile.json").write_text(
+        json.dumps({"schema_version": 8, "repo_id": "x", "language": "python", "generation": 1}),
+        encoding="utf-8",
+    )
+    # The generation counter must agree across all four artifacts or the load
+    # is refused before the idioms.md guard is ever reached.
+    for artifact in ("archetypes.json", "rules.json", "canonicals.json"):
+        (profile_dir / artifact).write_text(json.dumps({"generation": 1}), encoding="utf-8")
+    (profile_dir / "idioms.md").write_text(_POISON, encoding="utf-8")
+
+    loaded = load_profile_dir(profile_dir)
+    assert loaded.idioms_text == ""
+    line = capsys.readouterr().err.strip()
+    assert doctor_mod.INJECTION_DROP_RE.search(line), line
+    assert _ANCHOR_RE.match(line), line
+
+
 def test_idiom_store_emits_a_line_doctor_matches(tmp_path, capsys):
     from chameleon_mcp.core.idiom_store import STORE_DIRNAME, load_store
 
