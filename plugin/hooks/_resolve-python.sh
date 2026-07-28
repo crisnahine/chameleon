@@ -54,9 +54,10 @@ _cham_interp_cache_file() {
 }
 
 # Fill CHAMELEON_PY from the cache. Returns 0 only on a validated hit: the
-# recorded mcp_dir matches and the argv's leading binary still resolves
-# ([ -x ] for a path, command -v for a bare name) — a deleted venv or an
-# uninstalled uv turns the entry stale and the ladder repairs it. Deliberately
+# recorded mcp_dir matches, the argv's leading binary still resolves
+# ([ -x ] for a path, command -v for a bare name), and no higher-priority rung
+# has appeared since the entry was written — a deleted venv or an uninstalled
+# uv turns the entry stale and the ladder repairs it. Deliberately
 # NO version re-probe on a hit (that fork is the cost the cache removes): a
 # binary downgraded in place below 3.11 is caught downstream by the hook's
 # import failure, which fail-opens and logs, and the next plugin version
@@ -64,7 +65,7 @@ _cham_interp_cache_file() {
 # absent/unreadable/non-regular file, empty or mismatched content) is a miss,
 # never an error.
 _cham_cache_read() {
-    local mcp_dir="$1" cache line first n=0
+    local mcp_dir="$1" cache line first cand n=0
     if [ "${CHAMELEON_INTERP_CACHE:-1}" = "0" ]; then return 1; fi
     # An empty key must never hit (a corrupt cache with an empty first line
     # would otherwise match a caller that passed no mcp_dir).
@@ -84,6 +85,26 @@ _cham_cache_read() {
     if [ "${#CHAMELEON_PY[@]}" -eq 0 ]; then return 1; fi
     first="${CHAMELEON_PY[0]}"
     if [ -x "$first" ] || command -v "$first" >/dev/null 2>&1; then
+        # The key is the mcp_dir alone, which is fixed for the life of an
+        # installed version — so an entry written before the bundled venv
+        # existed would be served for that whole version, on an interpreter
+        # without chameleon's deps. `uv sync` in mcp/ materializes rung 1 long
+        # after SessionStart warms the cache, so re-check it here. Walk the
+        # SAME candidates in the SAME order as rung 1 and stop at the first
+        # viable one: that is precisely what the ladder would return, so
+        # comparing against it can never disagree with a re-run. Comparing
+        # against every candidate instead would thrash — with both layouts
+        # present, whichever one lost would invalidate the winner's own entry
+        # on every invocation. Builtin tests only; the hit path stays fork-free.
+        for cand in "${mcp_dir}/.venv/bin/python" "${mcp_dir}/.venv/Scripts/python.exe"; do
+            if [ -x "$cand" ]; then
+                if [ "$cand" != "$first" ]; then
+                    CHAMELEON_PY=()
+                    return 1
+                fi
+                break
+            fi
+        done
         return 0
     fi
     CHAMELEON_PY=()

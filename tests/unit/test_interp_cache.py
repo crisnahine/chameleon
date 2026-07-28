@@ -185,6 +185,138 @@ def test_unwritable_cache_dir_fails_open(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# Higher-rung re-evaluation
+# --------------------------------------------------------------------------- #
+
+# The cache is keyed by mcp_dir alone, and mcp_dir is stable for the life of an
+# installed plugin version -- so an entry written before the bundled venv
+# existed would otherwise be served for that whole version. `uv sync` in mcp/
+# (scripts/setup.sh) materializes rung 1 long after SessionStart warms the
+# cache, which is exactly the window these tests cover.
+
+
+def test_venv_appearing_after_cache_reresolves_to_rung_one(tmp_path):
+    """A rung-1 venv materialized AFTER the entry was cached wins on the next
+    resolve. Without re-evaluation the cached rung-2 interpreter is served for
+    the whole plugin version -- on an interpreter that lacks chameleon's deps."""
+    binp, mcp, data = _seed(tmp_path)
+    rc, lines = _run_resolver(mcp, str(binp), {"CHAMELEON_PLUGIN_DATA": str(data)})
+    assert rc == 0
+    assert lines == [str(binp / "python3.11")]
+
+    venv_py = mcp / ".venv" / "bin" / "python"
+    venv_py.parent.mkdir(parents=True)
+    _touch_exec(venv_py)
+
+    rc, lines = _run_resolver(mcp, str(binp), {"CHAMELEON_PLUGIN_DATA": str(data)})
+    assert rc == 0
+    assert lines == [str(venv_py)]
+    assert (data / "interp.cache").read_text().splitlines() == [str(mcp), str(venv_py)]
+
+
+def test_windows_venv_appearing_after_cache_reresolves(tmp_path):
+    """Rung 1 loops over TWO candidates; the Scripts/python.exe layout must
+    invalidate a stale entry the same way bin/python does."""
+    binp, mcp, data = _seed(tmp_path)
+    rc, _ = _run_resolver(mcp, str(binp), {"CHAMELEON_PLUGIN_DATA": str(data)})
+    assert rc == 0
+
+    venv_py = mcp / ".venv" / "Scripts" / "python.exe"
+    venv_py.parent.mkdir(parents=True)
+    _touch_exec(venv_py)
+
+    rc, lines = _run_resolver(mcp, str(binp), {"CHAMELEON_PLUGIN_DATA": str(data)})
+    assert rc == 0
+    assert lines == [str(venv_py)]
+
+
+def test_cached_venv_entry_stays_a_builtins_only_hit(tmp_path):
+    """The re-evaluation must not cost the hot path: when the cached argv IS
+    the venv, the hit is still served with no ladder run and no fork -- proven
+    by an empty PATH (no python, no coreutils)."""
+    binp, mcp, data = _seed(tmp_path)
+    venv_py = mcp / ".venv" / "bin" / "python"
+    venv_py.parent.mkdir(parents=True)
+    _touch_exec(venv_py)
+    rc, lines = _run_resolver(mcp, str(binp), {"CHAMELEON_PLUGIN_DATA": str(data)})
+    assert rc == 0
+    assert lines == [str(venv_py)]
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    rc, lines = _run_resolver(mcp, str(empty), {"CHAMELEON_PLUGIN_DATA": str(data)})
+    assert rc == 0
+    assert lines == [str(venv_py)]
+
+
+def test_non_executable_venv_does_not_thrash_the_cache(tmp_path):
+    """A present-but-not-executable venv python is not a viable rung 1, so it
+    must neither win nor invalidate: the cached entry keeps being served rather
+    than re-running the ladder on every single hook invocation."""
+    binp, mcp, data = _seed(tmp_path)
+    rc, _ = _run_resolver(mcp, str(binp), {"CHAMELEON_PLUGIN_DATA": str(data)})
+    assert rc == 0
+
+    venv_py = mcp / ".venv" / "bin" / "python"
+    venv_py.parent.mkdir(parents=True)
+    venv_py.write_text("#!/bin/sh\nexit 0\n")
+    venv_py.chmod(0o644)
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    rc, lines = _run_resolver(mcp, str(empty), {"CHAMELEON_PLUGIN_DATA": str(data)})
+    assert rc == 0
+    assert lines == [str(binp / "python3.11")]
+
+
+def test_both_venv_layouts_converge_without_thrashing(tmp_path):
+    """With BOTH rung-1 layouts present, the re-check must compare against the
+    first viable candidate only. Comparing against every candidate makes the
+    loser invalidate the winner's own entry on every single invocation, so the
+    ladder re-runs forever instead of the cache ever being served."""
+    binp, mcp, data = _seed(tmp_path)
+    bin_py = mcp / ".venv" / "bin" / "python"
+    scripts_py = mcp / ".venv" / "Scripts" / "python.exe"
+    for cand in (bin_py, scripts_py):
+        cand.parent.mkdir(parents=True, exist_ok=True)
+        _touch_exec(cand)
+    # Seed with the LOSING candidate so exactly one invalidation is required.
+    data.mkdir()
+    (data / "interp.cache").write_text(f"{mcp}\n{scripts_py}\n")
+
+    seen = []
+    for _ in range(4):
+        rc, lines = _run_resolver(mcp, str(binp), {"CHAMELEON_PLUGIN_DATA": str(data)})
+        assert rc == 0
+        seen.append(lines)
+    # Ladder order puts bin/python first, and every later resolve agrees.
+    assert seen == [[str(bin_py)]] * 4
+    assert (data / "interp.cache").read_text().splitlines() == [str(mcp), str(bin_py)]
+
+
+def test_higher_rung_recheck_honors_the_kill_switch(tmp_path):
+    """CHAMELEON_INTERP_CACHE=0 already bypasses read and write; the added
+    re-evaluation must not resurrect either half of that."""
+    binp, mcp, data = _seed(tmp_path)
+    venv_py = mcp / ".venv" / "bin" / "python"
+    venv_py.parent.mkdir(parents=True)
+    _touch_exec(venv_py)
+    data.mkdir()
+    (data / "interp.cache").write_text(f"{mcp}\n{binp / 'python3.11'}\n")
+
+    rc, lines = _run_resolver(
+        mcp, str(binp), {"CHAMELEON_PLUGIN_DATA": str(data), "CHAMELEON_INTERP_CACHE": "0"}
+    )
+    assert rc == 0
+    assert lines == [str(venv_py)]
+    # No write under the switch: the stale entry is preserved untouched.
+    assert (data / "interp.cache").read_text().splitlines() == [
+        str(mcp),
+        str(binp / "python3.11"),
+    ]
+
+
+# --------------------------------------------------------------------------- #
 # Kill switch
 # --------------------------------------------------------------------------- #
 
