@@ -196,7 +196,7 @@ Run `scripts/bump-version.sh --check` before tagging to catch drift.
 
 ## Continuous integration
 
-Four workflows live under [.github/workflows/](workflows/):
+Three workflows live under [.github/workflows/](workflows/):
 
 - **`ci.yml`** - fires on every PR against `main` and every push to `main`.
   Ten jobs: the Python test matrix (3.11, 3.12, and 3.13 on Ubuntu and macOS,
@@ -218,10 +218,6 @@ Four workflows live under [.github/workflows/](workflows/):
   to have configured `CLAUDE_CODE_OAUTH_TOKEN`, `CHAMELEON_TEST_TS_REPO`,
   and `CHAMELEON_TEST_RUBY_REPO` secrets. Fails soft with a SKIP message
   when those secrets aren't present.
-- **`calibration.yml`** - manual only (`workflow_dispatch`). Runs the
-  calibration harness against a corpus of repos to measure parameter
-  defaults. Requires `CHAMELEON_CALIBRATION_CORPUS_JSON` secret; without
-  it, emits `no_corpus_configured` and exits cleanly.
 
 Workflow run logs live under the repo's Actions tab on GitHub.
 
