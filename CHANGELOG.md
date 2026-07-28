@@ -4,6 +4,73 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.7.0] - 2026-07-28
+
+### Changed
+
+- **The three AST dump subprocesses are gone; parsing is in-process tree-sitter.**
+  `ts_dump.mjs`, `prism_dump.rb` and `libcst_dump.py` each cost a spawn, an NDJSON
+  protocol, a pipe-deadlock hazard and an interpreter hunt — plus, for TypeScript,
+  provisioning `node_modules` before a single file could be read. A repo whose
+  toolchain was missing simply had no profile. The new backend loads grammars in
+  process and returns the same `ParsedFile` shape, so nothing downstream changes:
+  every archetype, canonical, rule and index is derived from the same fields as
+  before. The dump scripts remain the reference implementation and the fallback,
+  reachable with `CHAMELEON_TREE_SITTER=0`.
+
+  Fidelity is not assumed, it is measured. `tests/differential_treesitter.py`
+  compares EVERY field the reference dumper emits, file by file, over a real
+  corpus — a hand-picked field list is what let an earlier pass report parity while
+  seven fields were unimplemented. Both backends now produce byte-identical
+  profiles (modulo timestamps) on Rails, Django, DRF, Flask, FastAPI, Next.js and
+  NestJS repositories.
+
+  Crash isolation, previously free at the process boundary, is re-earned per file:
+  a size cap, an AST node ceiling, symlink refusal, and a strictly iterative walk.
+  The last one is load-bearing rather than stylistic — tree-sitter parses a
+  20,000-deep expression happily, and a recursive walk over that tree raises
+  `RecursionError`, which in process would take the MCP server down rather than a
+  child.
+
+- **Grammars and core pinned to their newest releases.** tree-sitter core 0.26.0,
+  with python and javascript at 0.25.0; typescript (0.23.2) and ruby (0.23.1) are
+  behind only because no newer release exists anywhere, GitHub tags included. The
+  ABI constraint runs opposite to the obvious reading — a NEWER core accepts OLDER
+  grammars, so the core is pinned high on purpose. Note that core 0.26 removed
+  `Parser.timeout_micros` with no replacement exposed; the bound is honored where
+  it exists, and the size cap is what holds the line otherwise (the slowest parse
+  across 4,749 real files was 20.6ms on a 415KB file).
+
+### Fixed
+
+- **Valid TypeScript is no longer reported as broken.** tree-sitter's TS grammar
+  rejects six constructs the compiler accepts, and its grammar has not changed
+  since September 2024 with every relevant issue still open upstream. The largest
+  is a tagged template whose type argument is structural —
+  ``styled.div<{ $hasVideo?: boolean }>`...` `` — which alone accounted for 349 of
+  352 files flagged in a 21,904-file repository; a bare `&` in JSX text or a URL
+  attribute, variance annotations (`<in T, out U>`), `export type *`, the
+  `import(...)`-type family, and an invalid escape inside `String.raw` make up the
+  rest. Each is recognized by its exact recovery shape and excluded from the
+  diagnostics count. Recognition is all-or-nothing per file: one unrecognized
+  error and the file is still reported damaged, so a real syntax error sitting
+  beside a known defect can never hide behind it.
+
+- **Decorators are read, and attributed to what they decorate.** A decorator is a
+  child of the decorated node in the TypeScript AST but a preceding SIBLING in
+  this grammar, and reading only the children lost all of them: `@Module`,
+  `@Injectable` and `@Controller` on an exported class — which is most of what
+  identifies a NestJS codebase. The same asymmetry anchored a decorated method's
+  `start_line` to the wrong line and attributed a `@Query()` call to `<module>`
+  rather than to the method it decorates. A comment between two stacked decorators
+  also truncated the list, since comments are named nodes.
+
+- **Ruby block scoping.** A block's `|params|`, and any name first assigned inside
+  it, are scoped to that block. A flat per-function binding set left them bound
+  after `end`, so every later receiverless send by that name read as a variable
+  and its call row vanished — 127 files on one repository. Scopes now chain:
+  a block closes over its parent, a method gets none, and rebinding falls out.
+
 ## [4.6.2] - 2026-07-28
 
 ### Fixed
