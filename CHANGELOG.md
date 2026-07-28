@@ -4,6 +4,84 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.7.2] - 2026-07-28
+
+### Fixed
+
+- **An unbounded `mcp` range shipped a server that could not start.** The
+  dependency was declared `mcp>=1.2.0` with no upper bound. mcp 2.0.0 deleted
+  `mcp.server.fastmcp` outright — FastMCP became `MCPServer` under
+  `mcp.server.mcpserver`, with no compatibility alias — so `server.py`'s
+  import raised `ModuleNotFoundError` and the stdio server died before it could
+  answer a single request. The lockfile did not save anyone: an installed plugin
+  launches through `uvx --from <plugin>/mcp`, which resolves from
+  `pyproject.toml` and ignores `uv.lock`, so `uv.lock`'s 1.x pin only ever
+  protected the development venv. Every user who installed once mcp 2.0.0 was on
+  PyPI got `Failed to connect` on every session, taking all comprehension and
+  lifecycle tools with it; the hooks were unaffected, because `fastmcp` is
+  imported in `server.py` alone, which is what made the failure look partial
+  rather than total. The range is now capped at `<2`, with the reason recorded
+  next to it so the cap is not read as excess caution and lifted — widening it
+  means porting `server.py` to the `MCPServer` API.
+
+- **The README's "Proof, not promises" table promised checkable numbers and
+  shipped three stale ones.** Under a heading stating every number in it is
+  verifiable right now, the table claimed 5,311 unit tests against 6,846
+  collected, 183 releases against 264 tags, and a version range ending at v3.0.0
+  eight minor versions after that stopped being true. `check-derived-counts.py`
+  existed precisely to stop this and caught none of it: its only claim regex
+  matched the prose line elsewhere in the file, so the table it was written for
+  drifted unguarded. The numbers are corrected and the check now derives the
+  table's release count and version range from `git tag` as well. The unit-test
+  count is guarded as a floor rather than an equality, since pytest collects at
+  least one item per test function and the exact figure cannot be derived on the
+  bare interpreter this gate runs on.
+
+- **Two lint gates covered less than their names implied.** The ruff steps run
+  with `working-directory: plugin/mcp`, where the listed `../scripts/` resolves
+  to `plugin/scripts/` — leaving the repo-root `scripts/` directory, which holds
+  the CI gate scripts themselves, unlinted since it was created. A dead `import
+  json`, an ambiguous `l` binding, and four unformatted files had accumulated
+  there unseen. Both ruff steps now also take `../../scripts/`, and shellcheck
+  additionally covers `plugin/bin/*.sh`: the statusline ships and runs on every
+  prompt, so it earns the same gate as the hooks.
+
+- **A non-object `profile.json` reported as a healthy enforcing profile.** JSON
+  that parses but is not an object -- `null`, a list, a bare number, string, or
+  boolean -- is rejected outright by `load_profile_dir`, so the hooks fail open
+  and enforce nothing. But `_profile_unrenderable_status` guarded both its
+  schema-version and generation branches with `isinstance(peek, dict)`, so those
+  payloads skipped every corruption branch and reached the renderable return.
+  `get_status` then drew a full panel (`mode=enforce`, five armed block rules)
+  and `detect_repo` answered `profile_present` / `trusted`, over a profile
+  nothing could load -- the exact false-clean the function's own docstring says
+  it exists to prevent. Adjacent shapes were always caught (`{}` fails the
+  generation gate, truncated JSON fails the parse), which is what left this one
+  hole in the diagnostic surface whose whole job is to find it.
+
+- **The `.chameleon` merge driver could commit an unloadable profile.**
+  `load_profile_dir` requires profile/archetypes/rules/canonicals to agree on
+  one generation. The canonicals/rules branch carries the newer side's metadata
+  forward and the profile branch takes the newer side wholesale, but the
+  archetypes branch built its result as `{**ours_data, **theirs_data}` -- and
+  `generation` is a safe top-level key, so theirs won unconditionally. Merging
+  an older branch into a newer one therefore stamped `archetypes.json` with the
+  older generation while its three siblings kept the newer one. The driver
+  exited 0, git staged a clean tree with no conflict markers, and every later
+  load raised `generation mismatch across artifacts`. Direction-dependent, so
+  the reverse merge always looked fine.
+
+- **An archetype rename left the CLAUDE.md-channel mirror serving the old
+  names.** `apply_archetype_renames` rekeys `conventions.json`, but the profile
+  transaction carries `conventions.md` forward verbatim (it is not a protocol
+  file), and nothing re-rendered it -- the file's bytes were unchanged after a
+  rename. Because that mirror loads at CLAUDE.md priority, it outranks the
+  per-edit advisory, so the stale archetype names kept winning until an
+  unrelated `teach` happened to re-sync them. The partial-refresh path already
+  documents this exact invariant and calls the re-render; the rename path now
+  does too, after the idiom-store rekey so the rendered gists carry the new
+  tags, and before the hash snapshot so the mirror stays covered by it.
+
 ## [4.7.1] - 2026-07-28
 
 ### Fixed

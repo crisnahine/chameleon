@@ -1,6 +1,6 @@
 [project]
 name = "chameleon-mcp"
-version = "4.7.1"
+version = "4.7.2"
 description = "MCP server for chameleon. Auto-derives codebase conventions and serves archetype-keyed guidance via stdio JSON-RPC."
 authors = [
     { name = "Cris Nahine", email = "crisjosephnahine@gmail.com" }
@@ -9,7 +9,16 @@ license = "MIT"
 requires-python = ">=3.11"
 
 dependencies = [
-    "mcp>=1.2.0",            # FastMCP framework
+    # FastMCP framework. The <2 cap is load-bearing, not caution: mcp 2.0.0
+    # deleted `mcp.server.fastmcp` outright (FastMCP became MCPServer under
+    # `mcp.server.mcpserver`, with no compatibility alias), so server.py's
+    # import raises ModuleNotFoundError and the whole stdio server fails to
+    # start. uvx -- how an installed plugin launches the server -- resolves
+    # from this file and ignores uv.lock, so the lockfile's 1.x pin protects
+    # only the development venv; an unbounded range here ships a server that
+    # dies on first connect for every user. Lifting the cap means porting
+    # server.py to the MCPServer API, not just widening the range.
+    "mcp>=1.2.0,<2",
     "xxhash>=3.5.0",         # Non-crypto hash for sha_hint (drift.db, canonicals)
     "detect-secrets>=1.5.0", # Secret scanner for canonical excerpts
     "pyyaml>=6.0",           # tsconfig-adjacent + .eslintrc.yml + pnpm-workspace.yaml parsing
