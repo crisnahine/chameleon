@@ -1,8 +1,9 @@
 """Size-based rotator for chameleon's hook error log.
 
-Called in-process at the top of every hook's main, before anything appends to
-.hook_errors.log. Rotates when the file exceeds ROTATE_THRESHOLD_BYTES; keeps
-up to MAX_ROTATIONS old files (.1, .2, ...).
+Called in-process, never as a subprocess: from the top of hook_helper's `main`
+for .hook_errors.log, and from metrics.py before each append to metrics.jsonl.
+Rotates when the file exceeds ROTATE_THRESHOLD_BYTES; keeps up to
+MAX_ROTATIONS old files (.1, .2, ...).
 """
 
 from __future__ import annotations

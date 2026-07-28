@@ -43,10 +43,8 @@ class ArmSpec:
 _ENV_TOGGLES: dict[str, tuple[str, str]] = {
     "nearby_signatures": ("CHAMELEON_NEARBY_SIGNATURES", "0"),
     "counterexample": ("CHAMELEON_COUNTEREXAMPLE", "0"),
-    "stop_idiom_terse": ("CHAMELEON_STOP_IDIOM_TERSE", "0"),
     "inbound_callers": ("CHAMELEON_INBOUND_CALLERS", "0"),
     "archetype_facts": ("CHAMELEON_ARCHETYPE_FACTS", "0"),
-    "stop_idiom_gist": ("CHAMELEON_STOP_IDIOM_GIST", "0"),
     "memory_channel_dedup": ("CHAMELEON_MEMORY_CHANNEL_DEDUP", "0"),
 }
 

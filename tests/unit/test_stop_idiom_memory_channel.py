@@ -9,7 +9,7 @@ verified the way Claude Code resolves imports — code fences and inline code
 spans are ignored, the path resolves relative to the containing file, and the
 target must exist — so a prose mention or a worktree with an unmaterialized
 target never counts. Idioms with no channel keep the v3.0.3 full-text
-escalation, and CHAMELEON_STOP_IDIOM_GIST=0 restores it wholesale.
+escalation.
 """
 
 from __future__ import annotations
