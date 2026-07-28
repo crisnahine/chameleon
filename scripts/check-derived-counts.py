@@ -131,6 +131,16 @@ def claim_table_unit_tests() -> int | None:
     return _claim_int(r"\|\s*Unit tests\s*\|\s*\*\*([\d,]+)\*\*")
 
 
+def claim_badge_unit_tests() -> int | None:
+    """The shields.io badge's test count.
+
+    Its thousands separator is percent-encoded inside the badge URL, so the
+    digits are recovered before the shared comma stripping runs.
+    """
+    m = re.search(r"unit%20tests-([\d%C]+?)-", _read("README.md"))
+    return int(m.group(1).replace("%2C", "")) if m else None
+
+
 # Doc claims: (label, what the doc says, what the source says, why it matters).
 # Every entry is compared for EQUALITY, so each claim must be exactly derivable
 # from source on a bare interpreter -- this runs in CI with no deps installed.
@@ -164,6 +174,13 @@ FLOOR_CLAIMS: list[tuple[str, object, object, str]] = [
         derive_unit_test_functions,
         "pytest collects at least one item per test function, so a claim below "
         "the number of defined test functions is provably stale.",
+    ),
+    (
+        "README.md test-count badge",
+        claim_badge_unit_tests,
+        derive_unit_test_functions,
+        "The badge is the first number a reader sees; it drifted to less than "
+        "half the suite while the table beside it claimed something else again.",
     ),
 ]
 
