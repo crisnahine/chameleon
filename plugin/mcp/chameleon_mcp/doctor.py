@@ -452,7 +452,6 @@ def doctor(repo: str | None = None) -> dict:
 
             cutoff = _dt.now(_UTC) - _td(hours=72)
             ts_re = _re.compile(r"^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z\]")
-            _injection_drop_re = INJECTION_DROP_RE
             # Group lines into ENTRIES (one timestamped anchor line plus every
             # continuation line up to the next anchor), then window/slice by
             # entry, not by raw line. The previous line-based approach kept a
@@ -469,7 +468,7 @@ def doctor(repo: str | None = None) -> dict:
             # them out here stops a burst of them from pushing real hook errors
             # out of the last-5 tail, and stops the same line being reported
             # twice now that it carries an anchor of its own.
-            error_lines = [ln for ln in raw_lines if not _injection_drop_re.search(ln)]
+            error_lines = [ln for ln in raw_lines if not INJECTION_DROP_RE.search(ln)]
             entries: list[list[str] | None] = []
             for line in error_lines:
                 m = ts_re.match(line)
@@ -536,7 +535,7 @@ def doctor(repo: str | None = None) -> dict:
                 log_mtime = None
             injection_drops: list[str] = []
             for line in raw_lines:
-                if not _injection_drop_re.search(line):
+                if not INJECTION_DROP_RE.search(line):
                     continue
                 m = ts_re.match(line)
                 when = log_mtime
