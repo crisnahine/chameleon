@@ -19,6 +19,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from chameleon_mcp.bootstrap.discovery import _expand_brace_groups
+from chameleon_mcp.safe_open import safe_read_capped
+
+# Mirrors bootstrap/tool_config._MAX_CONFIG_BYTES: these manifests are repo-
+# committed and read before any trust decision, so they are bounded the same way.
+_MAX_MANIFEST_BYTES = 4_000_000
 
 try:
     import yaml as _yaml  # type: ignore[import-untyped]
@@ -107,7 +112,7 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
     package_json = repo_root / "package.json"
     if package_json.exists():
         try:
-            pkg = json.loads(package_json.read_text(errors="replace"))
+            pkg = json.loads(safe_read_capped(package_json, max_bytes=_MAX_MANIFEST_BYTES))
         except json.JSONDecodeError:
             pkg = {}
         workspaces = pkg.get("workspaces")
@@ -132,7 +137,7 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
     lerna_json = repo_root / "lerna.json"
     if lerna_json.exists():
         try:
-            lerna = json.loads(lerna_json.read_text(errors="replace"))
+            lerna = json.loads(safe_read_capped(lerna_json, max_bytes=_MAX_MANIFEST_BYTES))
         except json.JSONDecodeError:
             lerna = {}
         packages = lerna.get("packages") or ["packages/*"]
@@ -149,7 +154,7 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
     turbo_json = repo_root / "turbo.json"
     if turbo_json.exists():
         try:
-            turbo = json.loads(turbo_json.read_text(errors="replace"))
+            turbo = json.loads(safe_read_capped(turbo_json, max_bytes=_MAX_MANIFEST_BYTES))
         except json.JSONDecodeError:
             turbo = {}
         if "pipeline" in turbo or "tasks" in turbo:
@@ -159,7 +164,7 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
                 exp = expand_workspace_globs_with_diagnostics(repo_root, turbo_globs)
             elif package_json.exists():
                 try:
-                    pkg = json.loads(package_json.read_text(errors="replace"))
+                    pkg = json.loads(safe_read_capped(package_json, max_bytes=_MAX_MANIFEST_BYTES))
                 except json.JSONDecodeError:
                     pkg = {}
                 pkg_ws = pkg.get("workspaces")
@@ -187,7 +192,7 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
         ws_paths: list[Path] = []
         if ws_json.exists():
             try:
-                ws = json.loads(ws_json.read_text(errors="replace"))
+                ws = json.loads(safe_read_capped(ws_json, max_bytes=_MAX_MANIFEST_BYTES))
             except json.JSONDecodeError:
                 ws = {}
             projects = ws.get("projects", {}) or {}
@@ -218,7 +223,7 @@ def _read_pnpm_globs(pnpm_workspace_yaml: Path) -> list[str]:
     bootstrap even if the YAML library somehow goes missing at runtime.
     """
     try:
-        text = pnpm_workspace_yaml.read_text(errors="replace")
+        text = safe_read_capped(pnpm_workspace_yaml, max_bytes=_MAX_MANIFEST_BYTES)
     except OSError:
         return []
 

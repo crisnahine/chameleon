@@ -7518,6 +7518,19 @@ def list_idiom_candidates(repo: str) -> dict:
         rows = load_candidates(profile_dir)
     except Exception:
         rows = []
+    # Sanitize at the model surface. A candidate is the least-vetted thing the
+    # plugin will ever show: it lives in a COMMITTED directory, is deliberately
+    # off the trust-hashed surface (hashing unreviewed proposals would arm the
+    # trust gate on them), and this action is deliberately un-trust-gated. The
+    # "a human reviews it" argument does not hold at this boundary -- the tool
+    # response reaches the MODEL first, and the auto-idiom skill then asks it to
+    # present every row. Without this, a planted title carrying
+    # ``</chameleon-context>`` or a forged ``[🦎 chameleon]`` header speaks in
+    # chameleon's own voice. Prose-tripping strings are dropped as well as
+    # tag-sanitized: these fields are unreviewed model output rather than the
+    # engine-authored messages rules.json carries, so a drop costs a proposal
+    # nobody approved yet, not a real rule message.
+    rows = _sanitize_rules_value(rows, drop_prose_strings=True)
     return _envelope({"status": "ok", "count": len(rows), "candidates": rows})
 
 

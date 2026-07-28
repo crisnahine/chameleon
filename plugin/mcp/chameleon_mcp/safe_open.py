@@ -161,6 +161,40 @@ def safe_read_text(
     return safe_path.read_text(encoding=encoding, errors="replace")
 
 
+def safe_read_capped(path: Path, *, max_bytes: int, encoding: str = "utf-8") -> str:
+    """Read at most ``max_bytes`` of a repo-committed config file as text.
+
+    For manifests OUTSIDE ``.chameleon/`` -- package.json, lerna.json, turbo.json,
+    pnpm-workspace.yaml, the tool configs -- which bootstrap reads before any
+    trust decision exists. Unlike ``safe_read_profile_artifact`` this does NOT
+    refuse symlinks: a monorepo may legitimately symlink a manifest, and the
+    fstat below resolves THROUGH the link, so a link to ``/dev/zero`` is still
+    caught as non-regular.
+
+    The load-bearing flag is O_NONBLOCK. ``.exists()`` follows symlinks and git
+    stores them, so a committed ``package.json -> /dev/zero`` (or any FIFO on
+    the machine) makes a plain ``read_text`` never return while it materializes
+    an unbounded str -- ``/chameleon-init`` on a fresh clone hangs before any
+    other bootstrap work runs. Opening non-blocking makes the regular-file check
+    reachable, which is the whole point: the guard has to run BEFORE the syscall
+    that would block.
+
+    Raises OSError (including UnsafeFileError, which subclasses nothing here --
+    callers already guard OSError) so existing ``except OSError`` sites keep
+    working unchanged.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+    fd = os.open(str(path), flags)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise UnsafeFileError(f"not a regular file: {path}")
+        raw = os.read(fd, max_bytes)
+    finally:
+        os.close(fd)
+    return raw.decode(encoding, errors="replace")
+
+
 _DEFAULT_PROFILE_ARTIFACT_MAX_BYTES = 5 * 1024 * 1024
 
 
@@ -176,7 +210,15 @@ def _open_profile_artifact_fd(path: Path, max_bytes: int) -> tuple[int, os.stat_
     """
     # O_NOFOLLOW is POSIX-only (absent on Windows -> 0). The lstat symlink check
     # still rejects symlinks there; only the open()-level TOCTOU close is lost.
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    #
+    # O_NONBLOCK is what makes the S_ISREG check below reachable. Opening a FIFO
+    # for reading BLOCKS in open(2) until a writer appears, so without it a
+    # committed `renames.json` that is a named pipe hangs the caller forever and
+    # the "not a regular file" refusal never runs -- the guard was ordered after
+    # the syscall that never returns. O_NONBLOCK is defined as having no effect
+    # on regular files, so this changes nothing for the intended input; a device
+    # node with open-time side effects is likewise opened without waiting.
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     cloexec = getattr(os, "O_CLOEXEC", 0)
     flags |= cloexec
     try:

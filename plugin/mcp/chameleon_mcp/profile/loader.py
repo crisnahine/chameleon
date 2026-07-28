@@ -444,8 +444,20 @@ def safe_prose_text(path: Path) -> str:
     trust on a governed edit or at turn-end.
     """
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+        # Through the hardened reader, not read_text: O_NOFOLLOW + non-regular
+        # refusal + size cap. A committed `principles.md` that is a symlink to
+        # ~/.ssh/id_rsa or ../../.env would otherwise be followed and rendered
+        # straight into <chameleon-conventions> at SessionStart, into the
+        # per-edit Tier-1 echo, and into a tool response -- and nothing upstream
+        # stops it: hash_profile folds an UnsafeFileError into the digest and
+        # CONTINUES, so trust still grants, and the grant-time prose scan looks
+        # for injection patterns, which a private key does not trip. The size cap
+        # matters too: SessionStart is wrapped in a 3s timeout, so a 50MB prose
+        # artifact read whole would drop the entire conventions injection.
+        # _safe_read_artifact in this same module already reads these two files
+        # this way; only the prose render path did not.
+        text = safe_read_profile_artifact(path)
+    except (OSError, UnsafeFileError):
         return ""
     if text and _prose_injection_unsafe(text):
         import sys as _sys

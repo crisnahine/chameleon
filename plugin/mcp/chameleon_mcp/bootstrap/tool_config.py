@@ -51,9 +51,12 @@ def _read_capped(path: Path, *, max_bytes: int | None = None) -> str:
     keep their existing ``except OSError`` handling.
     """
     cap = _MAX_CONFIG_BYTES if max_bytes is None else max_bytes
-    with path.open("rb") as fh:
-        raw = fh.read(cap)
-    return raw.decode("utf-8", errors="replace")
+    # Through safe_read_capped, not path.open: the byte cap bounds how much is
+    # READ, but open() itself blocks forever on a FIFO, so a committed
+    # `.eslintrc.json -> /dev/zero` hung bootstrap before the cap ever applied.
+    from chameleon_mcp.safe_open import safe_read_capped
+
+    return safe_read_capped(path, max_bytes=cap)
 
 
 def _load_toml(path: Path) -> tuple[dict, str | None]:

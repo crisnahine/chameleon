@@ -44,9 +44,20 @@ def candidates_dir(profile_dir: Path) -> Path:
 
 
 def _read_candidate(path: Path) -> dict | None:
-    """Best-effort read of one candidate file; ``None`` on any failure."""
+    """Best-effort read of one candidate file; ``None`` on any failure.
+
+    Reads through ``safe_read_profile_artifact`` (O_NOFOLLOW, non-regular-file
+    refusal, size cap) rather than ``read_text``: the candidates directory is
+    committed and world-writable to anyone who can open a PR, so a symlinked or
+    FIFO ``*.json`` would otherwise follow out of the repo or block the reader
+    forever. Every other ``.chameleon/`` consumer already reads this way; this
+    one is on the browsing path a skill renders to the model, which makes it the
+    last place that should trust a raw open.
+    """
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        from chameleon_mcp.safe_open import safe_read_profile_artifact
+
+        raw = json.loads(safe_read_profile_artifact(path))
     except Exception:
         return None
     return raw if isinstance(raw, dict) else None

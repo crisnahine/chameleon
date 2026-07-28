@@ -248,7 +248,15 @@ def _stop_file_still_blockable(
             out_rules.extend(v.get("rule") for v in enforceable if v.get("rule"))
         return bool(enforceable)
     except Exception:
-        return False
+        # None, not False. False means "re-checked and resolved", and the caller
+        # acts on it by clearing blockable_unresolved -- permanently disarming
+        # the turn-end refusal for a hard violation that may still be on disk.
+        # The OSError branch above says exactly that about its own path, and the
+        # sibling _module_exports_at_head returns None from its blanket handler.
+        # The stated goal ("a re-check that can't run does not block") is already
+        # met by None: the caller's None arm skips this turn's block while
+        # keeping the file armed for the next Stop.
+        return None
 
 
 def _module_exports_at_head(ws_root: Path, target_key: str, lang: str) -> set[str] | None:

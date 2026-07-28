@@ -129,7 +129,24 @@ _SECURITY_SURFACE_PATTERNS: tuple[
         "migration",
         frozenset(),
         (),
-        ("db/migrate/", "/migrations/", "schema.rb", "structure.sql"),
+        # `alembic/versions/` and `migrations/versions/` are the Alembic layouts:
+        # a revision lives in a `versions/` dir and, under the default
+        # `alembic init alembic`, no path component says "migration" at all.
+        # Alembic is the declared migration surface for flask and fastapi, two of
+        # the six frameworks _classify_framework returns, so without these a
+        # schema change on those repos routes as an ordinary low-risk edit --
+        # migrations usually have no importers, so blast radius does not rescue
+        # it. cochange.py and signatures.py already carry the same predicate.
+        # `/migrations/` alone also missed a TOP-LEVEL `migrations/versions/...`,
+        # since the leading slash demands a parent directory.
+        (
+            "db/migrate/",
+            "/migrations/",
+            "alembic/versions/",
+            "migrations/versions/",
+            "schema.rb",
+            "structure.sql",
+        ),
     ),
     (
         "infra",

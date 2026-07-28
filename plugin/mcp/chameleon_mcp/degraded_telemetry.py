@@ -141,7 +141,13 @@ def parse_degradations(text: str, since_epoch: float) -> tuple[int, int, str | N
             continue
         if "no-interpreter" in line:
             kind = "no_interpreter"
-        elif "failed (python=" in line:
+        elif "failed (rc=" in line or "failed (python=" in line:
+            # Every wrapper writes `failed (rc=${rc}, python=...)`. Matching only
+            # the older `failed (python=` spelling made this branch dead: the
+            # commit that added the exit code changed all seven writers and no
+            # reader, so `spawn_fail` stayed 0 no matter how many hooks failed
+            # and the >=3 SessionStart banner could never fire. The rc-less form
+            # is still accepted so a log written by an older install still counts.
             kind = "spawn_failed"
         else:
             continue

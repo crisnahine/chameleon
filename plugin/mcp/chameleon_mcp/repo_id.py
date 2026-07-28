@@ -162,8 +162,20 @@ def _persisted_repo_uuid(repo_root: Path) -> str | None:
     uuid here.
     """
     try:
-        raw = (repo_root / ".chameleon" / "config.json").read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+        # Leniency here is about JSON PARSING (raw json.loads, not the strict
+        # config loader), not about how the bytes are obtained -- so the read
+        # still goes through the hardened helper: O_NOFOLLOW, non-regular-file
+        # refusal, size cap. This runs FIRST, on every hook, before any trust
+        # record is consulted, whenever a repo has no origin remote; a committed
+        # `.chameleon/config.json` symlinked to a FIFO would otherwise block in
+        # open() with no timeout (a blocking open is not an error, so the guard
+        # below never fires) and hang the hook until Claude Code kills it. The
+        # sibling reader for this exact file, profile/config.py::load_config,
+        # already reads it this way.
+        from chameleon_mcp.safe_open import UnsafeFileError, safe_read_profile_artifact
+
+        raw = safe_read_profile_artifact(repo_root / ".chameleon" / "config.json")
+    except (OSError, UnicodeDecodeError, UnsafeFileError):
         # A non-UTF8 config.json (binary/corrupt bytes at the path) must fail open
         # to the path-hash identity, not raise. UnicodeDecodeError is a ValueError
         # subclass, not an OSError, so a bare OSError guard let it escape and crash
