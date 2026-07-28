@@ -55,14 +55,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   every live session and delete the plugin out from under it, and `ps -o comm=`
   truncates. Every uncertain answer still resolves to keep.
 
-- **Four per-session marker families had no reaper.** `.attestation_last.`,
-  `.testint_judged.`, `.trust_prompted.` and `.job_heartbeat.` were absent from the
-  SessionStart sweep, so each left one file per session forever — one measured repo
-  held 101 `.attestation_last.` markers, 87 of them over a week old. All four now
+- **Five per-session marker families had no reaper.** `.attestation_last.`,
+  `.testint_judged.`, `.trust_prompted.`, `.job_heartbeat.` and
+  `.crossfile_deleted.` were absent from the SessionStart sweep, so each left one
+  file per session forever — one measured repo held 100 `.attestation_last.`
+  markers in a 307-file state directory, 87 of them over a week old. All five now
   age out on the shared 7-day retention horizon, which sits far above every window
   that could make one semantically live (a job rewrites its heartbeat every 10s; a
-  trust marker stops suppressing at 24h). `.verify_seen.` was already swept by its
-  own 24h reaper and is unchanged.
+  trust marker stops suppressing at 24h; no session lives a week). Sweeping that
+  same repo's state directory now reclaims 117 files. `.verify_seen.` was already
+  swept by its own 24h reaper and is unchanged.
 
 ## [4.7.0] - 2026-07-28
 

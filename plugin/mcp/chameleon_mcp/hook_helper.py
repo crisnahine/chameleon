@@ -8462,6 +8462,11 @@ SESSION_REAP_PREFIXES: tuple[str, ...] = (
     # reader treats a missing heartbeat exactly like a stale one, so removing a
     # dead heartbeat can never orphan the single-inflight slot.
     ".job_heartbeat.",
+    # Carries a deleted module forward to a later Stop of the SAME session, for
+    # a cross-file advisory the pruning Stop short-circuited past. Its reader
+    # already fails open to {}, and no session lives a week, so anything old
+    # enough to sweep belongs to a session that ended long ago.
+    ".crossfile_deleted.",
 )
 
 

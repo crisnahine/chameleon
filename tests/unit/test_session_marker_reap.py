@@ -47,6 +47,7 @@ _UNSWEPT_FAMILIES = (
     ".testint_judged.",
     ".trust_prompted.",
     ".job_heartbeat.",
+    ".crossfile_deleted.",
 )
 
 
