@@ -456,8 +456,38 @@ def parse_numstat(text: str) -> list[dict]:
         removed = 0 if removed_s.strip() == "-" else _safe_int(removed_s)
         if added is None or removed is None:
             continue
-        rows.append({"path": path, "added": added, "removed": removed})
+        rows.append({"path": _unquote_git_path(path), "added": added, "removed": removed})
     return rows
+
+
+def _unquote_git_path(path: str) -> str:
+    """Decode git's C-quoted path form, or return the path unchanged.
+
+    ``core.quotePath=false`` stops git quoting a NON-ASCII path but not one
+    holding a backslash or a double quote -- those still arrive as
+    ``"d/we\\"ird.ts"``. A caller matching that against a real filename misses,
+    and the file drops out of the change set silently. Decoding is used here
+    rather than ``-z`` because numstat's NUL framing also changes the RENAME
+    record's shape, which this parser does not model.
+
+    Only a fully double-quoted value is decoded; anything else is already
+    literal. Falls back to the raw input on a malformed escape rather than
+    raising -- this feeds an advisory verdict that must fail open.
+    """
+    if len(path) < 2 or not (path.startswith('"') and path.endswith('"')):
+        return path
+    try:
+        # git emits C-style escapes with non-ASCII bytes as octal, so decode the
+        # escapes bytewise and re-read the result as UTF-8.
+        return (
+            path[1:-1]
+            .encode("latin-1", "backslashreplace")
+            .decode("unicode_escape")
+            .encode("latin-1")
+            .decode("utf-8", "replace")
+        )
+    except (UnicodeDecodeError, UnicodeEncodeError, ValueError):
+        return path
 
 
 def _safe_int(s: str) -> int | None:
@@ -736,6 +766,15 @@ def assemble_facts(
         else:
             known_fanouts.append(int(fanout))
 
+    # One lint per file. block_findings_for re-reads and re-lints on every call,
+    # so the two facts below must share a single pass rather than each calling it.
+    _block_counts: list[int | None] = []
+    for p in files:
+        try:
+            _block_counts.append(block_findings_for(p))
+        except Exception:
+            _block_counts.append(None)
+
     signals = diff_signals or {}
     return {
         "files_changed": len(files),
@@ -746,7 +785,12 @@ def assemble_facts(
         ),
         "blast_radius": max(known_fanouts, default=0),
         "blast_radius_unknown": unknown_fanouts,
-        "active_block_findings": sum(int(block_findings_for(p)) for p in files),
+        # None from block_findings_for means "could not lint this file", counted
+        # separately rather than folded in as 0 -- a file whose lint never ran
+        # must not read as a file with no blocking findings. Evaluated once per
+        # file above; block_findings_for re-reads and re-lints on every call.
+        "active_block_findings": sum(n for n in _block_counts if n is not None),
+        "active_block_findings_unknown": sum(1 for n in _block_counts if n is None),
         "type_errors": sum(1 for p in files if p in type_errs),
         "security_surface": bool(security_surface_categories(files)),
         # Excludes non-source the same way, which also feeds weakening_combo's
@@ -809,6 +853,7 @@ def classify_complexity_tier(
     if (
         bool(facts.get("security_surface"))
         or _int("blast_radius_unknown") > 0
+        or _int("active_block_findings_unknown") > 0
         or blast > max_blast_radius
         or _int("unarchetyped_files") > 2
         or files > max_files
@@ -898,6 +943,14 @@ def classify_change(
     if blast_unknown > 0:
         reasons.append(
             f"blast radius unknown for {blast_unknown} file(s) (cross-file index unavailable)"
+        )
+
+    block_unknown = _int("active_block_findings_unknown")
+    if block_unknown > 0:
+        # "Linted clean" and "could not lint" must not both read as eligible.
+        reasons.append(
+            f"blocking-rule check could not run on {block_unknown} file(s) "
+            "(unreadable, or the lint returned a stub/untrusted result)"
         )
 
     unarchetyped = _int("unarchetyped_files")

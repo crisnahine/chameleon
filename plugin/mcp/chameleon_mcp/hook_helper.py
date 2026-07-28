@@ -1000,9 +1000,14 @@ def _idiom_candidates_note(profile_dir: Path) -> str | None:
     if os.environ.get("CHAMELEON_IDIOM_MINER") == "0":
         return None
     try:
-        from chameleon_mcp.core.idiom_candidates import load_candidates
+        from chameleon_mcp.core.idiom_candidates import candidates_dir
 
-        count = len(load_candidates(profile_dir))
+        # Count the files; do not parse them. This runs on SessionStart, whose
+        # whole Python emission is capped at 3 seconds -- and the note needs a
+        # NUMBER, so reading and JSON-decoding every candidate to take len() of
+        # the result buys nothing and scales with the directory. write_candidate
+        # counts the same way for its own cap check.
+        count = sum(1 for _ in candidates_dir(profile_dir).glob("*.json"))
     except Exception:  # noqa: BLE001
         return None
     if count <= 0:
@@ -2263,8 +2268,13 @@ def session_start() -> int:
         repo_root or _safe_cwd(), session_id=session_id
     )
     dead_session_banner = None
+    # Findings rendered here are marked delivered only after the emit below
+    # actually returns; see _dead_session_delivery_banner.
+    dead_session_commit: list = []
     if repo_root is not None:
-        dead_session_banner = _dead_session_delivery_banner(repo_root, session_id=session_id)
+        dead_session_banner = _dead_session_delivery_banner(
+            repo_root, session_id=session_id, out_commit=dead_session_commit
+        )
 
     digest_intro = (
         "Chameleon operational digest below (the full `using-chameleon` "
@@ -2354,6 +2364,17 @@ def session_start() -> int:
     wrapped = "\n".join(wrapped_parts)
 
     _emit_session_context(wrapped)
+
+    # Phase two: the block is out. Only now do these findings become delivered --
+    # a SIGTERM from the wrapper's `timeout 3` before this point leaves them
+    # pending for the next session rather than retiring them unseen.
+    for _commit_repo_id, _commit_keys in dead_session_commit:
+        try:
+            from chameleon_mcp.review_ledger import mark_delivered
+
+            mark_delivered(_commit_repo_id, _commit_keys)
+        except Exception:  # noqa: BLE001
+            pass
 
     # Reuse the repo root already resolved above instead of re-deriving it from
     # cwd inside the helper.
@@ -9411,7 +9432,12 @@ def _ledger_delivery_block(cwd: Path, session_id) -> str | None:
     return deliver_pending_findings(cwd, session_id)
 
 
-def _dead_session_delivery_banner(repo_root: Path, session_id: str | None = None) -> str | None:
+def _dead_session_delivery_banner(
+    repo_root: Path,
+    session_id: str | None = None,
+    *,
+    out_commit: list | None = None,
+) -> str | None:
     """SessionStart's dead-session finding delivery (spec section 3.5): a
     session that ended without a next prompt still surfaces its findings,
     here, at a later session's start. Fails open to None; bails before any
@@ -9432,7 +9458,23 @@ def _dead_session_delivery_banner(repo_root: Path, session_id: str | None = None
         repo_data = _plugin_data_dir() / repo_id
         if not repo_data.is_dir():
             return None
-        return deliver_dead_session_findings(resolved_root, repo_id, repo_data)
+        # Two-phase when the caller supplies out_commit: the findings are marked
+        # delivered only AFTER the emit that shows them. SessionStart's wrapper
+        # caps this interpreter with a bare `timeout 3` -- a SIGTERM, which runs
+        # no finally and no emit -- so committing at render time retires a
+        # finding that reached nobody, and undelivered_findings never returns it
+        # again. Callers that do not pass out_commit keep the old behavior.
+        keys: list = []
+        text = deliver_dead_session_findings(
+            resolved_root,
+            repo_id,
+            repo_data,
+            commit_delivery=out_commit is None,
+            out_match_keys=None if out_commit is None else keys,
+        )
+        if out_commit is not None and text and keys:
+            out_commit.append((repo_id, keys))
+        return text
     except Exception:
         return None
 

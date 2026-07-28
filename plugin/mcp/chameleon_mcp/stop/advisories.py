@@ -198,10 +198,16 @@ def _worktree_modified_rels(git_top: Path) -> set[str] | None:
             return None
         # Staged and unstaged alike: `git diff HEAD` is the full uncommitted
         # delta. An unborn HEAD (no commits) exits non-zero and degrades to None.
-        res = _run_git(["diff", "--name-only", "HEAD"], cwd=git_top)
+        # -z, not line framing. core.quotePath=false (set in _run_git) only stops
+        # git C-quoting a NON-ASCII path; a backslash or a double quote in the
+        # name is still quoted, and a newline still splits one path into two
+        # bogus entries. A path that fails to match here reads as "not dirty",
+        # which is the direction that produces a WRONG nudge about a file the
+        # turn already changed.
+        res = _run_git(["diff", "--name-only", "-z", "HEAD"], cwd=git_top)
         if res is None or res.returncode != 0:
             return None
-        return {ln.strip() for ln in (res.stdout or "").splitlines() if ln.strip()}
+        return {p for p in (res.stdout or "").split("\0") if p.strip()}
     except Exception:
         return None
 

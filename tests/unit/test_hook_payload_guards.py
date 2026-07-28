@@ -20,9 +20,12 @@ from chameleon_mcp.hook_helper import (
     _as_dict,
     _read_payload_dict,
     callout_detector,
+    peer_skill_advise,
     posttool_recorder,
     posttool_verify,
     preflight_and_advise,
+    session_start,
+    stop_backstop,
 )
 
 # Valid JSON that is not an object, plus invalid JSON, dict payloads carrying
@@ -50,12 +53,29 @@ HOSTILE_STDIN = [
     "",
 ]
 
+# Every python entry point a registered wrapper invokes. Kept in step with
+# hooks.json by the assertion below rather than by memory: peer_skill_advise
+# and stop_backstop were both live hooks that no payload-guard test covered,
+# and stop_backstop is the one that can refuse to end a turn.
 ENTRY_POINTS = [
     preflight_and_advise,
     posttool_recorder,
     posttool_verify,
     callout_detector,
+    session_start,
+    peer_skill_advise,
+    stop_backstop,
 ]
+
+
+def test_every_registered_wrapper_has_a_guarded_entry_point():
+    """A wrapper in hooks.json whose entry point is absent here is untested
+    against malformed stdin -- the exact payloads a fail-open hook must survive."""
+    from tests.unit.conftest import hook_wrappers_from_registry
+
+    covered = {fn.__name__ for fn in ENTRY_POINTS}
+    expected = {w.replace("-", "_") for w in hook_wrappers_from_registry()}
+    assert expected - covered == set()
 
 
 def _run(entry, raw_stdin: str, *, env: dict) -> tuple[int, dict]:

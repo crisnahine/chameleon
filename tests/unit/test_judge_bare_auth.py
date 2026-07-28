@@ -27,6 +27,45 @@ class _Proc:
         self.stderr = stderr
 
 
+class _FakePopen:
+    """Popen-shaped wrapper over a ``subprocess.run``-shaped double.
+
+    ``judge._spawn_reviewer_status`` moved to Popen + communicate(timeout) so a
+    timed-out reviewer's whole process GROUP can be killed -- run()'s timeout
+    kills only the direct child and leaves `claude -p`'s grandchildren holding
+    the pipe. These doubles keep asserting on the same (args, kwargs) they
+    always did; only the intercepted call changed.
+    """
+
+    def __init__(self, proc, args):
+        self._proc = proc
+        self.args = args
+        self.pid = -1
+        self.returncode = getattr(proc, "returncode", 0)
+
+    def communicate(self, input=None, timeout=None):  # noqa: A002
+        if isinstance(self._proc, BaseException):
+            raise self._proc
+        self.returncode = getattr(self._proc, "returncode", 0)
+        return getattr(self._proc, "stdout", ""), getattr(self._proc, "stderr", "")
+
+    def kill(self):
+        return None
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
+def _as_popen(run_double):
+    """Adapt a run-shaped side_effect into a Popen-shaped one."""
+
+    def popen(args, **kwargs):
+        result = run_double(list(args), **kwargs)
+        return _FakePopen(result, list(args))
+
+    return popen
+
+
 _NOT_LOGGED_IN = _Proc(1, stdout="", stderr="Not logged in · Please run /login")
 
 
@@ -56,7 +95,7 @@ def _fake_run_auth_broken(calls):
 @pytest.mark.real_judge_spawn
 def test_not_logged_in_bare_falls_back_to_plain_spawn(tmp_path):
     calls: list = []
-    with patch("subprocess.run", side_effect=_fake_run_auth_broken(calls)):
+    with patch("subprocess.Popen", side_effect=_as_popen(_fake_run_auth_broken(calls))):
         assert judge._spawn_reviewer_status("prompt", tmp_path) == ("stream", None)
     assert len(calls) == 2
     assert "--bare" in calls[0][0]
@@ -69,7 +108,7 @@ def test_fallback_spawn_keeps_chameleon_disable_isolation(tmp_path):
     # must still set CHAMELEON_DISABLE=1 so the user's installed chameleon
     # no-ops in the reviewer session (no Stop-hook recursion).
     calls: list = []
-    with patch("subprocess.run", side_effect=_fake_run_auth_broken(calls)):
+    with patch("subprocess.Popen", side_effect=_as_popen(_fake_run_auth_broken(calls))):
         judge._spawn_reviewer_status("prompt", tmp_path)
     _, fallback_kwargs = calls[1]
     assert fallback_kwargs["env"]["CHAMELEON_DISABLE"] == "1"
@@ -83,7 +122,7 @@ def test_bare_success_keeps_flag(tmp_path):
         calls.append(list(args))
         return _Proc(0, stdout="stream")
 
-    with patch("subprocess.run", side_effect=run):
+    with patch("subprocess.Popen", side_effect=_as_popen(run)):
         assert judge._spawn_reviewer_status("prompt", tmp_path) == ("stream", None)
     assert len(calls) == 1
     assert "--bare" in calls[0]
@@ -129,7 +168,7 @@ def test_bare_success_reviewing_auth_code_not_mistaken_for_auth_loss(tmp_path):
         calls.append(list(args))
         return _Proc(0, stdout=review)
 
-    with patch("subprocess.run", side_effect=run):
+    with patch("subprocess.Popen", side_effect=_as_popen(run)):
         assert judge._spawn_reviewer_status("prompt", tmp_path) == (review, None)
     # One spawn only: no needless fallback, and --bare stays enabled.
     assert len(calls) == 1
@@ -153,7 +192,7 @@ def test_bare_auth_error_wrapped_in_stream_json_is_still_detected(tmp_path):
             return _Proc(0, stdout=wrapped)
         return _Proc(0, stdout="[]")
 
-    with patch("subprocess.run", side_effect=run):
+    with patch("subprocess.Popen", side_effect=_as_popen(run)):
         out, fail = judge._spawn_reviewer_status("prompt", tmp_path)
 
     assert (out, fail) == ("[]", None)
@@ -167,7 +206,7 @@ def test_bare_auth_error_wrapped_in_stream_json_is_still_detected(tmp_path):
 def test_auth_failure_cached_in_process_no_reprobe(tmp_path):
     calls: list = []
     fake = _fake_run_auth_broken(calls)
-    with patch("subprocess.run", side_effect=fake):
+    with patch("subprocess.Popen", side_effect=_as_popen(fake)):
         judge._spawn_reviewer_status("prompt", tmp_path)
         calls.clear()
         assert judge._spawn_reviewer_status("prompt", tmp_path) == ("stream", None)
@@ -180,7 +219,7 @@ def test_auth_failure_cached_in_process_no_reprobe(tmp_path):
 def test_auth_failure_marker_survives_process_restart(tmp_path):
     calls: list = []
     fake = _fake_run_auth_broken(calls)
-    with patch("subprocess.run", side_effect=fake):
+    with patch("subprocess.Popen", side_effect=_as_popen(fake)):
         judge._spawn_reviewer_status("prompt", tmp_path)
         assert judge._bare_auth_marker_path().is_file()
         # Simulate a fresh process: only the in-memory cache is lost.
@@ -203,7 +242,7 @@ def test_stale_marker_expires_and_bare_is_reprobed(tmp_path):
         calls.append(list(args))
         return _Proc(0, stdout="stream")
 
-    with patch("subprocess.run", side_effect=run):
+    with patch("subprocess.Popen", side_effect=_as_popen(run)):
         assert judge._spawn_reviewer_status("prompt", tmp_path) == ("stream", None)
     # Expired marker: --bare is tried again (and succeeds here).
     assert "--bare" in calls[0]
@@ -218,7 +257,7 @@ def test_nonzero_exit_without_auth_shape_does_not_retry(tmp_path):
         calls.append(list(args))
         return _Proc(1, stdout="boom", stderr="some unrelated crash")
 
-    with patch("subprocess.run", side_effect=run):
+    with patch("subprocess.Popen", side_effect=_as_popen(run)):
         assert judge._spawn_reviewer_status("prompt", tmp_path) == (None, "spawn_nonzero_exit")
     assert len(calls) == 1
     # A non-auth failure must not poison the bare-auth cache.
@@ -233,7 +272,7 @@ def test_fallback_failure_still_maps_to_spawn_nonzero_exit(tmp_path):
             return _NOT_LOGGED_IN
         return _Proc(1, stdout="still broken")
 
-    with patch("subprocess.run", side_effect=run):
+    with patch("subprocess.Popen", side_effect=_as_popen(run)):
         assert judge._spawn_reviewer_status("prompt", tmp_path) == (None, "spawn_nonzero_exit")
     # The auth outcome was still recorded so the next spawn skips --bare.
     assert judge._BARE_AUTH_OK is False

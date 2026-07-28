@@ -29,6 +29,17 @@ fi
 # without guessing. Reads the exact same `${PLUGIN_DATA}/<repo_id>/.pause_until`
 # file the hooks check (`is_chameleon_suppressed` in optouts.py) rather than a
 # separate cache, so this can never drift from what the hooks actually honor.
+# A committed `.chameleon/.skip` silences EVERY hook for this repo -- the
+# per-edit advisory and the security deny gates alike -- and unlike a pause it
+# never expires and nothing else announces it. A user who inherited the file in
+# a clone has no way to tell chameleon is off from chameleon being quiet. One
+# stat on a path already in hand, so the render stays inside its budget; the
+# same `pause_suffix` slot carries it, since both mean "not currently guarding".
+skip_suffix=""
+if [[ -f "$project_dir/.chameleon/.skip" ]]; then
+  skip_suffix=" │ ⏸ off (.chameleon/.skip)"
+fi
+
 pause_suffix=""
 if [[ "${CHAMELEON_STATUSLINE_PAUSE:-}" != "0" ]]; then
   plugin_data_dir="${CHAMELEON_PLUGIN_DATA:-$HOME/.local/share/chameleon}"
@@ -186,7 +197,7 @@ if [[ -n "$cache_file" && -f "$cache_file" ]]; then
       # script with a nonzero exit -- the fail-open contract this statusline
       # holds everywhere else (see the jq-miss guard above) requires exit 0
       # regardless of what happened to the fd we tried to write to.
-      printf '🦎 chameleon │ %s%s' "$parts" "$pause_suffix" || true
+      printf '🦎 chameleon │ %s%s%s' "$parts" "$pause_suffix" "$skip_suffix" || true
       exit 0
     fi
   else
@@ -226,7 +237,7 @@ if ps:
     print(parts)
 " 2>/dev/null || true)
     if [[ -n "$result" ]]; then
-      printf '🦎 chameleon │ %s%s' "$result" "$pause_suffix" || true
+      printf '🦎 chameleon │ %s%s%s' "$result" "$pause_suffix" "$skip_suffix" || true
       exit 0
     fi
   fi
@@ -235,7 +246,7 @@ fi
 dir="$project_dir"
 while true; do
   if [[ -f "$dir/.chameleon/profile.json" ]]; then
-    printf '🦎 chameleon │ %s%s' "$(basename "$dir")" "$pause_suffix" || true
+    printf '🦎 chameleon │ %s%s%s' "$(basename "$dir")" "$pause_suffix" "$skip_suffix" || true
     exit 0
   fi
   parent="$(dirname "$dir")"

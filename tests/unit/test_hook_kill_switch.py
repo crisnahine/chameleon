@@ -20,13 +20,11 @@ PAYLOAD = (
     '{"tool_name":"Edit","tool_input":{"file_path":"/tmp/x.ts"},"session_id":"s","cwd":"/tmp"}'
 )
 
-ALL_WRAPPERS = [
-    "preflight-and-advise",
-    "session-start",
-    "posttool-recorder",
-    "posttool-verify",
-    "callout-detector",
-]
+from tests.unit.conftest import hook_wrappers_from_registry
+
+# Derived, not hand-typed: a wrapper added to hooks.json must be covered by
+# this kill-switch suite the moment it is registered.
+ALL_WRAPPERS = hook_wrappers_from_registry()
 
 
 def _run(wrapper: str, env_extra: dict, tmp_path: Path) -> subprocess.CompletedProcess:

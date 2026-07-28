@@ -28,6 +28,7 @@ Design constraints (every one fails open, returning no findings):
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -203,15 +204,23 @@ def _run_git(args: list[str], *, cwd: Path):
     Returns None on any failure (timeout, git not on PATH, OSError). Callers
     treat None as "git is unavailable here" and fall back to whole-file content.
 
-    ``core.quotePath=false`` is set here rather than per call site. By default git
-    C-quotes any path carrying a non-ASCII byte, a backslash, a quote or a newline
-    (``"caf\\303\\251/sub/plain.ts"``), and every consumer that parses path output
-    then fails to match it -- ``detect_language`` is a plain ``endswith``, so a
-    quoted name returns None and the file is dropped with nothing recorded. One
-    accented DIRECTORY component silently un-gates every ordinary file beneath it.
-    Putting the flag in the shared helper means a new call site cannot forget it;
-    it only affects how paths are RENDERED, so commands that emit none are
-    unchanged.
+    ``core.quotePath=false`` is set here rather than per call site. By default
+    git C-quotes any path carrying a NON-ASCII byte
+    (``"caf\\303\\251/sub/plain.ts"``), and every consumer that parses path
+    output then fails to match it -- ``detect_language`` is a plain
+    ``endswith``, so a quoted name returns None and the file is dropped with
+    nothing recorded. One accented DIRECTORY component silently un-gates every
+    ordinary file beneath it. Putting the flag in the shared helper means a new
+    call site cannot forget it; it only affects how paths are RENDERED, so
+    commands that emit none are unchanged.
+
+    It is NOT a complete fix, and a caller that parses paths must not treat it
+    as one. Verified against git 2.50.1: with ``core.quotePath=false`` a path
+    holding a backslash or a double quote is STILL C-quoted
+    (``"d/we\\"ird.ts"``, ``"d/back\\\\slash.ts"``), and a path holding a
+    newline still breaks line framing. Only ``-z`` (NUL-framed output) covers
+    all four, and ``-z`` is per-command, so each path-parsing call site passes
+    it itself.
     """
     try:
         return subprocess.run(
@@ -1573,23 +1582,40 @@ def _spawn_reviewer_status(
     deadline = time.monotonic() + timeout_s
 
     def _run(spawn_args: list[str], budget: float):
+        # Popen + communicate(timeout) rather than subprocess.run(timeout=...):
+        # run() reacts to a timeout with p.kill(), which signals ONLY the direct
+        # child. `claude -p` spawns its own children, and they inherit the pipe --
+        # so a timed-out review left grandchildren alive holding stdout, and the
+        # reader could block past the budget the timeout was meant to enforce.
+        # start_new_session puts the spawn in its own process group so the whole
+        # tree can be killed as one.
+        # Reuses production_ref's killer rather than a second copy: a fourth
+        # site reinventing it is how the first three drifted.
+        from chameleon_mcp.production_ref import _kill_process_group
+
+        proc = None
         try:
-            return (
-                subprocess.run(
-                    spawn_args,
-                    input=prompt,
-                    cwd=str(cwd),
-                    env=env,
-                    capture_output=True,
-                    text=True,
-                    timeout=budget,
-                    check=False,
-                ),
-                None,
+            proc = subprocess.Popen(
+                spawn_args,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=str(cwd),
+                env=env,
+                text=True,
+                start_new_session=True,
             )
+            out, err = proc.communicate(input=prompt, timeout=budget)
+            return subprocess.CompletedProcess(spawn_args, proc.returncode, out, err), None
         except subprocess.TimeoutExpired:
+            if proc is not None:
+                _kill_process_group(proc)
+                with contextlib.suppress(Exception):
+                    proc.communicate(timeout=5)
             return None, "spawn_timeout"
         except OSError:
+            if proc is not None:
+                _kill_process_group(proc)
             return None, "spawn_exec_error"
 
     proc, fail = _run(args, timeout_s)

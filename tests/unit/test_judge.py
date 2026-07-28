@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from tests.unit.conftest import as_popen_double
 
 from chameleon_mcp import judge
 from chameleon_mcp.judge import Finding
@@ -466,7 +467,7 @@ def test_spawn_reviewer_timeout_returns_none(tmp_path):
     def raise_timeout(*a, **k):
         raise subprocess.TimeoutExpired(cmd="claude", timeout=1)
 
-    with patch("subprocess.run", side_effect=raise_timeout):
+    with patch("subprocess.Popen", side_effect=as_popen_double(raise_timeout)):
         assert judge._spawn_reviewer("prompt", tmp_path) is None
 
 
@@ -476,7 +477,7 @@ def test_spawn_reviewer_nonzero_exit_returns_none(tmp_path):
         returncode = 1
         stdout = "boom"
 
-    with patch("subprocess.run", return_value=FakeProc()):
+    with patch("subprocess.Popen", side_effect=as_popen_double(FakeProc())):
         assert judge._spawn_reviewer("prompt", tmp_path) is None
 
 
@@ -488,13 +489,13 @@ def test_spawn_reviewer_status_maps_timeout(tmp_path):
     def raise_timeout(*a, **k):
         raise subprocess.TimeoutExpired(cmd="claude", timeout=1)
 
-    with patch("subprocess.run", side_effect=raise_timeout):
+    with patch("subprocess.Popen", side_effect=as_popen_double(raise_timeout)):
         assert judge._spawn_reviewer_status("prompt", tmp_path) == (None, "spawn_timeout")
 
 
 @pytest.mark.real_judge_spawn
 def test_spawn_reviewer_status_maps_exec_error(tmp_path):
-    with patch("subprocess.run", side_effect=OSError("no binary")):
+    with patch("subprocess.Popen", side_effect=as_popen_double(OSError("no binary"))):
         assert judge._spawn_reviewer_status("prompt", tmp_path) == (None, "spawn_exec_error")
 
 
@@ -504,7 +505,7 @@ def test_spawn_reviewer_status_maps_nonzero_exit(tmp_path):
         returncode = 1
         stdout = "boom"
 
-    with patch("subprocess.run", return_value=FakeProc()):
+    with patch("subprocess.Popen", side_effect=as_popen_double(FakeProc())):
         assert judge._spawn_reviewer_status("prompt", tmp_path) == (None, "spawn_nonzero_exit")
 
 
@@ -514,7 +515,7 @@ def test_spawn_reviewer_status_success(tmp_path):
         returncode = 0
         stdout = "stream"
 
-    with patch("subprocess.run", return_value=FakeProc()):
+    with patch("subprocess.Popen", side_effect=as_popen_double(FakeProc())):
         assert judge._spawn_reviewer_status("prompt", tmp_path) == ("stream", None)
 
 
@@ -524,13 +525,13 @@ def test_spawn_reviewer_wrapper_still_returns_bare_stdout(tmp_path):
         returncode = 0
         stdout = "stream"
 
-    with patch("subprocess.run", return_value=FakeProc()):
+    with patch("subprocess.Popen", side_effect=as_popen_double(FakeProc())):
         assert judge._spawn_reviewer("prompt", tmp_path) == "stream"
 
     def raise_timeout(*a, **k):
         raise subprocess.TimeoutExpired(cmd="claude", timeout=1)
 
-    with patch("subprocess.run", side_effect=raise_timeout):
+    with patch("subprocess.Popen", side_effect=as_popen_double(raise_timeout)):
         assert judge._spawn_reviewer("prompt", tmp_path) is None
 
 
@@ -569,7 +570,7 @@ def test_spawn_reviewer_inherits_auth_and_disables_chameleon(tmp_path):
         captured["env"] = kwargs.get("env") or {}
         return FakeProc()
 
-    with patch("subprocess.run", side_effect=fake_run):
+    with patch("subprocess.Popen", side_effect=as_popen_double(fake_run)):
         judge._spawn_reviewer("prompt", tmp_path)
 
     env = captured["env"]

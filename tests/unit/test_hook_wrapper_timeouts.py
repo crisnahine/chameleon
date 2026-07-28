@@ -21,13 +21,11 @@ HOOKS_DIR = REPO_ROOT / "plugin" / "hooks"
 
 _WRAPPER_RE = re.compile(r'\$\{TIMEOUT_BIN:\+"\$\{TIMEOUT_BIN\}" (\d+)\}')
 
-FAST_HOOKS = [
-    "preflight-and-advise",
-    "posttool-verify",
-    "posttool-recorder",
-    "callout-detector",
-    "session-start",
-]
+from tests.unit.conftest import hook_wrappers_from_registry
+
+# Every registered wrapper except stop-backstop, which owns the wider Stop
+# budget below. Derived so a new hook cannot silently escape the 3s cap.
+FAST_HOOKS = [h for h in hook_wrappers_from_registry() if h != "stop-backstop"]
 
 FAST_HOOK_TIMEOUT_SECONDS = 3
 STOP_BACKSTOP_TIMEOUT_SECONDS = 55

@@ -18,7 +18,6 @@ import os
 from pathlib import Path
 
 from chameleon_mcp._thresholds import threshold_int
-from chameleon_mcp.repo_id import _compute_repo_id
 from chameleon_mcp.tools import _envelope, daemon_status, list_profiles
 
 
@@ -612,6 +611,33 @@ def doctor(repo: str | None = None) -> dict:
         checks.append(
             {"name": "profile_merge_driver", "status": "warn", "detail": "could not determine"}
         )
+    # Whether chameleon is guarding this repo AT ALL. `.chameleon/.skip` silences
+    # every hook -- the per-edit advisory and the security deny gates alike --
+    # and unlike a pause it never expires. Nothing else reports it, so a user who
+    # inherited the file in a clone sees a plugin that is merely quiet. Reported
+    # through is_chameleon_suppressed rather than a bare stat so doctor and the
+    # hooks can never disagree about what counts as suppressed.
+    try:
+        from chameleon_mcp.optouts import is_chameleon_suppressed
+        from chameleon_mcp.tools import _compute_repo_id
+
+        _sup = is_chameleon_suppressed(_doctor_root, _compute_repo_id(_doctor_root), None)
+        if _sup is None:
+            checks.append({"name": "suppression", "status": "ok", "detail": "active"})
+        else:
+            checks.append(
+                {
+                    "name": "suppression",
+                    "status": "warn",
+                    "detail": (
+                        f"chameleon is NOT guarding this repo ({_sup}); "
+                        "every hook, including the security deny gates, is silent"
+                    ),
+                }
+            )
+    except Exception:
+        checks.append({"name": "suppression", "status": "warn", "detail": "could not determine"})
+
     cwd_config = _doctor_root / ".chameleon" / "config.json"
     if cwd_config.is_file():
         try:

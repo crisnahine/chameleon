@@ -6621,6 +6621,9 @@ def get_status(repo: str) -> dict:
     - ``idiom_review`` — whether the async turn-end review job's idiom lens
       runs (default on; advisory, never blocks).
     - ``idiom_judge`` — vestigial: no longer read by any lens.
+    - ``multi_lens_review`` — vestigial: no longer read by anything. It used to
+      pick between a single-lens and a multi-lens turn-end review; every lens
+      now runs from the ``stop.lenses.LENSES`` registry regardless.
     - ``correctness_judge`` — whether the async turn-end review job's
       correctness lens runs (default on; advisory, never blocks).
     - ``config_malformed`` — True when config.json is present but its enforcement
@@ -10340,8 +10343,14 @@ def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
 
     try:
         active = active_block_rules(_profile_root / ".chameleon")
+        active_unavailable = False
     except Exception:
+        # An empty `active` has two very different meanings: no rule is active
+        # (a real zero -- nothing can be violated), or the rules could not be
+        # READ. Only the second makes a per-file count unknown, so the two are
+        # kept apart rather than both collapsing to set().
         active = set()
+        active_unavailable = True
 
     def _archetype_of(rel: str):
         try:
@@ -10392,18 +10401,36 @@ def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
         except Exception:
             return None
 
-    def block_findings_for(rel: str) -> int:
+    def block_findings_for(rel: str) -> int | None:
+        """Active block-eligible violations on ``rel``, or None if it could not
+        be linted.
+
+        None, not 0. A file that was linted and is clean, and a file whose lint
+        could not run at all -- an unreadable/over-cap read, a stub or untrusted
+        lint envelope, an empty ``active`` because reading the rules raised --
+        are otherwise the same answer, and the auto-pass router reads that
+        answer as "no blocking findings" and stays eligible. The sibling
+        ``importers_of`` closure a few lines up already returns None for exactly
+        this reason and feeds ``blast_radius_unknown``.
+        """
+        if active_unavailable:
+            return None
         if not active:
+            # No rule is active, so nothing can be violated: a real zero.
             return 0
         arch, _ = _archetype_of(rel)
         if not arch:
+            # Not archetyped: nothing to lint against, which is a real zero.
+            # `unarchetyped_files` is the fact that carries this case.
             return 0
         try:
             content = safe_read_text(repo_root, rel)
-            data = lint_file(repo_arg, arch, content, str(repo_root / rel)).get("data") or {}
-            return sum(1 for v in (data.get("violations") or []) if v.get("rule") in active)
+            envelope = lint_file(repo_arg, arch, content, str(repo_root / rel)).get("data") or {}
+            if envelope.get("status") in {"stub", "untrusted"}:
+                return None
+            return sum(1 for v in (envelope.get("violations") or []) if v.get("rule") in active)
         except Exception:
-            return 0
+            return None
 
     # Deterministic caller-contract signature diff (default-on; fail-open). The
     # auto-pass router has no per-symbol contract signal otherwise, so a narrowed

@@ -271,7 +271,14 @@ def deliver_pending_findings(cwd: Path, session_id) -> str | None:
     return _wrap(rendered.text)
 
 
-def deliver_dead_session_findings(repo_root: Path, repo_id: str, repo_data: Path) -> str | None:
+def deliver_dead_session_findings(
+    repo_root: Path,
+    repo_id: str,
+    repo_data: Path,
+    *,
+    commit_delivery: bool = True,
+    out_match_keys: list | None = None,
+) -> str | None:
     """SessionStart's age-bounded ledger query (spec section 3.5): a
     session that ended without a next prompt still surfaces its findings,
     here, at a later session's start. Age-bounded so a finding whose
@@ -284,6 +291,17 @@ def deliver_dead_session_findings(repo_root: Path, repo_id: str, repo_data: Path
     (``_judge_spawn_health_banner`` and siblings) are plain ``[🦎 ...]``
     lines folded into ONE shared outer wrapper the caller builds, not
     individually wrapped blocks.
+
+    ``commit_delivery=False`` DEFERS the delivered transition to the caller, the
+    same two-phase shape ``deliver_for_root`` uses. It matters here because the
+    default marks a finding delivered the moment the TEXT EXISTS -- many lines
+    and several I/O stages before SessionStart's single ``_emit`` -- while the
+    session-start wrapper caps the interpreter with a bare ``timeout 3``. That
+    is a SIGTERM: no unwinding, so no ``finally`` and no emit, and the shell
+    prints ``{}`` instead. The finding is then marked delivered having reached
+    nobody, and ``undelivered_findings`` will never return it again. With the
+    flag off, ``out_match_keys`` collects exactly the keys the caller should
+    commit once the emit actually returns.
     """
     import time
 
@@ -313,7 +331,14 @@ def deliver_dead_session_findings(repo_root: Path, repo_id: str, repo_data: Path
         f"chameleon: {len(aged)} unaddressed finding{'s' if len(aged) != 1 else ''} "
         "from a previous session's review"
     )
-    return _render_and_mark(repo_id, aged, header=header, ceiling_tokens=ceiling)
+    return _render_and_mark(
+        repo_id,
+        aged,
+        header=header,
+        ceiling_tokens=ceiling,
+        commit=commit_delivery,
+        out_match_keys=out_match_keys,
+    )
 
 
 def _age_seconds(created_at: str, now: float) -> float | None:

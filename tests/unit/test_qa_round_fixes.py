@@ -46,6 +46,8 @@ def test_judge_spawn_preserves_auth_and_disables_chameleon(monkeypatch, tmp_path
     # CLAUDE_CONFIG_DIR (that stripped OAuth/subscription auth -> "Not logged in"
     # -> the judge silently never fired). It inherits the real config dir for
     # auth and sets CHAMELEON_DISABLE=1 so chameleon's own hooks don't recurse.
+    from tests.unit.conftest import as_popen_double
+
     from chameleon_mcp import judge
 
     captured: dict = {}
@@ -54,7 +56,7 @@ def test_judge_spawn_preserves_auth_and_disables_chameleon(monkeypatch, tmp_path
         captured["env"] = kwargs.get("env")
         return SimpleNamespace(returncode=0, stdout="[]", stderr="")
 
-    monkeypatch.setattr(judge.subprocess, "run", fake_run)
+    monkeypatch.setattr(judge.subprocess, "Popen", as_popen_double(fake_run))
     out = judge._spawn_reviewer("prompt", tmp_path)
     assert out == "[]"
     env = captured["env"]
@@ -71,7 +73,10 @@ def test_judge_spawn_fails_open_on_subprocess_error(monkeypatch, tmp_path):
     def boom(*a, **k):
         raise OSError("spawn failed")
 
-    monkeypatch.setattr(judge.subprocess, "run", boom)
+    # Popen, not run: judge spawns through Popen so a timed-out reviewer's whole
+    # process group can be killed. Patching the old seam would let this test
+    # spawn a real `claude -p`.
+    monkeypatch.setattr(judge.subprocess, "Popen", boom)
     # A spawn error must fail open to no findings, never raise.
     assert judge._spawn_reviewer("prompt", tmp_path) is None
 

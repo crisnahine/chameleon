@@ -48,7 +48,11 @@ def test_run_no_edited_files_returns_empty(tmp_path):
     profile.mkdir()
     result = duplication.run(repo, profile, [str(repo / "ghost.ts")], lambda _p: None)
     assert result.findings == []
-    assert result.check_events == []
+    # The empty result must NAME why it is empty: "no edited file survived the
+    # is_file filter" and "ran every probe, found nothing" are otherwise the
+    # same answer to every consumer of check_events. Mirrors the correctness
+    # lens's `no_diffs` in test_stop_lenses.py.
+    assert result.check_events == [("no_edited_files", "files=1")]
 
 
 def test_run_no_findings_never_spawns(tmp_path):

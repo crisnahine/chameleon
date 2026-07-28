@@ -99,6 +99,11 @@ def run(
     try:
         edited = [p for p in files if Path(p).is_file()]
         if not edited:
+            # Name it: "no edited file survived the is_file filter" and "this
+            # lens ran and found nothing" are otherwise the same empty result to
+            # every consumer of check_events. The sibling correctness lens
+            # records its own equivalent as `no_diffs`.
+            _sink("no_edited_files", f"files={len(files or ())}")
             return LensResult(findings=[], check_events=events)
 
         # Both gatherers hard-filter on a SINGLE catalog language, so inferring

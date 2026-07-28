@@ -13,6 +13,7 @@ no-spawn; the few tests that assert on the real spawn opt out with
 from __future__ import annotations
 
 import os
+import re
 from unittest.mock import patch
 
 import pytest
@@ -110,3 +111,90 @@ def _no_real_judge_spawn(request, monkeypatch):
         monkeypatch.setattr(scheduler, "launch_job", lambda *a, **k: False, raising=False)
     except Exception:
         pass
+
+
+def hook_wrappers_from_registry() -> list[str]:
+    """Every hook wrapper `hooks.json` actually registers.
+
+    The three hook test suites each carried their own hand-typed list, and all
+    three had drifted from the registry: `peer-skill-advise` (a live PreToolUse
+    hook on the Skill matcher) appeared in none of them, and `stop-backstop` --
+    the one hook that can refuse to end a turn -- was only ever shellchecked.
+    Deriving the list here means a wrapper added to hooks.json is covered by the
+    kill-switch, timeout and payload-guard suites the moment it is registered,
+    instead of when someone remembers to append it in three places.
+    """
+    import json
+    from pathlib import Path
+
+    registry = Path(__file__).resolve().parents[2] / "plugin" / "hooks" / "hooks.json"
+    data = json.loads(registry.read_text(encoding="utf-8"))
+    names: list[str] = []
+    for entries in (data.get("hooks") or {}).values():
+        for entry in entries or ():
+            for hook in entry.get("hooks") or ():
+                cmd = hook.get("command") or ""
+                match = re.search(r"run-hook\.cmd\"?\s+(\S+)", cmd)
+                if match and match.group(1) not in names:
+                    names.append(match.group(1))
+    return names
+
+
+class FakePopenFromRun:
+    """Popen-shaped wrapper over a ``subprocess.run``-shaped test double.
+
+    ``judge._spawn_reviewer_status`` spawns with Popen + ``communicate(timeout)``
+    so a timed-out reviewer's whole process GROUP can be killed: ``run()``'s own
+    timeout signals only the direct child, and `claude -p` starts children that
+    inherit the pipe, so a grandchild could hold stdout open past the budget.
+
+    The doubles keep asserting on the same ``(args, kwargs)`` they always did --
+    including ``kwargs["input"]``, which judge now hands to ``communicate()``
+    rather than to the spawn. The wrapped double is therefore invoked FROM
+    ``communicate`` with ``input`` folded back into its kwargs, so a double that
+    records the prompt still records it. Only the intercepted call moved; no
+    assertion was relaxed.
+    """
+
+    def __init__(self, run_double, args, kwargs):
+        self._run_double = run_double
+        self._kwargs = kwargs
+        self.args = args
+        self.pid = -1
+        self.returncode = 0
+
+    def communicate(self, input=None, timeout=None):  # noqa: A002
+        proc = self._run_double(self.args, **{**self._kwargs, "input": input})
+        self.returncode = getattr(proc, "returncode", 0)
+        return getattr(proc, "stdout", ""), getattr(proc, "stderr", "")
+
+    def kill(self):
+        return None
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
+def as_popen_double(run_double):
+    """Adapt a ``subprocess.run``-shaped double into a ``Popen``-shaped one.
+
+    Accepts the three shapes the suites use: a callable, a bare return value,
+    and an exception instance/class (``side_effect=OSError(...)``). A raising
+    double raises from ``communicate``, which is inside the same try judge
+    wraps around the spawn, so ``spawn_timeout`` / ``spawn_exec_error`` map
+    exactly as they did under ``run``.
+    """
+
+    def _call(args, kwargs):
+        if isinstance(run_double, BaseException):
+            raise run_double
+        if isinstance(run_double, type) and issubclass(run_double, BaseException):
+            raise run_double()
+        if callable(run_double):
+            return run_double(args, **kwargs)
+        return run_double
+
+    def popen(args, **kwargs):
+        return FakePopenFromRun(lambda a, **k: _call(a, k), list(args), kwargs)
+
+    return popen

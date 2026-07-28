@@ -113,7 +113,9 @@ def test_judge_spawn_feeds_prompt_on_stdin_not_argv(tmp_path, monkeypatch):
         captured["input"] = kwargs.get("input")
         return _Result()
 
-    monkeypatch.setattr(judge.subprocess, "run", _fake_run)
+    from tests.unit.conftest import as_popen_double
+
+    monkeypatch.setattr(judge.subprocess, "Popen", as_popen_double(_fake_run))
     # Force the deterministic non-bare path.
     monkeypatch.setattr(judge, "_bare_flag_supported", lambda: False)
 
