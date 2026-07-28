@@ -8444,6 +8444,24 @@ SESSION_REAP_PREFIXES: tuple[str, ...] = (
     # SessionDoc.idioms_shown_slugs now); this ages out files older installs
     # left behind.
     ".mirror_idioms.",
+    # Consecutive-duplicate dedup for the turn-end attestation. The durable
+    # record is session_attestations.ndjson, which autopass reads; this is only
+    # a touch marker, and one per session made it the largest family in a repo's
+    # state dir. Re-appending one attestation row is the worst a reap can cause,
+    # and the contract is raise-only, so a duplicate can never lower scrutiny.
+    ".attestation_last.",
+    # Per-(session,digest) dedup for the advisory-only test-weakening nudge.
+    ".testint_judged.",
+    # Suppresses a repeat trust prompt within a session. Its reader already
+    # treats anything past 24h as stale, so the sweep only ever removes markers
+    # that stopped suppressing days earlier -- it cannot cause a re-prompt.
+    ".trust_prompted.",
+    # A running job rewrites this every 10s and it goes stale at 30s, so a live
+    # one is never old enough to sweep. Survivors are crashed jobs (a clean exit
+    # leaves the file inert once job_inflight is cleared), and the staleness
+    # reader treats a missing heartbeat exactly like a stale one, so removing a
+    # dead heartbeat can never orphan the single-inflight slot.
+    ".job_heartbeat.",
 )
 
 
