@@ -4,6 +4,68 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.7.1] - 2026-07-28
+
+### Fixed
+
+- **The interpreter cache never reconsidered a better interpreter.** `interp.cache`
+  is keyed on the mcp_dir alone, which is fixed for the life of an installed
+  version, and a hit was validated only by that key plus "the recorded binary
+  still exists". Nothing asked whether a higher ladder rung had appeared since.
+  SessionStart warms the cache early, and `scripts/setup.sh` builds the bundled
+  venv later via `uv sync` — so an entry written in that window pinned every hook
+  of that version to a dep-poorer interpreter, one that cannot import `xxhash`
+  while the ignored venv can, making each hook-spawned refresh pay a `uv run`
+  fallback. Doctor's own remedy compounded it: `hook_interpreter_deps` said
+  "create mcp/.venv to remove the fallback" when the venv already existed and was
+  being skipped, so following the instruction changed nothing. A cache hit now
+  re-checks rung 1 with the same two candidates in the same order the ladder uses,
+  comparing only the first viable one — matching the ladder's own selection rather
+  than "any candidate differs", which would thrash whenever both layouts exist.
+  Builtin tests only, so the warm path stays fork-free.
+
+- **Doctor's prompt-injection-drop check had been matching nothing.** The pattern
+  required the artifact name to be a single unbroken token
+  (`chameleon: \S+ dropped from context`), but every writer had grown a
+  parenthesised profile path (`idioms.md (/repo/.chameleon) dropped ...`), and
+  `idiom_store`'s per-record drop was never covered by it in any version. So the
+  one diagnostic that exists to prove a live poisoning event was correctly blocked
+  reported a clean install while a real drop was happening — and its unit tests
+  passed throughout, because they asserted against a hand-written legacy string
+  instead of what the writers emit. The pattern is now keyed on the anchors all
+  three share, lifted to a module-level constant, and covered by tests that drive
+  the real writers and match their real stderr. Two smaller faults in the same
+  check are fixed with it: drop lines carried no timestamp, so the 72h window
+  could not apply and a months-old drop warned forever (they are anchored at write
+  time now, with the log's own mtime as the fallback for lines older installs
+  wrote), and the detail had no "may be from other repos" preamble, so a drop from
+  a deleted fixture read as this repo's idioms being poisoned. Anchoring would
+  otherwise have let a burst of drops crowd genuine hook errors out of
+  `recent_hook_errors`' last-5 window, so that pass now skips them.
+
+- **`prune-plugin-cache.sh` could not reclaim anything a session had ever loaded.**
+  The gate was `[[ -e "${dir}.in_use" ]]` — bare existence of the marker directory.
+  Claude Code writes a pid-named marker there when a session loads a build and
+  never removes it when the session dies, so existence means "was loaded once",
+  which after a few weeks is every build ever installed. Measured on one machine:
+  76 cached versions, 3.3 GB, 54 marker directories, 29 with no live pid and ~19
+  holding no pid file at all. The gate now asks whether a recorded pid is still
+  running. Liveness is pid existence alone, deliberately: the recorded `procStart`
+  is stored in UTC while `ps` prints local time, so comparing them would mismatch
+  every live session and delete the plugin out from under it, and `ps -o comm=`
+  truncates. Every uncertain answer still resolves to keep.
+
+- **Five per-session marker families had no reaper.** `.attestation_last.`,
+  `.testint_judged.`, `.trust_prompted.`, `.job_heartbeat.` and
+  `.crossfile_deleted.` were absent from the SessionStart sweep, so each left one
+  file per session forever — one measured repo held 100 `.attestation_last.`
+  markers in a 307-file state directory, 87 of them over a week old. All five now
+  age out on the shared 7-day retention horizon, which sits far above every window
+  that could make one semantically live (a job rewrites its heartbeat every 10s; a
+  trust marker stops suppressing at 24h; no session lives a week). Sweeping that
+  same repo's state directory now reclaims 117 files. `.verify_seen.` was already
+  swept by its own 24h reaper and is unchanged.
+
 ## [4.7.0] - 2026-07-28
 
 ### Changed

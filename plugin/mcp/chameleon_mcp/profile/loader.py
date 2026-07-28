@@ -461,9 +461,14 @@ def safe_prose_text(path: Path) -> str:
         return ""
     if text and _prose_injection_unsafe(text):
         import sys as _sys
+        import time as _time
 
+        # Anchored so doctor can age it out: the hook wrappers redirect this
+        # straight into .hook_errors.log, and an unanchored line there is
+        # undateable, so it would be reported as a live drop forever.
+        stamp = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
         print(
-            f"chameleon: {path.name} ({path.parent.parent}) dropped from context: "
+            f"[{stamp}] chameleon: {path.name} ({path.parent.parent}) dropped from context: "
             "contains a prompt-injection pattern (re-derive or re-teach with safe prose)",
             file=_sys.stderr,
         )
@@ -584,10 +589,12 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
         # trust. Mirrors canonical_loader: drop the whole artifact and warn. The scan
         # sits inside the mtime-cached load, so it runs only when idioms.md changes.
         import sys as _sys
+        import time as _time
 
+        stamp = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
         print(
-            f"chameleon: idioms.md ({idioms_path.parent.parent}) dropped from context: "
-            "contains a prompt-injection, secret, or dangerous pattern "
+            f"[{stamp}] chameleon: idioms.md ({idioms_path.parent.parent}) dropped from "
+            "context: contains a prompt-injection, secret, or dangerous pattern "
             "(re-run /chameleon-teach with safe prose)",
             file=_sys.stderr,
         )
