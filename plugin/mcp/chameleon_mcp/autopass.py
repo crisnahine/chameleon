@@ -139,9 +139,16 @@ _SECURITY_SURFACE_PATTERNS: tuple[
         # it. cochange.py and signatures.py already carry the same predicate.
         # `/migrations/` alone also missed a TOP-LEVEL `migrations/versions/...`,
         # since the leading slash demands a parent directory.
+        # `/migration/` is the SINGULAR TypeORM layout (`src/migration/<ts>-Name.ts`).
+        # cochange._is_ts_migration_dir accepts both spellings, so without it the
+        # two classifiers disagree about the same file: a co-change partner there
+        # and an ordinary low-risk edit here. Needles stay structural (the exact
+        # and prefix sets are empty on purpose) so only a migration DIRECTORY
+        # counts -- a `UserMigrationService.ts` is not a schema change.
         (
             "db/migrate/",
             "/migrations/",
+            "/migration/",
             "alembic/versions/",
             "migrations/versions/",
             "schema.rb",

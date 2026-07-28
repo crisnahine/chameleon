@@ -61,6 +61,133 @@ class IgnoreIndex:
         return self.file_rules | self.named_anywhere
 
 
+# Ruby accepts ANY non-alphanumeric, non-whitespace delimiter for a typed
+# percent-literal (`%q~...~`, `%w#...#`), but lint_engine's shared pattern
+# enumerates only the common ones. The rest are caught here, because THIS
+# consumer is the one that must fail closed: an unblanked literal is a
+# directive that activates out of string content and switches off a
+# deterministic security deny. The bracket openers are excluded -- lint_engine's
+# balanced-pair arms own those and have already run by the time this pass sees
+# the content. The two inner alternatives are first-char disjoint (`\` vs
+# everything else) so the match stays linear.
+_RUBY_PCT_FREE_DELIM = re.compile(
+    r"%[qQwWiIrsx](?P<d>[^A-Za-z0-9\s({\[<])(?:\\.|(?!(?P=d))[^\\])*(?P=d)",
+    re.DOTALL,
+)
+
+
+def _ts_quote_end(content: str, start: int) -> int:
+    """Index just past the quote closing the ``'``/``"`` literal at ``start``.
+
+    Runs to the end of the content when the literal never closes; the caller
+    blanks whatever span it returns, so an unterminated literal blanks to EOF.
+    """
+    quote = content[start]
+    n = len(content)
+    i = start + 1
+    while i < n:
+        if content[i] == "\\":
+            i += 2
+            continue
+        if content[i] == quote:
+            return i + 1
+        i += 1
+    return n
+
+
+def _ts_template_end(content: str, start: int) -> int:
+    """Index just past the backtick closing the template literal at ``start``.
+
+    Brace-aware: a ``${ ... }`` substitution -- including one holding a nested
+    template or a quoted string -- is consumed as part of the OUTER literal
+    rather than ending it at the next backtick. Flat backtick pairing is what
+    leaves the body of a nested template unblanked, and that body is string
+    content a directive must never activate from.
+    """
+    n = len(content)
+    i = start + 1
+    # One entry per open context, innermost last: True inside template text,
+    # False inside a ${...} substitution. ``depth`` tracks the brace nesting of
+    # each open substitution so a literal `{` in it does not close it early.
+    in_template = [True]
+    depth: list[int] = []
+    while i < n and in_template:
+        c = content[i]
+        if c == "\\":
+            i += 2
+            continue
+        if in_template[-1]:
+            if c == "`":
+                in_template.pop()
+                i += 1
+                continue
+            if c == "$" and i + 1 < n and content[i + 1] == "{":
+                in_template.append(False)
+                depth.append(1)
+                i += 2
+                continue
+            i += 1
+            continue
+        if c == "`":
+            in_template.append(True)
+            i += 1
+            continue
+        if c in "\"'":
+            i = _ts_quote_end(content, i)
+            continue
+        if c == "{":
+            depth[-1] += 1
+        elif c == "}":
+            depth[-1] -= 1
+            if depth[-1] == 0:
+                depth.pop()
+                in_template.pop()
+        i += 1
+    return i
+
+
+def _blank_ts_string_literals(content: str) -> str:
+    """Blank every TS/JS string and template literal, leaving comments intact.
+
+    Replaces ``lint_engine._TS_STRING``'s flat quote pairing for this consumer.
+    That regex pairs backticks positionally, so in ``` `a ${`b`} c` ``` it pairs
+    the 1st with the 2nd and the 3rd with the 4th, leaving the middle -- real
+    string content -- unblanked. Comments are SKIPPED rather than blanked
+    because a comment is where a legitimate directive lives; skipping them also
+    stops an apostrophe or backtick inside one from opening a literal that runs
+    over live code below.
+    """
+    n = len(content)
+    out = list(content)
+    i = 0
+    while i < n:
+        c = content[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "/" and i + 1 < n:
+            if content[i + 1] == "/":
+                nl = content.find("\n", i)
+                i = n if nl < 0 else nl
+                continue
+            if content[i + 1] == "*":
+                close = content.find("*/", i + 2)
+                i = n if close < 0 else close + 2
+                continue
+        if c in "\"'":
+            end = _ts_quote_end(content, i)
+        elif c == "`":
+            end = _ts_template_end(content, i)
+        else:
+            i += 1
+            continue
+        for k in range(i, end):
+            if out[k] != "\n":
+                out[k] = " "
+        i = end
+    return "".join(out)
+
+
 def _blank_string_literals(content: str, file_path: str | None, language: str | None) -> str:
     """Blank string-literal bodies so embedded text cannot activate directives.
 
@@ -92,12 +219,20 @@ def _blank_string_literals(content: str, file_path: str | None, language: str | 
             out = _RUBY_STRING_SQ.sub(_blank_match_to_spaces, out)
             # Percent-literals too: a directive inside `%q{...}` is content, not
             # author intent, and must not suppress a real violation.
-            return _blank_ruby_percent_literals(out)
+            out = _blank_ruby_percent_literals(out)
+            return _RUBY_PCT_FREE_DELIM.sub(_blank_match_to_spaces, out)
         if language == "python":
             # Triple-quoted / f/r/b-prefixed strings the TS regex can't span; a
             # directive inside a docstring must not suppress a real violation.
             return _blank_python_strings(content)
-        # TypeScript and unknown languages share the quote/backtick shapes.
+        if language == "typescript":
+            return _blank_ts_string_literals(content)
+        # An unknown language only shares the quote/backtick SHAPES, not the
+        # grammar, so it keeps the flat pairing: the brace-aware scanner would
+        # read an unbalanced backtick in prose (markdown, a plain-text config)
+        # as an unterminated template and blank the rest of the file. Nothing
+        # archetype-independent hard-blocks on such a file anyway --
+        # block_eligible_on_file drops those rules when the language is None.
         return _TS_STRING.sub(_blank_match_to_spaces, content)
     except Exception:
         return content

@@ -60,6 +60,8 @@ import os
 import re
 import sqlite3
 import time
+import uuid
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -413,11 +415,49 @@ def record_review(
         record["hmac"] = None
 
     line = json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
-    path = _ledger_path(repo_id)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(line)
-    _trim_ledger(path, threshold_int("REVIEW_LEDGER_MAX_RECORDS"))
+    _append_and_trim(_ledger_path(repo_id), line, threshold_int("REVIEW_LEDGER_MAX_RECORDS"))
     return record
+
+
+# How long an append is willing to wait for the ledger lock. Short: the locked
+# section is a small append plus (only past the cap) one rewrite, so a wait
+# longer than this means a contended or slow filesystem, and the append is
+# safe to do unlocked.
+_LEDGER_LOCK_TIMEOUT_SECONDS = 2.0
+
+
+def _append_and_trim(path: Path, line: str, cap: int) -> None:
+    """Append one NDJSON record, then enforce the ledger's recency cap.
+
+    Both halves run under ONE lock. These ledger paths are per-REPO, not
+    per-session, so concurrent sessions and parallel review subagents write the
+    same file -- and an unlocked trim reads every line, then replaces the file
+    with the tail, so anything another writer appended between the read and the
+    replace is silently gone.
+
+    Best-effort on the lock: when it cannot be taken in time the append still
+    happens (O_APPEND is atomic on its own) and the trim is left to whichever
+    writer does hold it, so a contended ledger never blocks or fails the review
+    writing to it. A real write failure still propagates -- callers read that as
+    "ledger unavailable, carry on".
+    """
+    from chameleon_mcp.locks import LockHeldError, acquire_advisory_lock
+
+    with ExitStack() as stack:
+        held = True
+        try:
+            stack.enter_context(
+                acquire_advisory_lock(
+                    path.with_name(path.name + ".lock"),
+                    blocking_timeout=_LEDGER_LOCK_TIMEOUT_SECONDS,
+                )
+            )
+        except (LockHeldError, OSError):
+            held = False
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line)
+        if held:
+            _trim_ledger(path, cap)
 
 
 def _trim_ledger(path: Path, cap: int) -> None:
@@ -427,6 +467,10 @@ def _trim_ledger(path: Path, cap: int) -> None:
     One record per event keeps them small in practice; this trims by recency
     only when the line count crosses the cap. Best-effort: any read/write error
     leaves the file untouched rather than risking data loss.
+
+    Call it under the ledger lock (see ``_append_and_trim``) -- the read and the
+    replace are not atomic together. The tmp name is per-write so two writers
+    can never land on the same staging file even if that discipline slips.
     """
     if cap <= 0:
         return
@@ -438,7 +482,7 @@ def _trim_ledger(path: Path, cap: int) -> None:
     if len(lines) <= cap:
         return
     keep = lines[-cap:]
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}-{uuid.uuid4().hex[:8]}.tmp")
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             f.writelines(keep)
@@ -769,10 +813,7 @@ def record_finding_fate(
         record["hmac"] = None
 
     line_out = json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
-    path = _fates_path(repo_id)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(line_out)
-    _trim_ledger(path, threshold_int("FINDING_FATES_MAX_RECORDS"))
+    _append_and_trim(_fates_path(repo_id), line_out, threshold_int("FINDING_FATES_MAX_RECORDS"))
     return record
 
 
@@ -1116,16 +1157,15 @@ def record_session_attestation(repo_id: str, payload: dict) -> dict:
     except Exception:
         record["hmac"] = None
 
-    path = _attestation_path(repo_id)
     line = json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(line)
+    _append_and_trim(
+        _attestation_path(repo_id), line, threshold_int("ATTESTATION_LEDGER_MAX_RECORDS")
+    )
     if marker is not None:
         try:
             marker.write_text(digest, encoding="utf-8")
         except OSError:
             pass
-    _trim_ledger(path, threshold_int("ATTESTATION_LEDGER_MAX_RECORDS"))
     return {"appended": True, "digest": digest, "record": record}
 
 
@@ -1227,6 +1267,10 @@ def read_session_attestations(
 # migrate_pending_queue below).
 
 _FINDINGS_LEDGER_FILENAME = "findings_ledger.json"
+# Row ceiling for that map, the counterpart of the *_MAX_RECORDS caps the
+# NDJSON ledgers above carry. Same reason: refresh never wipes it, so without a
+# cap it grows for the life of the repo's data dir.
+_FINDINGS_LEDGER_MAX_ROWS = 2000
 _RESURFACE_MAX_LINES = 8
 _OPEN_STATUSES = ("pending", "delivered", "resurfaced")
 _HIGH_SEVERITIES = ("blocker", "high")
@@ -1260,19 +1304,58 @@ def _write_findings_rows(repo_id: str, rows: dict) -> None:
     os.replace(tmp, path)
 
 
-def _update_findings_rows(repo_id: str, mutate) -> None:
+def _prune_findings_rows(rows: dict) -> None:
+    """Bound the rows map: closed rows first, oldest first within each class.
+
+    Unlike the NDJSON ledgers this store is a map, so a recurrence of the same
+    claim reuses its row -- but that is not a bound. ``compute_match_key``
+    hashes the model-authored claim prose, so a re-phrased claim about the same
+    defect mints a new permanent row, and ``shelved`` has no transition out at
+    all, which makes the fastest-growing class also the one nothing retires.
+    The whole file is parsed on the turn-end and prompt paths, so an unbounded
+    map is a cost paid on every one of them.
+
+    Closed rows are spent before open ones, so a pending finding is never
+    dropped while a retired one survives; only a repo whose OPEN findings alone
+    exceed the cap loses an open row.
+    """
+    excess = len(rows) - _FINDINGS_LEDGER_MAX_ROWS
+    if excess <= 0:
+        return
+
+    def _drop_order(item):
+        _key, row = item
+        is_dict = isinstance(row, dict)
+        is_open = is_dict and row.get("status") in _OPEN_STATUSES
+        created_at = str(row.get("created_at") or "") if is_dict else ""
+        return (is_open, created_at)
+
+    for key, _row in sorted(rows.items(), key=_drop_order)[:excess]:
+        rows.pop(key, None)
+
+
+def _update_findings_rows(repo_id: str, mutate, *, lock_timeout: float = 10.0) -> None:
     """Load-mutate-save the whole rows map under one flock, mirroring
     core/idiom_store.py's per-write discipline: the read, the mutation, and
     the atomic replace all happen while the lock is held, so a concurrent
-    writer never observes (or clobbers) a half-applied batch."""
+    writer never observes (or clobbers) a half-applied batch.
+
+    ``lock_timeout`` is how long the caller is willing to WAIT for that lock.
+    The default suits the detached review job, which owns minutes of budget. A
+    caller running inside a hook whose wrapper has a hard wall-clock cap must
+    pass a shorter one and handle ``LockHeldError``: the contending holder is
+    routinely that same long-lived job, and being SIGTERMed mid-wait loses the
+    hook's whole output, not just this write.
+    """
     from chameleon_mcp.locks import acquire_advisory_lock
 
     path = _findings_ledger_path(repo_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_name(path.name + ".lock")
-    with acquire_advisory_lock(lock_path, blocking_timeout=10.0):
+    with acquire_advisory_lock(lock_path, blocking_timeout=lock_timeout):
         rows = _read_findings_rows(repo_id)
         mutate(rows)
+        _prune_findings_rows(rows)
         _write_findings_rows(repo_id, rows)
 
 
@@ -1439,11 +1522,16 @@ def undelivered_findings(repo_id: str, *, ws_roots) -> list:
     return out
 
 
-def _transition_status(repo_id: str, match_keys, allowed_from, new_status: str) -> int:
+def _transition_status(
+    repo_id: str, match_keys, allowed_from, new_status: str, *, lock_timeout: float = 10.0
+) -> int:
     """Move each row in ``match_keys`` currently in ``allowed_from`` (any
     status, when ``allowed_from`` is None) to ``new_status``. Unknown or
     already-transitioned keys are skipped silently -- a stale or
     double-delivered key is not an error. Returns the count actually moved.
+
+    ``lock_timeout`` is passed straight through to ``_update_findings_rows``;
+    see there for when a caller must shorten it.
     """
     keys = {k for k in (match_keys or []) if isinstance(k, str) and k}
     if not repo_id or not keys:
@@ -1461,8 +1549,17 @@ def _transition_status(repo_id: str, match_keys, allowed_from, new_status: str) 
             row["status"] = new_status
             moved += 1
 
-    _update_findings_rows(repo_id, _mutate)
+    _update_findings_rows(repo_id, _mutate, lock_timeout=lock_timeout)
     return moved
+
+
+# Delivery runs inside the UserPromptSubmit / SessionStart hooks, whose wrapper
+# kills the interpreter after 3 seconds. The writer it contends with is the
+# detached review job's own persist, which by design outlives the Stop that
+# launched it and is therefore routinely still running when the next prompt
+# arrives -- so waiting the default here does not serialize, it guarantees the
+# wrapper kills the process and the ENTIRE injection is lost.
+_DELIVERY_LOCK_TIMEOUT_SECONDS = 1.0
 
 
 def mark_delivered(repo_id: str, match_keys) -> None:
@@ -1478,8 +1575,24 @@ def mark_delivered(repo_id: str, match_keys) -> None:
     Advances the repo-keyed delivery cursor (spec section 3.5: cursors are
     keyed by repo_id, not session) whenever at least one row actually
     transitioned, so a later reader can tell delivery happened and when.
+
+    Fails open on lock contention: the rows stay ``pending``, so the next
+    delivery point simply shows them again. A repeated finding costs one
+    duplicated block; overrunning the delivery hook's wall clock costs the
+    whole injection, including the conventions and every other banner.
     """
-    moved = _transition_status(repo_id, match_keys, {"pending"}, "delivered")
+    from chameleon_mcp.locks import LockHeldError
+
+    try:
+        moved = _transition_status(
+            repo_id,
+            match_keys,
+            {"pending"},
+            "delivered",
+            lock_timeout=_DELIVERY_LOCK_TIMEOUT_SECONDS,
+        )
+    except LockHeldError:
+        return
     if moved:
         try:
             from chameleon_mcp.core.session_state import update_delivery_cursor

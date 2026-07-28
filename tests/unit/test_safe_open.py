@@ -250,3 +250,58 @@ def test_excerpt_window_never_reads_outside_the_repo(tmp_path: Path):
     # No line number falls back to the head window, still containment-checked.
     assert "line1" in excerpt_window(repo, "a.py", None)
     assert excerpt_window(repo, "missing.py", 1) == ""
+
+
+# --- a non-regular file must be refused, not block forever -------------------
+
+
+def _fifo(tmp_path):
+
+    f = tmp_path / "artifact.json"
+    os.mkfifo(f)
+    return f
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX only")
+def test_profile_artifact_fifo_is_refused_not_hung(tmp_path):
+    """O_NOFOLLOW and the S_ISREG check are both present, but open(2) on a FIFO
+    blocks until a writer appears -- so without O_NONBLOCK the regular-file
+    guard sat behind a syscall that never returned and a committed named pipe
+    hung every reader of this helper. The refusal has to be reachable."""
+    from chameleon_mcp.safe_open import UnsafeFileError, safe_read_profile_artifact
+
+    with pytest.raises(UnsafeFileError):
+        safe_read_profile_artifact(_fifo(tmp_path))
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX only")
+def test_safe_read_capped_fifo_is_refused_not_hung(tmp_path):
+    """OSError, not UnsafeFileError: the manifest readers already skip a file on
+    OSError, so raising outside that hierarchy would trade a hang for a crashed
+    bootstrap."""
+    from chameleon_mcp.safe_open import safe_read_capped
+
+    with pytest.raises(OSError):
+        safe_read_capped(_fifo(tmp_path), max_bytes=4_000_000)
+
+
+def test_safe_read_capped_reads_regular_files_and_bounds_them(tmp_path):
+    f = tmp_path / "package.json"
+    f.write_text("x" * 500, encoding="utf-8")
+    from chameleon_mcp.safe_open import safe_read_capped
+
+    assert safe_read_capped(f, max_bytes=4_000_000) == "x" * 500
+    assert safe_read_capped(f, max_bytes=10) == "x" * 10
+
+
+def test_safe_read_capped_follows_a_symlink_to_a_regular_file(tmp_path):
+    """Unlike the profile-artifact reader this deliberately allows symlinks: a
+    monorepo may link a manifest. The fstat resolves THROUGH the link, so a link
+    to a device or pipe is still caught as non-regular."""
+    real = tmp_path / "real.json"
+    real.write_text("{}", encoding="utf-8")
+    link = tmp_path / "package.json"
+    link.symlink_to(real)
+    from chameleon_mcp.safe_open import safe_read_capped
+
+    assert safe_read_capped(link, max_bytes=1000) == "{}"

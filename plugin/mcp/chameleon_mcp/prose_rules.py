@@ -119,21 +119,46 @@ def _git_ignored(root: Path, paths: list[Path]) -> set[Path]:
     convention source and must not seed a prose rule. Fails open to the empty set
     (treat nothing as ignored, the prior over-inclusive behavior) when git is
     absent or errors -- never crash the bootstrap over a doc scan.
+
+    NUL framing on both ends, matching ``bootstrap.discovery._gitignored_files``.
+    Under git's default ``core.quotePath=true`` a newline-framed echo comes back
+    C-quoted for any path holding a non-ASCII byte (``"docs/caf\\303\\251/x.md"``),
+    which no longer equals the path that was sent, so the file reads as NOT
+    ignored and its ``use X not Y`` lines seed a rule from a never-committed
+    doc. ``-z`` suppresses that quoting, and it also fixes the framing for a path
+    containing a newline, which the old join split into two bogus entries. Keys
+    are repo-relative so one accented component in the CHECKOUT path (a
+    ``~/José/proj`` clone) cannot break the pairing for the whole repo.
     """
     if not paths:
+        return set()
+    rel_to_abs: dict[str, Path] = {}
+    for p in paths:
+        try:
+            rel_to_abs[p.relative_to(root).as_posix()] = p
+        except ValueError:
+            continue
+    if not rel_to_abs:
         return set()
     try:
         import subprocess
 
         proc = subprocess.run(
-            ["git", "-C", str(root), "check-ignore", "--stdin"],
-            input="\n".join(str(p) for p in paths),
+            ["git", "-C", str(root), "check-ignore", "--stdin", "-z"],
+            input="\0".join(rel_to_abs),
             capture_output=True,
             text=True,
             timeout=10,
         )
-        ignored_str = {ln.strip() for ln in proc.stdout.splitlines() if ln.strip()}
-        return {p for p in paths if str(p) in ignored_str}
+        # exit 0 = at least one ignored, 1 = none ignored, 128 = not a repo / error.
+        if proc.returncode not in (0, 1):
+            return set()
+        ignored: set[Path] = set()
+        for rel in (proc.stdout or "").split("\0"):
+            hit = rel_to_abs.get(rel)
+            if hit is not None:
+                ignored.add(hit)
+        return ignored
     except Exception:  # noqa: BLE001
         return set()
 

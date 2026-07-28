@@ -157,7 +157,29 @@ def doctor(repo: str | None = None) -> dict:
     # remove the external wall-clock cap, so report it (matching the wrapper's
     # resolution order). gtimeout ships with Homebrew coreutils on macOS.
     timeout_path = shutil.which("timeout") or shutil.which("gtimeout")
-    if timeout_path:
+    # Ask the wrapper's question, not PATH's. Every hook wrapper hard-disables
+    # the external cap on Git Bash / MSYS / Cygwin ("MINGW*|MSYS*|CYGWIN*)
+    # TIMEOUT_BIN=''") because the `timeout` PATH resolves there is Windows'
+    # timeout.exe, which takes no command and would break the wrapper. shutil.which
+    # finds that same timeout.exe and would report the cap present on a host where
+    # no wrapper will ever invoke it -- a health surface certifying a guard the
+    # code deliberately removed, which is the failure doctor exists to catch.
+    system = (platform.system() or "").upper()
+    caps_disabled_by_host = os.name == "nt" or system.startswith(("MINGW", "MSYS", "CYGWIN"))
+    if caps_disabled_by_host:
+        checks.append(
+            {
+                "name": "timeout_on_path",
+                "status": "warn",
+                "detail": (
+                    "hook wrappers skip timeout(1) on Windows/Git Bash by design "
+                    "(the PATH `timeout` is timeout.exe, which takes no command), so "
+                    "there is no external wall-clock cap on this host; in-process "
+                    "timeouts apply"
+                ),
+            }
+        )
+    elif timeout_path:
         checks.append({"name": "timeout_on_path", "status": "ok", "detail": timeout_path})
     else:
         checks.append(

@@ -535,14 +535,29 @@ def _degraded_banner(reason: str, detail: str | None = None) -> str:
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
-    """Write text via a tmp file + os.replace so a reader never sees torn JSON."""
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    """Write text via a tmp file + os.replace so a reader never sees torn JSON.
+
+    The tmp name carries the writer's pid and a random suffix. A FIXED tmp name
+    is only atomic within one process: ``write_text`` truncates, so a second
+    writer landing on the same tmp path empties it while the first writer is
+    mid-write, and the first writer's ``os.replace`` then publishes the
+    truncated bytes as the real file. A failed write removes its own tmp rather
+    than leaving a stale one for the next writer to inherit.
+    """
+    tmp = path.with_name(f"{path.name}.{os.getpid()}-{os.urandom(4).hex()}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
-def _write_timestamp_marker(marker: Path) -> None:
-    """Create a cooldown/state marker holding the current epoch seconds.
+def _write_marker_body(marker: Path, body: str) -> None:
+    """Create a state marker holding ``body``.
 
     Parent dir and marker are locked to owner-only perms (0700/0600); a chmod
     failure on an exotic filesystem is best-effort and never fatal.
@@ -552,11 +567,16 @@ def _write_timestamp_marker(marker: Path) -> None:
         os.chmod(marker.parent, 0o700)
     except OSError:
         pass
-    _atomic_write_text(marker, str(int(time.time())))
+    _atomic_write_text(marker, body)
     try:
         os.chmod(marker, 0o600)
     except OSError:
         pass
+
+
+def _write_timestamp_marker(marker: Path) -> None:
+    """Create a cooldown/state marker holding the current epoch seconds."""
+    _write_marker_body(marker, str(int(time.time())))
 
 
 def _update_statusline(
@@ -672,6 +692,7 @@ _ENGINE_BANNER_FILENAME = ".engine_banner.last"
 _PRODUCTION_BANNER_FILENAME = ".production_banner.last"
 _JUDGE_HEALTH_BANNER_FILENAME = ".judge_health_banner.last"
 _INTERPRETER_BANNER_FILENAME = ".interpreter_banner.last"
+_IDIOM_NOTE_FILENAME = ".idiom_candidates_note.last"
 
 # Degradation reasons the judge paths write into check events. The banner
 # echoes the reason into injected context, so anything outside this set reads
@@ -957,16 +978,24 @@ def _idiom_candidates_note(profile_dir: Path) -> str | None:
     """One-line SessionStart note when the self-learning miner has proposed
     idiom candidates for this repo.
 
-    Side-effect-free, unlike the drift/production banners: it reports the
-    CURRENT candidate count rather than a one-shot alert, so there is no
-    cooldown marker to write -- recomputing it every session is cheap and
-    correct. Rides the miner's own kill switch (CHAMELEON_IDIOM_MINER=0
-    disables both the mine and this note; no separate env var), and fires
-    only when at least one candidate exists. session_start's own
-    is_chameleon_suppressed gate runs before any banner is assembled, so
-    this needs no optout check of its own. Fail-open: a missing profile, an
-    absent/corrupt candidates dir, or any other error all read as "nothing
-    to report" (None), never a crash.
+    Announced once per DISTINCT candidate count, not once per session. Nothing
+    a user does to a candidate removes its file -- reviewing, adopting and
+    declining all leave ``idiom-candidates/`` exactly as the miner left it --
+    so an unchanged count re-announced every session is a nag the user cannot
+    act their way out of, and the loudest for someone who already did what it
+    asked. The marker records the count last surfaced; a count that moves in
+    either direction is genuinely new information and speaks up again, an
+    identical one stays quiet. The backlog is readable on demand the rest of
+    the time via /chameleon-status and /chameleon-auto-idiom.
+
+    Rides the miner's own kill switch (CHAMELEON_IDIOM_MINER=0 disables both
+    the mine and this note; no separate env var), and fires only when at least
+    one candidate exists. session_start's own is_chameleon_suppressed gate runs
+    before any banner is assembled, so this needs no optout check of its own.
+    Fail-open: a missing profile, an absent/corrupt candidates dir, or any
+    other error all read as "nothing to report" (None), never a crash. A marker
+    that cannot be read or written fails the other way and shows the note --
+    losing the dedup is a smaller harm than withholding a real proposal.
     """
     if os.environ.get("CHAMELEON_IDIOM_MINER") == "0":
         return None
@@ -978,6 +1007,17 @@ def _idiom_candidates_note(profile_dir: Path) -> str | None:
         return None
     if count <= 0:
         return None
+
+    try:
+        from chameleon_mcp.tools import _compute_repo_id
+
+        marker = _plugin_data_dir() / _compute_repo_id(profile_dir.parent) / _IDIOM_NOTE_FILENAME
+        if _marker_digest_matches(marker, str(count)):
+            return None
+        _write_marker_body(marker, str(count))
+    except Exception:  # noqa: BLE001
+        pass
+
     return (
         f"[🦎 chameleon] learned {count} idiom candidate(s) from usage; run "
         "/chameleon-auto-idiom to review -- nothing is adopted without your approval."
@@ -994,6 +1034,48 @@ def _hook_error_log_path() -> Path:
     if override:
         return Path(override).expanduser()
     return _plugin_data_dir() / ".hook_errors.log"
+
+
+# How far back the Stop attestation looks for per-edit verify fail-opens, and how
+# much of the log tail it reads to find them. Bounded by wall clock rather than
+# scoped to the session because .hook_errors.log carries no session id: counting a
+# neighbouring session's degradation only RAISES scrutiny, which the attestation's
+# raise-only contract allows, while missing one would let an unverified turn read
+# as verified.
+_ATTESTATION_DEGRADED_WINDOW_SECONDS = 3600
+_ATTESTATION_LOG_TAIL_BYTES = 65536
+
+
+def _verify_degradations_since(since_epoch: float) -> tuple[int, int]:
+    """Count posttool-verify fires that never reached Python, as (no_interp, spawn_fail).
+
+    ``plugin/hooks/posttool-verify`` fails open in two places the Python side can
+    never observe: no interpreter resolved, so the helper is never spawned, and
+    the wrapper's ``timeout 3`` SIGTERM, which kills the helper mid-run. Both
+    print ``{}`` and exit 0, leaving one timestamped line in ``.hook_errors.log``
+    as the sole trace. A killed process cannot write its own check event, so the
+    attestation reconstructs those fires from the log instead -- without them, an
+    edit that was never verified is indistinguishable in the record from one that
+    was verified and came back clean, which is exactly the claim the attestation
+    exists to keep honest.
+
+    Only this hook's own lines count: a degraded SessionStart says nothing about
+    whether an edit was verified. Best-effort -- an unreadable log yields (0, 0).
+    """
+    try:
+        from chameleon_mcp.degraded_telemetry import parse_degradations
+
+        log_path = _hook_error_log_path()
+        size = log_path.stat().st_size
+        with log_path.open("rb") as fh:
+            if size > _ATTESTATION_LOG_TAIL_BYTES:
+                fh.seek(size - _ATTESTATION_LOG_TAIL_BYTES)
+            tail = fh.read().decode("utf-8", errors="replace")
+        own = "\n".join(ln for ln in tail.splitlines() if " posttool-verify " in ln)
+        no_interp, spawn_fail, _ = parse_degradations(own, since_epoch)
+        return int(no_interp), int(spawn_fail)
+    except Exception:  # noqa: BLE001
+        return 0, 0
 
 
 def _interpreter_degraded_banner(repo_root: Path, session_id: str | None = None) -> str | None:
@@ -1403,6 +1485,11 @@ def _sanitize_profile_obj(obj: object) -> object:
     return obj
 
 
+# A settings.local.json rewrite is a read, a dict merge and one os.replace, so a
+# lock older than this belongs to a holder that died mid-write, never to a slow one.
+_SETTINGS_LOCK_STALE_SECONDS = 60
+
+
 def _wire_statusline_settings(project_dir: Path, plugin_root: str | None) -> None:
     """Point the project's settings.local.json at the chameleon statusline script.
 
@@ -1421,7 +1508,6 @@ def _wire_statusline_settings(project_dir: Path, plugin_root: str | None) -> Non
         local_settings = project_dir / ".claude" / "settings.local.json"
         project_settings = project_dir / ".claude" / "settings.json"
         current_cmd: str | None = str(script_path)
-        needs_write = False
 
         if project_settings.is_file():
             try:
@@ -1441,26 +1527,53 @@ def _wire_statusline_settings(project_dir: Path, plugin_root: str | None) -> Non
                 except Exception:
                     pass
 
-        existing: dict = {}
-        if current_cmd is not None:
+        if current_cmd is None:
+            return
+
+        # settings.local.json is USER-owned -- it carries permissions, env vars
+        # and hook wiring, and nothing regenerates it -- so the read-modify-write
+        # below has to be serialized. Two sessions starting at once (a fixture
+        # repo driven by several `claude -p` processes is the everyday case) would
+        # otherwise each merge onto a copy read before the other wrote, and the
+        # loser's keys would vanish. The lock lives in the per-user data dir
+        # rather than beside the file so nothing new shows up in the user's repo.
+        # Non-blocking on purpose: a holder is another session performing this
+        # exact write, so losing the race is the same outcome as winning it.
+        from chameleon_mcp.locks import acquire_advisory_lock
+
+        settings_digest = hashlib.sha256(str(local_settings).encode("utf-8")).hexdigest()[:16]
+        lock_path = _plugin_data_dir() / ".locks" / f"settings-{settings_digest}.lock"
+
+        with acquire_advisory_lock(lock_path, stale_after_seconds=_SETTINGS_LOCK_STALE_SECONDS):
+            existing: dict = {}
             if local_settings.is_file():
                 try:
-                    existing = json.loads(local_settings.read_text(encoding="utf-8"))
+                    loaded = json.loads(local_settings.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        existing = loaded
                 except Exception:
                     existing = {}
             old_cmd = (existing.get("statusLine") or {}).get("command", "")
-            if "statusLine" not in existing:
-                needs_write = True
-            elif old_cmd != current_cmd and "chameleon" in old_cmd:
-                needs_write = True
+            needs_write = "statusLine" not in existing or (
+                old_cmd != current_cmd and "chameleon" in old_cmd
+            )
+            if not needs_write:
+                return
 
-        if needs_write and current_cmd is not None:
             existing["statusLine"] = {
                 "type": "command",
                 "command": current_cmd,
             }
             local_settings.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             _atomic_write_text(local_settings, json.dumps(existing, indent=2) + "\n")
+            # Reap tmp files orphaned by a writer killed between write and
+            # replace. Safe here and nowhere else: the lock guarantees no other
+            # writer of this file has a tmp in flight.
+            for orphan in local_settings.parent.glob(f"{local_settings.name}.*.tmp"):
+                try:
+                    orphan.unlink()
+                except OSError:
+                    pass
     except Exception:
         pass
 
@@ -4855,6 +4968,75 @@ _INTERP_OPEN_WRITE_RE = re.compile(
 # state, so the Stop crossfile advisory would miss it entirely.
 _RM_CMD_RE = re.compile(r"(?:git\s+)?(?:rm|unlink)\b")
 
+# Ceiling on how much command text the backtracking-capable target patterns are
+# allowed to scan. A command longer than this is pathological input, not a write.
+_BASH_COMMAND_SCAN_CAP = 8192
+# A heredoc introducer and its delimiter word: `<<EOF`, `<< 'EOF'`, `<<-"EOF"`.
+_HEREDOC_INTRO_RE = re.compile(r"<<-?[ \t]*(?P<q>['\"]?)(?P<delim>[A-Za-z_]\w*)(?P=q)")
+
+
+def _strip_heredoc_bodies(command: str) -> str:
+    """Return ``command`` with the CONTENT of every closed heredoc removed.
+
+    `cat > src/foo.ts <<'EOF' … EOF` is the standard way an agent authors a file
+    through Bash, so the command string carries the whole file body. No write- or
+    delete-target pattern needs to read that body -- the redirect lives in the
+    introducer line -- but its size is what pushes the command past the scan cap,
+    and a capped-out command arms nothing, which leaves the written file out of
+    the turn's enforcement state and therefore never re-linted at Stop.
+
+    Only text between a matched introducer and its own terminator line is
+    dropped, so this can never invent a target: an unterminated heredoc, and a
+    left-shift like ``$((1 << n))`` that merely looks like one, both leave the
+    remainder of the command intact.
+    """
+    out: list[str] = []
+    pos = 0
+    while True:
+        intro = _HEREDOC_INTRO_RE.search(command, pos)
+        if intro is None:
+            out.append(command[pos:])
+            break
+        line_end = command.find("\n", intro.end())
+        if line_end == -1:
+            out.append(command[pos:])
+            break
+        out.append(command[pos : line_end + 1])
+
+        delim = intro.group("delim")
+        body_end: int | None = None
+        scan = line_end + 1
+        while scan <= len(command):
+            nl = command.find("\n", scan)
+            line = command[scan:] if nl == -1 else command[scan:nl]
+            # `<<-` strips leading tabs from the terminator; strip() covers both forms.
+            if line.strip() == delim:
+                body_end = len(command) if nl == -1 else nl + 1
+                break
+            if nl == -1:
+                break
+            scan = nl + 1
+
+        if body_end is None:
+            out.append(command[line_end + 1 :])
+            break
+        pos = body_end
+    return "".join(out)
+
+
+def _within_bash_scan_cap(command: str) -> str | None:
+    """The command text to scan for targets, or ``None`` when it must be skipped.
+
+    Over the cap, heredoc bodies come off first and the cap is re-applied to what
+    is left, so a 9KB file authored through `cat > f.ts <<EOF` still yields its
+    target while a genuinely pathological command still bails before the
+    backtracking-capable patterns run.
+    """
+    if len(command) <= _BASH_COMMAND_SCAN_CAP:
+        return command
+    stripped = _strip_heredoc_bodies(command)
+    return stripped if len(stripped) <= _BASH_COMMAND_SCAN_CAP else None
+
 
 def _extract_bash_delete_targets(command: str) -> list[str]:
     """Extract file paths a Bash command deletes via rm/unlink/git rm.
@@ -4864,8 +5046,12 @@ def _extract_bash_delete_targets(command: str) -> list[str]:
     env/sudo modifier) counts, flags are dropped, and a bogus path contributes
     nothing downstream (the deleted-module advisory drops a path that still
     exists or has no importers). Never resolves or stats a path."""
-    if not command or not isinstance(command, str) or len(command) > 8192:
+    if not command or not isinstance(command, str):
         return []
+    scanned = _within_bash_scan_cap(command)
+    if scanned is None:
+        return []
+    command = scanned
     out: list[str] = []
     seen: set[str] = set()
     for m in _RM_CMD_RE.finditer(command):
@@ -5004,10 +5190,12 @@ def _extract_bash_write_targets(command: str) -> list[str]:
     """
     if not command or not isinstance(command, str):
         return []
-    if len(command) > 8192:
-        # An unusually long command is almost never a single-target write; cap
-        # the regex work so a pathological input can't stall the hook.
+    scanned = _within_bash_scan_cap(command)
+    if scanned is None:
+        # Still pathological with every heredoc body removed: cap the regex work
+        # so an adversarial input can't stall the hook.
         return []
+    command = scanned
 
     targets: list[str] = []
     seen: set[str] = set()
@@ -7513,14 +7701,15 @@ def callout_detector() -> int:
 
     Three individually fail-open stages share the hook. (1) On detected
     frustration during a chameleon-active session, surface a one-line hint
-    about /chameleon-disable, /chameleon-pause-15m, and /chameleon-teach.
-    (2) Capture prompt-derived intent (extracted assertion tokens + digests,
-    hard-secret-scanned, never raw prose) for the Stop-path judge routing;
-    CHAMELEON_INTENT_CAPTURE=0 disables it. (3) Deliver findings a detached
-    judge left pending from a previous turn. Stages 2 and 3 operate on the
-    machine-block-stripped human remainder / first-party plugin data only, and
-    a suppressed session stays silent for both. The stage outputs compose into
-    a single additionalContext.
+    about /chameleon-disable, /chameleon-pause-15m, and /chameleon-teach, once
+    per session. (2) Capture prompt-derived intent (extracted assertion tokens
+    + digests, hard-secret-scanned, never raw prose) for the Stop-path judge
+    routing; CHAMELEON_INTENT_CAPTURE=0 disables it. (3) Deliver findings a
+    detached judge left pending from a previous turn. Stages 2 and 3 operate on
+    the machine-block-stripped human remainder / first-party plugin data only.
+    All three share ONE repo resolution and ONE suppression check, so a
+    disabled, paused or .skip'd repo stays silent across the whole hook. The
+    stage outputs compose into a single additionalContext.
     """
     payload = _read_payload_dict()
     if payload is None:
@@ -7540,26 +7729,11 @@ def callout_detector() -> int:
     session_id = payload.get("session_id")
     context_blocks: list[str] = []
 
-    if scan_prompt.strip():
-        chameleon_specific = any(p.search(scan_prompt) for p in _CHAMELEON_SPECIFIC_PATTERNS)
-        generic = any(p.search(scan_prompt) for p in _GENERIC_FRUSTRATION_PATTERNS)
-        mentions_chameleon = _CHAMELEON_MENTION_RE.search(scan_prompt) is not None
-        if chameleon_specific or (generic and mentions_chameleon):
-            context_blocks.append(
-                "<chameleon-context>\n"
-                "[🦎 chameleon: detected frustration phrase]\n"
-                "If chameleon is the issue, options:\n"
-                "  /chameleon-disable      — suppress for the rest of this session\n"
-                "  /chameleon-pause-15m    — pause for 15 minutes (auto-resume)\n"
-                "  /chameleon-teach <pattern>  — capture the missed pattern as an idiom\n"
-                "If chameleon is unrelated, ignore this note.\n"
-                "</chameleon-context>"
-            )
-
-    # Shared repo resolution for the capture + delivery stages. A suppressed
-    # (disabled/paused) session must stay silent, so both stages bail together.
+    # Shared repo resolution for ALL THREE stages. A suppressed session must stay
+    # silent, so every stage bails together.
     repo_root: Path | None = None
     repo_data: Path | None = None
+    suppressed = False
     try:
         from chameleon_mcp.optouts import is_chameleon_suppressed
         from chameleon_mcp.profile.loader import find_repo_root
@@ -7572,12 +7746,54 @@ def callout_detector() -> int:
         if repo_root is not None:
             repo_id = _compute_repo_id(repo_root)
             if is_chameleon_suppressed(repo_root, repo_id, session_id) is not None:
+                suppressed = True
                 repo_root = None
             else:
                 repo_data = _plugin_data_dir() / repo_id
     except Exception:
         repo_root = None
         repo_data = None
+
+    # The frustration hint answers the same suppression check as the other two
+    # stages, and for the strongest reason: the user typing "ugh chameleon" is
+    # the one most likely to have ALREADY committed a .chameleon/.skip or run
+    # /chameleon-disable, and a note that keeps arriving after the opt-out it
+    # advertises is itself the irritant. An unresolvable repo is NOT suppression
+    # -- nothing was opted out of, so a session outside a profiled repo still
+    # gets the pointer. Where a repo did resolve, the hint is once per session:
+    # repeating it to someone who read it the first time is the same failure at
+    # a smaller scale.
+    if not suppressed and scan_prompt.strip():
+        chameleon_specific = any(p.search(scan_prompt) for p in _CHAMELEON_SPECIFIC_PATTERNS)
+        generic = any(p.search(scan_prompt) for p in _GENERIC_FRUSTRATION_PATTERNS)
+        mentions_chameleon = _CHAMELEON_MENTION_RE.search(scan_prompt) is not None
+        if chameleon_specific or (generic and mentions_chameleon):
+            hint_marker: Path | None = None
+            try:
+                if repo_data is not None:
+                    from chameleon_mcp.optouts import _safe_session_marker
+
+                    hint_marker = (
+                        repo_data / f".frustration_hint.{_safe_session_marker(session_id)}"
+                    )
+            except Exception:
+                hint_marker = None
+            if hint_marker is None or not hint_marker.is_file():
+                context_blocks.append(
+                    "<chameleon-context>\n"
+                    "[🦎 chameleon: detected frustration phrase]\n"
+                    "If chameleon is the issue, options:\n"
+                    "  /chameleon-disable      — suppress for the rest of this session\n"
+                    "  /chameleon-pause-15m    — pause for 15 minutes (auto-resume)\n"
+                    "  /chameleon-teach <pattern>  — capture the missed pattern as an idiom\n"
+                    "If chameleon is unrelated, ignore this note.\n"
+                    "</chameleon-context>"
+                )
+                if hint_marker is not None:
+                    try:
+                        _write_timestamp_marker(hint_marker)
+                    except OSError:
+                        pass
 
     try:
         if (
@@ -9010,6 +9226,18 @@ def _build_session_attestation(
     if verify_off:
         key = ("posttool_verify", "skipped", "verify_env_off")
         checks_agg[key] = checks_agg.get(key, 0) + 1
+    # Verify fires that died before Python could record themselves: no interpreter
+    # resolved, or the wrapper's timeout killed the helper. Both exit 0 with `{}`,
+    # so without this the record would show an unverified edit as a clean one.
+    no_interp, spawn_fail = _verify_degradations_since(
+        time.time() - _ATTESTATION_DEGRADED_WINDOW_SECONDS
+    )
+    if no_interp:
+        key = ("posttool_verify", "degraded", "no_interpreter")
+        checks_agg[key] = checks_agg.get(key, 0) + no_interp
+    if spawn_fail:
+        key = ("posttool_verify", "degraded", "spawn_failed")
+        checks_agg[key] = checks_agg.get(key, 0) + spawn_fail
     checks = [
         {"check": c, "status": s, "reason": r, "count": n} for (c, s, r), n in checks_agg.items()
     ]

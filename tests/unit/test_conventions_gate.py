@@ -21,6 +21,8 @@ the write is strictly better, and this only covers writes that never got it.
 
 from __future__ import annotations
 
+import json
+import os
 import shutil
 import subprocess
 
@@ -182,3 +184,239 @@ def test_run_git_does_not_c_quote_paths(tmp_path):
     lines = [ln for ln in (res.stdout or "").splitlines() if ln.strip()]
     assert "café/sub/plain.ts" in lines
     assert not any(ln.startswith('"') for ln in lines)
+
+
+# --- a path core.quotePath=false does NOT un-quote --------------------------
+
+
+_ODD_NAMES = ['we"ird.ts', "back\\slash.ts", "new\nline.ts"]
+_POSIX_NAMES = pytest.mark.skipif(
+    os.name == "nt", reason="quotes, backslashes and newlines are illegal in Windows filenames"
+)
+
+
+def _commit_all(repo, message):
+    for args in (["add", "-A"], ["commit", "-qm", message]):
+        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+
+def _init_repo(root):
+    root.mkdir(parents=True, exist_ok=True)
+    for args in (
+        ["init", "-q"],
+        ["config", "user.email", "t@t.t"],
+        ["config", "user.name", "t"],
+    ):
+        subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+    return root
+
+
+def _repo_with_odd_names(tmp_path):
+    repo = _init_repo(tmp_path / "r")
+    for i, name in enumerate(_ODD_NAMES):
+        (repo / name).write_text(f"export const a{i} = 1;\n", encoding="utf-8")
+    _commit_all(repo, "one")
+    for i, name in enumerate(_ODD_NAMES):
+        (repo / name).write_text(f"export const a{i} = 2;\n", encoding="utf-8")
+    _commit_all(repo, "two")
+    return repo
+
+
+@_GIT
+@_POSIX_NAMES
+def test_quoted_metacharacter_paths_still_reach_the_gate(tmp_path):
+    """core.quotePath=false governs bytes >= 0x80 and nothing else.
+
+    A name holding a quote, a backslash or a newline is still C-quoted with the
+    flag set, and detect_language is a plain endswith -- a quoted name resolves
+    to no language and leaves the change set with nothing raised. Only -z emits
+    every path raw, which is why the file list is NUL-separated, not by line.
+    """
+    from chameleon_mcp.gate import _changed_source_files
+
+    files = _changed_source_files(_repo_with_odd_names(tmp_path), "HEAD~1", "HEAD")
+    assert sorted(files) == sorted(_ODD_NAMES)
+
+
+@_GIT
+@_POSIX_NAMES
+def test_a_metacharacter_path_can_still_be_read_at_a_revision(tmp_path):
+    """The other half of -z: a name the gate keeps has to round-trip back to git.
+
+    A dropped path and a path git cannot resolve are the same silent hole, so
+    the raw name from the file list must be the one `git show` accepts.
+    """
+    from chameleon_mcp.commit_scope import blob_at
+    from chameleon_mcp.gate import _changed_source_files
+
+    repo = _repo_with_odd_names(tmp_path)
+    for rel in _changed_source_files(repo, "HEAD~1", "HEAD"):
+        expected = f"export const a{_ODD_NAMES.index(rel)} = 2;\n"
+        assert blob_at(repo, "HEAD", rel, max_bytes=1_000_000) == expected
+
+
+@_GIT
+def test_git_missing_from_path_exits_unusable_not_findings(tmp_path, monkeypatch):
+    """Exit 1 under --strict means "this diff introduced violations".
+
+    An unguarded spawn error exits 1 as well, and a CI step branching on the
+    code cannot tell the two apart -- so it reads a broken gate as a failing one,
+    or learns to ignore the code. Every way the gate cannot run lands on 2.
+    """
+    from chameleon_mcp.gate import main
+
+    repo = _init_repo(tmp_path / "r")
+    (repo / "a.ts").write_text("export const a = 1;\n", encoding="utf-8")
+    _commit_all(repo, "one")
+    (repo / "a.ts").write_text("export const a = 2;\n", encoding="utf-8")
+    _commit_all(repo, "two")
+
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    assert main(["--repo", str(repo), "--base", "HEAD~1", "--strict"]) == 2
+
+
+# --- collect(): the producer behind every decide() verdict --------------------
+
+
+# Amazon's own published example key: the right shape for the scan to flag, and
+# not a credential that could ever be live.
+_EXAMPLE_KEY = "AKIAIOSFODNN7EXAMPLE"  # chameleon-ignore secret-detected-in-content
+
+
+def _profiled_repo(tmp_path, monkeypatch, *, trust=True):
+    """A git repo carrying a minimal, optionally trusted profile for collect()."""
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_HMAC_KEY_PATH", str(tmp_path / "hmac.key"))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+
+    repo = _init_repo(tmp_path / "repo")
+    cham = repo / ".chameleon"
+    cham.mkdir()
+    for name, body in (
+        ("profile.json", {"generation": 1, "language": "typescript"}),
+        ("archetypes.json", {"generation": 1, "archetypes": {"component": {"summary": "x"}}}),
+        ("canonicals.json", {"generation": 1, "canonicals": {"component": []}}),
+        ("conventions.json", {"generation": 1, "conventions": {}}),
+        ("rules.json", {"generation": 1, "rules": {}}),
+    ):
+        (cham / name).write_text(json.dumps(body), encoding="utf-8")
+    (cham / "idioms.md").write_text("# idioms\n\n## active\n", encoding="utf-8")
+    (cham / "COMMITTED").touch()
+    if trust:
+        from chameleon_mcp.profile.trust import grant_trust
+        from chameleon_mcp.tools import _compute_repo_id
+
+        grant_trust(_compute_repo_id(repo), cham)
+    return repo
+
+
+def _two_commits(repo, before, after):
+    (repo / "src").mkdir(exist_ok=True)
+    (repo / "src" / "a.ts").write_text(before, encoding="utf-8")
+    _commit_all(repo, "one")
+    (repo / "src" / "a.ts").write_text(after, encoding="utf-8")
+    _commit_all(repo, "two")
+
+
+@_GIT
+def test_collect_counts_only_what_the_diff_introduced(tmp_path, monkeypatch):
+    """Two violations present, one of them inherited -- the count is one.
+
+    decide() is pure and takes `trusted` as an argument. collect() is what
+    produces both, and where the baseline subtraction actually happens. A gate
+    reporting the file's whole load here would fail an author for what they
+    inherited, which is how a gate gets switched off in a week.
+    """
+    from chameleon_mcp.gate import collect, main
+
+    repo = _profiled_repo(tmp_path, monkeypatch)
+    _two_commits(
+        repo,
+        f'export const old = "{_EXAMPLE_KEY}";\n',
+        f'export const old = "{_EXAMPLE_KEY}";\nexport const fresh = "{_EXAMPLE_KEY}";\n',
+    )
+
+    rows, trusted = collect(repo, "HEAD~1", "HEAD")
+    assert trusted is True
+    assert [r.get("rule") for r in rows] == ["secret-detected-in-content"]
+    assert rows[0].get("file") == "src/a.ts"
+    assert main(["--repo", str(repo), "--base", "HEAD~1", "--strict"]) == 1
+
+
+@_GIT
+def test_collect_reports_nothing_when_the_diff_carries_no_new_violation(tmp_path, monkeypatch):
+    """The clean case has to reach exit 0 through a real lint of a real file.
+
+    Otherwise the test above proves only that something raised, and an empty
+    file list would read the same as a diff that was actually checked.
+    """
+    from chameleon_mcp.gate import collect, main
+
+    repo = _profiled_repo(tmp_path, monkeypatch)
+    _two_commits(
+        repo,
+        f'export const old = "{_EXAMPLE_KEY}";\n',
+        f'export const old = "{_EXAMPLE_KEY}";\nexport const two = 2;\n',
+    )
+
+    rows, trusted = collect(repo, "HEAD~1", "HEAD")
+    assert (rows, trusted) == ([], True)
+    assert main(["--repo", str(repo), "--base", "HEAD~1", "--strict"]) == 0
+
+
+@_GIT
+def test_a_stubbed_lint_is_unusable_never_clean(tmp_path, monkeypatch):
+    """A torn profile makes lint_file STUB: zero violations and no error.
+
+    That is indistinguishable from a clean file, so counting it as clean is how
+    a CI gate goes green on a repo it never linted. The reason has to reach the
+    operator too: an exit code alone does not say what to fix.
+    """
+    from chameleon_mcp.gate import GateUnusable, collect, main
+
+    repo = _profiled_repo(tmp_path, monkeypatch)
+    _two_commits(repo, "export const a = 1;\n", "export const a = 2;\n")
+    (repo / ".chameleon" / "archetypes.json").write_text("{ not json", encoding="utf-8")
+
+    with pytest.raises(GateUnusable) as exc:
+        collect(repo, "HEAD~1", "HEAD")
+    assert "profile failed to load" in str(exc.value)
+    assert main(["--repo", str(repo), "--base", "HEAD~1"]) == 2
+
+
+@_GIT
+def test_an_ungranted_profile_stops_collection_rather_than_passing(tmp_path, monkeypatch):
+    """Without a grant lint_file returns no convention findings at all, so the
+    loop has to stop on the trust status rather than run to completion and
+    report the empty result as a clean diff."""
+    from chameleon_mcp.gate import collect, main
+
+    repo = _profiled_repo(tmp_path, monkeypatch, trust=False)
+    _two_commits(repo, "export const a = 1;\n", "export const a = 2;\n")
+
+    assert collect(repo, "HEAD~1", "HEAD") == ([], False)
+    assert main(["--repo", str(repo), "--base", "HEAD~1"]) == 2
+
+
+@_GIT
+def test_an_unreadable_baseline_is_not_read_as_an_absent_one(tmp_path, monkeypatch):
+    """An empty baseline says "every row in this file is introduced".
+
+    It may only be reached when git confirms the path was absent at the base
+    commit. Here the baseline blob is over the size cap and the current one is
+    under it -- a commit that shrinks a generated file -- so the baseline is
+    unknown, not absent. Scoring its inherited rows as introduced is the
+    pre-existing-load inflation the diff scoping exists to remove.
+    """
+    from chameleon_mcp.gate import collect
+
+    repo = _profiled_repo(tmp_path, monkeypatch)
+    padding = "// " + ("x" * 400) + "\n"
+    _two_commits(
+        repo,
+        f'export const old = "{_EXAMPLE_KEY}";\n{padding}',
+        f'export const old = "{_EXAMPLE_KEY}";\n',
+    )
+    monkeypatch.setenv("CHAMELEON_GATE_MAX_FILE_BYTES", "200")
+
+    assert collect(repo, "HEAD~1", "HEAD") == ([], True)

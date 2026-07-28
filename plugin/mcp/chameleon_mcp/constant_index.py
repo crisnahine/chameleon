@@ -34,6 +34,12 @@ SCHEMA_VERSION = 1
 
 _ARTIFACT_NAME = "constant_index.json"
 
+# Read ceiling for the committed artifact, matching the sibling profile-artifact
+# loaders (counterexamples, function_catalog, symbol_signatures). The file
+# arrives via git, so its size is not something a bootstrap on this machine
+# vouched for.
+_MAX_ARTIFACT_BYTES = 16_000_000
+
 # mtime/size-keyed load cache, mirroring symbol_index.load_reverse_index.
 _CACHE: dict[str, tuple[tuple[int, int], dict]] = {}
 
@@ -147,6 +153,12 @@ def load_constant_index(repo_root: Path | str | None) -> dict | None:
     try:
         st = artifact.stat()
     except OSError:
+        return None
+    if not st.st_size or st.st_size > _MAX_ARTIFACT_BYTES:
+        # Empty or implausibly large (a real index is well under this); skip
+        # rather than materialize a pathological committed file in memory on
+        # the per-edit and Stop paths, both of which read this before any
+        # schema check has looked at the content.
         return None
     key = str(artifact)
     token = (int(st.st_mtime_ns), int(st.st_size))

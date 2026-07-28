@@ -12,7 +12,10 @@ FROM — they stay active regardless of the artifact (see active_block_rules).
 from __future__ import annotations
 
 import json
+import os
 import threading
+import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 
@@ -24,6 +27,11 @@ from chameleon_mcp.violation_class import (
 )
 
 ARTIFACT = "enforcement.json"
+
+# How old a leftover write-tmp must be before another writer removes it. The
+# write itself is a sub-millisecond dump of a handful of verdicts, so anything
+# this stale belongs to a process that died mid-write.
+_TMP_ORPHAN_STALE_SECONDS = 60
 
 # Rules exempt from override-driven auto-demotion. Derived from the
 # blanket-immune deterministic set rather than redefined: the same two rules
@@ -75,11 +83,38 @@ def _clear_block_rules_cache() -> None:
 
 
 def write_block_rules(profile_dir: Path, data: dict) -> None:
+    """Persist the block-rule verdicts atomically.
+
+    Per-writer tmp name plus ``os.replace``, the same discipline every other
+    artifact write in the package uses. A shared tmp path let two sessions
+    calibrating the same repo interleave -- one truncating the file the other
+    was mid-write, then promoting a half-written JSON that every later read
+    fails to parse, which fails open to "no measured rule active" and silently
+    demotes enforcement to advisory. ``Path.rename`` also refuses to overwrite
+    on Windows, where the sibling of this failure is a rewrite that never lands.
+    """
     profile_dir.mkdir(parents=True, exist_ok=True)
     payload = {"block_rules": data}
-    tmp = profile_dir / (ARTIFACT + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    tmp.rename(profile_dir / ARTIFACT)
+    tmp = profile_dir / f"{ARTIFACT}.{os.getpid()}-{uuid.uuid4().hex[:8]}.tmp"
+    try:
+        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, profile_dir / ARTIFACT)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+    # Reap tmp files orphaned by a writer killed mid-write, so the committed
+    # profile dir does not accumulate them. Age-gated because this write takes no
+    # lock: a concurrent writer's tmp is milliseconds old, so only one nobody is
+    # still holding can be older than the ceiling.
+    for orphan in profile_dir.glob(f"{ARTIFACT}.*.tmp"):
+        try:
+            if time.time() - orphan.stat().st_mtime > _TMP_ORPHAN_STALE_SECONDS:
+                orphan.unlink()
+        except OSError:
+            pass
     # Drop any cached parse so the next read reflects the new verdict immediately
     # even if the rename landed within the same mtime granularity as the prior write.
     _clear_block_rules_cache()

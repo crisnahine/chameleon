@@ -319,13 +319,33 @@ jobs:
         working-directory: plugin/mcp
         run: uv sync --frozen
 
-      - name: Invoke plugin/hooks/${{ matrix.hook.name }} with synthetic stdin
+      # Through run-hook.cmd, which is how hooks.json actually spells every hook
+      # command. Invoking the script directly skipped the wrapper's Unix
+      # dispatch tail entirely, so a regression there disabled every hook on
+      # macOS and Linux with CI still green.
+      - name: Invoke run-hook.cmd ${{ matrix.hook.name }} with synthetic stdin
         env:
           CLAUDE_PLUGIN_ROOT: ${{ github.workspace }}/plugin
         run: |
           echo '${{ matrix.hook.stdin }}' \
-            | plugin/hooks/${{ matrix.hook.name }} \
+            | bash plugin/hooks/run-hook.cmd ${{ matrix.hook.name }} \
             | python3 -c "import json,sys; obj=json.loads(sys.stdin.read(), strict=False); assert isinstance(obj, dict), f'expected dict, got {type(obj).__name__}'; print('hook emitted valid JSON object')"
+
+      # The wrapper's own contract, which no other POSIX gate covers: a missing
+      # script name is a usage error, an unknown one must not be treated as a
+      # silent success.
+      - name: run-hook.cmd rejects a missing or unknown script name
+        if: matrix.hook.name == 'session-start'
+        run: |
+          set +e
+          bash plugin/hooks/run-hook.cmd </dev/null >/dev/null 2>&1
+          no_arg=$?
+          bash plugin/hooks/run-hook.cmd no-such-hook </dev/null >/dev/null 2>&1
+          bad_name=$?
+          set -e
+          echo "no-arg rc=${no_arg} bad-name rc=${bad_name}"
+          test "${no_arg}" -ne 0 || { echo 'run-hook.cmd accepted a missing script name'; exit 1; }
+          test "${bad_name}" -ne 0 || { echo 'run-hook.cmd accepted an unknown script name'; exit 1; }
 
   security:
     name: dependency-audit
@@ -387,20 +407,34 @@ jobs:
       - name: Validate hooks.json references
         run: |
           python3 << 'PYEOF'
-          import json, sys, os
+          import json, shlex, sys, os
           errors = 0
           with open('plugin/hooks/hooks.json') as f:
               manifest = json.load(f)
+
+          def check(path):
+              global errors
+              if not os.path.isfile(path):
+                  print(f'ERROR: {path} missing'); errors += 1
+              elif not os.access(path, os.X_OK):
+                  print(f'ERROR: {path} not executable'); errors += 1
+
           for event, entries in manifest.get('hooks', {}).items():
               for entry in entries:
                   for hook in entry.get('hooks', []):
                       cmd = hook.get('command', '')
-                      name = cmd.split()[-1] if cmd else ''
-                      path = 'plugin/hooks/' + name
-                      if name and not os.path.isfile(path):
-                          print(f'ERROR: {path} missing'); errors += 1
-                      elif name and not os.access(path, os.X_OK):
-                          print(f'ERROR: {path} not executable'); errors += 1
+                      if not cmd:
+                          continue
+                      # Every token that names a file under plugin/hooks/ is a real
+                      # entry point: the wrapper the command actually invokes AND
+                      # the script name it dispatches to. Checking only the last
+                      # token left run-hook.cmd itself unverified.
+                      for token in shlex.split(cmd):
+                          if token.startswith('-'):
+                              continue  # a flag, not a path
+                          token = token.replace('${CLAUDE_PLUGIN_ROOT}/', 'plugin/')
+                          check(token if token.startswith('plugin/hooks/')
+                                else 'plugin/hooks/' + token)
           for d in os.listdir('plugin/skills'):
               sd = os.path.join('plugin/skills', d)
               if os.path.isdir(sd) and not os.path.isfile(os.path.join(sd, 'SKILL.md')):

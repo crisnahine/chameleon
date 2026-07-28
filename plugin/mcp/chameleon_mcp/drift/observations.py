@@ -75,8 +75,32 @@ _CONFIDENCE_BAND_TO_FLOAT = {
     None: 0.0,
 }
 
+# Fallbacks only. The live values come from _thresholds so an operator can bound
+# drift.db growth on a busy monorepo, or widen the window to keep more history
+# for the drift score; these stand in when that read cannot be made.
 _EDIT_OBS_HARD_CAP = 50_000
 _EDIT_OBS_SOFT_CAP = 10_000
+_EDIT_OBS_AGE_DAYS = 90
+
+
+def _edit_obs_retention() -> tuple[int, int, int]:
+    """(hard cap, soft cap, retention days) for the two edit-observation tables.
+
+    Read per call rather than bound at import: ``CHAMELEON_EDIT_OBS_HARD_CAP`` is
+    a published operator knob, and a value frozen at import ignores an env var
+    set for the session. Both tables trim on the same schedule, so they share one
+    resolution and cannot drift apart.
+    """
+    try:
+        from chameleon_mcp._thresholds import threshold_int
+
+        return (
+            threshold_int("EDIT_OBS_HARD_CAP"),
+            threshold_int("EDIT_OBS_SOFT_CAP"),
+            threshold_int("EDIT_OBS_AGE_DAYS"),
+        )
+    except Exception:
+        return _EDIT_OBS_HARD_CAP, _EDIT_OBS_SOFT_CAP, _EDIT_OBS_AGE_DAYS
 
 
 def _drift_db_path(repo_id: str) -> Path:
@@ -108,6 +132,8 @@ def record_edit_observation(
     except (sqlite3.Error, OSError):
         return
 
+    hard_cap, soft_cap, age_days = _edit_obs_retention()
+
     try:
         with conn:
             conn.execute(
@@ -119,14 +145,14 @@ def record_edit_observation(
                 (rel_path, archetype, confidence, 1 if matched_canonical else 0, ts),
             )
             (count,) = conn.execute("SELECT COUNT(*) FROM edit_observations").fetchone()
-            if count > _EDIT_OBS_HARD_CAP:
-                ninety_days_ago = ts - 90 * 24 * 3600
+            if count > hard_cap:
+                cutoff = ts - age_days * 24 * 3600
                 conn.execute(
                     "DELETE FROM edit_observations WHERE observed_at < ?",
-                    (ninety_days_ago,),
+                    (cutoff,),
                 )
                 (count_after,) = conn.execute("SELECT COUNT(*) FROM edit_observations").fetchone()
-                if count_after > _EDIT_OBS_SOFT_CAP:
+                if count_after > soft_cap:
                     conn.execute(
                         """
                         DELETE FROM edit_observations
@@ -135,7 +161,7 @@ def record_edit_observation(
                             ORDER BY observed_at DESC LIMIT ?
                         )
                         """,
-                        (_EDIT_OBS_SOFT_CAP,),
+                        (soft_cap,),
                     )
     except sqlite3.Error:
         return
@@ -171,6 +197,8 @@ def record_override(
     except (sqlite3.Error, OSError):
         return
 
+    hard_cap, soft_cap, age_days = _edit_obs_retention()
+
     try:
         with conn:
             conn.execute(
@@ -182,17 +210,17 @@ def record_override(
                 (rel_path, rule, archetype, session_id, 1 if blanket else 0, ts),
             )
             (count,) = conn.execute("SELECT COUNT(*) FROM rule_overrides").fetchone()
-            if count > _EDIT_OBS_HARD_CAP:
+            if count > hard_cap:
                 # Same two-stage trim as edit_observations: shed rows older than
                 # the retention window first, then hard-cap by recency if the
                 # repo overrides so heavily that age alone does not bound it.
-                ninety_days_ago = ts - 90 * 24 * 3600
+                cutoff = ts - age_days * 24 * 3600
                 conn.execute(
                     "DELETE FROM rule_overrides WHERE observed_at < ?",
-                    (ninety_days_ago,),
+                    (cutoff,),
                 )
                 (count_after,) = conn.execute("SELECT COUNT(*) FROM rule_overrides").fetchone()
-                if count_after > _EDIT_OBS_SOFT_CAP:
+                if count_after > soft_cap:
                     conn.execute(
                         """
                         DELETE FROM rule_overrides
@@ -201,7 +229,7 @@ def record_override(
                             ORDER BY observed_at DESC LIMIT ?
                         )
                         """,
-                        (_EDIT_OBS_SOFT_CAP,),
+                        (soft_cap,),
                     )
     except sqlite3.Error:
         return

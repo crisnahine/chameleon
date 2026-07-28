@@ -123,10 +123,12 @@ def _stale_test_advisory_lines(
             lines.append(line)
         if extra > 0:
             lines.append(f"- ...and {extra} more.")
-        lines.append(
-            "To silence this for a file, add `// chameleon-ignore tests` "
-            "(`# chameleon-ignore tests` in Ruby) in the source you touched."
-        )
+        # The comment token has to match the flagged file's own language: `//` is
+        # a syntax error in Ruby and Python, so a fixed hint tells half the
+        # supported languages to break their file. _ignore_hint derives it from
+        # the paths actually shown, and renders both forms for a mixed set.
+        hint = hh._ignore_hint([it.source_rel for it in shown], "tests")
+        lines.append(f"To silence this for a file, add {hint} in the source you touched.")
         return lines
     except Exception:
         return []
@@ -204,6 +206,45 @@ def _worktree_modified_rels(git_top: Path) -> set[str] | None:
         return None
 
 
+def _session_worktree_top(repo_root: Path, index_top: Path) -> Path:
+    """The work-tree top this turn's edits actually live under.
+
+    The co-change index is keyed to the top it was mined at, which is the MAIN
+    checkout: the miner runs at bootstrap/refresh and a linked worktree inherits
+    the main checkout's profile instead of bootstrapping its own. A turn running
+    inside a linked worktree therefore edits files under a DIFFERENT top, and
+    relativizing them against the recorded one yields either a ValueError or a
+    prefixed path that matches no key -- the whole advisory goes quiet in the one
+    workflow (an isolated worktree) that ends turns with the largest change sets.
+    A worktree checks out the same repository, so its own top is the right
+    anchor: the keys are identical, only the prefix differs.
+
+    Strictly additive, mirroring ``worktree.resolve_profile_root``: the recorded
+    top is returned unchanged unless ``repo_root`` sits under a genuine linked
+    worktree whose MAIN worktree is that same recorded top. Pure filesystem, no
+    git subprocess.
+    """
+    try:
+        from chameleon_mcp.worktree import main_worktree_root
+
+        index_resolved = index_top.resolve()
+        start = Path(repo_root).resolve()
+        for candidate in (start, *start.parents):
+            marker = candidate / ".git"
+            # A standalone repo (or the main checkout) has a ``.git`` DIRECTORY:
+            # nothing to re-anchor, the recorded top already covers it.
+            if marker.is_dir():
+                return index_top
+            if marker.is_file():
+                main = main_worktree_root(marker)
+                if main is not None and main.resolve() == index_resolved:
+                    return candidate
+                return index_top
+    except OSError:
+        pass
+    return index_top
+
+
 def _cochange_history_advisory_lines(
     *, repo_root: Path, repo_id: str | None, state, cfg, persist=None
 ) -> list[str]:
@@ -236,7 +277,10 @@ def _cochange_history_advisory_lines(
         top_str = index.get("root")
         if not isinstance(top_str, str) or not top_str:
             return []
-        git_top = Path(top_str)
+        # The recorded top is the checkout the index was mined at; a turn running
+        # in a linked worktree of that checkout edits the same keys under its own
+        # top, so anchor on the tree this turn actually touched.
+        git_top = _session_worktree_top(repo_root, Path(top_str))
 
         from chameleon_mcp.violation_class import ignored_rules
 
@@ -1511,7 +1555,12 @@ def _test_run_reminder_lines(
         from chameleon_mcp.violation_class import ignored_rules
 
         # An edited file that still exists and is not opted out via an inline
-        # bare `chameleon-ignore` directive in the touched file.
+        # `chameleon-ignore tests` (or bare ignore) directive in the touched
+        # file. Accepting the NAMED rule matters: the bare form resolves to the
+        # empty string, which every other turn-end check reads as "ignore
+        # everything", so a user silencing this one nudge would disarm them all.
+        # The token is shared with the stale-test advisory -- both are the same
+        # ask ("this turn's test story is incomplete") on one file.
         edited: list[str] = []
         for path in state.files:
             p = Path(path)
@@ -1521,7 +1570,8 @@ def _test_run_reminder_lines(
                 content = p.read_bytes()[:100_000].decode("utf-8", errors="replace")
             except OSError:
                 continue
-            if "" in (ignored_rules(content, file_path=path) or set()):
+            ign = ignored_rules(content, file_path=path) or set()
+            if ign & {"", "tests", "test-run"}:
                 continue
             edited.append(path)
         if not edited:
@@ -1579,12 +1629,19 @@ def _test_run_reminder_lines(
         except Exception:
             pass
 
+        # This nudge re-fires every qualifying Stop, so the escape hatch has to
+        # be advertised the way the sibling advisories advertise theirs -- an
+        # unnamed opt-out leaves a watch-process or CI-runs-the-suite workflow
+        # with a bare `chameleon-ignore` as its only way out, which silences far
+        # more than this line.
+        hint = hh._ignore_hint(governed[:5], "tests")
         return [
             "[🦎 chameleon: no passing test run this turn]",
             f"You edited {names} with no recorded passing test run. Run the suite "
             "to confirm your changes pass before ending (skip only if a watch "
             "process or CI is already running them). Advisory; the turn ends "
             "normally.",
+            f"To silence this for a file, add {hint} in the source you touched.",
         ]
     except Exception:  # noqa: BLE001
         return []

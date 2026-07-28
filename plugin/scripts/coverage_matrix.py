@@ -214,6 +214,27 @@ def _binds_language(node: ast.AST) -> bool:
     return "language" in names
 
 
+def _enclosing_functions(node: ast.AST, parents: dict) -> list[ast.AST]:
+    """Every enclosing function, innermost first, with NO hop cap.
+
+    Deliberately not reusing ``_enclosing_blocks``. That cap bounds the
+    language-EVIDENCE scope, where widening credits a site with languages its
+    enclosing function merely handles elsewhere. Whether anything on the
+    emission path even RECEIVES a language is a different question, and
+    answering it inside a truncated window makes a construction nested four
+    branches deep read as language-blind. ``analyze`` then credits that rule
+    with all three languages on the strength of a parameter nobody looked for --
+    a false ``A``, which is the vacuous silence this whole tool exists to catch.
+    """
+    out: list[ast.AST] = []
+    cur = node
+    while cur in parents:
+        cur = parents[cur]
+        if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            out.append(cur)
+    return out
+
+
 def _enclosing_blocks(node: ast.AST, parents: dict) -> list[ast.AST]:
     """The <=4 nearest enclosing branch/loop/function blocks, innermost first."""
     out: list[ast.AST] = []
@@ -377,11 +398,12 @@ def observed(root: Path) -> tuple[dict[str, set[str]], dict[str, bool], list[str
                     langs |= _dispatch_complement(block)
                     break
             langs |= _else_arm_languages(node, parents)
-            takes_language = any(_binds_language(b) for b in blocks)
+            enclosing_fns = _enclosing_functions(node, parents)
+            takes_language = any(_binds_language(f) for f in enclosing_fns)
 
             if not langs:
                 # The emitting helper is language-blind; its callers may not be.
-                enclosing_fn = next((b for b in blocks if isinstance(b, ast.FunctionDef)), None)
+                enclosing_fn = next(iter(enclosing_fns), None)
                 if enclosing_fn is not None:
                     for call in call_sites.get(enclosing_fn.name, []):
                         caller_blocks = _enclosing_blocks(call, parents)
@@ -396,7 +418,7 @@ def observed(root: Path) -> tuple[dict[str, set[str]], dict[str, bool], list[str
                                 langs |= hit | _dispatch_complement(block)
                                 break
                         takes_language = takes_language or any(
-                            _binds_language(b) for b in caller_blocks
+                            _binds_language(f) for f in _enclosing_functions(call, parents)
                         )
 
             found.setdefault(rule, set()).update(langs)

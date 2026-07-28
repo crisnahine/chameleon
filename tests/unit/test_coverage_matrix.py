@@ -273,3 +273,124 @@ def test_runs_under_a_bare_system_python3():
     assert proc.returncode == 0, f"{proc.returncode}: {proc.stderr[-800:]}"
     assert "Traceback" not in proc.stderr
     assert "declared" in proc.stdout
+
+
+# --- the gap path itself ------------------------------------------------------
+
+
+def _repo(tmp_path: Path, source: str, declaration: str) -> Path:
+    """A synthetic tree carrying both halves of the matrix at their real paths."""
+    (tmp_path / "plugin/mcp/chameleon_mcp").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "plugin/mcp/chameleon_mcp/violation_class.py").write_text(
+        declaration, encoding="utf-8"
+    )
+    for rel in cm.RULE_SOURCES:
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("", encoding="utf-8")
+    (tmp_path / cm.RULE_SOURCES[0]).write_text(source, encoding="utf-8")
+    return tmp_path
+
+
+_RUBY_ONLY = """
+def scan(content, language):
+    if language == "ruby":
+        out.append(Violation(rule="sql-interp"))
+"""
+
+_DECLARES_TWO = (
+    "BLOCK_RULE_LANGUAGES: dict[str, frozenset[str] | None] = "
+    '{"sql-interp": frozenset({"ruby", "python"})}\n'
+)
+
+
+def test_a_declared_language_with_no_evidence_is_reported(tmp_path):
+    """The whole point of the tool, and the branch nothing else here executes.
+
+    Every other case asserts an EMPTY gap list, which a report that structurally
+    cannot populate one satisfies just as well as a correct clean matrix. Drive
+    a real gap through analyze, render and the exit code so the clean assertions
+    mean something.
+    """
+    root = _repo(tmp_path, _RUBY_ONLY, _DECLARES_TWO)
+
+    report = cm.analyze(root)
+    row = next(r for r in report["rules"] if r["rule"] == "sql-interp")
+    assert row["implemented"] == ["ruby"]
+    assert row["unjustified_missing"] == ["python"]
+    assert row["severity"] == "P1"
+
+    text = cm.render(report)
+    assert "1 rule(s) declared for a language with NO evidence" in text
+    assert "[P1] sql-interp: no evidence for python" in text
+
+    assert cm.main(["--repo", str(root), "--strict"]) == cm.EXIT_FINDINGS
+
+
+def test_a_gap_is_advisory_until_strict_is_passed(tmp_path):
+    """Soft by default, like the conventions gate: a `?` is a read assignment,
+    not a proven absence, so it must not fail a build unless the caller asks."""
+    root = _repo(tmp_path, _RUBY_ONLY, _DECLARES_TWO)
+    assert cm.main(["--repo", str(root)]) == cm.EXIT_OK
+
+
+def test_a_justified_absence_is_not_counted_as_a_gap(tmp_path):
+    """A construct the language does not have is coverage nobody owes. Pinning
+    this alongside the gap case keeps the exemption from silently swallowing a
+    real hole."""
+    rule = next(iter(cm.JUSTIFIED_ABSENCE))
+    excused = next(iter(cm.JUSTIFIED_ABSENCE[rule]))
+    root = _repo(
+        tmp_path,
+        f"""
+def scan(content, language):
+    if language == "typescript":
+        out.append(Violation(rule="{rule}"))
+""",
+        "BLOCK_RULE_LANGUAGES: dict[str, frozenset[str] | None] = "
+        f'{{"{rule}": frozenset({{"typescript", "{excused}"}})}}\n',
+    )
+    row = next(r for r in cm.analyze(root)["rules"] if r["rule"] == rule)
+    assert row["unproven"] == [excused]
+    assert row["unjustified_missing"] == []
+    assert cm.main(["--repo", str(root), "--strict"]) == cm.EXIT_OK
+
+
+def test_main_translates_unusable_into_exit_2(tmp_path):
+    """A matrix that could not be built must never read as a matrix with no
+    holes. observed() raising is only half the contract -- main has to turn it
+    into 2, and 2 is not the code --strict uses for findings."""
+    (tmp_path / "plugin/mcp/chameleon_mcp").mkdir(parents=True)
+    (tmp_path / "plugin/mcp/chameleon_mcp/violation_class.py").write_text(
+        'BLOCK_RULE_LANGUAGES: dict[str, frozenset[str] | None] = {"x": None}\n', encoding="utf-8"
+    )
+    assert cm.main(["--repo", str(tmp_path), "--strict"]) == cm.EXIT_UNUSABLE
+
+
+# --- the agnostic credit needs positive evidence ------------------------------
+
+
+def test_a_deeply_nested_emission_is_not_credited_as_agnostic(tmp_path):
+    """`A` on every language is the strongest claim the matrix makes, and it is
+    inferred from the ABSENCE of a `language` parameter. Looking for that
+    parameter inside the 4-hop evidence window made a construction nested four
+    branches deep read as language-blind, so a rule whose own function takes a
+    `language` rendered `A A A` with no gap and no severity -- the tool
+    certifying coverage it never found, wearing its own badge.
+    """
+    root = _repo(
+        tmp_path,
+        """
+def lint(content, language):
+    if content:
+        for item in content:
+            while item:
+                if item > 1:
+                    out.append(Violation(rule="deep-rule"))
+""",
+        'BLOCK_RULE_LANGUAGES: dict[str, frozenset[str] | None] = {"deep-rule": None}\n',
+    )
+    row = next(r for r in cm.analyze(root)["rules"] if r["rule"] == "deep-rule")
+    assert row["language_agnostic"] is False
+    assert row["unjustified_missing"] == list(sorted(cm.LANGUAGES))
+    assert row["severity"] == "P0"

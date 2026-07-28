@@ -1894,15 +1894,21 @@ def _persist_cochange_history_to_plugin_data(repo_root: Path, repo_id: str) -> N
             COCHANGE_HISTORY_FILENAME,
             mine_cochange_history,
         )
-        from chameleon_mcp.hook_helper import _plugin_data_dir
+        from chameleon_mcp.hook_helper import _atomic_write_text, _plugin_data_dir
 
         index = mine_cochange_history(repo_root)
         if index is None:
             return
         out_dir = _plugin_data_dir() / repo_id
         out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / COCHANGE_HISTORY_FILENAME).write_text(
-            json.dumps(index, separators=(",", ":")), encoding="utf-8"
+        # The Stop advisory loads this from a DIFFERENT process while a refresh
+        # may be rewriting it, and its loader fails open to None on a short or
+        # unparseable read -- so a truncate-in-place write would silently drop
+        # the co-change nudge for the length of the write. tmp + os.replace
+        # means a concurrent reader sees the previous complete index or the new
+        # one, and an interrupted refresh leaves the last good one in place.
+        _atomic_write_text(
+            out_dir / COCHANGE_HISTORY_FILENAME, json.dumps(index, separators=(",", ":"))
         )
         # A no-remote repo's first bootstrap wrote under the PATH-HASH id, then a
         # repo_uuid was stamped; a later refresh resolves to the UUID id and writes
@@ -1952,7 +1958,7 @@ def _persist_cross_index_to_plugin_data(
     if os.environ.get("CHAMELEON_CROSSWS_INDEX") == "0":
         return
     try:
-        from chameleon_mcp.hook_helper import _plugin_data_dir
+        from chameleon_mcp.hook_helper import _atomic_write_text, _plugin_data_dir
         from chameleon_mcp.symbol_index import CROSS_REVERSE_INDEX_FILENAME
         from chameleon_mcp.tools import _compute_repo_id
 
@@ -1970,8 +1976,13 @@ def _persist_cross_index_to_plugin_data(
         canonical_id = _compute_repo_id(root)
         out_dir = _plugin_data_dir() / canonical_id
         out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / CROSS_REVERSE_INDEX_FILENAME).write_text(
-            json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+        # Indented + sorted JSON is many write() syscalls, and the per-edit
+        # cross-workspace advisory loads this from another process mid-refresh.
+        # Its loader treats a zero-length or short read as "no index" and stays
+        # silent, so a truncate-in-place write would blank the advisory for the
+        # duration; tmp + os.replace makes the swap a single visible step.
+        _atomic_write_text(
+            out_dir / CROSS_REVERSE_INDEX_FILENAME, json.dumps(payload, indent=2, sort_keys=True)
         )
         # A no-remote monorepo's first bootstrap wrote this index under the
         # PATH-HASH id (branch 3), then stamped a repo_uuid; every later refresh

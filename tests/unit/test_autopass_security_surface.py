@@ -21,6 +21,36 @@ def test_migration_paths_flagged():
     assert classify_security_surface("db/migrate/20260101120000_add_x.rb") == "migration"
 
 
+def test_every_supported_migration_layout_is_a_migration_surface():
+    """An irreversible schema change is one of the five classes this row exists
+    for, and it is the one whose layout differs most per framework. Alembic's
+    default `alembic init alembic` puts revisions in `alembic/versions/` with no
+    path component saying "migration" at all, and TypeORM's is the SINGULAR
+    `src/migration/`. Both are what cochange._is_ts_migration_dir and
+    signatures.python_role_for_path already treat as migrations, so a miss here
+    is three classifiers disagreeing about one file, not a conservative default.
+    """
+    for path in (
+        "alembic/versions/a1b2c3_add_column.py",
+        "migrations/versions/a1b2c3_add_column.py",
+        "app/migrations/0001_initial.py",
+        "src/migration/1700000000000-AddColumn.ts",
+        "src/migrations/1700000000000-AddColumn.ts",
+        "db/schema.rb",
+        "db/structure.sql",
+    ):
+        assert classify_security_surface(path) == "migration", path
+
+
+def test_a_migration_named_file_outside_a_migration_dir_is_not_a_surface():
+    """The row is structural on purpose (its exact and prefix sets are empty):
+    only a migration DIRECTORY counts. Widening to a "migration" token would
+    route every service and test that mentions the word, the same over-match the
+    auth category's exact-only "auth" needle exists to avoid."""
+    assert classify_security_surface("src/services/UserMigrationService.ts") is None
+    assert classify_security_surface("app/jobs/run_migration.rb") is None
+
+
 def test_infra_paths_flagged():
     assert classify_security_surface(".github/workflows/deploy.yml") == "infra"
     assert classify_security_surface("Dockerfile") == "infra"

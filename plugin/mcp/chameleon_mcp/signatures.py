@@ -364,19 +364,34 @@ _NESTJS_ROLE_SUFFIXES: tuple[tuple[str, str], ...] = (
 # 1-member cluster and the repo's test layer never forms an archetype -- no
 # canonical witness, no guidance, even though every spec shares one shape. The
 # basename suffix is the role signal, exactly like the NestJS suffixes above.
+#
+# The .js family is here because a plain-JavaScript repo is a first-class shape:
+# the TypeScript extractor's can_handle admits a package.json repo with only
+# .js/.jsx/.mjs/.cjs sources, and its parse glob covers all six extensions. A
+# JS repo colocating foo.test.js beside foo.js has exactly the fragmentation
+# this matcher exists to prevent.
 _TS_SPEC_SUFFIXES: tuple[str, ...] = (
     ".spec.ts",
     ".spec.tsx",
+    ".spec.js",
+    ".spec.jsx",
+    ".spec.mjs",
+    ".spec.cjs",
     ".test.ts",
     ".test.tsx",
+    ".test.js",
+    ".test.jsx",
+    ".test.mjs",
+    ".test.cjs",
 )
 
 
 def ts_spec_role_for_path(file_path: str) -> str | None:
     """Return ``"spec"`` for a co-locatable TS test-file basename, or None.
 
-    Self-gated on the ``.spec.ts(x)`` / ``.test.ts(x)`` basename suffix so it
-    never reshapes an ordinary source file, and checked AFTER the Next.js and
+    Self-gated on a ``.spec.<ext>`` / ``.test.<ext>`` basename suffix over the
+    six extensions the TypeScript extractor parses (ts, tsx, js, jsx, mjs, cjs)
+    so it never reshapes an ordinary source file, and checked AFTER the Next.js and
     NestJS role matchers (none of which can match these suffixes) so existing
     role buckets keep precedence. A ``*.e2e-spec.ts`` does not end in a bare
     ``.spec.ts`` and stays directory-bucketed with its e2e siblings.

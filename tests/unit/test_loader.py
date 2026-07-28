@@ -561,3 +561,31 @@ class TestLoadProfileDir:
         l2 = load_profile_dir(variant)
 
         assert l1 is l2
+
+
+def test_safe_prose_text_refuses_a_symlinked_artifact(tmp_path):
+    """A committed `.chameleon/principles.md` symlinked to ~/.ssh/id_rsa was
+    followed and rendered into <chameleon-conventions> at SessionStart, into the
+    per-edit echo, and into a tool response. Nothing upstream stopped it:
+    hash_profile folds an UnsafeFileError into the digest and CONTINUES, so
+    trust still grants, and the grant-time prose scan looks for injection
+    patterns, which a private key does not trip."""
+    from chameleon_mcp.profile.loader import safe_prose_text
+
+    secret = tmp_path / "outside.txt"
+    secret.write_text("PRIVATE-KEY-BODY", encoding="utf-8")
+    profile = tmp_path / "repo" / ".chameleon"
+    profile.mkdir(parents=True)
+    (profile / "principles.md").symlink_to(secret)
+
+    assert safe_prose_text(profile / "principles.md") == ""
+
+
+def test_safe_prose_text_still_reads_a_real_artifact(tmp_path):
+    from chameleon_mcp.profile.loader import safe_prose_text
+
+    profile = tmp_path / ".chameleon"
+    profile.mkdir(parents=True)
+    (profile / "idioms.md").write_text("Match sibling shape.\n", encoding="utf-8")
+
+    assert safe_prose_text(profile / "idioms.md") == "Match sibling shape.\n"

@@ -272,7 +272,45 @@ def _witness_sort_key(archetype: str, witness_path: str) -> tuple[int, str]:
     return (0 if is_test else 1, archetype)
 
 
-def _pattern_facts(cwd: object, skill_key: str | None = None) -> str:
+def _suppression_reason(cwd: object, session_id: object = None) -> str | None:
+    """Why chameleon must stay silent for this invocation, or None.
+
+    Every session-level opt-out closes this channel whole -- directive and facts
+    alike. A user who ran /chameleon-disable, /chameleon-pause-15m, or dropped a
+    ``.chameleon/.skip`` asked for silence, and a block that keeps arriving on
+    every skill invocation is exactly the noise they were escaping. The facts
+    half has its own gate for the trust reasons that do not apply to a constant,
+    but suppression is not one of those: it is about the channel, not the data.
+
+    ``session_id`` is what makes the /chameleon-disable marker visible at all --
+    ``is_chameleon_suppressed`` can only look up ``.session_disabled.<marker>``
+    when it has the session to look up. Without it the other three opt-outs still
+    resolve.
+
+    Fails open to None (not suppressed): an unreadable profile or repo root must
+    not be the thing that silences the composition contract.
+    """
+    try:
+        from chameleon_mcp.optouts import is_chameleon_suppressed
+
+        sid = session_id if isinstance(session_id, str) and session_id else None
+        if not isinstance(cwd, str) or not cwd:
+            # No repo in hand: only the env kill switch is answerable, and it
+            # needs no filesystem access.
+            return is_chameleon_suppressed(None, None, sid)
+
+        from chameleon_mcp.profile.loader import find_repo_root
+        from chameleon_mcp.tools import _compute_repo_id
+
+        root = find_repo_root(Path(cwd).expanduser())
+        if root is None:
+            return is_chameleon_suppressed(None, None, sid)
+        return is_chameleon_suppressed(root, _compute_repo_id(root), sid)
+    except Exception:
+        return None
+
+
+def _pattern_facts(cwd: object, skill_key: str | None = None, session_id: object = None) -> str:
     """The repo's archetype -> canonical-witness map, or "" when unavailable.
 
     Trust-gated exactly like every other profile-derived injection: an
@@ -297,7 +335,8 @@ def _pattern_facts(cwd: object, skill_key: str | None = None) -> str:
         if root is None:
             return ""
         repo_id = _compute_repo_id(root)
-        if is_chameleon_suppressed(root, repo_id, None) is not None:
+        sid = session_id if isinstance(session_id, str) and session_id else None
+        if is_chameleon_suppressed(root, repo_id, sid) is not None:
             return ""
         grant = trust_state_for(repo_id)
         if grant is None or not grant.grants_root(root):
@@ -341,21 +380,27 @@ def _pattern_facts(cwd: object, skill_key: str | None = None) -> str:
         return ""
 
 
-def skill_context(skill: object, cwd: object) -> str:
+def skill_context(skill: object, cwd: object, session_id: object = None) -> str:
     """The context block for a superpowers skill invocation, or "".
 
     Returns "" for every non-superpowers tool call before touching the
     filesystem, so the common case -- a chameleon skill, a user's own skill --
     costs one string comparison.
+
+    ``session_id`` comes from the hook payload and is what lets a
+    /chameleon-disable marker be found; the block is withheld whole for any
+    active opt-out.
     """
     if os.environ.get(_KILL_SWITCH) == "0":
         return ""
     key = _skill_key(skill)
     if key is None:
         return ""
+    if _suppression_reason(cwd, session_id) is not None:
+        return ""
     parts = [_HEADER.format(name=key), _BRIEFS[key]]
     if key in _FACT_BEARING:
-        facts = _pattern_facts(cwd, key)
+        facts = _pattern_facts(cwd, key, session_id)
         if facts:
             parts.append(facts)
     block = "\n".join(parts)
@@ -374,7 +419,7 @@ def skill_context(skill: object, cwd: object) -> str:
 _SLASH_INVOCATION = re.compile(r"^\s*/(superpowers:[A-Za-z0-9._-]+)")
 
 
-def slash_skill_context(prompt: object, cwd: object) -> str:
+def slash_skill_context(prompt: object, cwd: object, session_id: object = None) -> str:
     """The same context block for a superpowers skill typed as a slash command.
 
     Two invocation paths reach the same skill and only one of them is a tool
@@ -387,4 +432,4 @@ def slash_skill_context(prompt: object, cwd: object) -> str:
     if not isinstance(prompt, str) or _PREFIX not in prompt:
         return ""
     match = _SLASH_INVOCATION.match(prompt)
-    return skill_context(match.group(1), cwd) if match else ""
+    return skill_context(match.group(1), cwd, session_id) if match else ""

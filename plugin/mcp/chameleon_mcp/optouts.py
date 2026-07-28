@@ -165,13 +165,26 @@ def is_chameleon_suppressed(
     """Return reason string if chameleon is suppressed, else None.
 
     Reasons:
-      - "repo_skip" — .chameleon/.skip file present in repo
+      - "repo_skip" — .chameleon/.skip present in the repo, or in the profile
+        root a linked worktree borrows its profile from
       - "user_disable" — CHAMELEON_DISABLE=1 in env
       - "session_disable" — .session_disabled.<session_id> marker exists
       - "pause" — .pause_until file with future timestamp
     """
-    if repo_root is not None and (repo_root / ".chameleon" / ".skip").is_file():
-        return "repo_skip"
+    if repo_root is not None:
+        if (repo_root / ".chameleon" / ".skip").is_file():
+            return "repo_skip"
+        # A linked worktree with no `.chameleon/` of its own runs entirely off the
+        # MAIN worktree's profile, repo_id and trust grant, so the repo-wide
+        # opt-out that lives beside them has to be read from there too. Checking
+        # only the raw root leaves chameleon fully operational in a worktree of a
+        # repo whose team switched it off. resolve_profile_root returns the root
+        # unchanged in every other case, so this is a no-op outside that shape.
+        from chameleon_mcp.worktree import resolve_profile_root
+
+        profile_root = resolve_profile_root(repo_root)
+        if profile_root != repo_root and (profile_root / ".chameleon" / ".skip").is_file():
+            return "repo_skip"
 
     if os.environ.get("CHAMELEON_DISABLE") == "1":
         return "user_disable"

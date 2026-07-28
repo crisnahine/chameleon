@@ -349,7 +349,9 @@ def test_correctness_lens_run_no_diffs_returns_empty(tmp_path):
     # Nonexistent path -> reconstruct_diff returns None -> no diffs -> [].
     result = correctness_lens.run(repo, profile, [str(repo / "ghost.ts")], lambda _p: None)
     assert result.findings == []
-    assert result.check_events == []
+    # An empty diff set must be NAMED, not silent: "no diffs" and "reviewed,
+    # clean" are different outcomes and a replay has to tell them apart.
+    assert result.check_events == [("no_diffs", "files=1")]
 
 
 def test_correctness_lens_conftest_guard_blocks_real_spawn(tmp_path):

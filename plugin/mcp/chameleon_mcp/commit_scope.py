@@ -44,6 +44,43 @@ from pathlib import Path
 # estimate of an edit-time intervention.
 PER_EDIT_SUPPRESSED = frozenset({"cross-file-importers"})
 
+# Bounds a hung git, nothing more. Generous next to the 5s the per-edit hooks
+# allow themselves: nothing here runs on a hook hot path, and a `show` of a
+# multi-megabyte blob on a cold object store is legitimately slow.
+_GIT_TIMEOUT_SECONDS = 60
+
+
+class BlobUnreadable(Exception):
+    """git could not produce the blob, and absence was not the reason.
+
+    Distinct from a ``None`` return, which means git CONFIRMED the path did not
+    exist at that rev. A caller scoping a diff must not collapse the two: an
+    empty baseline says "every row in this file is introduced", so reaching it
+    through an unreadable blob rather than a genuinely new file scores the whole
+    inherited load as new -- the 5.2-5.7x inflation this module exists to remove.
+    """
+
+
+def _run_git(repo: Path, args: list[str]):
+    """Run ``git`` in ``repo`` under a timeout, returning the process or None.
+
+    None covers every way the spawn fails to produce a result: git missing from
+    PATH, a hung object read, an embedded null in a caller-supplied ref (which
+    subprocess raises as ValueError BEFORE spawning). Callers turn it into
+    BlobUnreadable rather than letting it escape, because this module's consumers
+    are a CI gate and two study drivers, and in all three an uncaught spawn error
+    is indistinguishable from a real result.
+    """
+    try:
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            timeout=_GIT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        return None
+
 
 def violation_key(row: dict) -> tuple:
     """Identity used to match a violation across two versions of a file.
@@ -60,10 +97,43 @@ def actionable(rows: list[dict]) -> list[dict]:
 
 
 def blob_at(repo: Path, rev: str, rel: str, *, max_bytes: int) -> str | None:
-    r = subprocess.run(["git", "-C", str(repo), "show", f"{rev}:{rel}"], capture_output=True)
-    if r.returncode != 0 or len(r.stdout) > max_bytes:
-        return None
+    """The file's content at ``rev``, or None when the path was not there.
+
+    Raises BlobUnreadable for every other outcome -- git failed, the spawn
+    failed, or the blob is over ``max_bytes`` -- so a caller can tell "this file
+    is new" from "I could not look". The two demand opposite handling and the
+    difference is not recoverable downstream.
+    """
+    r = _run_git(repo, ["show", f"{rev}:{rel}"])
+    if r is None:
+        raise BlobUnreadable(f"git show {rev}:{rel} did not run")
+    if r.returncode != 0:
+        if _path_absent_at(repo, rev, rel):
+            return None
+        raise BlobUnreadable(
+            f"git show {rev}:{rel} failed: "
+            f"{(r.stderr or b'').decode('utf-8', errors='replace').strip()[:200]}"
+        )
+    if len(r.stdout) > max_bytes:
+        raise BlobUnreadable(f"{rel} at {rev} exceeds {max_bytes} bytes")
     return r.stdout.decode("utf-8", errors="replace")
+
+
+def _path_absent_at(repo: Path, rev: str, rel: str) -> bool:
+    """True only when git successfully listed ``rev``'s tree and ``rel`` was not in it.
+
+    Asked once ``show`` has already failed, so it costs a process on new and
+    deleted files and nothing else. ls-tree separates the three outcomes that
+    ``show`` collapses into one exit code: a clean exit with no row is a genuine
+    absence, a clean exit with a row means the object is there and ``show``
+    failed for another reason, and a non-zero exit means the tree could not be
+    read at all (no repo, an unresolvable rev) -- which is emphatically NOT
+    absence. Matching git's stderr prose would answer the same question against
+    an unstable interface, and reading a real error as absence is the one mistake
+    that inflates the introduced count.
+    """
+    r = _run_git(repo, ["--literal-pathspecs", "ls-tree", rev, "--", rel])
+    return r is not None and r.returncode == 0 and not (r.stdout or b"").strip()
 
 
 def net_new(current: list[dict], baseline: list[dict]) -> tuple[list[dict], int]:
@@ -89,11 +159,14 @@ def net_new(current: list[dict], baseline: list[dict]) -> tuple[list[dict], int]
 
 
 def first_parent(repo: Path, sha: str) -> str | None:
-    """The commit's first parent, or None for a root commit (no baseline exists)."""
-    r = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", f"{sha}^1"],
-        capture_output=True,
-        text=True,
-    )
-    out = r.stdout.strip()
+    """The commit's first parent, or None for a root commit (no baseline exists).
+
+    Also None when git could not be run at all. The callers are study drivers
+    that already treat None as "no baseline for this commit", and a spawn failure
+    there costs one commit's contribution rather than the whole run.
+    """
+    r = _run_git(repo, ["rev-parse", "--verify", "--quiet", f"{sha}^1"])
+    if r is None:
+        return None
+    out = (r.stdout or b"").decode("utf-8", errors="replace").strip()
     return out or None

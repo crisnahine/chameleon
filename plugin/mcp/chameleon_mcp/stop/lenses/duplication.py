@@ -58,12 +58,15 @@ def run(
 ) -> LensResult:
     """Run the duplication review for one turn's edited ``files``.
 
-    Mirrors the standalone gate's sequence exactly: infer the catalog
-    language from the first edited file, build the candidate index over the
+    Follows the standalone gate's sequence: build the candidate index over the
     edited files, gather body-hash + semantic matches against the committed
-    catalog, then confirm each candidate with a bounded judge spawn. Every
-    stage fails open to an empty finding list -- no edited files, no
-    candidates, a spawn failure, or an unconfirmed candidate all return
+    catalog, then confirm each candidate with a bounded judge spawn. The gather
+    runs once per catalog language the turn touched -- the gatherers filter on
+    exactly one language, so a mixed-language turn needs one pass each or the
+    other languages go unreviewed -- and the union is deduped, re-capped, and
+    confirmed by a SINGLE spawn. Every stage fails open to an empty finding
+    list -- no edited files, no catalog language, no candidates, a spawn
+    failure, or an unconfirmed candidate all return
     ``LensResult(findings=[], check_events=[...])``.
 
     ``profile_dir``, ``archetype_for``, ``budget``, and ``model`` are part
@@ -98,16 +101,28 @@ def run(
         if not edited:
             return LensResult(findings=[], check_events=events)
 
-        lang = dr._lang_of(edited[0])
+        # Both gatherers hard-filter on a SINGLE catalog language, so inferring
+        # one for the whole turn silently drops every file whose language is not
+        # the first edited file's -- and a mixed-language turn (a Rails API plus
+        # a TS frontend, a Django plus a Next.js workspace) is the normal shape
+        # here, not the exotic one. Gather once per language present instead.
+        # Files with no catalog language contribute no functions to compare, so
+        # they need no bucket of their own.
+        langs: list[str] = []
+        for path in edited:
+            lg = dr._lang_of(path)
+            if lg is not None and lg not in langs:
+                langs.append(lg)
+        if not langs:
+            return LensResult(findings=[], check_events=events)
 
         # Both downstream caps are order-dependent and ``files`` arrives
         # insertion-ordered: build_candidate_index caps its re-parse at
         # DUPLICATION_INDEX_MAX_FILES (the search space checked AGAINST) and
         # gather_findings slices DUPLICATION_REVIEW_MAX_FILES (the files the
         # gate CHECKS). Order a separate view most-recently-modified first so
-        # the freshest working set survives both (``edited`` itself is
-        # untouched -- its first element drives language inference above),
-        # and record an index trim so that cap is never silent.
+        # the freshest working set survives both, and record an index trim so
+        # that cap is never silent.
         def _mtime(p: str) -> float:
             try:
                 return Path(p).stat().st_mtime
@@ -132,11 +147,36 @@ def run(
         except Exception:
             catalog = None
 
-        raw_findings = dr.gather_findings(
-            repo_root, index_input, index=index, catalog=catalog, lang=lang
-        )
+        # One gather per language, then a single judge spawn over the union: the
+        # gatherers are deterministic and cheap, the confirm spawn is neither, so
+        # widening coverage must not multiply the turn's reviewer cost.
+        raw_findings: list = []
+        seen_pairs: set = set()
+        for lg in langs:
+            for f in dr.gather_findings(
+                repo_root, index_input, index=index, catalog=catalog, lang=lg
+            ):
+                pair = (f.new_name, f.new_file, f.existing_name, f.existing_file)
+                if pair in seen_pairs:
+                    continue
+                seen_pairs.add(pair)
+                raw_findings.append(f)
         if not raw_findings:
             return LensResult(findings=[], check_events=events)
+        # gather_findings caps each language independently; re-apply the ceiling
+        # to the union so a mixed turn cannot exceed the per-turn budget.
+        try:
+            from chameleon_mcp._thresholds import threshold_int
+
+            _findings_cap = threshold_int("DUPLICATION_REVIEW_MAX_FINDINGS")
+            if len(raw_findings) > _findings_cap:
+                _sink(
+                    "findings_capped",
+                    f"dropped:{len(raw_findings) - _findings_cap};cap:{_findings_cap}",
+                )
+                raw_findings = raw_findings[:_findings_cap]
+        except Exception:
+            pass
 
         _sink("duplication_review", "ran")
         confirmed = dr.judge_body_matches(repo_root, raw_findings, semantic=True)

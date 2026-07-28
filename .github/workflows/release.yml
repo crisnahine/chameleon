@@ -8,11 +8,20 @@
 #      `## [0.3.0]`).
 #
 # After verification, runs the full Python test matrix (same suites as
-# ci.yml's test-python job), builds a plugin tarball (plugin/ +
+# ci.yml's test-python job) plus the gates that cover the SHIPPED surface --
+# ruff, shellcheck, the hook-wrapper smoke matrix, and the hooks/skills
+# manifest check -- then builds a plugin tarball (plugin/ +
 # README/LICENSE/CHANGELOG), and publishes a
 # GitHub Release with the CHANGELOG entry as the body plus every published
 # effectiveness run's run.md/metrics.json as extra assets (skipped when
 # tests/effectiveness/results-published/ is absent or empty).
+#
+# Those shipped-surface jobs are duplicated from ci.yml on purpose. ci.yml is
+# scoped to pushes and PRs against main; nothing in the repo requires a tag to
+# sit on a merged commit, so a tag cut from a release branch is gated by THIS
+# file alone. Without them, a hook wrapper that lost its +x bit, a hooks.json
+# entry pointing at a renamed script, or a shellcheck-fatal hook edit ships
+# inside a fully green release run. Keep each job in step with its ci.yml twin.
 #
 # To cut a release:
 #   1. bash scripts/bump-version.sh <new-version>           # 6 manifests
@@ -156,15 +165,146 @@ jobs:
         working-directory: plugin/mcp
         env:
           PYTHONPATH: '.:../..'
-        run: .venv/bin/python -m pytest ../../tests/unit/ ../../tests/journey/harness/tests/ -v
+        run: .venv/bin/python -m pytest ../../tests/unit/ ../../tests/journey/harness/tests/ ../../tests/effectiveness/tests/ -v
+
+  lint:
+    name: lint (ruff)
+    needs: verify-tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'plugin/mcp/uv.lock'
+
+      - name: Ruff check (MCP package + tests)
+        working-directory: plugin/mcp
+        run: uvx ruff@0.15.13 check chameleon_mcp/ ../../tests/unit/ ../../tests/journey/ ../scripts/
+
+      - name: Ruff format check (MCP package + tests)
+        working-directory: plugin/mcp
+        run: uvx ruff@0.15.13 format --check chameleon_mcp/ ../../tests/unit/ ../../tests/journey/ ../scripts/
+
+  shellcheck:
+    name: shellcheck
+    needs: verify-tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Lint hook scripts
+        run: shellcheck -S warning plugin/hooks/_resolve-python.sh plugin/hooks/session-start plugin/hooks/preflight-and-advise plugin/hooks/peer-skill-advise plugin/hooks/posttool-recorder plugin/hooks/posttool-verify plugin/hooks/callout-detector plugin/hooks/stop-backstop plugin/scripts/*.sh scripts/*.sh
+
+  hook-smoke:
+    name: hook-smoke (${{ matrix.hook.name }})
+    needs: verify-tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        hook:
+          - name: session-start
+            stdin: '{"session_id":"ci-smoke","hook_event_name":"SessionStart"}'
+          - name: preflight-and-advise
+            stdin: '{"tool_name":"Edit","tool_input":{"file_path":"/tmp/test.ts"},"session_id":"ci-test"}'
+          - name: posttool-recorder
+            stdin: '{"tool_name":"Bash","tool_input":{"command":"echo hi"},"tool_response":{"stdout":"hi"},"session_id":"ci-test"}'
+          - name: posttool-verify
+            stdin: '{"tool_name":"Edit","tool_input":{"file_path":"/tmp/test.ts"},"tool_response":{"content":"const x = 1;","success":true},"session_id":"ci-test"}'
+          - name: callout-detector
+            stdin: '{"user_prompt":"hello world","session_id":"ci-test"}'
+          - name: peer-skill-advise
+            stdin: '{"tool_name":"Skill","tool_input":{"skill":"superpowers:brainstorming"},"session_id":"ci-test"}'
+          - name: stop-backstop
+            stdin: '{"session_id":"ci-test","hook_event_name":"Stop"}'
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'plugin/mcp/uv.lock'
+
+      - name: Install Python dependencies (uv sync)
+        working-directory: plugin/mcp
+        run: uv sync --frozen
+
+      - name: Invoke plugin/hooks/${{ matrix.hook.name }} with synthetic stdin
+        env:
+          CLAUDE_PLUGIN_ROOT: ${{ github.workspace }}/plugin
+        run: |
+          echo '${{ matrix.hook.stdin }}' \
+            | plugin/hooks/${{ matrix.hook.name }} \
+            | python3 -c "import json,sys; obj=json.loads(sys.stdin.read(), strict=False); assert isinstance(obj, dict), f'expected dict, got {type(obj).__name__}'; print('hook emitted valid JSON object')"
+
+  hooks-manifest:
+    name: hooks-manifest-check
+    needs: verify-tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Validate hooks.json references
+        run: |
+          python3 << 'PYEOF'
+          import json, sys, os
+          errors = 0
+          with open('plugin/hooks/hooks.json') as f:
+              manifest = json.load(f)
+          for event, entries in manifest.get('hooks', {}).items():
+              for entry in entries:
+                  for hook in entry.get('hooks', []):
+                      cmd = hook.get('command', '')
+                      name = cmd.split()[-1] if cmd else ''
+                      path = 'plugin/hooks/' + name
+                      if name and not os.path.isfile(path):
+                          print(f'ERROR: {path} missing'); errors += 1
+                      elif name and not os.access(path, os.X_OK):
+                          print(f'ERROR: {path} not executable'); errors += 1
+          for d in os.listdir('plugin/skills'):
+              sd = os.path.join('plugin/skills', d)
+              if os.path.isdir(sd) and not os.path.isfile(os.path.join(sd, 'SKILL.md')):
+                  print(f'ERROR: {sd}/ missing SKILL.md'); errors += 1
+          print(f'Checked hooks + skills: {errors} error(s)')
+          sys.exit(1 if errors else 0)
+          PYEOF
 
   build-tarball:
     name: build-tarball
-    # verify-tag is what produces the `version` output consumed below;
-    # test-all is the quality gate. Need both — the prior `needs: test-all`
-    # alone left needs.verify-tag.outputs.version unscoped, so VERSION
-    # rendered empty and tar wrote a `chameleon-.tar.gz` next to itself.
-    needs: [verify-tag, test-all]
+    # verify-tag is what produces the `version` output consumed below; the rest
+    # are the quality gates. verify-tag must stay listed even though the others
+    # already depend on it — the prior `needs: test-all` alone left
+    # needs.verify-tag.outputs.version unscoped, so VERSION rendered empty and
+    # tar wrote a `chameleon-.tar.gz` next to itself. Every gate that covers the
+    # shipped surface belongs here: a tarball built past a red one ships the
+    # defect the gate exists to catch.
+    needs: [verify-tag, test-all, lint, shellcheck, hook-smoke, hooks-manifest]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:

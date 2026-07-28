@@ -243,3 +243,32 @@ def test_summary_never_raises_on_corrupt_sources(monkeypatch, tmp_path: Path):
     (tmp_path / "metrics.jsonl").write_bytes(b"\x00\x01 not json at all\n")
     summary = read_degraded_summary(window_days=7)
     assert summary["total"] == 0
+
+
+def test_spawn_failure_line_with_exit_code_is_counted():
+    """Every wrapper writes `failed (rc=..., python=...)`. Matching only the
+    older `failed (python=` spelling made this branch dead: spawn_fail stayed 0
+    however many hooks failed, so the >=3 SessionStart banner could never fire
+    on the one path meant to make a degraded session visible."""
+    import time
+
+    from chameleon_mcp.degraded_telemetry import parse_degradations
+
+    ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    no_interp, spawn_fail, _last = parse_degradations(
+        f"[{ts}] preflight-and-advise failed (rc=124, python=/usr/bin/python3)", 0.0
+    )
+    assert (no_interp, spawn_fail) == (0, 1)
+
+
+def test_legacy_spawn_failure_line_without_exit_code_still_counted():
+    """A log written by an older install has no rc= segment; it must keep counting."""
+    import time
+
+    from chameleon_mcp.degraded_telemetry import parse_degradations
+
+    ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    _n, spawn_fail, _last = parse_degradations(
+        f"[{ts}] preflight-and-advise failed (python=/usr/bin/python3)", 0.0
+    )
+    assert spawn_fail == 1

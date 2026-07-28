@@ -133,6 +133,19 @@ def render_findings(findings: list[Finding], *, header: str, ceiling_tokens: int
 
     if not packed_keys:
         return RenderResult(text="", delivered_match_keys=())
+    omitted = len(items) - len(packed_keys)
+    if omitted > 0:
+        # Every caller builds its header from the PRE-pack count, so without
+        # this line the emission asserts a count its own body contradicts and
+        # the reader cannot tell "dropped for space" from "renderer is broken".
+        # Charged outside the ceiling, like the idiom hint below: a one-line
+        # reconciliation is worth less than one finding line, and dropping it
+        # to save space would recreate the very contradiction it exists to
+        # close.
+        lines.append(
+            f"{omitted} more finding(s) omitted for space; they stay open and "
+            "will be shown at the next delivery point."
+        )
     if idiom_shown:
         lines.append(_IDIOM_DURABLE_OFF_HINT)
     return RenderResult(text="\n".join(lines), delivered_match_keys=tuple(packed_keys))

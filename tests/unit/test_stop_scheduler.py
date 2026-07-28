@@ -18,7 +18,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import subprocess
 import sys
 import threading
 import time
@@ -677,13 +676,33 @@ def test_detach_kwargs_posix_uses_start_new_session():
     assert scheduler._detach_kwargs("posix") == {"start_new_session": True}
 
 
-def test_detach_kwargs_windows_uses_detached_creationflags():
+def test_detach_kwargs_windows_uses_detached_creationflags(monkeypatch):
+    """The "nt" branch must name BOTH real CreateProcess flags.
+
+    This is the only place the Windows branch is ever executed -- CI's Windows
+    job runs test_locks_cross_platform.py alone -- so it has to be able to fail
+    on a POSIX host. Deriving the expected value with the same
+    ``getattr(subprocess, NAME, 0)`` the implementation uses cannot: neither
+    constant exists off Windows, so both sides collapse to 0 and the assertion
+    holds for ANY pair of names, including two that do not exist. Publishing the
+    documented CreateProcess values onto the module under test instead means a
+    renamed or misspelled constant drops out of the OR and fails here on every
+    host. On a real Windows host these are the values already present.
+    """
+    detached_process = 0x00000008
+    create_new_process_group = 0x00000200
+    monkeypatch.setattr(scheduler.subprocess, "DETACHED_PROCESS", detached_process, raising=False)
+    monkeypatch.setattr(
+        scheduler.subprocess,
+        "CREATE_NEW_PROCESS_GROUP",
+        create_new_process_group,
+        raising=False,
+    )
+
     kwargs = scheduler._detach_kwargs("nt")
 
-    expected = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
-        subprocess, "CREATE_NEW_PROCESS_GROUP", 0
-    )
-    assert kwargs == {"creationflags": expected}
+    assert kwargs == {"creationflags": detached_process | create_new_process_group}
+    assert kwargs["creationflags"] == 0x00000208
     assert "start_new_session" not in kwargs
 
 

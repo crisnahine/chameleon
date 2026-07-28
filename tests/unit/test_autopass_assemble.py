@@ -275,3 +275,28 @@ def test_assemble_source_only_diff_unchanged():
     assert facts["unarchetyped_files"] == 2
     assert facts["source_files_changed"] == 3
     assert facts["security_surface"] is False
+
+
+def test_alembic_revision_classifies_as_a_migration_surface():
+    """Alembic is the declared migration surface for flask and fastapi, and its
+    default layout (`alembic init alembic`) has no path component saying
+    "migration" at all. Keying on `/migrations/` alone left a schema change on
+    those repos routing as an ordinary low-risk edit -- a migration usually has
+    no importers, so blast radius does not rescue it."""
+    from chameleon_mcp.autopass import classify_security_surface
+
+    for path in (
+        "db/migrate/20260101_add_x.rb",
+        "app/migrations/0002_add_x.py",
+        "alembic/versions/9c0a54914c78_add_max_apples.py",
+        "src/alembic/versions/x.py",
+        "migrations/versions/0001_initial.py",
+    ):
+        assert classify_security_surface(path) == "migration", path
+
+
+def test_a_plain_versions_directory_is_not_a_migration():
+    from chameleon_mcp.autopass import classify_security_surface
+
+    for path in ("src/app/versions.py", "lib/versions/util.py", "docs/migrations-guide.md"):
+        assert classify_security_surface(path) != "migration", path

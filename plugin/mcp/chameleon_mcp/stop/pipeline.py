@@ -376,25 +376,35 @@ def stop_gates(ctx: RootContext) -> dict:
             # framework convention demands a companion (a model its migration, a
             # controller its route) but whose change-set carries none gets a
             # nudge. Advisory only, folded into the same Stop context.
+            # The once-per-session markers this and the historical co-change
+            # builder set are session-terminal: ``cochange_shown`` is unioned
+            # monotonically and never cleared, so a marker set for a block the
+            # ranked pack below then drops for space retires the nudge without
+            # anyone having read it. Both are therefore run WITHOUT their
+            # persist writer and their new keys are captured here; the commit
+            # (state + disk) happens after the pack, for the blocks that
+            # actually made it into the emission.
+            cochange_before = set(state.cochange_shown)
             cochange_lines = hh._changeset_completeness_lines(
                 repo_root=repo_root,
                 state=state,
                 cfg=cfg,
                 daemon_state=daemon_state,
-                persist=lambda: save_state(state, repo_data, session_id or ""),
             )
+            cochange_keys = state.cochange_shown - cochange_before
 
             # Historical co-change (F7): a turn that edited a file whose git history
             # shows a usual partner, left untouched. Framework-agnostic complement
             # to the curated pairs above, read from the plugin-data index built at
             # bootstrap. Advisory only, folded into the same Stop context.
+            cochist_before = set(state.cochange_shown)
             cochist_lines = hh._cochange_history_advisory_lines(
                 repo_root=repo_root,
                 repo_id=repo_id,
                 state=state,
                 cfg=cfg,
-                persist=lambda: save_state(state, repo_data, session_id or ""),
             )
+            cochist_keys = state.cochange_shown - cochist_before
 
             # Cross-file existence breaks: a turn that removed/renamed a TS export
             # other files still import by name left their call sites broken. Reuse
@@ -403,6 +413,13 @@ def stop_gates(ctx: RootContext) -> dict:
             # deleted_paths carries THIS turn's deletions plus any persisted from a
             # prior Stop that short-circuited (idiom block) before this pipeline ran;
             # dedup and mark surfaced afterwards so a deleted module is reported once.
+            # Surfacing is likewise committed after the pack, never here: a
+            # pending deletion flipped to surfaced is only ever un-flipped by the
+            # deleted file coming back, so marking one whose advisory the ceiling
+            # then dropped would swallow the strongest existence break chameleon
+            # computes. A silent advisory still retires them -- nothing was
+            # computed to lose, and leaving them pending would re-walk a resolved
+            # deletion on every remaining Stop of the session.
             pending_del = hh._consume_pending_deletions(repo_data, session_id)
             all_deleted = list(dict.fromkeys(list(deleted_paths) + pending_del))
             crossfile_lines = hh._crossfile_existence_advisory_lines(
@@ -411,7 +428,6 @@ def stop_gates(ctx: RootContext) -> dict:
                 cfg=cfg,
                 deleted_paths=all_deleted,
             )
-            hh._mark_pending_deletions_surfaced(repo_data, session_id, all_deleted)
 
             # WP-C5: cross-WORKSPACE existence breaks -- an export this workspace
             # file removed that a SIBLING workspace still imports (read from the
@@ -504,15 +520,20 @@ def stop_gates(ctx: RootContext) -> dict:
                         match_keys=review_delivered_keys,
                     )
                 )
-            for lines in (
-                reminder_lines,
-                stale_lines,
-                cochange_lines,
-                cochist_lines,
-                crossfile_lines,
-                crossws_lines,
-                testint_lines,
-                scope_lines,
+            # The three advisories that burn a session-terminal marker carry a
+            # synthetic key each, so the packer reports back whether their block
+            # was emitted. The keys are namespaced literals; a finding match_key
+            # is a sha256 digest, so they cannot collide with the resurface /
+            # review keys filtered out of ``packed`` below.
+            for lines, keys in (
+                (reminder_lines, ()),
+                (stale_lines, ()),
+                (cochange_lines, ("advisory:changeset-completeness",)),
+                (cochist_lines, ("advisory:cochange-history",)),
+                (crossfile_lines, ("advisory:crossfile-existence",)),
+                (crossws_lines, ()),
+                (testint_lines, ()),
+                (scope_lines, ()),
             ):
                 if lines:
                     items.append(
@@ -521,8 +542,42 @@ def stop_gates(ctx: RootContext) -> dict:
                             text="<chameleon-context>\n"
                             + "\n".join(lines)
                             + "\n</chameleon-context>",
+                            match_keys=keys,
                         )
                     )
+
+            def _commit_surfacings(emitted_keys: set[str]) -> None:
+                """Retire the one-shot markers of the advisories actually emitted.
+
+                Everything else is rolled back out of ``state`` before it can be
+                persisted, so a nudge held back for space is recomputed and
+                re-offered on the next Stop instead of being retired unread.
+                Pending deletions are the exception when the advisory produced
+                nothing: no text was withheld, so nothing is lost by retiring
+                them, and keeping them would re-walk the same resolved deletion
+                every remaining Stop.
+                """
+                kept: set[str] = set()
+                for key, candidates in (
+                    ("advisory:changeset-completeness", cochange_keys),
+                    ("advisory:cochange-history", cochist_keys),
+                ):
+                    if key in emitted_keys:
+                        kept |= candidates
+                    else:
+                        state.cochange_shown -= candidates
+                if kept:
+                    # The advisory path has no downstream save_state, so without
+                    # this the marker dies with the process and the same nudge
+                    # re-renders on every consecutive Stop.
+                    try:
+                        save_state(state, repo_data, session_id or "")
+                    except Exception:
+                        pass
+                if all_deleted and (
+                    not crossfile_lines or "advisory:crossfile-existence" in emitted_keys
+                ):
+                    hh._mark_pending_deletions_surfaced(repo_data, session_id, all_deleted)
 
             try:
                 assembled = assemble_stop_context(
@@ -540,7 +595,10 @@ def stop_gates(ctx: RootContext) -> dict:
                 # item would.
                 joined = "\n\n".join(it.text for it in items)
                 if not joined:
+                    _commit_surfacings(set())
                     return {}
+                # Every item is in the join, so every one-shot marker is earned.
+                _commit_surfacings({k for it in items for k in it.match_keys})
                 return {
                     "hookSpecificOutput": {
                         "hookEventName": "Stop",
@@ -548,6 +606,7 @@ def stop_gates(ctx: RootContext) -> dict:
                     }
                 }
             if not assembled.text:
+                _commit_surfacings(set())
                 return {}
             result: dict = {
                 "hookSpecificOutput": {
@@ -563,6 +622,7 @@ def stop_gates(ctx: RootContext) -> dict:
             # stop_backstop always goes through the same root loop, which reads
             # and drops them). Each carries only the keys that actually packed.
             packed = set(assembled.packed_match_keys)
+            _commit_surfacings(packed)
             resurface_committed = tuple(k for k in resurface_match_keys if k in packed)
             if resurface_committed:
                 result["_resurface_committed_keys"] = resurface_committed

@@ -420,7 +420,8 @@ def _trim_intent_file(path: Path, max_bytes: int) -> None:
     """Drop oldest lines once the file exceeds ``max_bytes``. Best-effort.
 
     Newest intent is the routing-relevant intent, so trimming is oldest-first.
-    Atomic tmp + rename so a reader never sees a partial file.
+    Atomic tmp + rename so a reader never sees a partial file, and the tmp is
+    created at 0600 so the rename cannot widen the file's mode.
     """
     try:
         if max_bytes <= 0 or path.stat().st_size <= max_bytes:
@@ -436,9 +437,19 @@ def _trim_intent_file(path: Path, max_bytes: int) -> None:
             kept.append(line)
             used += n
         kept.reverse()
-        tmp = path.with_name(path.name + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.writelines(kept)
+        # A pid+random tmp name: a fixed one is only safe within one process, and
+        # two writers in the same session would otherwise truncate each other's
+        # staging file and publish the loser's bytes.
+        tmp = path.with_name(f"{path.name}.{os.getpid()}-{os.urandom(4).hex()}.tmp")
+        # os.replace is a rename, so the published file keeps the TMP's inode and
+        # therefore the TMP's MODE. A plain open() creates at 0666 & ~umask, which
+        # would silently widen the file holding verbatim prompt fragments to 0644
+        # right after capture_intent chmodded it to 0600. Create it at 0600.
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, "".join(kept).encode("utf-8"))
+        finally:
+            os.close(fd)
         os.replace(tmp, path)
     except OSError:
         try:

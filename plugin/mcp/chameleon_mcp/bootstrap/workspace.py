@@ -113,7 +113,7 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
     if package_json.exists():
         try:
             pkg = json.loads(safe_read_capped(package_json, max_bytes=_MAX_MANIFEST_BYTES))
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, OSError):
             pkg = {}
         workspaces = pkg.get("workspaces")
         if workspaces:
@@ -138,7 +138,7 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
     if lerna_json.exists():
         try:
             lerna = json.loads(safe_read_capped(lerna_json, max_bytes=_MAX_MANIFEST_BYTES))
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, OSError):
             lerna = {}
         packages = lerna.get("packages") or ["packages/*"]
         if isinstance(packages, list):
@@ -155,7 +155,7 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
     if turbo_json.exists():
         try:
             turbo = json.loads(safe_read_capped(turbo_json, max_bytes=_MAX_MANIFEST_BYTES))
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, OSError):
             turbo = {}
         if "pipeline" in turbo or "tasks" in turbo:
             turbo_globs = _read_turbo_globs(turbo)
@@ -165,7 +165,7 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
             elif package_json.exists():
                 try:
                     pkg = json.loads(safe_read_capped(package_json, max_bytes=_MAX_MANIFEST_BYTES))
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, OSError):
                     pkg = {}
                 pkg_ws = pkg.get("workspaces")
                 pkg_globs: list[str] = []
@@ -193,7 +193,7 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
         if ws_json.exists():
             try:
                 ws = json.loads(safe_read_capped(ws_json, max_bytes=_MAX_MANIFEST_BYTES))
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, OSError):
                 ws = {}
             projects = ws.get("projects", {}) or {}
             for project_path in projects.values():

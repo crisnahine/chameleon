@@ -26,6 +26,24 @@ from chameleon_mcp.extractors._base import ExtractorUnavailableError, ParsedFile
 from chameleon_mcp.plugin_paths import plugin_root
 
 
+def _stderr_tail(text: str | None, limit: int = 160) -> str:
+    """The dumper's last non-empty stderr line, bounded and sanitized, or "".
+
+    Folded into the skip reason so a crashed child says WHY: a node heap OOM, a
+    segfault in a native parser, and a version mismatch all exit non-zero and
+    all get the same "re-run once the toolchain is healthy" advice, which fixes
+    none of them. Sanitized because the reason reaches a user-facing error body
+    and the text comes from a subprocess reading repo files.
+    """
+    for line in reversed((text or "").splitlines()):
+        line = line.strip()
+        if line:
+            from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+            return sanitize_for_chameleon_context(line[:limit])
+    return ""
+
+
 class NodeUnavailableError(ExtractorUnavailableError):
     """Node.js / npm (or an installed node_modules) is unavailable.
 
@@ -385,10 +403,10 @@ class TypeScriptExtractor:
 
         timed_out = False
         try:
-            stdout_data, _stderr = proc.communicate(input=input_data, timeout=600)
+            stdout_data, stderr_data = proc.communicate(input=input_data, timeout=600)
         except subprocess.TimeoutExpired:
             proc.kill()
-            stdout_data, _stderr = proc.communicate()
+            stdout_data, stderr_data = proc.communicate()
             timed_out = True
 
         results = []
@@ -420,6 +438,13 @@ class TypeScriptExtractor:
         if timed_out or rc not in (0, None):
             seen = {str(pf.path) for pf in results} | {str(p) for p, _ in skipped}
             reason = "extractor_timeout" if timed_out else f"extractor_exit_{rc}"
+            # An exit code alone cannot tell a heap OOM from a version mismatch,
+            # and stderr was piped rather than inherited, so without this the
+            # child's diagnosis is unrecoverable. The prefix is preserved: the
+            # orchestrator classifies dead-child skips by it.
+            detail = _stderr_tail(stderr_data)
+            if detail:
+                reason = f"{reason}: {detail}"
             for fp in files:
                 rp = str(fp.resolve())
                 if rp not in seen:

@@ -14,6 +14,7 @@ and Round 5 AppSec recommendation #3 (single safe_open helper).
 
 from __future__ import annotations
 
+import errno
 import os
 import stat
 import unicodedata
@@ -179,16 +180,18 @@ def safe_read_capped(path: Path, *, max_bytes: int, encoding: str = "utf-8") -> 
     reachable, which is the whole point: the guard has to run BEFORE the syscall
     that would block.
 
-    Raises OSError (including UnsafeFileError, which subclasses nothing here --
-    callers already guard OSError) so existing ``except OSError`` sites keep
-    working unchanged.
+    Raises OSError -- deliberately NOT ``UnsafeFileError``, which does not
+    subclass it. Callers of these manifests already treat an unreadable file as
+    "skip this one" via ``except OSError``; raising a type outside that
+    hierarchy would turn a hostile file from a skipped manifest into a crashed
+    bootstrap, trading a hang for a different total failure.
     """
     flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
     fd = os.open(str(path), flags)
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
-            raise UnsafeFileError(f"not a regular file: {path}")
+            raise OSError(errno.EINVAL, f"not a regular file: {path}")
         raw = os.read(fd, max_bytes)
     finally:
         os.close(fd)

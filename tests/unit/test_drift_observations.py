@@ -318,12 +318,24 @@ class TestGetDriftStatusWithData:
 
 
 class TestHardCapPruning:
-    """The edit-observation hard cap (>50k) triggers a tiered prune."""
+    """The edit-observation hard cap (>50k) triggers a tiered prune.
 
-    def test_hard_cap_deletes_rows_older_than_90_days(self, tmp_path: Path, monkeypatch):
+    Driven through the `CHAMELEON_EDIT_OBS_*` env vars rather than by patching
+    the module constants: those variables are the documented operator knob for
+    bounding drift.db, and reading them at call time is the behavior under test.
+    Patching the constant would pass just as well against a build that ignored
+    the env entirely.
+    """
+
+    def _small_caps(self, monkeypatch, *, hard=10, soft=4):
+        monkeypatch.setenv("CHAMELEON_EDIT_OBS_HARD_CAP", str(hard))
+        monkeypatch.setenv("CHAMELEON_EDIT_OBS_SOFT_CAP", str(soft))
+
+    def test_hard_cap_deletes_rows_older_than_the_retention_window(
+        self, tmp_path: Path, monkeypatch
+    ):
         # Lower caps so we don't have to insert 50k rows.
-        monkeypatch.setattr(obs, "_EDIT_OBS_HARD_CAP", 10)
-        monkeypatch.setattr(obs, "_EDIT_OBS_SOFT_CAP", 4)
+        self._small_caps(monkeypatch)
 
         now = int(time.time())
         old_ts = now - 200 * 86_400  # older than the 90-day retention floor
@@ -340,9 +352,25 @@ class TestHardCapPruning:
         rels = [r[0] for r in _read_rows(REPO_A)]
         assert rels == ["new0.ts", "new1.ts", "new2.ts"]
 
+    def test_retention_window_is_operator_tunable(self, tmp_path: Path, monkeypatch):
+        # The age window is a knob like the two caps, not a literal. Widened past
+        # the rows' age, the first trim stage sheds nothing and the recency cap
+        # is what bounds the table.
+        self._small_caps(monkeypatch)
+        monkeypatch.setenv("CHAMELEON_EDIT_OBS_AGE_DAYS", "365")
+
+        now = int(time.time())
+        old_ts = now - 200 * 86_400
+        for i in range(8):
+            record_edit_observation(REPO_A, f"old{i}.ts", "a", "high", observed_at=old_ts)
+        for i in range(3):
+            record_edit_observation(REPO_A, f"new{i}.ts", "a", "high", observed_at=now)
+
+        rels = sorted(r[0] for r in _read_rows(REPO_A))
+        assert rels == ["new0.ts", "new1.ts", "new2.ts", "old7.ts"]
+
     def test_soft_cap_keeps_only_newest_when_all_recent(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setattr(obs, "_EDIT_OBS_HARD_CAP", 10)
-        monkeypatch.setattr(obs, "_EDIT_OBS_SOFT_CAP", 4)
+        self._small_caps(monkeypatch)
 
         now = int(time.time())
         # 11 recent rows: the 90-day delete removes nothing, so the second
@@ -356,14 +384,27 @@ class TestHardCapPruning:
         assert kept == ["r07.ts", "r08.ts", "r09.ts", "r10.ts"]
 
     def test_below_hard_cap_keeps_everything(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setattr(obs, "_EDIT_OBS_HARD_CAP", 10)
-        monkeypatch.setattr(obs, "_EDIT_OBS_SOFT_CAP", 4)
+        self._small_caps(monkeypatch)
 
         now = int(time.time())
         for i in range(10):  # exactly at the cap, not over it
             record_edit_observation(REPO_A, f"r{i:02d}.ts", "a", "high", observed_at=now)
         # count == 10 is not > 10, so no pruning fires.
         assert len(_read_rows(REPO_A)) == 10
+
+    def test_overrides_prune_on_the_same_operator_caps(self, tmp_path: Path, monkeypatch):
+        # rule_overrides shares the retention schedule; it read the same frozen
+        # literals and so ignored the same env vars.
+        from chameleon_mcp.drift.observations import record_override
+
+        self._small_caps(monkeypatch)
+        now = int(time.time())
+        for i in range(11):
+            record_override(REPO_A, f"rule-{i:02d}", observed_at=now + i)
+
+        conn = obs._get_drift_conn(REPO_A)
+        (count,) = conn.execute("SELECT COUNT(*) FROM rule_overrides").fetchone()
+        assert count == 4
 
 
 class TestConnectionCache:

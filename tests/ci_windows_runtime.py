@@ -6,7 +6,7 @@ catch a hook that fails-open because its venv-python path is POSIX-only).
 
 Phase 1 - hook plumbing: drive each hook through run-hook.cmd with synthetic
 stdin. A hook whose python path is wrong fails-open to "{}" (still valid JSON),
-so the real signal is the hook error log: it must record no "failed (python="
+so the real signal is the hook error log: it must record no wrapper failure
 line. Output must also be a valid JSON object.
 
 Phase 2 - lifecycle: bootstrap -> trust -> refresh a throwaway TS repo, which
@@ -28,7 +28,16 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PLUGIN_DIR = REPO_ROOT / "plugin"
 MCP_DIR = PLUGIN_DIR / "mcp"
 RUN_HOOK = PLUGIN_DIR / "hooks" / "run-hook.cmd"
+HOOKS_JSON = PLUGIN_DIR / "hooks" / "hooks.json"
 IS_WINDOWS = sys.platform == "win32"
+
+# The two anchors every wrapper's fail-open branch writes, as
+# `<name> failed (rc=${rc}, python=${CHAMELEON_PY[*]})`. Matching the whole
+# literal is what let this gate rot: an earlier spelling carried no rc, so a
+# single-token grep for `failed (python=` matched nothing a current wrapper
+# writes and the check passed on a runner where every hook failed to spawn.
+# Keep this in step with degraded_telemetry's parser, which reads the same line.
+_WRAPPER_FAILURE_ANCHORS = ("failed (", "python=")
 
 fails: list[str] = []
 
@@ -50,6 +59,29 @@ def _invoke_hook(name: str, payload: str, env: dict) -> subprocess.CompletedProc
     return subprocess.run(
         cmd, input=payload, capture_output=True, text=True, env=env, timeout=60
     )
+
+
+def _wired_hook_names() -> set[str]:
+    """Wrapper names hooks.json actually wires, e.g. {"session-start", ...}.
+
+    Each command is `"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd" <name>`, so the
+    trailing token is the wrapper. An unreadable manifest yields an empty set:
+    this feeds a coverage check, and a parse problem must not masquerade as a
+    missing hook.
+    """
+    try:
+        manifest = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return set()
+    names: set[str] = set()
+    for entries in (manifest.get("hooks") or {}).values():
+        for entry in entries or ():
+            for hook in (entry or {}).get("hooks") or ():
+                command = (hook or {}).get("command") or ""
+                tokens = command.split()
+                if len(tokens) >= 2:
+                    names.add(tokens[-1])
+    return names
 
 
 def phase1_hooks() -> None:
@@ -79,7 +111,29 @@ def phase1_hooks() -> None:
             '"tool_response":{"content":"const x = 1;","success":true},"session_id":"ci"}',
         ),
         ("callout-detector", '{"user_prompt":"hello world","session_id":"ci"}'),
+        # A live PreToolUse hook on the Skill matcher.
+        (
+            "peer-skill-advise",
+            '{"tool_name":"Skill","tool_input":{"skill":"superpowers:brainstorming"},'
+            '"session_id":"ci"}',
+        ),
+        # The widest wrapper: multi-root discovery, flock/sidecar locking, the
+        # detached job spawn (whose Windows creationflags branch nothing else
+        # executes), and the only hook that can block turn end.
+        ("stop-backstop", '{"session_id":"ci","hook_event_name":"Stop"}'),
     ]
+
+    # A wrapper wired in hooks.json but absent from the table above would be
+    # driven by nothing on Windows while this job's caption claims it covers
+    # every hook. Derive the expectation from the manifest so newly-wired
+    # wrappers fail here instead of going silently unexercised.
+    driven = {name for name, _ in hooks}
+    missing = sorted(_wired_hook_names() - driven)
+    check(
+        "hooks.every_wired_hook_is_driven",
+        not missing,
+        "all hooks.json wrappers driven" if not missing else f"UNDRIVEN: {missing}",
+    )
 
     for name, payload in hooks:
         try:
@@ -98,12 +152,15 @@ def phase1_hooks() -> None:
             check(f"hook:{name}.json", ok_json, f"valid JSON dict (rc={res.returncode})")
 
     # The load-bearing assertion: no hook fell into the python-failure branch.
+    # A wrapper that cannot spawn python still prints "{}" and exits 0 by design,
+    # so it passes the valid-JSON checks above exactly like a healthy one -- this
+    # log read is the only thing that tells the two apart.
     log_text = log_file.read_text(errors="ignore") if log_file.is_file() else ""
-    bad = [ln for ln in log_text.splitlines() if "failed (python=" in ln]
+    bad = [ln for ln in log_text.splitlines() if all(a in ln for a in _WRAPPER_FAILURE_ANCHORS)]
     check(
         "hooks.python_actually_ran",
         not bad,
-        "no 'failed (python=' in error log" if not bad else f"FAILURES: {bad}",
+        "no wrapper failure line in error log" if not bad else f"FAILURES: {bad}",
     )
     # session-start emits the using-chameleon skill when python runs; prove the
     # process produced real output, not just a fail-open {}.

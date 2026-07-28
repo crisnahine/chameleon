@@ -6185,12 +6185,27 @@ def get_drift_status(repo: str) -> dict:
     repo_data = plugin_data_dir() / repo_id
     trust = trust_state_for(repo_id) if repo_data.is_dir() else None
 
+    # Two workspaces of a monorepo share one repo_id, and the record's top-level
+    # granted_at is the FIRST root's grant time -- it stays put when a later
+    # sibling root is granted. Reading it here would age a workspace trusted
+    # today by the other root's history and recommend a refresh the profile does
+    # not need. Ask the per-root map when we know which root the caller means;
+    # it falls back to the top-level value for legacy records and for the bare
+    # repo_id call shape, which carries no root to key on.
+    granted_at = None
+    if trust is not None:
+        granted_at = (
+            trust.granted_at_for_root(resolved_path)
+            if resolved_path is not None
+            else trust.granted_at
+        )
+
     days_since_refresh: int | None = None
-    if trust is not None and trust.granted_at:
+    if granted_at:
         try:
             import calendar as _calendar
 
-            granted_epoch = _calendar.timegm(time.strptime(trust.granted_at, "%Y-%m-%dT%H:%M:%SZ"))
+            granted_epoch = _calendar.timegm(time.strptime(granted_at, "%Y-%m-%dT%H:%M:%SZ"))
             days_since_refresh = max(0, int((time.time() - granted_epoch) / 86_400))
         except ValueError:
             days_since_refresh = None
@@ -7039,6 +7054,37 @@ def get_longitudinal_signals(repo: str, window_days: int | None = None) -> dict:
     return _envelope(signals)
 
 
+def _sanitize_ledger_record(value):
+    """Deep-sanitize a review-ledger or attestation payload for the model surface.
+
+    Every string leaf in these records is repo-derived: the file paths a branch
+    author chose, rule names, check reasons. The ledger's own normalizer only
+    type-checks them (``value if isinstance(value, str) else None``) -- it
+    escapes nothing -- so without this they reach the model raw inside a
+    ``<chameleon-context>`` block, unlike the verdict's ``changed_files``, which
+    are sanitized on the way out of the same file.
+
+    HMAC verification already happened on the read path, so rewriting a leaf
+    here cannot invalidate anything: tamper-EVIDENCE is not tamper-SAFETY, and a
+    signed record is still attacker-authored text. Structure-preserving --
+    non-string leaves pass through untouched and the input is never mutated.
+    """
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+    if isinstance(value, str):
+        return sanitize_for_chameleon_context(value)
+    if isinstance(value, dict):
+        return {
+            (sanitize_for_chameleon_context(k) if isinstance(k, str) else k): (
+                _sanitize_ledger_record(v)
+            )
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_ledger_record(v) for v in value]
+    return value
+
+
 def get_review_history(
     repo: str, limit: int | None = None, include_attestations: bool = False
 ) -> dict:
@@ -7112,13 +7158,16 @@ def get_review_history(
         from chameleon_mcp.review_ledger import read_review_history
 
         history = read_review_history(repo_id, limit)
+        history["records"] = _sanitize_ledger_record(history.get("records") or [])
     except Exception:
         history = {"repo_id": repo_id, "records": [], "total": 0, "unverified": 0}
     if include_attestations:
         try:
             from chameleon_mcp.review_ledger import read_session_attestations
 
-            history["attestations"] = read_session_attestations(repo_id, limit=10)["records"]
+            history["attestations"] = _sanitize_ledger_record(
+                read_session_attestations(repo_id, limit=10)["records"]
+            )
         except Exception:
             history["attestations"] = []
     return _envelope(history)
@@ -10515,11 +10564,6 @@ def _calibrate_block_rules_for_repo(repo_root: Path) -> None:
         loaded = load_profile_dir(profile_dir)
         conformance: dict = {}
         verdicts = calibrate_block_rules(repo_root, loaded, conformance_out=conformance)
-        # Which committed files still deviate, from the scan that just ran. Off
-        # the trust-hashed surface: it is an observation about the repo's current
-        # state, not a convention anyone approved, and hashing it would arm the
-        # trust gate on ordinary code movement.
-        _write_conformance_map(repo_root, conformance)
         # Feed the team's lived override behavior back into the verdict: a rule the
         # team keeps overriding in practice drops to advisory. Isolated so an
         # unreadable override stream leaves the structural calibration untouched.
@@ -10558,6 +10602,16 @@ def _calibrate_block_rules_for_repo(repo_root: Path) -> None:
         except Exception:
             pass
         write_block_rules(profile_dir, verdicts)
+        # Which committed files still deviate, from the scan that just ran. Off
+        # the trust-hashed surface: it is an observation about the repo's current
+        # state, not a convention anyone approved, and hashing it would arm the
+        # trust gate on ordinary code movement.
+        #
+        # Written AFTER write_block_rules: the map stamps a hash of the profile
+        # it describes, enforcement.json is part of that hashed surface, and a
+        # stamp taken before the verdict lands would never match what a reader
+        # hashes -- reporting a map written seconds ago as stale.
+        _write_conformance_map(repo_root, conformance)
     except Exception:
         pass
 

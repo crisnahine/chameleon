@@ -38,6 +38,47 @@ _DANGEROUS_TOKENS = (
 _BIDI_CONTROLS = "‪‫‬‭‮⁦⁧⁨⁩"
 _BIDI_RE = re.compile(f"[{_BIDI_CONTROLS}]")
 
+# Invisible characters Unicode does NOT classify as format (Cf): the variation
+# selectors and their supplement, and the combining grapheme joiner, all of
+# which report as Mn. They render as nothing, so a token carrying one is still
+# read as the token by the model while no longer matching it literally.
+_HIDDEN_MARKS = frozenset(
+    [
+        chr(0x034F),
+        *(chr(cp) for cp in range(0xFE00, 0xFE10)),
+        *(chr(cp) for cp in range(0xE0100, 0xE01F0)),
+    ]
+)
+
+# DEL is the only invisible character reachable in pure-ASCII text, so it is
+# matched here rather than by the category sweep, which the ASCII fast path skips.
+_ASCII_INVISIBLE_RE = re.compile("\x7f")
+
+
+def _strip_invisible(content: str) -> str:
+    """Drop every character that renders as nothing.
+
+    Decided by CATEGORY, not by an enumeration: every format character (Cf --
+    the zero widths, the bidi controls, soft hyphen, the Mongolian vowel
+    separator, the invisible math operators, the Unicode Tags block) plus the
+    invisible marks Cf misses. An enumerated class kept letting new obfuscators
+    through -- a soft hyphen inside ``</chameleon-context>`` hides the boundary
+    from the literal comparison below while the model still reads the tag, and
+    NFC folds none of them away.
+
+    Pure-ASCII content (the overwhelming majority of what is sanitized) skips
+    the per-character walk entirely.
+    """
+    cleaned = _ASCII_INVISIBLE_RE.sub("", content)
+    if cleaned.isascii():
+        return cleaned
+    return "".join(
+        ch
+        for ch in cleaned
+        if ch.isascii() or (unicodedata.category(ch) != "Cf" and ch not in _HIDDEN_MARKS)
+    )
+
+
 # Forged chameleon status header, e.g. `[🦎 chameleon: ...]` or the
 # `[🦎 archetype: clean]` verdict form. The lizard emoji is chameleon's marker
 # signature and never appears in real source, so keying the neutralizer on the
@@ -60,8 +101,10 @@ def sanitize_for_chameleon_context(content: str) -> str:
     literal tag-boundary replacement.
 
     Defensive transformations:
-    1. Strip zero-width / invisible-format unicode (U+200B–U+200D, U+FEFF,
-       U+2060, and the directional marks U+200E/U+200F/U+061C) — must be first.
+    1. Strip every invisible character — the whole Cf format category (zero
+       widths, soft hyphen, the invisible math operators, the Tags block, the
+       directional marks) plus the variation selectors and the combining
+       grapheme joiner — must be first. See ``_strip_invisible``.
     2. Strip bidi formatting controls (U+202A–U+202E + U+2066–U+2069) — the
        Trojan Source / CVE-2021-42574 character set. Removed byte-for-byte
        (no replacement marker) so the underlying logical order is restored.
@@ -73,7 +116,9 @@ def sanitize_for_chameleon_context(content: str) -> str:
     6. Replace each dangerous token with a `[chameleon-sanitized: <text>]`
        annotation so the meaning is preserved but the structure is broken.
     """
-    cleaned = re.sub(r"[​-‍﻿⁠‎‏؜]", "", content)
+    cleaned = _strip_invisible(content)
+    # Redundant after the sweep above (bidi controls are Cf), kept because it
+    # names the Trojan Source class this defense exists for.
     cleaned = _BIDI_RE.sub("", cleaned)
     cleaned = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", cleaned)
     cleaned = re.sub(r"\x1b\][^\x07]*\x07?", "", cleaned)

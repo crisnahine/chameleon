@@ -212,14 +212,14 @@ class EnforcementConfig:
     # surface an advisory naming what was weakened. Deterministic, zero model
     # spawn; advisory only, never a block. Set false to opt out.
     test_integrity_review: bool = True
-    # multi_lens_review: on by default. When True (and mode is shadow/enforce),
-    # the turn-end review runs a coordinated multi-lens pass (correctness +
-    # duplication today) merged through lens_synthesis instead of the separate
-    # correctness-judge and duplication gates, so duplication is no longer starved
-    # by the single-spawn defer. It REPLACES (does not add to) the correctness-judge
-    # and duplication gates for the turn -- the per-turn reviewer budget rises from
-    # one spawn to the lens set, still advisory only, never a block. Set false to
-    # restore the separate single-spawn correctness and duplication gates.
+    # multi_lens_review: vestigial; no longer read by anything. It used to pick
+    # the coordinated multi-lens pass over the separate single-spawn correctness
+    # and duplication gates. Those separate gates no longer exist -- every
+    # turn-end review is one job running whatever `stop.lenses.active_lenses`
+    # selects, and that reads only correctness_judge / duplication_review /
+    # idiom_review. Setting it false does NOT reduce the per-turn reviewer
+    # budget. Kept (accepted, type-validated, defaulted True) so a committed
+    # config carrying it still loads unchanged.
     multi_lens_review: bool = True
     # calibration: per-repo tuning for the refresh-time override-feedback
     # demotion (see CalibrationConfig above). Defaults mirror the global

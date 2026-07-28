@@ -781,3 +781,37 @@ class TestReadPriorWorkspaceParent:
         pd.mkdir()
         (pd / "profile.json").write_text("{ not valid json ][")
         assert orch._read_prior_workspace_parent(pd) is None  # corrupt
+
+
+def test_manifest_that_is_a_fifo_does_not_hang_detection(tmp_path):
+    """`.exists()` follows symlinks and git stores them, so a committed
+    `package.json -> /dev/zero` (or any FIFO) made read_text never return --
+    /chameleon-init on a fresh clone hung before any other bootstrap work."""
+    import os
+
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("POSIX only")
+    os.mkfifo(tmp_path / "package.json")
+
+    from chameleon_mcp.bootstrap.workspace import detect_workspace
+
+    info = detect_workspace(tmp_path)
+    assert info.is_workspace is False
+
+
+def test_real_workspace_still_detected(tmp_path):
+    import json as _json
+
+    (tmp_path / "packages" / "a").mkdir(parents=True)
+    (tmp_path / "package.json").write_text(
+        _json.dumps({"name": "root", "workspaces": ["packages/*"]}), encoding="utf-8"
+    )
+    (tmp_path / "packages" / "a" / "package.json").write_text(
+        _json.dumps({"name": "@x/a"}), encoding="utf-8"
+    )
+
+    from chameleon_mcp.bootstrap.workspace import detect_workspace
+
+    info = detect_workspace(tmp_path)
+    assert info.is_workspace is True
+    assert info.manager == "yarn"

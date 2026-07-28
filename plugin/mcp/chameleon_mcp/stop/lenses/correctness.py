@@ -107,6 +107,14 @@ def run(
     try:
         diffs = judge.collect_file_diffs(repo_root, files, archetype_for)
         if not diffs:
+            # Named, like every other degraded seam below: an empty diff set is
+            # NOT the same as a clean review. It also covers a turn whose every
+            # edited path was dropped by collect_file_diffs' forbidden-segment
+            # filter, or whose files no longer exist -- reported as "reviewed,
+            # clean" this would put a dead state into ok. The input count is the
+            # cheapest discriminator available here: 0 means the turn edited
+            # nothing reviewable, N means N paths went in and none survived.
+            _sink("no_diffs", f"files={len(files or ())}")
             return LensResult(findings=[], check_events=events)
 
         # One config read for all three grounding flags (each default on; an

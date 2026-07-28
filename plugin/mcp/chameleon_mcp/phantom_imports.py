@@ -74,10 +74,8 @@ _NON_CODE_EXT_RE = re.compile(
     r"\.(css|scss|sass|less|svg|png|jpe?g|gif|webp|avif|md|mdx|graphql|gql|ya?ml|vue|wasm)$",
     re.IGNORECASE,
 )
-_IGNORE_TS_RE = re.compile(r"//\s*chameleon-ignore\s+([\w-]+)")
 
 _RUBY_REQUIRE_RELATIVE_RE = re.compile(r"^\s*require_relative\s+['\"]([^'\"]+)['\"]", re.MULTILINE)
-_IGNORE_RUBY_RE = re.compile(r"#\s*chameleon-ignore\s+([\w-]+)")
 # A Python relative import: `from .mod import x`, `from ..pkg.sub import y, z`,
 # `from . import z`. group(1) = leading dots (relative level), group(2) = the
 # dotted module after the dots (empty for `from . import`), group(3) = the
@@ -672,6 +670,30 @@ def _alias_targets(spec: str, paths: dict, ts_config_dir: Path) -> list[Path]:
     return out
 
 
+def _ignored_rules(content: str, file_path: str | None, language: str | None) -> frozenset[str]:
+    """Rule names an inline ``chameleon-ignore`` directive suppresses in this file.
+
+    Routed through violation_class's parser rather than a local regex so the two
+    modules cannot disagree about what a directive IS. That matters because the
+    checks in this module suppress at the gate -- they return no Violation at all,
+    so nothing downstream is left to re-adjudicate with the real grammar. The
+    shared parser requires the rule name to end its line (prose that merely
+    mentions a directive never activates it), blanks string literals first (text
+    inside a constant is content, not author intent), and honors the ``-file``
+    and block-comment forms. Fails closed to "nothing ignored": a parse failure
+    must never silently switch off a block-eligible check.
+    """
+    if "chameleon-ignore" not in content:
+        return frozenset()
+    try:
+        from chameleon_mcp.violation_class import build_ignore_index
+
+        index = build_ignore_index(content, file_path=file_path, language=language)
+    except Exception:
+        return frozenset()
+    return index.all_rules() if index is not None else frozenset()
+
+
 def lint_phantom_imports(
     content: str,
     *,
@@ -701,7 +723,7 @@ def lint_phantom_imports(
 
     violations: list[Violation] = []
     if language == "typescript":
-        _ignored = {m.group(1) for m in _IGNORE_TS_RE.finditer(content)}
+        _ignored = _ignored_rules(content, file_path, language)
         if _RULE in _ignored:
             return []
         # phantom-symbol can be suppressed independently of phantom-import; the
@@ -863,7 +885,7 @@ def lint_phantom_imports(
             if any(_safe_is_dir(t.parent) for t in targets):
                 violations.append(_violation(spec, targets[0].parent, root))
     elif language == "ruby":
-        if _RULE in {m.group(1) for m in _IGNORE_RUBY_RE.finditer(content)}:
+        if _RULE in _ignored_rules(content, file_path, language):
             return []
         seen_rb: set[str] = set()
         for m in _RUBY_REQUIRE_RELATIVE_RE.finditer(content):
@@ -895,7 +917,7 @@ def lint_phantom_imports(
         from chameleon_mcp.lint_engine import _blank_python_strings
 
         scan = _blank_python_strings(content)
-        _ignored_py = {m.group(1) for m in _IGNORE_RUBY_RE.finditer(scan)}
+        _ignored_py = _ignored_rules(content, file_path, language)
         if _RULE in _ignored_py:
             return []
         symbol_check_on = _SYMBOL_RULE not in _ignored_py
@@ -1060,6 +1082,11 @@ _CLAUSE_NAME_RE = re.compile(r"[A-Za-z_$][\w$]*(?:\s+as\s+([A-Za-z_$][\w$]*))?")
 # is falsely flagged as a broken existence-break on an unmodified file.
 _TS_EXPORT_DESTRUCTURE_RE = re.compile(r"\bexport\s+(?:declare\s+)?(?:const|let|var)\s+([{\[])")
 _LEADING_IDENT_RE = re.compile(r"[A-Za-z_$][\w$]*")
+# Hard bound on how many export names one file's live re-parse collects. Hitting it
+# abandons the parse mid-pipeline, so the names gathered so far are a PREFIX, not the
+# file's real export set -- every cap site returns open=True for that reason: a name
+# missing from a truncated prefix is not evidence it stopped being exported, and a
+# barrel with more than this many exports would otherwise read as removing all of them.
 _MAX_EXPORT_NAMES = 1000
 
 
@@ -1163,13 +1190,13 @@ def _current_export_names_uncached(content: str) -> tuple[frozenset[str], bool]:
             continue
         names.add(m.group(1))
         if len(names) >= _MAX_EXPORT_NAMES:
-            return frozenset(names), False
+            return frozenset(names), True
     for m in _TS_EXPORT_DECL_RE.finditer(stripped):
         if _masked(m.start()):
             continue
         names.add(m.group(1))
         if len(names) >= _MAX_EXPORT_NAMES:
-            return frozenset(names), False
+            return frozenset(names), True
     for clause in _TS_EXPORT_CLAUSE_RE.finditer(stripped):
         if _masked(clause.start()):
             continue
@@ -1194,7 +1221,7 @@ def _current_export_names_uncached(content: str) -> tuple[frozenset[str], bool]:
             if exported and exported != "default":
                 names.add(exported)
             if len(names) >= _MAX_EXPORT_NAMES:
-                return frozenset(names), False
+                return frozenset(names), True
     for dm in _TS_EXPORT_DESTRUCTURE_RE.finditer(stripped):
         if _masked(dm.start()):
             continue
@@ -1207,7 +1234,7 @@ def _current_export_names_uncached(content: str) -> tuple[frozenset[str], bool]:
             return frozenset(), True
         names.update(dnames)
         if len(names) >= _MAX_EXPORT_NAMES:
-            return frozenset(names), False
+            return frozenset(names), True
     return frozenset(names), False
 
 
@@ -1335,7 +1362,13 @@ def _python_current_export_names(
                     ) or os.path.isfile(os.path.join(pkg_dir, entry, "__init__.pyi")):
                         names.add(entry)
             except OSError:
-                pass
+                # The package dir could not be enumerated (unreadable, removed
+                # mid-turn, a dead mount), so its submodule names are unknown --
+                # exactly as unenumerable as a PEP 562 __getattr__. Whatever the
+                # walk collected before raising is a partial prefix, so the set
+                # must not be advertised as authoritative or every submodule an
+                # importer names would read as a removed export.
+                open_set = True
 
     return frozenset(names), open_set
 
@@ -1384,19 +1417,7 @@ def lint_cross_file_imports(
     if not _under_repo(fp, root):
         return []
 
-    # Python uses `#` comment directives; TS uses `//`. Both ignore patterns are
-    # `<comment> chameleon-ignore <rule>`; pick the one for the language. For
-    # Python, blank string literals first so a directive inside a docstring is
-    # not read as author intent.
-    if language == "python":
-        from chameleon_mcp.lint_engine import _blank_python_strings
-
-        _ignore_scan = _blank_python_strings(content)
-        _ignore_re = _IGNORE_RUBY_RE
-    else:
-        _ignore_scan = content
-        _ignore_re = _IGNORE_TS_RE
-    ignored = {m.group(1) for m in _ignore_re.finditer(_ignore_scan)}
+    ignored = _ignored_rules(content, file_path, language)
     crossfile_on = _CROSSFILE_RULE not in ignored
     broken_on = _BROKEN_EXPORT_RULE not in ignored
     if not crossfile_on and not broken_on:
