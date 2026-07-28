@@ -180,7 +180,6 @@ def detect_language(file_path: str | None) -> str | None:
     return None
 
 
-_TS_LINE_COMMENT = re.compile(r"//[^\n]*")
 _TS_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
 _TS_STRING = re.compile(
     r"""(?<!\\)(?:

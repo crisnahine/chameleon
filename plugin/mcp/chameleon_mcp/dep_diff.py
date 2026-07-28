@@ -424,7 +424,6 @@ def _install_script_value_is_command(value: str) -> bool:
     return not (_looks_like_dep_value(value) and not _SCRIPT_COMMAND_HINT_RE.search(value))
 
 
-_REMOVED_JSON_KEY_RE = re.compile(r'^-\s*"([^"]+)"\s*:\s*(.*)$')
 # Every ``"key": "value"`` string pair on one line. A compact/inline dependency
 # object keeps several deps on a SINGLE line (``"dependencies": { "next": "^1",
 # "react": "^2" }``); a per-line-single-key match would read only the first key
