@@ -7,13 +7,6 @@ import json
 
 from tests.journey.harness.checkpoints import PhaseOutcome
 
-# Fully-qualified names of the three dispatcher tools (v3 MCP surface split).
-# The folded lifecycle / review / telemetry operations are invoked as
-# `action` arguments on these; acts allow-list the dispatcher, not the action.
-MCP_LIFECYCLE = "mcp__plugin_chameleon_chameleon-mcp__chameleon_lifecycle"
-MCP_REVIEW = "mcp__plugin_chameleon_chameleon-mcp__chameleon_review"
-MCP_TELEMETRY = "mcp__plugin_chameleon_chameleon-mcp__chameleon_telemetry"
-
 
 @dataclasses.dataclass
 class ActResult:

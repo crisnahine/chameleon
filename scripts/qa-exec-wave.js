@@ -12,16 +12,16 @@ const WS = (args && args.ws) || HOME + '/Documents/Projects/chameleon-fullmatrix
 const DEV = (args && args.dev) || HOME + '/Documents/Projects/chameleon'
 
 const COLS = {
-  C1: { repo: 'ts-plain', lang: 'typescript', fw: 'none', ext: 'ts', cmt: '//', dump: 'ts_dump.mjs' },
-  C2: { repo: 'ts-nextjs', lang: 'typescript', fw: 'nextjs', ext: 'tsx', cmt: '//', dump: 'ts_dump.mjs' },
-  C3: { repo: 'ts-nestjs', lang: 'typescript', fw: 'nestjs', ext: 'ts', cmt: '//', dump: 'ts_dump.mjs' },
-  C4: { repo: 'rb-plain', lang: 'ruby', fw: 'none', ext: 'rb', cmt: '#', dump: 'prism_dump.rb' },
-  C5: { repo: 'rb-rails', lang: 'ruby', fw: 'rails', ext: 'rb', cmt: '#', dump: 'prism_dump.rb' },
-  C6: { repo: 'py-plain', lang: 'python', fw: 'none', ext: 'py', cmt: '#', dump: 'libcst_dump.py' },
-  C7: { repo: 'py-django', lang: 'python', fw: 'django', ext: 'py', cmt: '#', dump: 'libcst_dump.py' },
-  C8: { repo: 'py-drf', lang: 'python', fw: 'django+drf', ext: 'py', cmt: '#', dump: 'libcst_dump.py' },
-  C9: { repo: 'py-flask', lang: 'python', fw: 'flask', ext: 'py', cmt: '#', dump: 'libcst_dump.py' },
-  C10: { repo: 'py-fastapi', lang: 'python', fw: 'fastapi', ext: 'py', cmt: '#', dump: 'libcst_dump.py' },
+  C1: { repo: 'ts-plain', lang: 'typescript', fw: 'none', cmt: '//', dump: 'ts_dump.mjs' },
+  C2: { repo: 'ts-nextjs', lang: 'typescript', fw: 'nextjs', cmt: '//', dump: 'ts_dump.mjs' },
+  C3: { repo: 'ts-nestjs', lang: 'typescript', fw: 'nestjs', cmt: '//', dump: 'ts_dump.mjs' },
+  C4: { repo: 'rb-plain', lang: 'ruby', fw: 'none', cmt: '#', dump: 'prism_dump.rb' },
+  C5: { repo: 'rb-rails', lang: 'ruby', fw: 'rails', cmt: '#', dump: 'prism_dump.rb' },
+  C6: { repo: 'py-plain', lang: 'python', fw: 'none', cmt: '#', dump: 'libcst_dump.py' },
+  C7: { repo: 'py-django', lang: 'python', fw: 'django', cmt: '#', dump: 'libcst_dump.py' },
+  C8: { repo: 'py-drf', lang: 'python', fw: 'django+drf', cmt: '#', dump: 'libcst_dump.py' },
+  C9: { repo: 'py-flask', lang: 'python', fw: 'flask', cmt: '#', dump: 'libcst_dump.py' },
+  C10: { repo: 'py-fastapi', lang: 'python', fw: 'fastapi', cmt: '#', dump: 'libcst_dump.py' },
 }
 
 const SCHEMA = {

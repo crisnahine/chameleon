@@ -1582,13 +1582,6 @@ CREATE TABLE decision_log (
   match_quality TEXT, confidence_band TEXT, violations_raised INTEGER NOT NULL DEFAULT 0,
   blockable_rules TEXT, outcome TEXT NOT NULL, content_digest TEXT,
   session_id TEXT, observed_at INTEGER NOT NULL);
-
--- Surfaced-finding ledger (the finding->fix loop). Durable, NOT reset on refresh.
-CREATE TABLE judge_findings (
-  id INTEGER PRIMARY KEY, session_id TEXT, lens TEXT NOT NULL, severity TEXT,
-  rel_path TEXT, line INTEGER, anchor_digest TEXT, fingerprint TEXT NOT NULL,
-  ws_root TEXT, status TEXT NOT NULL DEFAULT 'open',
-  observed_at INTEGER NOT NULL, resolved_at INTEGER);
 ```
 
 `observed_drift_score` is `clamp(0, 1, 1 - mean(confidence_observed))` over a
@@ -1598,20 +1591,15 @@ least 10 observations) and a cooldown marker is older than its TTL (default 7
 days). `rule_overrides` and `decision_log` are durable because the questions
 they answer (is a convention fighting the team; what did chameleon know when
 a defect escaped) span many profile revisions; they are bounded by an
-age-then-recency trim, not drop-and-recreate. `judge_findings` backed the
-pre-3.4.0 finding->fix ledger the same way (`fingerprint` the per-(lens,
-file, locus) dedup key, `anchor_digest` the reviewed file's content digest at
-review time, `status` walking open / addressed / resurfaced / ignored,
-`ws_root` scoping each row to the workspace that wrote it) but is retired:
-the async-first cutover moved the finding->fix loop to `review_ledger.py`'s
-`findings_ledger.json` (see [Enforcement](#enforcement)), and nothing reads
-or writes this table anymore. Its DDL is left in place (a stale
-`judge_findings` row from before the cutover is not migrated — a documented,
-low-impact gap) rather than dropped, since `drift.db` is a cache a schema
-bump can drop-and-recreate freely anyway.
+age-then-recency trim, not drop-and-recreate. A `judge_findings` table backed
+the pre-3.4.0 finding->fix ledger; the async-first cutover moved that loop to
+`review_ledger.py`'s `findings_ledger.json` (see
+[Enforcement](#enforcement)), and its DDL is gone. A pre-cutover row is not
+migrated — a documented, low-impact gap, and harmless because `drift.db` is a
+cache a schema bump may drop and recreate.
 
-(There is no `files` table; the old per-file cache table was removed when it lost
-its last reader.)
+(There is no `files` table either; the old per-file cache table was removed when
+it lost its last reader.)
 
 ### index.db (single, `<data>/index.db`)
 
@@ -1827,8 +1815,7 @@ re-bootstrap re-clusters under the new metric. The first migration script will
 be authored when a bump needs one.
 
 `drift.db` is a cache: drop-and-recreate is permitted on a schema bump (the
-durable `rule_overrides`, `decision_log`, and `judge_findings` tables migrate
-additively).
+durable `rule_overrides` and `decision_log` tables migrate additively).
 `index.db` uses additive-only `ALTER TABLE`.
 
 **MCP tool surface** is a public API. Adding a tool, an optional field, or

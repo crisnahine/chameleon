@@ -19,6 +19,9 @@ import os
 from typing import Final
 
 DEFAULTS: Final[dict[str, int | float]] = {
+    # Raised from 50: workspaces 501+ were never analyzed. This is a sampling
+    # cap, not a safety guard -- REPO_SIZE_GUARD is the post-exclusion DoS
+    # backstop.
     "WORKSPACE_FANOUT_CAP": 500,
     "WARNING_SAMPLE_PATHS": 3,
     "SPARSE_WARNING_LIMIT": 50,
@@ -610,11 +613,6 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # literal repr in a single violation; past the cap a '+N more (capped at
     # ...)' summary reports the remainder, mirroring the secret-scan cap.
     "TOP_LEVEL_NODE_KINDS_REPR_CAP": 50,
-    # Cap on proposed-content characters the PreToolUse hard-secret deny
-    # scans, consistent with the 100KB ceiling every existing content scan
-    # shares. A secret placed past the cap escapes the pre-write deny but
-    # still meets the PostToolUse and Stop scans.
-    "PREWRITE_SECRET_SCAN_MAX_CHARS": 100_000,
     # Above this many sub-clusters, a named archetype's single canonical witness
     # is one sub-role's exemplar, not the archetype template, so the Tier-2 lead
     # downgrades "mirror closely" to "loose reference" even on a structural match.
@@ -626,7 +624,8 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # boundary with an honest marker.
     "TIER2_WITNESS_MAX_CHARS": 16_000,
     # The DETERMINISTIC hard-secret / hard-eval PreToolUse DENY paths scan a much
-    # larger window than the advisory 100KB cap above: the deny is the only gate
+    # larger window than the 100KB ceiling the on-disk lint paths use: the deny
+    # is the only gate
     # that stops the write from landing on disk (PostToolUse/Stop fire after the
     # bytes are already written), so a token padded past a small prefix cap must
     # not evade it. Any single proposed write up to this ceiling is scanned in

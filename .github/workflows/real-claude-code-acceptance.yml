@@ -108,16 +108,9 @@ jobs:
         if: steps.secrets-check.outputs.missing == 'false'
         run: npm install -g @anthropic-ai/claude-code
 
-      - name: Authenticate Claude Code
-        if: steps.secrets-check.outputs.missing == 'false'
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-        run: |
-          # The acceptance test spawns the `claude` binary, which reads
-          # CLAUDE_CODE_OAUTH_TOKEN from the environment. We forward it
-          # via the `env` block on the test-runner step below.
-          echo "OAuth token wired through env (not echoed)."
-
+      # No `claude auth` step: the acceptance test spawns the `claude` binary,
+      # which reads CLAUDE_CODE_OAUTH_TOKEN straight from the environment, and
+      # the step below forwards it via its own `env` block.
       - name: Run real-Claude-Code acceptance test
         if: steps.secrets-check.outputs.missing == 'false'
         working-directory: plugin/mcp

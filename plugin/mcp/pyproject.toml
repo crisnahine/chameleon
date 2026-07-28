@@ -52,7 +52,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
-    "pytest-asyncio>=0.23.0",
     "ruff>=0.6.0",
 ]
 
@@ -96,8 +95,3 @@ ignore = [
 # Path is relative to this pyproject.toml; the test suite lives two levels
 # above (`../../tests/`) when running from `plugin/mcp/`.
 "../../tests/**" = ["B007"]
-"tests/**" = ["B007"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-asyncio_mode = "auto"

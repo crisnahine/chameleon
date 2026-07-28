@@ -668,12 +668,6 @@ def _select_extractor(repo_root: Path) -> Extractor | None:
     return select_extractor(repo_root)
 
 
-# Raised from 50: workspaces 501+ were never analyzed (a sampling cap, not a
-# safety guard). REPO_SIZE_GUARD is the real post-exclusion DoS backstop.
-# Back-compat alias only; the live cap is read from _thresholds at call time
-# (see _detect_workspace_ts_monorepo) so CHAMELEON_WORKSPACE_FANOUT_CAP works.
-_WORKSPACE_FANOUT_CAP = 500
-
 _WORKSPACE_PARENT_DIRS = ("apps", "packages", "services", "workspaces")
 
 
@@ -3442,44 +3436,6 @@ def _bootstrap_single(
     # it would leave the consumer unable to match). The checkout shares the repo's
     # full history and its current tree is what the consumer's edits live in.
     _persist_cochange_history_to_plugin_data(target_root, repo_id)
-
-    try:
-        from chameleon_mcp.drift.observations import record_bootstrap_baseline
-
-        cluster_id_to_name: dict[str, str] = {}
-        for arch_name, body in archetypes_data["archetypes"].items():
-            cid = body.get("cluster_id")
-            if isinstance(cid, str):
-                cluster_id_to_name[cid] = arch_name
-
-        baseline_rows: list[tuple[str, str | None, str | None]] = []
-        for cluster in clustering.dense_clusters:
-            cluster_id = next(
-                (
-                    cid
-                    for cid, sel in selection.selections.items()
-                    if sel.witness_path in {pf.path for pf in cluster.members}
-                ),
-                None,
-            )
-            arch_name = cluster_id_to_name.get(cluster_id) if cluster_id else None
-            confidence = "high" if cluster.size >= 5 else "medium"
-            for member in cluster.members:
-                try:
-                    rel = str(member.path.relative_to(repo_root))
-                except ValueError:
-                    rel = str(member.path)
-                baseline_rows.append((rel, arch_name, confidence))
-        for cluster in clustering.sparse_clusters:
-            for member in cluster.members:
-                try:
-                    rel = str(member.path.relative_to(repo_root))
-                except ValueError:
-                    rel = str(member.path)
-                baseline_rows.append((rel, None, "low"))
-        record_bootstrap_baseline(repo_id, baseline_rows)
-    except Exception:
-        pass
 
     duration_ms = int((time.time() - started_at) * 1000)
 

@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-7C3AED.svg)](https://docs.claude.com/claude-code)
 [![Languages](https://img.shields.io/badge/languages-TS%20%7C%20Ruby%20%7C%20Python-2ea44f.svg)](#languages-and-frameworks)
-[![Tests](https://img.shields.io/badge/unit%20tests-6%2C853-blue.svg)](#proof-not-promises)
+[![Tests](https://img.shields.io/badge/unit%20tests-6%2C849-blue.svg)](#proof-not-promises)
 [![Listed on ClaudePluginHub](https://www.claudepluginhub.com/badge/crisnahine-chameleon)](https://www.claudepluginhub.com/plugins/crisnahine-chameleon?ref=badge)
 
 **Your AI writes code that works, and it reads wrong. Chameleon shows the model your repo's own conventions at the moment it types, then reviews the turn's diff before you do.**
@@ -127,7 +127,7 @@ And chameleon writes the rule file for you, in the one channel models actually o
 
 ## The full surface
 
-Six hooks across six lifecycle events, 19 MCP tools (16 comprehension/conformance + 3 operator dispatchers), 15 skills. You will call almost none of it directly; it works behind two moments, before the model writes and after the turn ends.
+Seven hooks across six lifecycle events, 19 MCP tools (16 comprehension/conformance + 3 operator dispatchers), 15 skills. You will call almost none of it directly; it works behind two moments, before the model writes and after the turn ends.
 
 | When | What runs |
 |---|---|
@@ -278,7 +278,7 @@ Every number below is checkable in this repo right now:
 
 | What | Count | Verify yourself |
 |---|---|---|
-| Unit tests | **6,853** | `PYTHONPATH=. plugin/mcp/.venv/bin/python -m pytest tests/unit/ --co -q` |
+| Unit tests | **6,849** | `PYTHONPATH=. plugin/mcp/.venv/bin/python -m pytest tests/unit/ --co -q` |
 | Released versions | **265** (v0.1.1 to v4.7.2) | `git tag \| wc -l` |
 | Changelog | **10,000+ lines** | `wc -l CHANGELOG.md` |
 | CI | ubuntu + macos + **native Windows**, Python 3.11-3.13 | [.github/workflows/ci.yml](.github/workflows/ci.yml) |

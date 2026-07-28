@@ -61,14 +61,6 @@ from tests.journey.harness.checkpoints import parse_checkpoint_file
 from tests.journey.harness.claude import spawn_claude
 from tests.journey.harness.context import JourneyContext
 
-# Files the staged diff touches. The anti-hallucination guard (phase 39) only
-# accepts findings that reference one of these relative paths.
-_CHANGED_FILES = (
-    "src/utils/format_date.ts",
-    "src/utils/parse_count.ts",
-    "src/utils/round.ts",
-)
-
 # The convention-violating rewrite of an existing util. Default-exported,
 # snake_case arrow const — the opposite of the util archetype's named-camelCase
 # `export function` shape.

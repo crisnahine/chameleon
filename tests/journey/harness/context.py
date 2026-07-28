@@ -12,7 +12,6 @@ import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 
 @dataclasses.dataclass
@@ -32,7 +31,6 @@ class JourneyContext:
     current_checkpoint_file: Path | None = None
     fixtures: dict[str, Path] = dataclasses.field(default_factory=dict)
     origins: dict[str, Path] = dataclasses.field(default_factory=dict)
-    act_results: list[Any] = dataclasses.field(default_factory=list)
 
     def now(self) -> float:
         return time.time()
@@ -51,9 +49,6 @@ class JourneyContext:
         if name not in self.origins:
             raise KeyError(f"origin {name!r} not registered; available: {sorted(self.origins)}")
         return self.origins[name]
-
-    def projected_remaining_cost(self, remaining_act_ceilings: list[float]) -> float:
-        return self.cost_so_far_usd + sum(remaining_act_ceilings)
 
 
 def build_context(
