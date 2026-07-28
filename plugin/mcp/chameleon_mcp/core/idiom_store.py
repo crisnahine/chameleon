@@ -158,9 +158,12 @@ def load_store(profile_dir: Path) -> list[IdiomRecord]:
             )
             continue
         if hit:
+            # Anchored so doctor can age it out; see the sibling drops in
+            # profile/loader.py.
+            stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             print(
-                f"chameleon: idiom '{rec.slug}' dropped from context: matched {label!r} "
-                "(edit or re-teach it with safe prose)",
+                f"[{stamp}] chameleon: idiom '{rec.slug}' dropped from context: "
+                f"matched {label!r} (edit or re-teach it with safe prose)",
                 file=sys.stderr,
             )
             continue

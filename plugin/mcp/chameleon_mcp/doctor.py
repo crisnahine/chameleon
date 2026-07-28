@@ -15,10 +15,21 @@ that it cannot answer rather than raising and taking the whole report down.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from chameleon_mcp._thresholds import threshold_int
 from chameleon_mcp.tools import _envelope, daemon_status, list_profiles
+
+# The prose-injection-drop line shape, shared with the writers that emit it
+# (profile/loader.py's two whole-artifact drops and core/idiom_store.py's
+# per-record drop) so the two cannot drift apart unnoticed. They did once: the
+# pattern required the artifact name to be one unbroken token, every writer
+# grew a parenthesised profile path, and this check silently matched nothing
+# for releases while its fixtures -- written against the older wording -- kept
+# passing. Keyed on the two fixed anchors all three share, and covered by a
+# test that matches it against the writers' real stderr rather than a literal.
+INJECTION_DROP_RE = re.compile(r"chameleon: .+ dropped from context:")
 
 
 def _chameleon_version_or_unknown() -> str:
@@ -441,14 +452,7 @@ def doctor(repo: str | None = None) -> dict:
 
             cutoff = _dt.now(_UTC) - _td(hours=72)
             ts_re = _re.compile(r"^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z\]")
-            # Matches both prose-injection-drop stderr prints (safe_prose_text's
-            # "<name> dropped from context: contains a prompt-injection pattern"
-            # and load_profile_dir's "idioms.md dropped from context: contains a
-            # prompt-injection, secret, or dangerous pattern") regardless of which
-            # artifact name fills the middle.
-            _injection_drop_re = _re.compile(
-                r"chameleon: \S+ dropped from context: contains a prompt-injection"
-            )
+            _injection_drop_re = INJECTION_DROP_RE
             # Group lines into ENTRIES (one timestamped anchor line plus every
             # continuation line up to the next anchor), then window/slice by
             # entry, not by raw line. The previous line-based approach kept a
@@ -461,8 +465,13 @@ def doctor(repo: str | None = None) -> dict:
             # anchor line of the real recent error it displaced fell outside
             # the slice entirely.
             raw_lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+            # Injection drops are reported by their own check below. Holding
+            # them out here stops a burst of them from pushing real hook errors
+            # out of the last-5 tail, and stops the same line being reported
+            # twice now that it carries an anchor of its own.
+            error_lines = [ln for ln in raw_lines if not _injection_drop_re.search(ln)]
             entries: list[list[str] | None] = []
-            for line in raw_lines:
+            for line in error_lines:
                 m = ts_re.match(line)
                 if m:
                     try:
@@ -506,24 +515,48 @@ def doctor(repo: str | None = None) -> dict:
                 )
 
             # Prose-injection-drop warnings (loader.safe_prose_text /
-            # load_profile_dir's idioms.md guard) are plain stderr prints with NO
-            # leading `[timestamp]` anchor -- the hook wrappers redirect a hook's
-            # raw stderr straight into this same log (`2>>"${LOG_FILE}"`), so this
-            # warning class never matches ts_re and the anchor-grouping pass above
-            # drops it silently (an unanchored line "has nothing to attach to").
-            # That is exactly the ONE diagnostic doctor exists to surface: a live
-            # poisoning event correctly blocked at the read path must leave a
-            # trace here. Scan the raw lines independently of the anchor grouping
-            # (they carry no timestamp to window against) and surface the most
-            # recent ones regardless of the 72h window.
-            injection_drops = [_san(ln) for ln in raw_lines if _injection_drop_re.search(ln)][-5:]
+            # load_profile_dir's idioms.md guard / idiom_store's per-record drop)
+            # reach this log as raw stderr, redirected by the hook wrappers
+            # (`2>>"${LOG_FILE}"`). They get their own check because a live
+            # poisoning event correctly blocked at the read path is the ONE
+            # diagnostic doctor exists to surface, and the anchor-grouping pass
+            # would otherwise fold each one into whatever unrelated entry
+            # preceded it.
+            #
+            # Age them like everything else. The writers anchor their lines now,
+            # so a drop windows on its own timestamp; a line an older install
+            # wrote has none, and falls back to the log's own mtime -- a log
+            # nothing has written to in days cannot evidence a live drop, and
+            # surfacing one forever leaves doctor permanently warn on a repo
+            # with nothing wrong. An undateable line is surfaced rather than
+            # hidden: for this class, over-reporting is the safe direction.
+            try:
+                log_mtime = _dt.fromtimestamp(log.stat().st_mtime, _UTC)
+            except OSError:
+                log_mtime = None
+            injection_drops: list[str] = []
+            for line in raw_lines:
+                if not _injection_drop_re.search(line):
+                    continue
+                m = ts_re.match(line)
+                when = log_mtime
+                if m:
+                    try:
+                        when = _dt.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S").replace(tzinfo=_UTC)
+                    except ValueError:
+                        when = log_mtime
+                if when is not None and when < cutoff:
+                    continue
+                injection_drops.append(_san(line))
+            injection_drops = injection_drops[-5:]
             if injection_drops:
                 checks.append(
                     {
                         "name": "prose_injection_drops",
                         "status": "warn",
                         "detail": [
-                            "prose artifact(s) dropped for prompt-injection at the read path:"
+                            "prose artifact(s) dropped for prompt-injection at the read path "
+                            "(installation-wide log; entries may be from other repos):"
                         ]
                         + injection_drops,
                     }
