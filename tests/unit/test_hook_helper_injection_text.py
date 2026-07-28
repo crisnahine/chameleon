@@ -22,10 +22,6 @@ def _preflight_source() -> str:
     return inspect.getsource(hook_helper.preflight_and_advise)
 
 
-def _posttool_verify_source() -> str:
-    return inspect.getsource(hook_helper.posttool_verify)
-
-
 # --- BUG-F1: rules pointer must not call get_rules(archetype_name) ----------
 
 

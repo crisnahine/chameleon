@@ -73,16 +73,6 @@ def test_select_canonicals_picks_a_real_witness(tmp_path):
     assert witness.suffix == ".rb"
 
 
-def _specs(repo: Path, n: int) -> list[ParsedFile]:
-    out = []
-    for i in range(n):
-        p = _write(
-            repo, f"spec/services/svc_{i}_spec.rb", f"class Svc{i}Spec\n  def t; {i}; end\nend\n"
-        )
-        out.append(_pf(p))
-    return out
-
-
 def _legacy(repo: Path, n: int) -> list[ParsedFile]:
     out = []
     for i in range(n):

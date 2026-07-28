@@ -115,12 +115,6 @@ def _lock_config(root: Path, branch: str) -> None:
     )
 
 
-def _exports_paths(root: Path) -> set[str]:
-    data = json.loads((root / ".chameleon" / "exports_index.json").read_text(encoding="utf-8"))
-    # keys are repo-relative POSIX paths
-    return set(data.get("files", data).keys()) if isinstance(data, dict) else set()
-
-
 def _profile_json(root: Path) -> dict:
     return json.loads((root / ".chameleon" / "profile.json").read_text(encoding="utf-8"))
 
