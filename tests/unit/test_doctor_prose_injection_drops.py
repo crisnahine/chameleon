@@ -1,13 +1,28 @@
-"""doctor must surface a prose-injection-drop warning, not just timestamped hook
-errors.
+"""doctor must surface a prose-injection-drop warning, and only a live one.
 
-loader.safe_prose_text / load_profile_dir print a plain stderr warning (no
-leading ``[timestamp]`` anchor) when idioms.md / principles.md / conventions.md
-is dropped from context for tripping the prompt-injection scan. The hook
-wrappers redirect a hook's raw stderr straight into ``.hook_errors.log``, so an
-unanchored line either has "nothing to attach to" (dropped entirely) or gets
-misattributed as a continuation of an unrelated timestamped entry -- either way
-the one diagnostic tool meant to surface a live poisoning event stayed silent.
+Three writers drop a prose artifact that trips the prompt-injection scan and
+warn on stderr about it: ``loader.safe_prose_text`` (principles.md,
+conventions.md), ``loader.load_profile_dir``'s whole-artifact idioms.md guard,
+and ``idiom_store.load_store``'s per-record drop. The hook wrappers redirect a
+hook's raw stderr straight into ``.hook_errors.log``, which is where doctor
+reads them back.
+
+Two failure modes are guarded here, and the second is why the tests below drive
+the real writers instead of asserting against fixed strings.
+
+An UNANCHORED line has nothing for the anchor-grouping pass to attach it to, so
+it is either discarded or folded into an unrelated preceding entry, and it is
+undateable, so the 72h window cannot age it out and a months-old drop warns
+forever. The writers anchor their lines; a legacy line still sitting in a log
+falls back to the log's own mtime.
+
+A line the PATTERN DOES NOT MATCH is worse: doctor reports a clean install
+while a real poisoning event is being blocked. That shipped, because the
+pattern required the artifact name to be one unbroken token while every writer
+had grown a parenthesised profile path -- and the tests kept passing, because
+they asserted against a hand-written string rather than against what the
+writers emit. Any test here that fixes a drop line as a literal is testing
+doctor's half of the contract only; the writers' half needs the writer driven.
 """
 
 from __future__ import annotations
