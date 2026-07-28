@@ -252,6 +252,10 @@ def test_install_raises_and_cleans_staging_when_promote_fails(tmp_path, monkeypa
 
 
 def test_bootstrap_degrades_when_node_unavailable(tmp_path, monkeypatch):
+    # Exercises the DUMP-SCRIPT degradation path, which is the fallback now
+    # that tree-sitter parses in-process: with the default backend the dumper
+    # is never spawned, so its unavailability never arises.
+    monkeypatch.setenv("CHAMELEON_TREE_SITTER", "0")
     from chameleon_mcp.bootstrap import orchestrator
 
     repo = tmp_path / "repo"

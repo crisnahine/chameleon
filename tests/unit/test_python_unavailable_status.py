@@ -26,6 +26,10 @@ def _python_repo(tmp_path: Path, n: int) -> Path:
 
 
 def test_python_toolchain_missing_reports_python_not_ruby(tmp_path: Path, monkeypatch):
+    # Exercises the DUMP-SCRIPT degradation path, which is the fallback now
+    # that tree-sitter parses in-process: with the default backend the dumper
+    # is never spawned, so its unavailability never arises.
+    monkeypatch.setenv("CHAMELEON_TREE_SITTER", "0")
     repo = _python_repo(tmp_path, 4)
 
     from chameleon_mcp.extractors.python import PythonExtractor, PythonUnavailableError

@@ -35,6 +35,25 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # bundle past this is skipped rather than read into memory; raise it for a
     # repo whose real sources are legitimately large.
     "GATE_MAX_FILE_BYTES": 2_000_000,
+    # Caps for in-process tree-sitter extraction. The dump scripts carried the
+    # same numbers as their own module constants because a subprocess could not
+    # import this file; parsing in-process is what lets them become real
+    # thresholds with the usual CHAMELEON_<NAME> override.
+    #
+    # A file past TS_MAX_AST_NODES is pathological rather than merely large --
+    # TS_MAX_FILE_BYTES is the real bound -- so it is skipped whole rather than
+    # reported truncated, which downstream cannot distinguish from a genuine
+    # shape. The node ceiling is the CST-scale 165000 libcst needed, not the
+    # 50000 the AST-scale dumpers used, because tree-sitter's concrete tree
+    # counts punctuation and delimiters as nodes.
+    "TS_MAX_AST_NODES": 165_000,
+    "TS_MAX_FILE_BYTES": 1_000_000,
+    "TS_MAX_CALLABLE_SIGNATURES": 200,
+    "TS_MAX_CALL_SITES": 10_000,
+    # Wall-clock bound on a single parse, in microseconds. Replaces the
+    # subprocess timeout the dump scripts relied on: in-process there is no
+    # child to kill, so the bound has to live in the parser itself.
+    "TS_PARSE_TIMEOUT_MICROS": 5_000_000,
     # Mirrors the rules file may import. SessionStart re-reads every one of them
     # inside its 3s budget, so a monorepo with hundreds of workspaces bounds the
     # fan-out here rather than paying it on every session load.

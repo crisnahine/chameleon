@@ -1,6 +1,6 @@
 [project]
 name = "chameleon-mcp"
-version = "4.6.2"
+version = "4.7.0"
 description = "MCP server for chameleon. Auto-derives codebase conventions and serves archetype-keyed guidance via stdio JSON-RPC."
 authors = [
     { name = "Cris Nahine", email = "crisjosephnahine@gmail.com" }
@@ -14,6 +14,30 @@ dependencies = [
     "detect-secrets>=1.5.0", # Secret scanner for canonical excerpts
     "pyyaml>=6.0",           # tsconfig-adjacent + .eslintrc.yml + pnpm-workspace.yaml parsing
     "libcst>=1.1.0",         # Lossless Python CST for the Python extractor (scripts/libcst_dump.py)
+    # Tree-sitter parsers, in-process. Every entry is the newest release that
+    # exists on PyPI; typescript and ruby look behind only because no newer one
+    # is published. Note that tree-sitter-typescript's `tree-sitter~=0.23`
+    # requirement applies to its `core` extra, not to the wheel, so it does not
+    # cap the core.
+    #
+    # A grammar wheel encodes a Language ABI number the core must accept, and
+    # the two float independently. The direction of that constraint is worth
+    # stating because the obvious reading is backwards: a NEWER core accepts
+    # OLDER grammars -- 0.26 loads the ABI-14 typescript grammar and the ABI-15
+    # python one in the same process -- so an incompatibility appears only when
+    # the core is held DOWN while a grammar floats up. Pinning the core high and
+    # exactly is what keeps that from happening by accident.
+    #
+    # Grammars are pinned exactly rather than bounded because a grammar bump
+    # changes parse output. The differential harness
+    # (tests/differential_treesitter.py --strict) is what certifies any
+    # replacement: it compares every field the reference dumpers emit, and this
+    # exact set reproduces them.
+    "tree-sitter>=0.26.0,<0.27",
+    "tree-sitter-typescript==0.23.2",
+    "tree-sitter-javascript==0.25.0",
+    "tree-sitter-ruby==0.23.1",
+    "tree-sitter-python==0.25.0",
 ]
 
 [project.optional-dependencies]

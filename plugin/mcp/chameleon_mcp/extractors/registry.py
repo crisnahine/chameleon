@@ -6,9 +6,14 @@ AST to the ``ParsedFile`` shape -- no edit to bootstrap's selection logic.
 ``select_extractor`` iterates the same ``(TypeScript, Ruby)`` precedence the
 former hardcoded loop used, so existing profiles do not re-cluster.
 
-A Tree-sitter-backed extractor is then a new class that satisfies the
-``Extractor`` protocol plus a ``register()`` call; the bespoke ts_dump.mjs /
-prism_dump.rb paths stay as-is alongside it.
+The Tree-sitter-backed extractor is that new class: it satisfies the same
+``Extractor`` protocol and is tried FIRST, with the bespoke ts_dump.mjs /
+prism_dump.rb / libcst_dump.py paths intact behind it as the fallback. It
+reproduces all three dumpers byte-for-byte on the committed fixture corpus
+(``tests/differential_treesitter.py``), so the swap is invisible downstream --
+but a fallback that costs nothing to keep is worth keeping while the in-process
+path earns real-repo mileage. ``CHAMELEON_TREE_SITTER=0`` reverts to the
+dumpers.
 """
 
 from __future__ import annotations
@@ -38,9 +43,50 @@ def register(extractor_cls: type[Extractor]) -> None:
 
 
 def select_extractor(repo_root: Path) -> Extractor | None:
-    """Return the first registered extractor that can handle ``repo_root``."""
+    """Return the extractor that should analyze ``repo_root``.
+
+    The in-process tree-sitter extractor is tried first and the dump-script
+    extractors are the fallback, so a repo it cannot claim -- or a grammar that
+    will not load -- still derives a profile through the path that has always
+    worked. Selection order is the only thing that changes; the ``ParsedFile``
+    contract is identical either way.
+    """
     for ext_cls in EXTRACTORS:
         ext = ext_cls()
-        if ext.can_handle(repo_root):
-            return ext
+        if not ext.can_handle(repo_root):
+            continue
+        # Detection and precedence stay the DUMPERS' -- language choice is a
+        # marker-file question (Gemfile, tsconfig.json, pyproject.toml) that has
+        # nothing to do with which parser reads the files, and downstream code
+        # reads `.language` off whatever comes back. Only the parsing backend is
+        # swapped, and only for a language tree-sitter reproduces exactly.
+        if _treesitter_enabled():
+            try:
+                from chameleon_mcp.extractors.treesitter.extractor import TreeSitterExtractor
+
+                if TreeSitterExtractor.supports(ext.language):
+                    return TreeSitterExtractor(ext.language)
+            except Exception:
+                # A missing grammar package or an ABI mismatch must not take the
+                # repo's profile down with it: keep the dump-script extractor,
+                # which needs no Python-side parser at all.
+                pass
+        return ext
     return None
+
+
+def _treesitter_enabled() -> bool:
+    """Default-ON, killed by ``CHAMELEON_TREE_SITTER=0``.
+
+    Offline, no repo-code execution, no network, so it follows the repo's
+    default-on-with-kill-switch convention rather than shipping opt-in. The
+    evidence for defaulting it on is `tests/differential_treesitter.py
+    --strict`, which compares EVERY field each dump script emits (not a curated
+    subset) and reports PARITY for all three languages on the committed fixture
+    corpus.
+
+    Read at call time so a test can toggle it without a module reload.
+    """
+    import os
+
+    return os.environ.get("CHAMELEON_TREE_SITTER") != "0"

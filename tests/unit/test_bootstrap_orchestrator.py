@@ -839,6 +839,10 @@ class TestKilledExtractorNeverCommitsThinProfile:
     def test_mass_parse_skips_fail_the_run_and_leave_profile_untouched(
         self, tmp_path: Path, monkeypatch
     ):
+        # Exercises the DUMP-SCRIPT degradation path, which is the fallback now
+        # that tree-sitter parses in-process: with the default backend the dumper
+        # is never spawned, so its unavailability never arises.
+        monkeypatch.setenv("CHAMELEON_TREE_SITTER", "0")
         # Simulate a ruby child killed after the first record: 1 parsed, the
         # rest marked skipped as never-reached-stdout. The run must fail with
         # failed_extractor_degraded and must not write a profile.
@@ -868,6 +872,10 @@ class TestKilledExtractorNeverCommitsThinProfile:
         assert not (marker / "archetypes.json").exists()
 
     def test_zero_parsed_files_fail_even_below_the_skip_floor(self, tmp_path: Path, monkeypatch):
+        # Exercises the DUMP-SCRIPT degradation path, which is the fallback now
+        # that tree-sitter parses in-process: with the default backend the dumper
+        # is never spawned, so its unavailability never arises.
+        monkeypatch.setenv("CHAMELEON_TREE_SITTER", "0")
         # 3 candidates, all skipped: below EXTRACTOR_DEGRADED_MIN_SKIPPED but
         # nothing parsed at all — still a failed run, never an empty profile.
         repo = self._ruby_repo(tmp_path, 3)
@@ -888,6 +896,10 @@ class TestKilledExtractorNeverCommitsThinProfile:
         assert not (repo / ".chameleon").exists()
 
     def test_ruby_toolchain_missing_degrades_to_clean_report(self, tmp_path: Path, monkeypatch):
+        # Exercises the DUMP-SCRIPT degradation path, which is the fallback now
+        # that tree-sitter parses in-process: with the default backend the dumper
+        # is never spawned, so its unavailability never arises.
+        monkeypatch.setenv("CHAMELEON_TREE_SITTER", "0")
         # ruby/prism_dump.rb unavailable must yield a failed report through the
         # normal envelope, not an exception escaping to the MCP boundary.
         repo = self._ruby_repo(tmp_path, 2)
