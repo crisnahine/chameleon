@@ -360,3 +360,23 @@ def test_status_unrelated_section_typo_still_shows_enforce(make_trusted_repo):
     enf = get_status(str(repo))["data"]["enforcement"]
     assert enf["config_malformed"] is False
     assert enf["mode"] == "enforce"
+
+
+@pytest.mark.parametrize("payload", ["null", "[1, 2, 3]", "42", '"hello"', "true"])
+def test_status_reports_corrupt_for_a_non_dict_profile_json(make_trusted_repo, payload):
+    """Valid JSON that is not an object must not render as a healthy profile.
+
+    load_profile_dir rejects a non-dict artifact outright, so the hooks fail
+    open and enforce nothing. _profile_unrenderable_status guarded its schema
+    and generation branches with isinstance(peek, dict), so these payloads fell
+    through every corruption branch and get_status advertised mode=enforce with
+    armed block rules over a profile nothing could load -- precisely the
+    false-clean that function exists to prevent. Truncated and non-object-dict
+    profiles were always flagged; these five were the hole.
+    """
+    from chameleon_mcp.tools import get_status
+
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
+    profile_dir.joinpath("profile.json").write_text(payload, encoding="utf-8")
+
+    assert get_status(str(repo))["data"]["status"] == "profile_corrupted"

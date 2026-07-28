@@ -154,3 +154,28 @@ def test_rename_rekeys_every_per_archetype_conventions_section(tmp_path):
 
     # The rekeyed conventions artifact is part of the trust-hashed surface.
     assert res["new_profile_sha256"] == hash_profile(cham)
+
+
+def test_rename_re_renders_the_conventions_md_mirror(tmp_path):
+    """The CLAUDE.md-channel mirror must not keep serving pre-rename names.
+
+    conventions.md is rendered FROM conventions.json, but the rename txn carries
+    it forward verbatim (it is not a protocol file). Rekeying conventions.json
+    without re-rendering left the mirror advertising archetypes that no longer
+    exist -- and because that channel loads at CLAUDE.md priority it outranks
+    the per-edit advisory, so the stale name won until an unrelated teach
+    happened to re-sync it.
+    """
+    repo, cham = _make_profile_repo(tmp_path)
+    (cham / "conventions.json").write_text(json.dumps(_conventions_payload()), encoding="utf-8")
+    tools._sync_conventions_md_from_disk(cham)
+
+    mirror = cham / "conventions.md"
+    assert "svc-old" in mirror.read_text(encoding="utf-8"), "fixture did not seed a real mirror"
+
+    res = tools.apply_archetype_renames(str(repo), {"svc-old": "payment-service"})["data"]
+    assert res["status"] == "success"
+
+    rendered = mirror.read_text(encoding="utf-8")
+    assert "svc-old" not in rendered, "conventions.md still serves the pre-rename archetype name"
+    assert "payment-service" in rendered, "conventions.md was not re-rendered with the new name"

@@ -105,3 +105,42 @@ def test_merge_archetypes_still_unions(tmp_path):
     merged = json.loads(ours.read_text(encoding="utf-8"))
     assert set(merged["archetypes"]) == {"a", "b"}
     assert merged["archetype_count"] == 2
+
+
+def _merge_archetypes(tmp_path, ours_gen: int, theirs_gen: int) -> dict:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    base = _write(tmp_path / "base.json", {"schema_version": 8, "generation": 1, "archetypes": {}})
+    ours = _write(
+        tmp_path / "ours.json",
+        {"schema_version": 8, "generation": ours_gen, "archetypes": {"a": {"cluster_size": 10}}},
+    )
+    theirs = _write(
+        tmp_path / "theirs.json",
+        {"schema_version": 8, "generation": theirs_gen, "archetypes": {"b": {"cluster_size": 20}}},
+    )
+    out = tools.merge_profiles(
+        repo=str(tmp_path), base=str(base), ours=str(ours), theirs=str(theirs)
+    )
+    assert out["data"]["status"] == "success"
+    return json.loads(ours.read_text(encoding="utf-8"))
+
+
+def test_merge_archetypes_keeps_the_newer_generation_in_both_directions(tmp_path):
+    """The merged archetypes.json must carry the HIGHER generation, either way.
+
+    load_profile_dir requires profile/archetypes/rules/canonicals to report one
+    identical generation. The canonicals/rules and profile branches carry the
+    newer side's metadata forward, but the archetypes branch unioned as
+    {**ours, **theirs}, handing `generation` to theirs unconditionally. Merging
+    an OLDER branch into a newer one therefore stamped archetypes.json with the
+    older generation while its three siblings kept the newer one -- the driver
+    exited 0, git saw a clean tree, and the committed profile raised
+    'generation mismatch across artifacts' on every later load.
+    """
+    ours_newer = _merge_archetypes(tmp_path / "a", 5000, 3000)
+    assert ours_newer["generation"] == 5000
+    assert set(ours_newer["archetypes"]) == {"a", "b"}
+
+    theirs_newer = _merge_archetypes(tmp_path / "b", 3000, 5000)
+    assert theirs_newer["generation"] == 5000
+    assert set(theirs_newer["archetypes"]) == {"a", "b"}

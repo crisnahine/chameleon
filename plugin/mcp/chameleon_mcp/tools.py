@@ -6436,7 +6436,14 @@ def _profile_unrenderable_status(profile_dir: Path) -> str | None:
         peek = json.loads(pf.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return "profile_corrupted"
-    sv = peek.get("schema_version") if isinstance(peek, dict) else None
+    if not isinstance(peek, dict):
+        # Valid JSON but not an object (a bare null/list/number/string/bool).
+        # load_profile_dir refuses these outright, so treating them as merely
+        # "no schema_version to check" and falling through would render the
+        # enforcement panel over a profile nothing can actually load -- the
+        # exact false-clean this guard exists to prevent.
+        return "profile_corrupted"
+    sv = peek.get("schema_version")
     if sv is not None and (isinstance(sv, bool) or not isinstance(sv, int)):
         return "profile_corrupted"
     if isinstance(sv, int) and sv > MAX_SUPPORTED_SCHEMA_VERSION:
@@ -11487,7 +11494,22 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
                 if theirs_witness < ours_witness:
                     merged[name] = arch
 
-        unioned = {**ours_data, **theirs_data}
+        # Metadata follows whichever side is NEWER, the same rule the
+        # canonicals/rules and profile branches below apply. A plain
+        # {**ours_data, **theirs_data} hands every scalar to theirs
+        # unconditionally -- `generation` included -- so merging an OLDER branch
+        # into a newer one stamped archetypes.json with the older generation
+        # while profile/canonicals/rules kept the newer one. load_profile_dir
+        # requires all four generations to be equal, so that merge exited 0,
+        # left git a clean tree, and committed a profile nothing could load.
+        _ours_gen = ours_data.get("generation")
+        _theirs_gen = theirs_data.get("generation")
+        _ours_gen = _ours_gen if isinstance(_ours_gen, int) else 0
+        _theirs_gen = _theirs_gen if isinstance(_theirs_gen, int) else 0
+        if _theirs_gen > _ours_gen:
+            unioned = {**ours_data, **theirs_data}
+        else:
+            unioned = {**theirs_data, **ours_data}
         merged_data = {
             k: v for k, v in unioned.items() if k in _SAFE_TOP_LEVEL_KEYS or k.startswith("_")
         }
@@ -13523,6 +13545,16 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
         from chameleon_mcp.core.idiom_store import rename_archetypes
 
         rename_archetypes(profile_dir, effective, repo_id=repo_id)
+
+    # The txn carried conventions.md forward verbatim (it is not a protocol
+    # file), so the rekeyed conventions.json must be re-rendered or the
+    # memory channel keeps serving pre-rename archetype names -- and that
+    # channel carries more instruction authority than the per-edit advisory,
+    # so a stale mirror outranks the corrected profile until some later teach
+    # happens to re-sync it. Runs after rename_archetypes so the idiom gists
+    # it renders reflect the renamed archetype tags, and before the
+    # hash_profile snapshot below so the mirror is covered by it.
+    _sync_conventions_md_from_disk(profile_dir)
 
     # The rename rewrites canonicals.json (the witness set), so the block-rule
     # verdict in enforcement.json must be re-measured against the renamed profile;
