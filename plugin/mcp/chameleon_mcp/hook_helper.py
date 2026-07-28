@@ -9140,7 +9140,6 @@ def _stop_gates(
 
     return stop_gates(
         RootContext(
-            payload=payload,
             repo_root=repo_root,
             repo_id=repo_id,
             session_id=session_id,

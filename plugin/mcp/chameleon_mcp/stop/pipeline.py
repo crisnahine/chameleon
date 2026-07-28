@@ -53,7 +53,6 @@ from pathlib import Path
 class RootContext:
     """One workspace root's slice of a Stop invocation."""
 
-    payload: dict
     repo_root: Path
     repo_id: str
     session_id: str | None

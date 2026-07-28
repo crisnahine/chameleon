@@ -563,7 +563,6 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # noise on real repos; two co-occurring domain words is a real lead.
     "DUPLICATION_SEMANTIC_MIN_SHARED_TOKENS": 2,
     "DUPLICATION_REVIEW_MAX_PROMPT_BYTES": 60_000,
-    "DUPLICATION_REVIEW_MAX_SPAWNS_PER_SESSION": 2,
     # Lines of a candidate function's body read from disk as a citation aid for
     # the duplication judge. Enough to show the function's intent without
     # inlining a whole large method into the tool result: covers the median TS

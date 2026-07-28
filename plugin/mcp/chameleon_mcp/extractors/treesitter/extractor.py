@@ -10,7 +10,6 @@ boundary used to provide for free, is re-earned per file by the try/except in
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
@@ -38,18 +37,6 @@ _TABLES: dict[str, Any] = {
     "python": python_tables,
     "typescript": typescript_tables,
 }
-
-ENABLE_ENV = "CHAMELEON_TREE_SITTER"
-
-
-def is_enabled() -> bool:
-    """True unless an operator has killed the tree-sitter path.
-
-    Ships default-ON with a kill switch per the repo's convention for offline
-    features: nothing here executes repo code or touches the network, so the
-    opt-in form would be wrong.
-    """
-    return os.environ.get(ENABLE_ENV) != "0"
 
 
 class TreeSitterExtractor:
