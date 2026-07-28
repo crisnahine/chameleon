@@ -204,20 +204,26 @@ jobs:
           enable-cache: true
           cache-dependency-glob: 'plugin/mcp/uv.lock'
 
-      - name: Ruff check (MCP package + tests)
+      - name: Ruff check (MCP package + tests + scripts)
         working-directory: plugin/mcp
         # Use uvx so we don't need a full `uv sync` just to lint. Ruff
         # config (line-length, target-version, select) lives in
         # plugin/mcp/pyproject.toml -- uvx picks it up from the working directory.
-        run: uvx ruff@0.15.13 check chameleon_mcp/ ../../tests/unit/ ../../tests/journey/ ../scripts/
+        #
+        # Both script directories are listed because the paths are relative to
+        # this working-directory: `../scripts/` is plugin/scripts/, and the
+        # repo-root scripts/ -- which holds the CI gates themselves -- is
+        # `../../scripts/`. Listing only the first leaves the gate scripts
+        # unlinted, which is how a dead import sat in check-derived-counts.py.
+        run: uvx ruff@0.15.13 check chameleon_mcp/ ../../tests/unit/ ../../tests/journey/ ../scripts/ ../../scripts/
 
-      - name: Ruff format check (MCP package + tests)
+      - name: Ruff format check (MCP package + tests + scripts)
         working-directory: plugin/mcp
         # Formatter gate, same scope and pinned version as the check above
         # so the local venv (uv.lock pins ruff 0.15.13) and CI agree
         # byte-for-byte. Run `uvx ruff@0.15.13 format chameleon_mcp/ ../../tests/`
         # to fix locally.
-        run: uvx ruff@0.15.13 format --check chameleon_mcp/ ../../tests/unit/ ../../tests/journey/ ../scripts/
+        run: uvx ruff@0.15.13 format --check chameleon_mcp/ ../../tests/unit/ ../../tests/journey/ ../scripts/ ../../scripts/
 
   version-sync:
     name: version-sync (bump-version.sh --check)
@@ -393,7 +399,11 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Lint hook scripts
-        run: shellcheck -S warning plugin/hooks/_resolve-python.sh plugin/hooks/session-start plugin/hooks/preflight-and-advise plugin/hooks/peer-skill-advise plugin/hooks/posttool-recorder plugin/hooks/posttool-verify plugin/hooks/callout-detector plugin/hooks/stop-backstop plugin/scripts/*.sh scripts/*.sh
+        # plugin/bin/*.sh is in scope too: the statusline ships and runs on
+        # every prompt, so it earns the same gate as the hooks. Hook wrappers
+        # are named individually because the directory also holds run-hook.cmd,
+        # a Windows batch file shellcheck cannot parse.
+        run: shellcheck -S warning plugin/hooks/_resolve-python.sh plugin/hooks/session-start plugin/hooks/preflight-and-advise plugin/hooks/peer-skill-advise plugin/hooks/posttool-recorder plugin/hooks/posttool-verify plugin/hooks/callout-detector plugin/hooks/stop-backstop plugin/bin/*.sh plugin/scripts/*.sh scripts/*.sh
 
   hooks-manifest:
     name: hooks-manifest-check

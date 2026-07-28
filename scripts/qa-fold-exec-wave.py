@@ -76,7 +76,7 @@ def _redact_secrets(text: str) -> str:
     """Mask any real-shaped credential token to <prefix>REDACTED."""
     out = text
     for pat in _SECRET_SHAPES:
-        out = pat.sub(lambda m: (m.group(0)[:4] + "REDACTED"), out)
+        out = pat.sub(lambda m: m.group(0)[:4] + "REDACTED", out)
     return out
 
 

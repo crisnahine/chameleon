@@ -88,7 +88,7 @@ Real output from the bundled `golden-ts-nestjs` fixture, so you can reproduce it
 
 We ship a Rails + TypeScript codebase at [Empire Flippers](https://empireflippers.com/), and we review every AI PR that touches it. The failure mode was always the same: the code worked, and it read wrong. `axios` where the team standardized on our HTTP wrapper, a hand-rolled date formatter next to the one we already had, a new service that skipped the base class every other service extends. We wrote CLAUDE.md rules for all of it, and they rotted in a week, because prose about code goes stale the moment the code moves and nobody's job is rewriting the style guide after every refactor. Then we noticed when the model DID conform: exactly when a real file from our repo happened to be sitting in its context. It needs to see one of our files at the moment it writes, not read prose about them. So we built the thing that shows it one, automatically, derived from the repo itself.
 
-That was 263 releases ago. We still run it daily on the code that pays our salaries.
+That was 264 releases ago. We still run it daily on the code that pays our salaries.
 
 ## Why the rule-file approach fails
 
@@ -278,9 +278,9 @@ Every number below is checkable in this repo right now:
 
 | What | Count | Verify yourself |
 |---|---|---|
-| Unit tests | **5,311** | `PYTHONPATH=. plugin/mcp/.venv/bin/python -m pytest tests/unit/ --co -q` |
-| Released versions | **183** (v0.1.1 to v3.0.0) | `git tag \| wc -l` |
-| Changelog | **6,500+ lines** | `wc -l CHANGELOG.md` |
+| Unit tests | **6,853** | `PYTHONPATH=. plugin/mcp/.venv/bin/python -m pytest tests/unit/ --co -q` |
+| Released versions | **264** (v0.1.1 to v4.7.1) | `git tag \| wc -l` |
+| Changelog | **10,000+ lines** | `wc -l CHANGELOG.md` |
 | CI | ubuntu + macos + **native Windows**, Python 3.11-3.13 | [.github/workflows/ci.yml](.github/workflows/ci.yml) |
 | Per-edit hot path | benchmarked cold/warm p50 and p99 | `PYTHONPATH=. plugin/mcp/.venv/bin/python tests/bench_hot_path.py` |
 | Effectiveness harness | paired off-vs-on sessions | `PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.effectiveness.runner --list` |

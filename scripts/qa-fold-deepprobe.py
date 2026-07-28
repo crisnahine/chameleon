@@ -33,7 +33,7 @@ def _resolve(index: dict, item_id: str, col: str) -> str | None:
 
 def main() -> int:
     journal = Path(sys.argv[1])
-    rows = [json.loads(l) for l in LEDGER.read_text().splitlines() if l.strip()]
+    rows = [json.loads(ln) for ln in LEDGER.read_text().splitlines() if ln.strip()]
     index = {r["cell_id"]: r for r in rows}
 
     results = []
@@ -42,7 +42,11 @@ def main() -> int:
             d = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if d.get("type") == "result" and isinstance(d.get("result"), dict) and "cells" in d["result"]:
+        if (
+            d.get("type") == "result"
+            and isinstance(d.get("result"), dict)
+            and "cells" in d["result"]
+        ):
             results.append(d["result"])
 
     applied = dropped = 0

@@ -150,7 +150,9 @@ def main() -> int:
         print(f"no baseline at {BASELINE_FILE}; run with --write-baseline")
         return 1
     try:
-        baseline = int(json.loads(BASELINE_FILE.read_text(encoding="utf-8"))["largest_import_cycle"])
+        baseline = int(
+            json.loads(BASELINE_FILE.read_text(encoding="utf-8"))["largest_import_cycle"]
+        )
     except (ValueError, KeyError, OSError):
         print("baseline unreadable")
         return 1
