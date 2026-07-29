@@ -120,8 +120,14 @@ expert, matched to the work:
   the two modes, the tool limits, and the output schema, so the dispatch
   prompt carries only the mode, this task's brief and acceptance criteria,
   the current diff, and the declined-findings log. When the harness does not
-  expose that agent type, dispatch a read-only explore agent under the same
-  rules. That agent has NO shell on purpose: a verifier that runs the suite
+  expose that agent type, read `${CLAUDE_PLUGIN_ROOT}/agents/verifier.md` and
+  dispatch a read-only explore agent with that file's body (everything after
+  the frontmatter) prepended to the prompt - one source of truth, never a
+  from-memory retelling of the role. Say in the report that the fallback path
+  ran, because it does NOT reproduce the no-shell guarantee: a harness explore
+  agent typically HAS Bash, so on that path the state discipline below is a
+  rule the agent must follow rather than one the tool grants make impossible.
+  The packaged agent has NO shell on purpose: a verifier that runs the suite
   or drives the app mutates state that outlives it - a graded run handed over
   a branch whose suite was RED because a review subagent wrote two rows
   outside a transaction and the repo's whole-table ordering assertions then
