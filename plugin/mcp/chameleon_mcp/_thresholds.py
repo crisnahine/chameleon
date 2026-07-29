@@ -19,9 +19,8 @@ import os
 from typing import Final
 
 DEFAULTS: Final[dict[str, int | float]] = {
-    # Raised from 50: workspaces 501+ were never analyzed. This is a sampling
-    # cap, not a safety guard -- REPO_SIZE_GUARD is the post-exclusion DoS
-    # backstop.
+    # How many workspaces a monorepo bootstrap analyzes. A sampling cap, not a
+    # safety guard -- REPO_SIZE_GUARD is the post-exclusion DoS backstop.
     "WORKSPACE_FANOUT_CAP": 500,
     "WARNING_SAMPLE_PATHS": 3,
     "SPARSE_WARNING_LIMIT": 50,
@@ -623,14 +622,13 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # boundary with an honest marker.
     "TIER2_WITNESS_MAX_CHARS": 16_000,
     # The DETERMINISTIC hard-secret / hard-eval PreToolUse DENY paths scan a much
-    # larger window than the 100KB ceiling the on-disk lint paths use: the deny
-    # is the only gate
-    # that stops the write from landing on disk (PostToolUse/Stop fire after the
-    # bytes are already written), so a token padded past a small prefix cap must
-    # not evade it. Any single proposed write up to this ceiling is scanned in
-    # full; a pathologically larger write is scanned head+tail (each half of this
-    # value), which still defeats front- or back-padding. 8MB in full is ~0.4s of
-    # regex on this Edit/Write-only path, an acceptable one-shot cost.
+    # larger window than the 100KB ceiling the on-disk lint paths use: the deny is
+    # the only gate that stops the write from landing on disk (PostToolUse/Stop
+    # fire after the bytes are already written), so a token padded past a small
+    # prefix cap must not evade it. Any single proposed write up to this ceiling is
+    # scanned in full; a pathologically larger write is scanned head+tail (each
+    # half of this value), which still defeats front- or back-padding. 8MB in full
+    # is ~0.4s of regex on this Edit/Write-only path, an acceptable one-shot cost.
     "PREWRITE_DENY_SCAN_MAX_CHARS": 8_000_000,
     # Hard per-session budget for the per-turn-routed correctness judge (the
     # old behavior was exactly one spawn per session). Bounds cost and the

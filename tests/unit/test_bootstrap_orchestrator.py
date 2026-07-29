@@ -36,8 +36,8 @@ def _isolate_data_dir(tmp_path: Path, monkeypatch):
     """Replicate the per-file isolation other unit tests use.
 
     No connection cache to reset for the orchestrator, but pinning the
-    data dir keeps record_bootstrap_baseline / index writes off the real
-    home dir if any test reaches an assembly path.
+    data dir keeps index writes off the real home dir if any test reaches
+    an assembly path.
     """
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "_data"))
     yield
