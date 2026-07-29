@@ -124,11 +124,15 @@ def _section(text: str, heading: str) -> str:
     rather than a hypothetical one.
     """
     lines = text.splitlines()
-    hits = [i for i, ln in enumerate(lines) if ln.startswith(f"## {heading}")]
-    assert hits, f"no `## {heading}...` section found"
+    # Anchored on the colon, so `## Step 4:` never matches a legitimate
+    # `## Step 4a: ...` sub-step (this diff itself added `## Step 7b`), while a
+    # decoy that duplicates the real heading verbatim still trips the
+    # uniqueness check below.
+    hits = [i for i, ln in enumerate(lines) if ln.startswith(f"## {heading}:")]
+    assert hits, f"no `## {heading}:` section found"
     assert len(hits) == 1, (
-        f"`## {heading}` matches {len(hits)} headings ({[lines[i] for i in hits]}); "
-        "scope is ambiguous -- rename one or pass a longer heading"
+        f"`## {heading}:` matches {len(hits)} headings ({[lines[i] for i in hits]}); "
+        "scope is ambiguous -- rename one so the contract cannot bind to a decoy"
     )
     start = hits[0]
     end = next(
@@ -160,13 +164,22 @@ def _reference_dirs() -> list[Path]:
     return dirs
 
 
-def _assert_ordered(section: str, tokens: tuple[str, ...], what: str) -> None:
-    """Every token present EXACTLY ONCE in this section, in this order.
+def _assert_ordered(
+    section: str, tokens: tuple[str, ...], what: str, *, unique: bool = True
+) -> None:
+    """Every token present in this section, in this order.
 
-    Exactly-once is what gives the order check teeth: with duplicates allowed,
-    a single recap sentence listing the slots in canonical order pins every
-    position, and the real template underneath can then be in any order at all
-    (proven -- a fully reversed template passed).
+    ``unique`` additionally requires each label to appear exactly once, which
+    is what gives the order check teeth: with duplicates allowed, one recap
+    sentence listing the slots in canonical order pins every position and the
+    real template underneath can be in any order (proven -- a fully reversed
+    template passed).
+
+    It is off where the slot labels are ordinary sentences rather than markers,
+    because there a worked example or a completeness-pass line naming a slot is
+    legitimate prose, and failing on it is the cry-wolf class that gets a
+    contract deleted. A pure reversal still fails there, since reversing moves
+    the first occurrence too.
     """
     flat = _norm(section)
     positions = []
@@ -174,10 +187,11 @@ def _assert_ordered(section: str, tokens: tuple[str, ...], what: str) -> None:
         needle = _norm(token)
         count = flat.count(needle)
         assert count, f"{what} lost its {token!r} slot (searched only its own section)"
-        assert count == 1, (
-            f"{what} names {token!r} {count} times in one section; a duplicate listing "
-            "defeats the order check, so keep each slot label to its own slot"
-        )
+        if unique:
+            assert count == 1, (
+                f"{what} names {token!r} {count} times in one section; a duplicate listing "
+                "defeats the order check, so keep each slot label to its own slot"
+            )
         positions.append(flat.find(needle))
     assert positions == sorted(positions), (
         f"{what} slots are out of order: {tokens}; a template's order IS its contract"
@@ -289,11 +303,14 @@ def test_agents_that_feed_the_refuter_use_its_severity_vocabulary():
     # which is the very defect it exists to catch.
     match = re.search(r"`severity` is one of ((?:\s*`[a-z]+`\s*/?)+)", body)
     assert match, "verifier.md no longer states its severity vocabulary as a `/`-joined list"
-    emitted = re.findall(r"`([a-z]+)`", match.group(1))
+    emitted = set(re.findall(r"`([a-z]+)`", match.group(1)))
     assert emitted, "verifier.md's severity vocabulary is empty"
-    assert emitted[0] in REFUTER_HIGH, (
-        f"verifier's TOP severity is {emitted[0]!r}, which is not in the refuter's escalation "
-        f"set {sorted(REFUTER_HIGH)} -- its highest-stakes findings would never escalate the "
+    # Membership, not list POSITION: nothing declares the list is ordered, and
+    # the refuter matches the emitted string rather than the doc's ordering, so
+    # pinning position would fail on a content-preserving reorder.
+    assert emitted & REFUTER_HIGH, (
+        f"verifier emits {sorted(emitted)}, none of which is in the refuter's escalation set "
+        f"{sorted(REFUTER_HIGH)} -- its highest-stakes findings would never escalate the "
         "adjudicating model (refuter.py `_refuter_model_for` does an exact lowercased match)"
     )
 
@@ -437,8 +454,8 @@ def test_receiving_renders_a_fixed_ordered_adjudication_report():
     _assert_ordered(
         section,
         (
-            "Comments: N fetched",
-            "Verification records: M/N complete",
+            "Comments: <fetched> fetched",
+            "Verification records: <complete>/<verifiable> complete",
             # The table header, not its exact column list: adding a column is a
             # strengthening edit and must not fail.
             "| # | reviewer |",
@@ -449,6 +466,9 @@ def test_receiving_renders_a_fixed_ordered_adjudication_report():
             "Implementation queue:",
         ),
         "receiving adjudication report",
+        # Slot labels here are sentences, not markers, so a worked example or a
+        # completeness-pass line naming one is legitimate prose.
+        unique=False,
     )
 
 

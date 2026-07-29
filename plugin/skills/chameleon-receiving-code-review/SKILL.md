@@ -46,8 +46,8 @@ to resolve.
   outdated comment may still be unaddressed. Record the per-source counts —
   how many inline, general, review-summary, and outdated/resolved — and carry
   them into Step 2; they are RENDERED once, in slot 1 of the adjudication
-  report, whose own letters (A/B/C/D there) are distinct from Step 2's
-  reconciliation triple, so do not carry a letter across steps. If
+  report, whose slots use self-describing placeholders rather than
+  letters, so nothing has to be carried across steps. If
   `gh`/`bbcurl` is absent, unauthenticated, or returns
   empty, STOP and ask the user to paste — never invent comments.
 - **Jira key**: resolve the PR(s), then as above (see multi-PR below).
@@ -395,9 +395,13 @@ requirement that has to be RENDERED as a named line cannot be skipped without
 the omission being visible on the page.
 
 ```
-1. Comments: N fetched (A inline + B general + C review-summary; D outdated/resolved included)
-   -> M checklist items (K closed informational)
-2. Verification records: M/N complete (K routed to NEEDS CLARIFICATION on incomplete records)
+1. Comments: <fetched> fetched (<inline> inline + <general> general + <summary>
+   review-summary; <outdated> outdated/resolved included) -> <items> checklist
+   items (<informational> closed informational)
+2. Verification records: <complete>/<verifiable> complete (<unclear> routed to NEEDS
+   CLARIFICATION on an incomplete record). <verifiable> counts the items that REQUIRE
+   verification - every checklist item except the informational ones, which skip
+   Step 3 by design and so have no record to be incomplete.
 3. Adjudication
 
    | # | reviewer | file:line | class | ask | verdict | grounded by |
@@ -413,10 +417,11 @@ the omission being visible on the page.
 4. Grounding: R round(s), L labels changed in the final round.
    Refuter: <b> refuted-dropped / <c> tool-grounded inline-exempt / <d> held unverified
    (or "refuter <disabled | unavailable | untrusted> — all code-changing verdicts held").
-5. Finding fates recorded: N accepted / M declined / K converted
+5. Finding fates recorded: <accepted> accepted / <declined> declined / <converted> converted
    (or "fate recording failed: <reason>", or "none - no adjudicated items").
 6. Drafted replies: <per item, the exact text that would be posted — drafts only, nothing posted>
-7. Not verified: <every item whose record stayed incomplete, and what is missing>
+7. Not verified: <every item whose record stayed incomplete, and what is missing;
+   informational items are NOT listed here - they are unverified by design, not by omission>
 8. Implementation queue: <the approved order, blocking/bugs -> simple -> complex; nothing
    implemented until the user approves that item>
 ```
