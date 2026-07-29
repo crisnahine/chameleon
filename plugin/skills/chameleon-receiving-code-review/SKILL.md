@@ -132,8 +132,9 @@ whose record is complete (an incomplete record can only be NEEDS CLARIFICATION):
    the five questions at the end of this step.
 
 This record feeds the adjudication report's verification-records slot
-("Verification records: M/N complete (K routed to NEEDS CLARIFICATION on
-incomplete records)"), which is where it is RENDERED. Keep the per-item
+("Verification records: <complete>/<verifiable> complete"), which is where it
+is RENDERED - and note there that <verifiable> excludes the informational
+items, which skip this step by design and so have no record to be incomplete. Keep the per-item
 records as you go; the report is the one place the counts are published.
 
 Run the cited line through the Step 1 hunk map FIRST. Three outcomes:
@@ -412,10 +413,11 @@ the omission being visible on the page.
    `class` is the Step 2 comment-class. `verdict` is AGREE / PUSH BACK /
    NEEDS CLARIFICATION / YAGNI / informational. `grounded by` names the tools
    that actually ran for THAT item, or the sanctioned "no tool route: <reason>"
-   — one row per checklist item, so slot 1's M and this table's row count match
+   — one row per checklist item, so slot 1's <items> and this table's row count match
    or the difference is explained here.
-4. Grounding: R round(s), L labels changed in the final round.
-   Refuter: <b> refuted-dropped / <c> tool-grounded inline-exempt / <d> held unverified
+4. Grounding: <rounds> round(s), <changed> labels changed in the final round.
+   Refuter: <refuted> refuted-dropped / <exempt> tool-grounded inline-exempt /
+   <held> held unverified
    (or "refuter <disabled | unavailable | untrusted> — all code-changing verdicts held").
 5. Finding fates recorded: <accepted> accepted / <declined> declined / <converted> converted
    (or "fate recording failed: <reason>", or "none - no adjudicated items").

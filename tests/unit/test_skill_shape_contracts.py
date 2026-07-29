@@ -459,16 +459,13 @@ def test_receiving_renders_a_fixed_ordered_adjudication_report():
             # The table header, not its exact column list: adding a column is a
             # strengthening edit and must not fail.
             "| # | reviewer |",
-            "Grounding: R round(s)",
+            "Grounding: <rounds> round(s)",
             "Finding fates recorded:",
             "Drafted replies:",
             "Not verified:",
             "Implementation queue:",
         ),
         "receiving adjudication report",
-        # Slot labels here are sentences, not markers, so a worked example or a
-        # completeness-pass line naming one is legitimate prose.
-        unique=False,
     )
 
 
