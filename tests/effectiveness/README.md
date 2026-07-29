@@ -50,9 +50,9 @@ Missing env repos skip that language's tasks with a reason (never an error).
       --tier ci --arms off,shadow --toggle judge_crossfile_facts
 
 adds the paired arm `shadow~judge_crossfile_facts=false`. Env-flag features
-(`nearby_signatures`, `counterexample`, `stop_idiom_terse`, `inbound_callers`,
-`archetype_facts`) get a paired arm that flips the env var instead of a config
-key.
+(`nearby_signatures`, `counterexample`, `inbound_callers`, `archetype_facts`,
+`memory_channel_dedup`) get a paired arm that flips the env var instead of a
+config key.
 
 ## Model-tier arms
 

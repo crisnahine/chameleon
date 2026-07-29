@@ -44,10 +44,6 @@ WITNESS_SRC = "export default function widget() {}\n"
 # export), so import-preference-violation is the sole violation.
 LODASH_SRC = "import _ from 'lodash'\nexport default function widget() {}\n"
 
-# No competing import; matches the archetype shape. Used for the soft-class case
-# where we instead expect a naming/shape violation that is NOT block-eligible.
-CLEAN_SHAPE_SRC = "export default function widget() {}\n"
-
 # A class default export violates the function-default-export archetype shape,
 # producing a default-export-kind violation (a learned, archetype-dependent
 # heuristic) that is NOT in any active block set.

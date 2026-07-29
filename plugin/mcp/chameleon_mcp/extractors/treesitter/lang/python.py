@@ -291,12 +291,6 @@ def import_bindings(
     return symbols, namespaces
 
 
-def bound_names(node: Any, text: Callable[[Any], str]) -> list[str]:
-    """Names an import node binds locally, for the export set."""
-    symbols, namespaces = import_bindings(node, text)
-    return [r["local"] for r in symbols] + [r["alias"] for r in namespaces]
-
-
 def file_extras(
     root: Any, text: Callable[[Any], str], path: Any, walked: Any = None
 ) -> dict[str, Any]:

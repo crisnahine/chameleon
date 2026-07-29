@@ -29,9 +29,7 @@ _HELD_LOCKS: list = []
 def claude_on_path() -> Path:
     p = shutil.which("claude")
     if not p:
-        raise PreflightError(
-            "`claude` CLI not on PATH; install Claude Code or unset CHAMELEON_TEST_NO_CLAUDE"
-        )
+        raise PreflightError("`claude` CLI not on PATH; install Claude Code")
     return Path(p)
 
 

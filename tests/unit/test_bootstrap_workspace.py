@@ -495,7 +495,7 @@ class TestWorkspaceGlobWarnings:
 
 
 # --------------------------------------------------------------------------- #
-# Orchestrator fanout cap (_WORKSPACE_FANOUT_CAP)
+# Orchestrator fanout cap (WORKSPACE_FANOUT_CAP)
 # --------------------------------------------------------------------------- #
 
 

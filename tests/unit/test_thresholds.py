@@ -118,13 +118,6 @@ class TestDefaults:
         assert d["JUDGE_FACTS_MAX_SITES"] == 5
         assert d["JUDGE_FACTS_CHAR_CAP"] == 1200
 
-    def test_prewrite_secret_scan_cap_default_and_override(self, monkeypatch):
-        # The pre-write hard-secret deny truncates proposed content at this
-        # cap, matching the 100KB read ceiling the on-disk lint paths use.
-        assert _thresholds.DEFAULTS["PREWRITE_SECRET_SCAN_MAX_CHARS"] == 100_000
-        monkeypatch.setenv("CHAMELEON_PREWRITE_SECRET_SCAN_MAX_CHARS", "5000")
-        assert _thresholds.threshold_int("PREWRITE_SECRET_SCAN_MAX_CHARS") == 5000
-
 
 # --- _env_name --------------------------------------------------------------
 

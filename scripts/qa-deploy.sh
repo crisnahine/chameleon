@@ -49,7 +49,7 @@ tree_differs() {
     ! diff -rq --exclude='__pycache__' --exclude='.venv' --exclude='node_modules' \
         --exclude='.in_use' --exclude='.pytest_cache' --exclude='.ruff_cache' \
         --exclude='.claude' --exclude='.chameleon' \
-        --exclude='.orphaned_at' --exclude='.in_use' \
+        --exclude='.orphaned_at' \
         "$1" "$2" >/dev/null 2>&1
 }
 
@@ -143,7 +143,7 @@ cmd_verify() {
         diff -rq --exclude='__pycache__' --exclude='.venv' --exclude='node_modules' \
             --exclude='.in_use' --exclude='.pytest_cache' --exclude='.ruff_cache' \
             --exclude='.claude' --exclude='.chameleon' \
-        --exclude='.orphaned_at' --exclude='.in_use' \
+        --exclude='.orphaned_at' \
             "${DEV_ROOT}/plugin" "${cache_dir}" 2>&1 | head -20 >&2
         rc=1
     else

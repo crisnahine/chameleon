@@ -26,7 +26,6 @@ from collections.abc import Callable
 # "depth": long multi-file sessions scored by authoring position rather than
 # by final tree; uses the committed ci fixtures, so it needs no env repos.
 VALID_TIERS = ("ci", "full", "dup", "depth")
-VALID_FIXTURES = ("ts", "rails", "py", "env-ts", "env-ruby", "env-py")
 # tier "dup" reuses the env-pointed real repos (same fixtures as full); it is a
 # separate tier so the large duplication-reuse corpus runs in isolation from the
 # tier-full tasks for the powered causal A/B.

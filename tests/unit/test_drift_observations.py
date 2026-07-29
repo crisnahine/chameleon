@@ -26,7 +26,6 @@ from chameleon_mcp.drift import observations as obs
 from chameleon_mcp.drift.observations import (
     compute_drift_score,
     compute_drift_stats,
-    record_bootstrap_baseline,
     record_edit_observation,
 )
 
@@ -133,14 +132,6 @@ class TestRecordAndReadBack:
         for i in range(4):
             record_edit_observation(REPO_A, f"f{i}.ts", "c", "high", observed_at=1 + i)
         assert len(_read_rows(REPO_A)) == 4
-
-
-class TestRecordBootstrapBaseline:
-    def test_is_noop_returns_zero(self, tmp_path: Path):
-        result = record_bootstrap_baseline(REPO_A, [("a.ts", "comp", "high")])
-        assert result == 0
-        # The stub must not create a drift.db or any rows.
-        assert not obs._drift_db_path(REPO_A).is_file()
 
 
 class TestComputeDriftStats:

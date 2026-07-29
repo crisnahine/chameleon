@@ -196,18 +196,21 @@ Run `scripts/bump-version.sh --check` before tagging to catch drift.
 
 ## Continuous integration
 
-Four workflows live under [.github/workflows/](workflows/):
+Three workflows live under [.github/workflows/](workflows/):
 
 - **`ci.yml`** - fires on every PR against `main` and every push to `main`.
-  Ten jobs: the Python test matrix (3.11, 3.12, and 3.13 on Ubuntu and macOS,
-  running unit + harness + effectiveness tests), `test-windows` (native Windows
-  import + cross-platform locking, py3.11-3.13), `runtime-windows` (drives the
-  hook stack plus a bootstrap/trust/refresh lifecycle on native Windows), ruff
-  lint, `bump-version.sh --check`, `check-no-personal-paths.sh`, a `hook-smoke`
-  matrix over 5 hooks (`session-start`, `preflight-and-advise`,
-  `posttool-recorder`, `posttool-verify`, `callout-detector`) each fed synthetic
-  stdin and asserted to emit valid JSON, `dependency-audit` (`pip-audit` +
-  `npm audit`), `shellcheck`, and `hooks-manifest-check`.
+  Twelve jobs: the Python test matrix (3.11, 3.12, and 3.13 on Ubuntu and
+  macOS, running unit + harness + effectiveness tests), `test-windows` (native
+  Windows import + cross-platform locking, py3.11-3.13), `runtime-windows`
+  (drives the hook stack plus a bootstrap/trust/refresh lifecycle on native
+  Windows), ruff lint, `bump-version.sh --check`,
+  `check-no-personal-paths.sh`, `check-derived-counts.py`,
+  `check-import-cycle.py`, a `hook-smoke` matrix over all 7 hooks
+  (`session-start`, `preflight-and-advise`, `peer-skill-advise`,
+  `posttool-recorder`, `posttool-verify`, `callout-detector`,
+  `stop-backstop`) each fed synthetic stdin and asserted to emit valid JSON,
+  `dependency-audit` (`pip-audit` + `npm audit`), `shellcheck`, and
+  `hooks-manifest-check`.
 - **`release.yml`** - fires on tag pushes matching `v*.*.*`. Verifies all
   six manifests agree with the tag, that `CHANGELOG.md` has an entry for
   the version, re-runs the full test matrix, builds a release tarball, and
@@ -218,10 +221,6 @@ Four workflows live under [.github/workflows/](workflows/):
   to have configured `CLAUDE_CODE_OAUTH_TOKEN`, `CHAMELEON_TEST_TS_REPO`,
   and `CHAMELEON_TEST_RUBY_REPO` secrets. Fails soft with a SKIP message
   when those secrets aren't present.
-- **`calibration.yml`** - manual only (`workflow_dispatch`). Runs the
-  calibration harness against a corpus of repos to measure parameter
-  defaults. Requires `CHAMELEON_CALIBRATION_CORPUS_JSON` secret; without
-  it, emits `no_corpus_configured` and exits cleanly.
 
 Workflow run logs live under the repo's Actions tab on GitHub.
 

@@ -393,18 +393,6 @@ def test_unreadable_entry_shape_defers_to_the_cache_rung(tmp_path, monkeypatch):
         assert superpowers_installed() is True
 
 
-def test_parsed_registry_omitting_superpowers_stays_authoritative(tmp_path, monkeypatch):
-    """The contrast case: a readable registry that simply lacks the key must
-    still beat a stale cache directory."""
-    home = tmp_path / "home"
-    home.mkdir()
-    _write_registry(home, {"version": 2, "plugins": {"chameleon@mkt": _entry(tmp_path)}})
-    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(_cache_root_with_superpowers(tmp_path)))
-
-    with patch("pathlib.Path.home", return_value=home):
-        assert superpowers_installed() is False
-
-
 def test_a_recorded_directory_without_the_bootstrap_skill_is_not_an_install(tmp_path, monkeypatch):
     """Rung 1 used to accept any directory that merely existed while rung 2
     demanded the bootstrap skill, so the two rungs disagreed about what counts

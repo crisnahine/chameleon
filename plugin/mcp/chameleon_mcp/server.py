@@ -248,10 +248,7 @@ def get_rules(repo: str, source: str | None = None) -> dict:
     `source` filters to a single source key (`"eslint"`, `"rubocop"`,
     `"formatting"`, `"typescript"`). Omit to return all. Passing an
     archetype name (e.g. `"component"`) returns a failed envelope —
-    rules are SOURCE-scoped, not archetype-scoped. The legacy
-    `archetype=` kwarg was removed from the MCP schema
-    (still accepted by the in-process function with a deprecation
-    field, but no longer advertised to callers).
+    rules are SOURCE-scoped, not archetype-scoped.
     """
     return tools.get_rules(repo, source)
 

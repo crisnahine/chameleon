@@ -612,14 +612,6 @@ def test_extract_scope_lines_char_cap_applies_after_clause_narrowing(monkeypatch
     assert clause.startswith(out[0])
 
 
-def test_extract_scope_lines_multiple_matches_in_one_sentence_dedup():
-    # Two distinct matches in one sentence, each bounded by the other's
-    # conjunction, both widen back out to the same full clause and dedup to
-    # a single entry (order-preserving).
-    text = "don't touch the auth module, only change the retry count"
-    assert extract_scope_lines(text) == [text]
-
-
 def test_extract_scope_lines_pathological_input_completes_quickly():
     # Thousands of left-boundary words before the match and thousands of
     # right-boundary words after it -- both scans must stay linear, not

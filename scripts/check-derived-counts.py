@@ -11,17 +11,25 @@ Each check DERIVES the value from source and compares it to what the doc claims,
 so the failure names both sides and the fix is unambiguous. Run it in CI and the
 class stops recurring.
 
-Exit 0 = every claim matches. Exit 1 = at least one drifted.
+Runs on a bare interpreter by default, which bounds the test count from below
+rather than deriving it. Pass --exact to collect the suite for real and compare
+that count for equality too; it needs the suite's dependencies installed and
+fails rather than quietly serving the weaker floor.
+
+Exit 0 = every claim matches. Exit 1 = at least one drifted. Exit 2 = the check
+could not run as asked (bad argument, or --exact could not collect).
 """
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+_USAGE = "usage: check-derived-counts.py [--exact]"
 
 
 def _read(rel: str) -> str:
@@ -80,23 +88,84 @@ def derive_latest_git_tag() -> str | None:
     return names[0] if names else None
 
 
+_TEST_DEF_RE = re.compile(r"^[ \t]*(?:async[ \t]+)?def test_", re.MULTILINE)
+_UNIT_DIR = ROOT / "tests" / "unit"
+
+
 def derive_unit_test_functions() -> int:
     """Test functions defined under tests/unit/.
 
     A FLOOR for what pytest collects, never the exact figure: parametrize
     turns one function into many collected items, so the collected count is
-    always at least this. Deriving the exact number would mean importing the
-    suite, and this check has to run on a bare interpreter with no
-    dependencies installed.
+    always at least this. Deriving the exact number means importing the suite,
+    which needs its dependencies -- see ``derive_collected_unit_tests`` and the
+    ``--exact`` mode. This one runs on a bare interpreter with nothing
+    installed, which is why it is the default.
     """
-    d = ROOT / "tests" / "unit"
-    if not d.is_dir():
+    if not _UNIT_DIR.is_dir():
         return -1
-    pattern = re.compile(r"^[ \t]*(?:async[ \t]+)?def test_", re.MULTILINE)
     return sum(
-        len(pattern.findall(p.read_text(encoding="utf-8", errors="replace")))
-        for p in d.glob("*.py")
+        len(_TEST_DEF_RE.findall(p.read_text(encoding="utf-8", errors="replace")))
+        for p in _UNIT_DIR.glob("*.py")
     )
+
+
+def _files_defining_tests() -> set[str]:
+    """Repo-relative paths of tests/unit files that define at least one test.
+
+    The expected collection surface. A file with no ``def test_`` (conftest.py)
+    contributes no node ids and must not be expected.
+    """
+    return {
+        f"tests/unit/{p.name}"
+        for p in _UNIT_DIR.glob("*.py")
+        if _TEST_DEF_RE.search(p.read_text(encoding="utf-8", errors="replace"))
+    }
+
+
+def derive_collected_unit_tests() -> int:
+    """Items pytest actually collects from tests/unit/ -- the exact figure.
+
+    The floor above tolerates a claim anywhere above it, so a README that
+    drifted DOWNWARD (tests deleted, count not updated) stays green: the very
+    drift this script exists to catch. Only a real collection resolves
+    parametrize, so only a real collection can compare for equality.
+
+    Returns the underivable sentinel rather than a number it cannot stand
+    behind. Caller decides what that means; --exact treats it as fatal.
+    """
+    try:
+        out = subprocess.run(
+            [sys.executable, "-m", "pytest", "tests/unit/", "--co", "-q", "-p", "no:cacheprovider"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=900,
+            env={**os.environ, "PYTHONPATH": str(ROOT)},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return -1
+    if out.returncode != 0:
+        return -1
+    m = re.search(r"^(\d+) tests? collected", out.stdout, re.MULTILINE)
+    if not m:
+        return -1
+
+    # A module skipped at COLLECTION time -- a module-level importorskip whose
+    # dependency is missing -- contributes no node ids, yet pytest still exits 0
+    # and still prints a plain "N tests collected". The count alone therefore
+    # cannot tell a complete collection from a partial one, and a partial one
+    # would read as a drifted README (`doc says 6849, pytest collects 6841`)
+    # instead of an environment that cannot answer the question. Compare the
+    # files that actually produced node ids against the files defining tests.
+    collected_files = {
+        line.split("::", 1)[0].replace("\\", "/")
+        for line in out.stdout.splitlines()
+        if "::" in line
+    }
+    if collected_files != _files_defining_tests():
+        return -1
+    return int(m.group(1))
 
 
 def _underivable(actual: object) -> bool:
@@ -165,7 +234,8 @@ DOC_CLAIMS: list[tuple[str, object, object, str]] = [
     ),
 ]
 
-# Claims that can only be bounded from below, not derived exactly.
+# Claims bounded from below on a bare interpreter, compared for EQUALITY under
+# --exact (which collects the suite for real).
 # (label, what the doc says, the floor the source proves, why it matters)
 FLOOR_CLAIMS: list[tuple[str, object, object, str]] = [
     (
@@ -185,8 +255,32 @@ FLOOR_CLAIMS: list[tuple[str, object, object, str]] = [
 ]
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    args = argv if argv is not None else sys.argv[1:]
+
+    # A misspelled flag must not be ignored. Silently dropping --exact would run
+    # the weak floor while the caller believes equality was checked, and the CI
+    # log would look identical either way.
+    unknown = [a for a in args if a != "--exact"]
+    if unknown:
+        print(f"error: unrecognized argument(s): {', '.join(unknown)}")
+        print(_USAGE)
+        return 2
+
     failures: list[str] = []
+
+    # --exact FAILS CLOSED. Whoever passes it is asking for the strong check, so
+    # quietly serving the floor would defeat the request; and in CI, where the
+    # dependencies are installed, a collection that cannot complete is itself
+    # the thing worth reporting. Omit the flag to get the floor deliberately.
+    exact_total = -1
+    if "--exact" in args:
+        exact_total = derive_collected_unit_tests()
+        if _underivable(exact_total):
+            print("error: --exact could not collect tests/unit/ completely.")
+            print("       Install the suite's dependencies (uv sync --extra dev), or drop")
+            print("       --exact to compare against the bare-interpreter floor instead.")
+            return 2
 
     unwired = unwired_hook_scripts()
     if unwired:
@@ -215,10 +309,22 @@ def main() -> int:
 
     for label, claim_fn, floor_fn, why in FLOOR_CLAIMS:
         claimed = claim_fn()
-        floor = floor_fn()
         if claimed is None:
             print(f"SKIP  {label}: no claim found to check")
             continue
+        if not _underivable(exact_total):
+            # Not `why`: that one argues from the floor, which a claim above it
+            # satisfies. Under equality the reproducible number is the point.
+            if claimed != exact_total:
+                failures.append(
+                    f"{label}: doc says {claimed}, pytest collects {exact_total}\n"
+                    "      The collected count is the number the doc invites a "
+                    "reader to reproduce."
+                )
+            else:
+                print(f"ok    {label}: {claimed} (exact)")
+            continue
+        floor = floor_fn()
         if _underivable(floor):
             print(f"SKIP  {label}: could not derive")
             continue

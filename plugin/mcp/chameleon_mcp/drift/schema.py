@@ -116,50 +116,6 @@ CREATE TABLE IF NOT EXISTS decision_log (
 CREATE INDEX IF NOT EXISTS idx_decision_log_at ON decision_log(observed_at);
 CREATE INDEX IF NOT EXISTS idx_decision_log_path ON decision_log(rel_path, observed_at);
 CREATE INDEX IF NOT EXISTS idx_decision_log_digest ON decision_log(rel_path, content_digest);
-
--- RETIRED: nothing reads or writes this table anymore (see below). Was the
--- surfaced-finding ledger (the finding->fix loop): the correctness judge and
--- the multi-lens review can
--- never block; nothing tracked whether a surfaced advisory was ever acted
--- on, so a dropped high-severity finding was simply lost with zero telemetry
--- on advisory efficacy. Each surfaced finding wrote one row here at Stop; the
--- next Stop re-checked the anchor (the reviewed file's content digest) to
--- classify it addressed (the cited content changed) vs still-open, and an
--- unaddressed high-severity finding re-surfaced ONCE. `fingerprint` was the
--- per-(lens, file, locus) dedup key so the same finding across turns was one
--- logical row; `anchor_digest` was the 16-hex content digest of the reviewed
--- file at review time (the addressed/ignored proxy); `status` walked open /
--- addressed / ignored / resurfaced. `ws_root` was the absolute workspace root
--- that persisted the row, scoping a monorepo's shared-repo_id workspaces to
--- their own findings.
---
--- The async-first cutover moved the finding->fix loop to `review_ledger.py`'s
--- `findings_ledger.json` (one JSON row per repo, not a drift.db table); this
--- table's writer (`record_judge_finding`) and reader
--- (`open_judge_findings`/`mark_judge_finding`) were retired with it. Any HIGH
--- finding left open here from before the cutover is not migrated -- a
--- documented, low-impact gap (unlike the `.judge_pending.<session>.json`
--- queue, which IS migrated via `review_ledger.migrate_pending_queue`). The
--- DDL is left in place rather than dropped, since drift.db is a cache a
--- schema bump can drop-and-recreate freely anyway.
-CREATE TABLE IF NOT EXISTS judge_findings (
-  id INTEGER PRIMARY KEY,
-  session_id TEXT,
-  lens TEXT NOT NULL,
-  severity TEXT,
-  rel_path TEXT,
-  line INTEGER,
-  anchor_digest TEXT,
-  fingerprint TEXT NOT NULL,
-  ws_root TEXT,
-  status TEXT NOT NULL DEFAULT 'open',
-  observed_at INTEGER NOT NULL,
-  resolved_at INTEGER
-);
-CREATE INDEX IF NOT EXISTS idx_judge_findings_session ON judge_findings(session_id);
-CREATE INDEX IF NOT EXISTS idx_judge_findings_fp ON judge_findings(fingerprint);
-CREATE INDEX IF NOT EXISTS idx_judge_findings_status ON judge_findings(status, ws_root);
-CREATE INDEX IF NOT EXISTS idx_judge_findings_at ON judge_findings(observed_at);
 """
 
 

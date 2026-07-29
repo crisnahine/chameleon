@@ -644,21 +644,6 @@ def archetype_antipattern_signals(
     return out
 
 
-def record_bootstrap_baseline(
-    repo_id: str,
-    clustered_files: list[tuple[str, str | None, str | None]],
-) -> int:
-    """No-op retained for call-site compatibility.
-
-    This previously populated the `files` table, which had no readers anywhere
-    (drift detection runs entirely off ``edit_observations``). The table and
-    its writers were removed; this stub keeps the signature so the orchestrator
-    caller is unchanged. Returns 0.
-    """
-    del repo_id, clustered_files
-    return 0
-
-
 def reset_drift_baseline(repo_id: str) -> int:
     """Clear all edit observations for a repo, re-baselining the drift window.
 

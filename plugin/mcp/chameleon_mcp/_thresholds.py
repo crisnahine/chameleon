@@ -19,6 +19,8 @@ import os
 from typing import Final
 
 DEFAULTS: Final[dict[str, int | float]] = {
+    # How many workspaces a monorepo bootstrap analyzes. A sampling cap, not a
+    # safety guard -- REPO_SIZE_GUARD is the post-exclusion DoS backstop.
     "WORKSPACE_FANOUT_CAP": 500,
     "WARNING_SAMPLE_PATHS": 3,
     "SPARSE_WARNING_LIMIT": 50,
@@ -560,7 +562,6 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # noise on real repos; two co-occurring domain words is a real lead.
     "DUPLICATION_SEMANTIC_MIN_SHARED_TOKENS": 2,
     "DUPLICATION_REVIEW_MAX_PROMPT_BYTES": 60_000,
-    "DUPLICATION_REVIEW_MAX_SPAWNS_PER_SESSION": 2,
     # Lines of a candidate function's body read from disk as a citation aid for
     # the duplication judge. Enough to show the function's intent without
     # inlining a whole large method into the tool result: covers the median TS
@@ -610,11 +611,6 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # literal repr in a single violation; past the cap a '+N more (capped at
     # ...)' summary reports the remainder, mirroring the secret-scan cap.
     "TOP_LEVEL_NODE_KINDS_REPR_CAP": 50,
-    # Cap on proposed-content characters the PreToolUse hard-secret deny
-    # scans, consistent with the 100KB ceiling every existing content scan
-    # shares. A secret placed past the cap escapes the pre-write deny but
-    # still meets the PostToolUse and Stop scans.
-    "PREWRITE_SECRET_SCAN_MAX_CHARS": 100_000,
     # Above this many sub-clusters, a named archetype's single canonical witness
     # is one sub-role's exemplar, not the archetype template, so the Tier-2 lead
     # downgrades "mirror closely" to "loose reference" even on a structural match.
@@ -626,13 +622,13 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # boundary with an honest marker.
     "TIER2_WITNESS_MAX_CHARS": 16_000,
     # The DETERMINISTIC hard-secret / hard-eval PreToolUse DENY paths scan a much
-    # larger window than the advisory 100KB cap above: the deny is the only gate
-    # that stops the write from landing on disk (PostToolUse/Stop fire after the
-    # bytes are already written), so a token padded past a small prefix cap must
-    # not evade it. Any single proposed write up to this ceiling is scanned in
-    # full; a pathologically larger write is scanned head+tail (each half of this
-    # value), which still defeats front- or back-padding. 8MB in full is ~0.4s of
-    # regex on this Edit/Write-only path, an acceptable one-shot cost.
+    # larger window than the 100KB ceiling the on-disk lint paths use: the deny is
+    # the only gate that stops the write from landing on disk (PostToolUse/Stop
+    # fire after the bytes are already written), so a token padded past a small
+    # prefix cap must not evade it. Any single proposed write up to this ceiling is
+    # scanned in full; a pathologically larger write is scanned head+tail (each
+    # half of this value), which still defeats front- or back-padding. 8MB in full
+    # is ~0.4s of regex on this Edit/Write-only path, an acceptable one-shot cost.
     "PREWRITE_DENY_SCAN_MAX_CHARS": 8_000_000,
     # Hard per-session budget for the per-turn-routed correctness judge (the
     # old behavior was exactly one spawn per session). Bounds cost and the
@@ -764,9 +760,8 @@ DEFAULTS: Final[dict[str, int | float]] = {
     "JOB_TOTAL_BUDGET_SECONDS": 240,
     "JOB_LENS_BUDGET_SECONDS": 150,
     "JOB_VERIFY_BUDGET_SECONDS": 60,
-    "JOB_RENDER_BUDGET_SECONDS": 10,
     # The self-learning idiom miner's own share of the job's remaining budget
-    # (the reserved remainder after lenses/VERIFY/render): it runs LAST, after
+    # (the reserved remainder after lenses/VERIFY): it runs LAST, after
     # every other stage, so this is a ceiling on its own window rather than a
     # slice reserved up front.
     "JOB_MINER_BUDGET_SECONDS": 20,

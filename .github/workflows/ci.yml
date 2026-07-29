@@ -255,7 +255,7 @@ jobs:
   derived-counts:
     name: derived-counts
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -264,8 +264,30 @@ jobs:
           # `git tag`, and a shallow checkout fetches no tags.
           fetch-depth: 0
 
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'plugin/mcp/uv.lock'
+
+      # The suite has to be importable for --exact below to collect it. --exact
+      # fails closed, so a broken install fails this job rather than quietly
+      # downgrading it to the weaker floor comparison.
+      - name: Install Python dependencies (uv sync)
+        working-directory: plugin/mcp
+        run: uv sync --frozen --extra dev
+
       - name: Fail when a documented count no longer matches the source
-        run: python3 scripts/check-derived-counts.py
+        # --exact collects tests/unit/ for real instead of counting `def test_`
+        # with a regex. That regex is only a FLOOR, so a README claiming any
+        # number above it passed -- including one left stale by deleted tests,
+        # which is the exact drift this gate exists to catch.
+        run: plugin/mcp/.venv/bin/python scripts/check-derived-counts.py --exact
 
   import-cycle:
     name: import-cycle

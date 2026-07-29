@@ -1,13 +1,13 @@
 """Size-based rotator for chameleon's hook error log.
 
-Called from bash hook scripts via `python -m chameleon_mcp.log_rotation`
-before appending to .hook_errors.log. Rotates when the file exceeds
-ROTATE_THRESHOLD_BYTES; keeps up to MAX_ROTATIONS old files (.1, .2, ...).
+Called in-process, never as a subprocess: from the top of hook_helper's `main`
+for .hook_errors.log, and from metrics.py before each append to metrics.jsonl.
+Rotates when the file exceeds ROTATE_THRESHOLD_BYTES; keeps up to
+MAX_ROTATIONS old files (.1, .2, ...).
 """
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 ROTATE_THRESHOLD_BYTES = 10 * 1024 * 1024
@@ -45,14 +45,3 @@ def rotate_if_needed(log_path: Path) -> None:
         log_path.rename(_backup_path(log_path, 1))
     except OSError:
         pass
-
-
-def main() -> int:
-    if len(sys.argv) < 2:
-        return 0
-    rotate_if_needed(Path(sys.argv[1]))
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

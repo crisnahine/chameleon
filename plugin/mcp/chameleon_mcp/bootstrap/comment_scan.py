@@ -177,35 +177,3 @@ def detect_commented_out_code_by_group(
     except Exception:
         return {}
     return counts
-
-
-def _parse_and_count(
-    spans: list[str],
-    *,
-    language: str,
-    ext: str,
-    extractor: Extractor,
-) -> int:
-    flagged = 0
-    try:
-        with tempfile.TemporaryDirectory(prefix="chameleon-cot-") as tmp:
-            tmp_dir = Path(tmp)
-            span_paths: list[Path] = []
-            for i, span in enumerate(spans):
-                p = tmp_dir / f"span_{i}{ext}"
-                try:
-                    p.write_text(span, encoding="utf-8")
-                except OSError:
-                    continue
-                span_paths.append(p)
-            if not span_paths:
-                return 0
-            result = extractor.parse_repo(tmp_dir, paths=span_paths)
-            for pf in result.files:
-                if _span_is_code(pf, language):
-                    flagged += 1
-    except Exception:
-        # A subprocess/parse failure must not abort bootstrap; report what we
-        # have. The witness is still committed without the advisory.
-        return flagged
-    return flagged

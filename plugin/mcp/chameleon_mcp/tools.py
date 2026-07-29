@@ -2926,7 +2926,7 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
     )
 
 
-def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
+def get_rules(repo: str, source: str | None = None) -> dict:
     """Return repo-global rules (eslint, prettier, rubocop, tsconfig) keyed
     by source/tool.
 
@@ -2935,13 +2935,6 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
       ``source``: optional tool/source filter (``"eslint"``,
                   ``"rubocop"``, ``"formatting"``, etc.). When omitted,
                   returns all rules.
-
-    Bug 1 follow-up: the historical ``archetype=`` kwarg has
-    been REMOVED from the public schema. The signature accepts
-    ``**kwargs`` so a stale caller passing ``archetype=`` gets a clear
-    deprecation error envelope instead of a TypeError — but the kwarg
-    is no longer advertised in the MCP tool description. Callers must
-    migrate to ``source=``.
 
     Usage:
       - ``get_rules(repo)`` → all rules (full source map).
@@ -2960,32 +2953,6 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
     if source is not None and not isinstance(source, str):
         return _envelope({"status": "failed", "error": "source must be a string or null"})
 
-    deprecation_note = None
-    legacy_archetype = kwargs.pop("archetype", None)
-    if kwargs:
-        unknown = sorted(kwargs.keys())
-        return _envelope(
-            {
-                "status": "failed",
-                "error": (
-                    f"get_rules got unexpected keyword argument(s): {unknown!r}. "
-                    "Use `repo` and (optionally) `source`."
-                ),
-            }
-        )
-    if legacy_archetype is not None and source is None:
-        source = legacy_archetype
-        deprecation_note = (
-            "the 'archetype' parameter was removed; the call "
-            "still resolves but rename it to 'source' — rules are "
-            "tool-scoped (eslint / rubocop / etc), not archetype-scoped."
-        )
-    elif legacy_archetype is not None and source is not None:
-        deprecation_note = (
-            "both 'source' and 'archetype' were passed; 'archetype' is "
-            "removed. Drop it; 'source' wins."
-        )
-
     repo_root, repo_id = _resolve_repo_arg(repo)
     if repo_root is None and repo_id is not None:
         repo_root = _resolve_repo_root_by_id(repo_id)
@@ -2994,8 +2961,6 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
         # repo (which returns a bare {"rules": []}); the untrusted / degraded
         # branches below carry a status the same way.
         env = {"rules": [], "status": "unresolved"}
-        if deprecation_note:
-            env["deprecation"] = deprecation_note
         return _envelope(env)
 
     def _with_repo_root(env: dict) -> dict:
@@ -3019,8 +2984,6 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
     _gate_rec = _trust_state_for(_compute_repo_id(repo_root))
     if _gate_rec is None or not _gate_rec.grants_root(repo_root):
         env = {"status": "untrusted", "rules": []}
-        if deprecation_note:
-            env["deprecation"] = deprecation_note
         return _with_repo_root(env)
 
     try:
@@ -3030,8 +2993,6 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
         # to load must not look identical: the caller needs the degraded flag
         # to avoid reading corruption as "nothing to enforce".
         env = {"rules": [], "status": "degraded", "reason": "profile_unavailable"}
-        if deprecation_note:
-            env["deprecation"] = deprecation_note
         return _with_repo_root(env)
 
     rules_dict = loaded.rules.get("rules", {}) or {}
@@ -3069,14 +3030,10 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
     # already scrubbed; this closes the asymmetry for the rule entries beside it).
     if source is None:
         env = _with_warnings({"rules": _sanitize_rule_items(list(rules_dict.items()))})
-        if deprecation_note:
-            env["deprecation"] = deprecation_note
         return _with_repo_root(env)
 
     if source in rules_dict:
         env = _with_warnings({"rules": _sanitize_rule_items([(source, rules_dict[source])])})
-        if deprecation_note:
-            env["deprecation"] = deprecation_note
         return _with_repo_root(env)
 
     if source in loaded.archetype_names:
@@ -3092,14 +3049,10 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
             ),
             "rules": [],
         }
-        if deprecation_note:
-            env["deprecation"] = deprecation_note
         return _with_repo_root(env)
 
     filtered = [(k, v) for k, v in rules_dict.items() if source in str(k)]
     env = {"rules": _sanitize_rule_items(filtered)}
-    if deprecation_note:
-        env["deprecation"] = deprecation_note
     return _with_repo_root(env)
 
 
