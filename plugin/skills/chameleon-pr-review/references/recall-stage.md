@@ -14,10 +14,14 @@ lens, over the WHOLE diff. Its definition (`agents/recall-lens.md` at the
 plugin root) is AUTHORITATIVE for the agent's own contract — the role, the
 read-only tool limits, the anchoring rules, and the output schema — so the
 dispatch prompt carries only WHICH lens, the inputs below, and nothing else.
-What follows here is the PARENT's half: which lens to run, how deep, and how
-to merge and gate what comes back. Where this file and the agent definition
-describe the same thing, the agent definition wins; treat a disagreement as a
-drift to fix, not a choice to make. When the harness does not expose that agent
+What follows here is written for the PARENT — which lens to run, how deep, and
+how to merge and gate what comes back — and it restates parts of the agent's
+own contract (the lens definitions, the return schema, the anchoring rules)
+because the parent has to reason about them to calibrate and gate. That
+duplication is deliberate, not a second source of truth: where this file and
+the agent definition describe the same thing, the AGENT DEFINITION WINS, and a
+disagreement is a drift to fix rather than a choice to make. When the harness
+does not expose that agent
 type, read `${CLAUDE_PLUGIN_ROOT}/agents/recall-lens.md` and dispatch a
 read-only explore agent with that file's body (everything after the
 frontmatter) prepended — one source of truth, never a from-memory retelling of

@@ -27,9 +27,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   hardening the graded-sonnet rounds bought — the 9-slot brief, the 9-slot
   report, the ladder and experts lines, the per-step `-> verify:` clause —
   was unguarded by any test and could be edited away with the suite green.
-  Eighteen contracts now pin them, plus the agent roster, the skill-to-agent
+  Twenty-three contracts now pin them, plus the agent roster, the skill-to-agent
   dispatch wiring, the reference wiring, and the refuter call shape. Verified
-  by flipping the sources: 7 fail against the pre-change tree.
+  by flipping the sources: 11 fail against the pre-change tree. Two adversarial
+  passes then attacked the contracts themselves, and the surviving ceiling is
+  stated in the module docstring rather than overclaimed: these are static text
+  pins over prose files, so they catch accidental regression — a dropped slot,
+  an inverted rule, a loosened tool policy — and cannot be proof against a
+  deliberate rewrite. Behavioural conformance stays the journey harness's job,
+  which still has no deep-work act.
 
 ### Fixed
 

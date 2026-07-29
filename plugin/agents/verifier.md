@@ -105,11 +105,11 @@ replay. Each `message` quotes at most the single line that carries the claim.
  "clean": ["<what you checked and found genuinely sound — one line each>"]}
 ```
 
-`severity` is one of `block` / `fix` / `nit` — these exact tokens, because a
-decline you rate `block` is routed straight into the engine's `refute_finding`,
-which lowercases the string and escalates its adjudicating model only for
-`block` / `high` / `critical`. A near-miss like `blocking` matches nothing and
-silently drops your highest-stakes finding to the base model. In `probe` mode each
+`severity` is one of `block` / `fix` / `nit`. These exact tokens: a decline you
+rate top-severity is routed straight into the engine's refuter, which lowercases
+the string and escalates its adjudicating model only for an exact match against
+its own high set. A near-miss spelling matches nothing and silently drops your
+highest-stakes finding to the base model. In `probe` mode each
 finding's `message` names the hostile input tried and what the code does with
 it. Return `"findings": []` when the pass found nothing — and fill `clean` so
 the parent can see what was actually examined.

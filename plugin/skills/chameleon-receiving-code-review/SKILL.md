@@ -44,8 +44,10 @@ to resolve.
   pass `--paginate` to `gh api` on each GitHub endpoint, and follow `next`
   until exhausted on Bitbucket. Include outdated and resolved threads: an
   outdated comment may still be unaddressed. Record the per-source counts —
-  N inline, M general, K review-summary, P outdated/resolved — and carry them
-  into Step 2; they are RENDERED once, in slot 1 of the adjudication report. If
+  how many inline, general, review-summary, and outdated/resolved — and carry
+  them into Step 2; they are RENDERED once, in slot 1 of the adjudication
+  report, whose own letters (A/B/C/D there) are distinct from Step 2's
+  reconciliation triple, so do not carry a letter across steps. If
   `gh`/`bbcurl` is absent, unauthenticated, or returns
   empty, STOP and ask the user to paste — never invent comments.
 - **Jira key**: resolve the PR(s), then as above (see multi-PR below).
@@ -67,11 +69,12 @@ checklist item (a multi-ask comment may split into several items, but no
 comment maps to zero). A comment with NO ask — a bot/CI status note, a bare
 "LGTM" review body, an emoji reaction — still gets an item, closed on the spot
 as `informational — no ask, NO ACTION`; it counts in the reconciliation and
-skips Steps 3-6 and Step 8 (it still gets its own row in the
-adjudication table, with verdict `informational` — the table has one row per
-checklist item, so an item that vanished from it would break the very
-reconciliation this paragraph exists to force). Carry the reconciliation
-counts — N fetched, M checklist items, K informational — into slot 1 of the
+skips Steps 3-7 and Step 8 — it is never verified, never adjudicated, and
+never gets a drafted reply — but it DOES get its own row in the adjudication
+table, with verdict `informational`. The table has one row per checklist item,
+so an item that vanished from it would break the very reconciliation this
+paragraph exists to force. Carry the reconciliation counts — comments fetched,
+checklist items, and how many closed informational — into slot 1 of the
 adjudication report, which is where they are rendered; a fetched comment with no
 item is a self-evident gap to close before Step 3.
 

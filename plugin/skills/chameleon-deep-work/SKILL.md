@@ -123,10 +123,12 @@ expert, matched to the work:
   expose that agent type, read `${CLAUDE_PLUGIN_ROOT}/agents/verifier.md` and
   dispatch a read-only explore agent with that file's body (everything after
   the frontmatter) prepended to the prompt - one source of truth, never a
-  from-memory retelling of the role. Say in the report that the fallback path
-  ran, because it does NOT reproduce the no-shell guarantee: a harness explore
-  agent typically HAS Bash, so on that path the state discipline below is a
-  rule the agent must follow rather than one the tool grants make impossible.
+  from-memory retelling of the role. That fallback does NOT reproduce the
+  no-shell guarantee: a harness explore agent typically HAS Bash, so there the
+  state discipline below is a rule the agent must follow rather than one the
+  tool grants make impossible. Disclose it on the report's convergence line
+  (slot 4), the way a self-review is disclosed, so a reader can tell which
+  guarantee was in force.
   The packaged agent has NO shell on purpose: a verifier that runs the suite
   or drives the app mutates state that outlives it - a graded run handed over
   a branch whose suite was RED because a review subagent wrote two rows
@@ -498,7 +500,9 @@ report incomplete exactly like an unfilled evidence-table cell:
 3. **Guard checks** - which flips ran (git or editor-with-reason), which
    tests failed, restored-clean confirmation.
 4. **Review convergence** - the per-round line ("N round(s) (r1: X applied,
-   r2: 0) - converged | cap hit | self-reviewed").
+   r2: 0) - converged | cap hit | self-reviewed"), plus ", fallback verifier -
+   no packaged agent type" when Step 6 dispatched the fallback rather than the
+   packaged agent, since that path does not carry the no-shell guarantee.
 5. **Finding fates recorded** - "N accepted / M declined / K converted" or
    "fate recording failed: <reason>" or "none - zero findings". The numbers
    are a TRANSCRIPTION, never a recollection: derive them by re-counting
