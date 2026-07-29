@@ -43,9 +43,10 @@ to resolve.
   paginates and defaults to a small page, which silently truncates a busy PR:
   pass `--paginate` to `gh api` on each GitHub endpoint, and follow `next`
   until exhausted on Bitbucket. Include outdated and resolved threads: an
-  outdated comment may still be unaddressed. Then render one coverage line — "Comments fetched: N inline +
-  M general + K review-summary (P outdated/resolved included)" — and carry the
-  count into Step 2. If `gh`/`bbcurl` is absent, unauthenticated, or returns
+  outdated comment may still be unaddressed. Record the per-source counts —
+  N inline, M general, K review-summary, P outdated/resolved — and carry them
+  into Step 2; they are RENDERED once, in slot 1 of the adjudication report. If
+  `gh`/`bbcurl` is absent, unauthenticated, or returns
   empty, STOP and ask the user to paste — never invent comments.
 - **Jira key**: resolve the PR(s), then as above (see multi-PR below).
 
@@ -66,9 +67,13 @@ checklist item (a multi-ask comment may split into several items, but no
 comment maps to zero). A comment with NO ask — a bot/CI status note, a bare
 "LGTM" review body, an emoji reaction — still gets an item, closed on the spot
 as `informational — no ask, NO ACTION`; it counts in the reconciliation and
-skips Steps 3-8. Render "Comments: N fetched -> M checklist items (K closed
-informational)"; a fetched comment with no item is a self-evident gap to close
-before Step 3.
+skips Steps 3-6 and Step 8 (it still gets its own row in the
+adjudication table, with verdict `informational` — the table has one row per
+checklist item, so an item that vanished from it would break the very
+reconciliation this paragraph exists to force). Carry the reconciliation
+counts — N fetched, M checklist items, K informational — into slot 1 of the
+adjudication report, which is where they are rendered; a fetched comment with no
+item is a self-evident gap to close before Step 3.
 
 Each item: reviewer, `file:line` (nullable), the ask, type, and comment-class:
 `inline-current` (line maps to the file), `inline-outdated` (carry `original_line`
@@ -123,8 +128,10 @@ whose record is complete (an incomplete record can only be NEEDS CLARIFICATION):
 4. **Five confirmations** (code-changing verdicts only): one-line answers to
    the five questions at the end of this step.
 
-Render a ledger line in the Step 5 output: "Verification records: M/N complete
-(K routed to NEEDS CLARIFICATION on incomplete records)."
+This record feeds the adjudication report's verification-records slot
+("Verification records: M/N complete (K routed to NEEDS CLARIFICATION on
+incomplete records)"), which is where it is RENDERED. Keep the per-item
+records as you go; the report is the one place the counts are published.
 
 Run the cited line through the Step 1 hunk map FIRST. Three outcomes:
 - **The file is not in the PR at all** (no entry in the per-file hunk map for that
