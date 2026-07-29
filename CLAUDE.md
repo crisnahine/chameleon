@@ -20,7 +20,8 @@ chameleon/
 │   │                    posttool-verify, callout-detector, stop-backstop
 │   │                    (+ _resolve-python.sh, run-hook.cmd, hooks.json)
 │   ├── skills/          using-chameleon (auto) + 14 user-invocable slash commands
-│   ├── agents/          code-scout, pattern-reviewer, web-researcher
+│   ├── agents/          code-scout, pattern-reviewer, recall-lens, verifier,
+│   │                    web-researcher
 │   ├── mcp/             chameleon-mcp Python server (FastMCP, stdio transport)
 │   ├── scripts/         ts_dump.mjs, prism_dump.rb, libcst_dump.py, merge driver, setup.sh
 │   └── bin/             chameleon-statusline.sh (status line, <100ms budget)

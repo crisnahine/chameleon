@@ -112,16 +112,21 @@ expert, matched to the work:
   include the pinned version in the prompt, the researcher cannot read the
   repo). When the harness does not expose it, dispatch a general-purpose
   subagent under the same rules.
-- **Reviewers** (Step 6): a fresh-context, read-only pass over the finished
-  diff against the brief. Read-only means the APP's state too: a reviewer
-  that runs the suite or drives the app must not leave rows in a shared
-  development/test database, files in its storage dir, or caches primed - a
-  graded run handed over a branch whose suite was RED because a review
-  subagent wrote two rows outside a transaction and the repo's
-  whole-table ordering assertions then failed. Verify against a prepared
-  test database and reset it, or drive read-only. Fresh eyes catch what the author's context has
-  gone blind to. No packaged agent here: the reviewer's prompt is composed
-  per round from THIS task's brief, diff, and declined-findings log.
+- **Verifiers** (Step 6): a fresh-context pass over the finished diff -
+  either a convergence-round review against the brief, or an adversarial
+  bypass hunt on one surface. Fresh eyes catch what the author's context has
+  gone blind to. Dispatch the packaged `chameleon:verifier` plugin agent
+  (Task tool `subagent_type: "chameleon:verifier"`); its definition carries
+  the two modes, the tool limits, and the output schema, so the dispatch
+  prompt carries only the mode, this task's brief and acceptance criteria,
+  the current diff, and the declined-findings log. When the harness does not
+  expose that agent type, dispatch a read-only explore agent under the same
+  rules. That agent has NO shell on purpose: a verifier that runs the suite
+  or drives the app mutates state that outlives it - a graded run handed over
+  a branch whose suite was RED because a review subagent wrote two rows
+  outside a transaction and the repo's whole-table ordering assertions then
+  failed. Removing the shell makes that class impossible rather than
+  forbidden, and running the gates is YOUR job at Step 6 anyway.
 
 The dispatch recipe - every expert prompt carries three things:
 
@@ -288,58 +293,52 @@ in one line.
 
 ## Step 5: Implement in a worktree
 
-- Detect before you create. The session may already be inside a linked
-  worktree: `git rev-parse --path-format=absolute --git-dir` differs from
-  `git rev-parse --path-format=absolute --git-common-dir` (compare as
-  absolute paths - the raw outputs differ spuriously when run from a
-  subdirectory). A plain submodule does not produce this mismatch; there
-  `git rev-parse --show-superproject-working-tree` prints the superproject
-  path instead of nothing. Being in a linked worktree is not enough on its
-  own: use it only when it is dedicated to this task (the harness created
-  it for this session, or `git status --porcelain` is clean with no user
-  work parked there). Otherwise it is the user's workspace like any other
-  checkout - create a SIBLING worktree per the placement rules below.
-  Never nest means never place the new worktree inside the current one; a
-  sibling is fine.
-- Create it where the user's instructions say worktrees live, when they
-  declare a placement: hand that path to the harness's native worktree
-  tool if it accepts one, else use the git fallback at that location. An
-  explicit user constraint outranks any tool default. With no declared
-  placement, prefer the native worktree tool when one exists - a manual
-  `git worktree add` beside a native tool leaves phantom state the harness
-  cannot see or clean up - and report the branch it creates as-is in
-  Step 7. Only without a native tool, fall back to git, placing the
-  worktree by priority: (1) an existing `.worktrees/` or `worktrees/`
-  directory at the repo root, but only if `git check-ignore` confirms it
-  is ignored - if it is not, do NOT edit the user's `.gitignore` (that
-  edits their checked-out branch); fall through instead; (2) the sibling
-  default `../<repo>-deep-<slug>`. Every git-fallback placement creates
-  the same branch - `git worktree add <dir> -b deep/<slug>` from the repo
-  root - only the directory differs.
-- Never implement on the branch the user has checked out: their working tree,
-  stash, and half-staged files are not yours to disturb. If a worktree cannot
-  be created (not a git repo, `git worktree add` fails, the sandbox denies
-  it), that is a missing hard dependency of implementation - contract rule
-  2c: STOP and report it in one line, never fall back to implementing on the
-  checked-out branch.
-- Make it runnable, then baseline it. A fresh linked worktree shares the
-  repo's history, not its installed state: run the repo's own dependency
-  setup first (the lockfile's install command). No lockfile present -
-  a vendored-dependency repo, a stdlib-only script collection - means
-  there is no install step: confirm the gates run at all (import the
-  entry point, invoke the linter) before treating the tree as ready,
-  rather than assuming "no lockfile" means "nothing to set up". Then run
-  the gates for the surface you are about to touch once, BEFORE the
-  first edit. A pre-existing failure found now is inherited, not yours
-  to fix - note it for the Step 7 report (scope holds) and keep
-  building. The baseline is what keeps Step 6 attributable: any new
-  failure after it is yours.
+- **Never implement on the branch the user has checked out**: their working
+  tree, stash, and half-staged files are not yours to disturb. If a worktree
+  cannot be created (not a git repo, `git worktree add` fails, the sandbox
+  denies it), that is a missing hard dependency of implementation - contract
+  rule 2c: STOP and report it in one line, never fall back to implementing on
+  the checked-out branch.
+- Detect before you create (the session may already be in one), then place it.
+  Read `${CLAUDE_PLUGIN_ROOT}/skills/chameleon-deep-work/references/worktree-setup.md`
+  NOW, before creating anything. Do not run the detection or the placement
+  priority from memory: both `rev-parse` claims a plainer form would rest on
+  were refuted live on git 2.50.1, and the placement order carries a rule
+  about the user's `.gitignore` that a reasonable-looking shortcut violates.
+- Make it runnable, then baseline it - the reference above covers the install;
+  this is the part that binds afterward. Run the gates for the surface you are
+  about to touch once, BEFORE the first edit, and record the result on the
+  build log's baseline line below. A pre-existing failure that survives a
+  correct install is inherited, not yours to fix - name it for the Step 7
+  report (scope holds) and keep building. The baseline is what keeps Step 6
+  attributable: any new failure after it is yours.
 - Chameleon follows you in. A linked worktree inherits the main checkout's
   profile and trust (`worktree.py` resolves the profile root through the
   `.git` file pointer), so the per-edit injection, the deny gates, and the
   turn-end review stay live on every edit you make there.
 - Build one plan step at a time, in the plan's order. Run the step's own
   verification before moving on.
+- **Keep a build log, and render it as you go.** This step is the plan's only
+  execution record, and until it has one the plan is a promise nobody is
+  holding. Emit one line the moment each plan step lands - not a batch
+  reconstructed at delivery:
+
+  ```
+  Baseline: <the install command run | none needed - <reason>> | gates: <command> -> <result>
+            | inherited failures: <named, N> | none
+  Step <n>/<N>: <action> -> verify: <this step's own check> -> <the observed result>
+  ```
+
+  Three things fall out of the shape that exhortation has not held. A step you
+  skipped has no line, so the gap is visible on the page instead of surviving
+  to a report slot that asks you to remember it. A step whose verify you did
+  not actually run cannot be filled in without writing an observed result you
+  did not observe, which is the same fabrication class as an invented evidence
+  cell. And the Step 7 report's not-verified slot becomes a TRANSCRIPTION -
+  read the log, list the steps whose lines are missing or whose result was not
+  clean - rather than a recollection of a plan you read many turns ago.
+  `<N>` is the plan's step count from the brief; if the plan grew or shrank
+  mid-flight, say so on the line where it changed.
 - **The brief stays binding mid-flight.** When a premise the brief relied on
   turns out false during implementation, or a mid-flight user instruction
   materially changes the scope (not just flips a named default), STOP building
@@ -406,10 +405,21 @@ in one line.
   reason with new evidence. Verify its load-bearing findings first-hand
   before acting; apply or decline each with a reason. Declining is not free
   convergence: a declined finding the reviewer rated blocking goes to the
-  engine's `chameleon_review(action="refute_finding", ...)` (independent
-  adjudication of the decline) - a
+  engine for independent adjudication of the decline —
+  `chameleon_review(action="refute_finding", params={"repo": <repo_id>, "findings": [{id, kind, severity, file, line, claim, evidence}, ...], "base_ref": <the branch's merge base, or the locked production_ref, else "main">})`.
+  Every key earns its place: `id` maps verdicts back, `file`/`line` is the
+  excerpt the refuter prefetches (omit them and it silently degrades to the
+  whole branch diff), `kind` is rendered VERBATIM into the adjudication prompt
+  (omit it and the refuter is told `kind: None` about the claim it is judging),
+  and `severity` picks the refuter's model — only `block` / `high` / `critical`
+  escalate, so an unset severity adjudicates your highest-stakes declines with
+  the base model. At most 8 findings per call (the per-invocation spawn cap; an
+  over-cap send returns "unverified" for the tail). A
   `confirmed` verdict means the decline was wrong: apply the finding, and the
-  round is non-converged. If ANY finding was applied, the diff changed - the
+  round is non-converged. `refuted` upholds the decline. `unverified` — or a
+  `refuter` envelope of `disabled` / `unavailable` / `untrusted` — upholds
+  nothing: hold that decline as unadjudicated and say so in the convergence
+  line, never present it as vindicated. If ANY finding was applied, the diff changed - the
   fixes are new unreviewed code, so run round N+1; also re-run the specific
   verification each applied finding's criterion or gate describes. The cap
   may be EXTENDED one round at a time past 3 only while the latest round
@@ -450,7 +460,10 @@ in one line.
   loop's first `refute_finding` send, call
   `chameleon_telemetry(action="get_finding_fate_stats", params={"repo": <repo_id>})`
   once — fail-open: on any error or an empty ledger, skip silently — and read
-  `surfaces["deep-work"].lenses`. Each lens bucket carries
+  `surfaces["deep-work"].lenses`. The `surfaces` map holds ONLY surfaces that
+  have rows, so a repo that has never run deep-work simply has no `"deep-work"`
+  key; that absence is the empty-ledger case, not an error, and it is the
+  normal first-run state. Each lens bucket carries
   `{accepted, declined, converted, total, precision}` from this repo's own
   adjudication history. Use it to ORDER the refuter queue only: a decline
   that contradicts history (the finding's lens has high `precision` with
@@ -491,8 +504,11 @@ report incomplete exactly like an unfilled evidence-table cell:
 7. **Not verified** - what was not driven, and why. This includes any
    PLAN STEP from the brief that was not carried out: the plan is a promise,
    so a step silently dropped (the hostile-input probes that never ran) is a
-   broken one unless it is named here. Reconcile the plan against what you
-   actually did before writing this slot.
+   broken one unless it is named here. Derive this slot from the Step 5 build
+   log, not from memory: every plan step with no log line, and every logged
+   step whose observed result was not clean, belongs here. Reconciling "what
+   you actually did" from recollection is the exact move that lost the
+   hostile-input probes.
 8. **Worktree** - path, branch, commit state, integration options: merge
    locally, push the branch and open a PR, or discard. The integration
    decision belongs to the user - pushing, merging into a shared branch, or

@@ -183,7 +183,8 @@ chameleon/
 │   ├── skills/
 │   │   ├── using-chameleon/       # auto-fired foundation skill
 │   │   └── chameleon-*/           # 14 user-invocable slash commands
-│   ├── agents/                    # code-scout, pattern-reviewer, web-researcher
+│   ├── agents/                    # code-scout, pattern-reviewer, recall-lens,
+│   │                              # verifier, web-researcher
 │   ├── mcp/
 │   │   ├── pyproject.toml         # Python package (requires-python >=3.11)
 │   │   ├── uv.lock, package.json  # committed locks

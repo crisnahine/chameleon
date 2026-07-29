@@ -88,6 +88,19 @@ envelope; every field path below is relative to `data`.
     `severity`, cite the violation and its parsed ` at line N`, and anchor
     line-carrying sinks inside an added/changed range. Where 2.6d and your own
     2.6c judgment overlap, 2.6d WINS (report the deterministic finding once).
+    Two further rules arrive on the trusted TS/Python path and are NOT findings
+    of yours — the parent's whole-diff passes own their defect class:
+    `cross-file-importers` (`severity: info`, "N files import `name` from this
+    module") folds into your blast-radius reasoning for that file and is never
+    rendered; `removed-export-breaks-importers` (`severity: warning`) is the
+    same existence-break class the parent's 2.9c owns — report it in the
+    manifest note for 2.6d and leave it to the parent, never as your own FIX.
+    Silence is language-scoped, not proof of a clean line: `command-injection`
+    and `insecure-deserialization` fire for Ruby and Python only, and
+    `sql-string-interpolation` for Ruby only, so a TS `child_process.execSync`
+    on an interpolated string returns nothing at all. Where you can SEE such a
+    sink on a TS line and 2.6d is silent, fall back to your 2.6c judgment and
+    read the code — never report "the engine says it is clean".
 - **2.7 — migration safety (only files under `db/migrate/`).** An
   irreversible operation inside a `def change` block → BLOCK (witnessed
   structural fact). `null: false` without a `default:` → FIX; `add_index`
@@ -116,8 +129,9 @@ envelope; every field path below is relative to `data`.
 Do NOT run the dependency pass or any whole-diff pass (co-change, cross-file
 existence/duplication/layering/contract-break, coverage delta, auto-pass
 routing, recall) and do not render a verdict — the parent runs those once at
-synthesis, and you are not granted `scan_dependency_changes` or the cross-file
-tools.
+synthesis. `scan_dependency_changes` and the cross-file tools reach the same
+namespaced MCP server you do, so this is a directive, not a capability you
+lack: do not call them, and never claim you were denied them.
 
 ## Output (your final message)
 

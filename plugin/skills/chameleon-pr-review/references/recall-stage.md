@@ -8,8 +8,16 @@ design the engine's own turn-end synthesis is built on (~33% single-lens recall
 vs ~72% combined in the literature it cites; see `lens_synthesis.py`). Run it on
 every review, fan-out or not.
 
-**The two lenses.** Dispatch read-only in-session Task agents (Read + read-only
-chameleon MCP, no Bash, no Edit/Write, no nested Task) over the WHOLE diff:
+**The two lenses.** Dispatch the packaged `chameleon:recall-lens` plugin agent
+(Task tool `subagent_type: "chameleon:recall-lens"`), one in-session agent per
+lens, over the WHOLE diff. Its definition (`agents/recall-lens.md` at the
+plugin root) carries the role, the read-only tool limits, the anchoring rules,
+and the output schema — so the dispatch prompt carries only WHICH lens, the
+inputs below, and nothing else. When the harness does not expose that agent
+type, read `${CLAUDE_PLUGIN_ROOT}/agents/recall-lens.md` and dispatch a
+read-only explore agent with that file's body (everything after the
+frontmatter) prepended — one source of truth, never a from-memory retelling of
+the role. The two lenses:
 
 - **Lens A — correctness/delta**: edge cases, removed guards and behavior the
   `-` lines took out, inverted conditions, error paths, spec/ticket compliance

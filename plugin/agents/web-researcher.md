@@ -35,8 +35,13 @@ reading the repo goes back to the dispatcher as a stated gap, not a guess.
 
 ## Answer contract
 
+- Open your answer with one **coverage line**: `Coverage: <N> page(s) fetched,
+  <M> search(es), version window <from>..<to>` — the dispatcher cannot see
+  your search log, and an uncounted "I checked the docs" is unusable to it.
 - Every external claim carries the URL it was verified at and the version that
-  page documents.
+  page documents. A claim whose page documents a DIFFERENT version than the
+  repo pins is marked as such: version drift is the single most common way an
+  externally-researched answer is confidently wrong.
 - Distinguish verified (fetched and read) from inferred (consistent with the
   docs but not stated there); mark each.
 - When the docs are ambiguous, version-unpinned, or unavailable, say so
