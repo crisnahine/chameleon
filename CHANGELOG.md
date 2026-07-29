@@ -4,6 +4,75 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.7.3] - 2026-07-29
+
+### Removed
+
+- **Dead code across the repo: 1,696 deletions, adding nothing but doc and
+  comment corrections plus the handful of lines re-emitted with a dead key or
+  argument taken out.** Each candidate went through a
+  second pass whose only job was to prove it still alive, and that pass killed
+  more than half of them (53 of 93 in the first sweep, 29 of 59 in the second) —
+  an empty grep proves little in a repo that resolves ~35 MCP action names to
+  functions by string, reads thresholds by name, and registers hooks through
+  decorators. Four things that looked dead survived and were deliberately kept:
+  `judge.pin_excerpt`/`excerpt_is_stale` (the only writer of a field
+  `core/finding.py` still reads), the `qa-fold-*` scripts (operator-invoked CLI
+  entry points, where zero inbound references is the expected shape rather than
+  evidence of death), `profile/config.py`'s vestigial but deliberately
+  type-validated `multi_lens_review`/`idiom_judge` keys, and `ts_dump.mjs`'s
+  decorator fallback (unreachable under the current TypeScript pin, but a
+  zero-cost defensive arm in a subprocess parsing arbitrary user code).
+
+- **A workflow that could not have run.** `calibration.yml` invoked
+  `tests/calibration/harness.py`, deleted in `ea462de` and gone since v0.6.2 —
+  239 tags back. Being `workflow_dispatch`-only is exactly why nobody noticed:
+  with no PR or cron trigger, the first person to reach for it would have been
+  the one to find it broken, and `CONTRIBUTING.md` still listed it among four
+  working workflows.
+
+- **The `loop-chameleon/` install bundle.** Three of its six files were
+  byte-identical to the live `.claude/` copies, and a fourth had gone stale:
+  `coverage_matrix.py` gained an uncapped `_enclosing_functions` walk in
+  `8aaa165`, and the bundle copy still carried the pre-fix version. Two copies of
+  an audit tool, one of them wrong about the exact bug the tool exists to catch,
+  and a second wrong copy of every symbol in it inside the repo's own index.
+
+- **Work paid on every run for nothing.** `record_bootstrap_baseline` was a stub
+  whose entire body was `del repo_id, clustered_files; return 0`, but the
+  orchestrator still walked every clustered file — an O(members x selections)
+  scan plus a `relative_to` per file — to build rows it then discarded, on every
+  bootstrap. The retired `judge_findings` DDL created one table and four indexes
+  on every `drift.db` open.
+
+- **Two latent hazards.** `get_rules` kept a `**kwargs` sink for a legacy
+  `archetype=` caller, which the MCP schema rejects before the shim could ever
+  see it, and which no in-repo caller passes.
+  `[tool.pytest.ini_options]` set `testpaths = ["tests"]`, resolving to a
+  `plugin/mcp/tests/` that does not exist, so a developer running bare `pytest`
+  there collected zero tests and saw green.
+
+### Fixed
+
+- **The unit-test count gate could not catch a count that drifted downward.**
+  4.7.2 guarded the README's test count as a floor, reasoning that pytest
+  collects at least one item per test function and the exact figure was not
+  derivable on the bare interpreter the gate runs on. The floor is 6,401 against
+  6,849 collected, so any claim in a 448-wide band passed — including a README
+  left stale by deleted tests, which is precisely the drift the check exists to
+  catch, and precisely what this release's own removals would have caused.
+  `check-derived-counts.py` now takes `--exact`, which collects `tests/unit/` for
+  real and compares for equality; CI installs the dependencies and passes it. The
+  bare-interpreter floor remains the default when the flag is absent, but
+  `--exact` fails closed rather than quietly serving that weaker check: an
+  unrecognized argument and a collection that cannot complete both exit 2, since
+  a gate that downgrades itself in silence has stopped being a gate. Detecting
+  "cannot complete" needs more than pytest's exit code — a module skipped at
+  collection time (a module-level `importorskip` whose dependency is missing)
+  still exits 0 and still prints a plain `N tests collected`, so the collected
+  node ids are matched against the files that define tests, and a partial
+  collection is reported as an unusable environment rather than as README drift.
+
 ## [4.7.2] - 2026-07-28
 
 ### Fixed
