@@ -374,6 +374,49 @@ def test_untrusted_and_stale_do_not_deny(tmp_path: Path):
         assert _decision(out) != "deny", trust_state
 
 
+def test_stale_trust_still_gets_credential_advisory(tmp_path: Path):
+    # A stale grant (CHAMELEON_TRUST_REVALIDATE=1 revalidation failed) is not
+    # trusted, so it never denies -- but it is no longer a confirmed-healthy
+    # grant either, so it must get the same deterministic-credential advisory
+    # an untrusted repo gets. Stale used to fall between the trusted deny gate
+    # and the untrusted advisory gate and surface nothing at all.
+    repo, repo_id = _build_repo(tmp_path, mode="enforce")
+    write_block_rules(repo / ".chameleon", ACTIVE_SECRET_RULE)
+    out = _run_preflight(
+        repo=repo,
+        repo_id=repo_id,
+        tmp_path=tmp_path,
+        file_path=str(repo / "src/config.ts"),
+        content=SECRET_CONTENT,
+        session_id="s-stale-advisory",
+        env={"CHAMELEON_ENFORCE": "1"},
+        trust_state="stale",
+    )
+    assert _decision(out) != "deny"
+    ctx = out.get("hookSpecificOutput", {}).get("additionalContext", "")
+    assert "hardcoded credential" in ctx
+
+
+def test_stale_trust_still_gets_eval_advisory(tmp_path: Path):
+    # eval()/exec() is the co-equal deterministic sink behind the same advisory
+    # gate: a stale session must surface it too, not just credentials.
+    repo, repo_id = _build_repo(tmp_path, mode="enforce")
+    write_block_rules(repo / ".chameleon", ACTIVE_SECRET_RULE)
+    out = _run_preflight(
+        repo=repo,
+        repo_id=repo_id,
+        tmp_path=tmp_path,
+        file_path=str(repo / "src/config.ts"),
+        content=EVAL_CONTENT,
+        session_id="s-stale-eval-advisory",
+        env={"CHAMELEON_ENFORCE": "1"},
+        trust_state="stale",
+    )
+    assert _decision(out) != "deny"
+    ctx = out.get("hookSpecificOutput", {}).get("additionalContext", "")
+    assert "dynamic code execution" in ctx
+
+
 def test_named_directive_clears_deny_and_records_override(tmp_path: Path):
     repo, repo_id = _build_repo(tmp_path, mode="enforce")
     write_block_rules(repo / ".chameleon", ACTIVE_SECRET_RULE)

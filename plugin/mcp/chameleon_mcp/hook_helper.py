@@ -4161,14 +4161,24 @@ def preflight_and_advise() -> int:
     # trusted profile (chameleon must not deny edits on a repo the user has not
     # opted into), so on an untrusted repo this NEVER denies; it surfaces the
     # deterministic hard-kind secret as an advisory so a pre-trust user is not
-    # silently unprotected. FP-free: only the high-precision deterministic kinds
-    # reach the hard set (entropy/keyword hits stay out), and an inline
-    # chameleon-ignore on the line suppresses it like the trusted deny.
-    if trust_state == "untrusted" and repo_root_path is not None:
+    # silently unprotected. A STALE grant (the opt-in revalidation found the
+    # profile changed since sign-off) is no longer confirmed-healthy either:
+    # it gets the same advisory posture, still without denying. FP-free: only
+    # the high-precision deterministic kinds reach the hard set (entropy/keyword
+    # hits stay out), and an inline chameleon-ignore on the line suppresses it
+    # like the trusted deny.
+    if trust_state in ("untrusted", "stale") and repo_root_path is not None:
         try:
             _tool = str(payload.get("tool_name") or "")
             _proposed = _proposed_content_for_tool(_tool, tool_input)
             if _proposed and isinstance(_proposed, str):
+                # The state sentence names the ACTUAL trust posture: a stale
+                # grant is re-confirmed (not newly granted) via /chameleon-trust.
+                _profile_state = (
+                    "This repo's chameleon profile trust is stale"
+                    if trust_state == "stale"
+                    else "This repo's chameleon profile is untrusted"
+                )
                 _hard_sec, _ = _proposed_hard_secret_violations(
                     _proposed, file_path, tool_name=_tool
                 )
@@ -4187,7 +4197,7 @@ def preflight_and_advise() -> int:
                     _metric(
                         advisory_emitted=True,
                         repo_id=repo_info.get("id") or repo_id_hint,
-                        trust_state="untrusted",
+                        trust_state=trust_state,
                     )
                     # Summary carries only the secret kind + line (the scanner
                     # redacts the matched token), so the advisory cannot echo the
@@ -4197,10 +4207,9 @@ def preflight_and_advise() -> int:
                         + sanitize_for_chameleon_context(
                             f"{_summary} in the proposed content. Rotate any real "
                             "credential and load it from an environment variable or a "
-                            "secret manager. This repo's chameleon profile is "
-                            "untrusted, so this is an advisory only -- run "
-                            "/chameleon-trust to enable the pre-write credential block. "
-                            "If this is a known-fake fixture value, add "
+                            f"secret manager. {_profile_state}, so this is an advisory "
+                            "only -- run /chameleon-trust to enable the pre-write "
+                            "credential block. If this is a known-fake fixture value, add "
                             f"{_ignore_hint(file_path, 'secret-detected-in-content')} "
                             "on the offending line."
                         )
@@ -4224,17 +4233,16 @@ def preflight_and_advise() -> int:
                     _metric(
                         advisory_emitted=True,
                         repo_id=repo_info.get("id") or repo_id_hint,
-                        trust_state="untrusted",
+                        trust_state=trust_state,
                     )
                     _emit_chameleon_context(
                         "<chameleon-context>\n[🦎 chameleon: dynamic code execution]\n\n"
                         + sanitize_for_chameleon_context(
                             f"eval()/exec() dynamic code execution at {_eloc}. This is a "
                             "remote-code-execution sink; prefer an explicit dispatch over "
-                            "evaluating a string. This repo's chameleon profile is "
-                            "untrusted, so this is an advisory only -- run "
-                            "/chameleon-trust to enable the pre-write eval block. If this "
-                            "use is deliberate and safe, add "
+                            f"evaluating a string. {_profile_state}, so this is an "
+                            "advisory only -- run /chameleon-trust to enable the pre-write "
+                            "eval block. If this use is deliberate and safe, add "
                             f"{_ignore_hint(file_path, 'eval-call')} on the offending line."
                         )
                         + "\n</chameleon-context>"
