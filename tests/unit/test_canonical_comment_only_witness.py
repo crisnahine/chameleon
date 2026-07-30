@@ -77,3 +77,34 @@ def test_barrel_reexport_still_eligible_as_witness(tmp_path):
     assert sel.selections, "a barrel cluster must still yield a witness"
     witnesses = {s.witness_path.name for s in sel.selections.values()}
     assert "index.ts" in witnesses
+
+
+def test_docstring_only_loses_witness_to_real_sibling(tmp_path):
+    # A docstring-only __init__.py re-extracts to top_level_node_kinds == ["Expr"]
+    # (a module docstring is an ast.Expr), so the empty-signature guard does NOT
+    # catch it -- yet a 26-char docstring teaches nothing as the structural
+    # exemplar. It must be excluded like a comment-only file.
+    repo = tmp_path / "repo"
+    doc = _write(repo, "app/services/a_docstring.py", '"""Package services."""\n')
+    real = _write(
+        repo, "app/services/z_real.py", "class A:\n    def call(self):\n        return 1\n"
+    )
+    result = cluster_files([_pf(doc), _pf(real)], repo, min_cluster_size=2)
+    sel = select_canonicals(result.clusters, repo)
+    assert sel.selections, "expected a witness"
+    witnesses = {s.witness_path.name for s in sel.selections.values()}
+    assert "z_real.py" in witnesses
+    assert "a_docstring.py" not in witnesses
+
+
+def test_all_docstring_cluster_yields_no_witness(tmp_path):
+    # Every member docstring-only: the cluster reports lacking a clean
+    # canonical rather than serving a substance-free exemplar.
+    repo = tmp_path / "repo"
+    a = _write(repo, "app/services/a_init.py", '"""Package alpha."""\n')
+    b = _write(repo, "app/services/b_init.py", '"""Package beta."""\n')
+    result = cluster_files([_pf(a), _pf(b)], repo, min_cluster_size=2)
+    sel = select_canonicals(result.clusters, repo)
+    witnesses = {s.witness_path.name for s in sel.selections.values()}
+    assert "a_init.py" not in witnesses
+    assert "b_init.py" not in witnesses

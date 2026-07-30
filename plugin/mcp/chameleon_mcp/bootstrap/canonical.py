@@ -457,6 +457,16 @@ def select_canonicals(
                 # non-empty signature (export/import nodes) and stay eligible.
                 if not snap.top_level_node_kinds:
                     trivial[i] = True
+                elif set(snap.top_level_node_kinds) == {"Expr"}:
+                    # A docstring-only Python module (an __init__.py carrying
+                    # just a """...""" header) re-extracts to ["Expr"] -- a
+                    # module docstring is an ast.Expr -- so the guard above
+                    # misses it and a 26-char docstring could win the witness
+                    # slot. A docstring is documentation, not structure: an
+                    # Expr-ONLY signature is as substance-free as comment-only.
+                    # ("Expr" is emitted only by the Python extractors; TS/Ruby
+                    # never produce it.)
+                    trivial[i] = True
                 jsx_tag = ("jsx",) if snap.jsx_present else ()
                 sig = (
                     tuple(sorted(set(_normalize_kind(k) for k in snap.top_level_node_kinds)))
