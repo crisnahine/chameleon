@@ -1022,6 +1022,56 @@ def doctor(repo: str | None = None) -> dict:
         )
 
     try:
+        # A linter config that failed to parse (torn TOML/YAML, broken
+        # symlink) bootstraps to zero extracted rules with the failure
+        # recorded only as a per-source parse_warning inside rules.json.
+        # get_rules surfaces those; doctor must too, or a degraded linter
+        # config passes the health check clean.
+        linter_status = "ok"
+        if not (cwd_profile_dir / "profile.json").is_file():
+            linter_detail = "no profile in the current directory"
+        elif not (cwd_profile_dir / "rules.json").is_file():
+            # The profile_artifacts check above names the missing artifact;
+            # there is simply nothing to inspect here.
+            linter_detail = "no rules.json in the current profile"
+        else:
+            import json as _json_lc
+
+            from chameleon_mcp.sanitization import (
+                sanitize_for_chameleon_context as _san_lc,
+            )
+
+            _rules_obj = _json_lc.loads(
+                (cwd_profile_dir / "rules.json").read_text(encoding="utf-8")
+            )
+            _rules_map = _rules_obj.get("rules") if isinstance(_rules_obj, dict) else None
+            _parse_warnings: list[str] = []
+            for _src, _stanza in (_rules_map or {}).items():
+                if isinstance(_stanza, dict) and _stanza.get("parse_warning"):
+                    # A parser message can quote the offending config line --
+                    # sanitize before it reaches the model surface.
+                    _parse_warnings.append(f"{_src}: {_san_lc(str(_stanza['parse_warning']))}")
+            if _parse_warnings:
+                linter_status = "warn"
+                linter_detail = (
+                    "linter config parse warnings recorded in rules.json: "
+                    + "; ".join(_parse_warnings)
+                    + ". The config is present but unreadable, so its conventions "
+                    "were not extracted; fix the config, then run /chameleon-refresh."
+                )
+            else:
+                linter_detail = "no linter config parse warnings"
+        checks.append({"name": "linter_config", "status": linter_status, "detail": linter_detail})
+    except Exception as exc:
+        checks.append(
+            {
+                "name": "linter_config",
+                "status": "ok",
+                "detail": f"could not inspect: {type(exc).__name__}: {exc}",
+            }
+        )
+
+    try:
         from chameleon_mcp.profile.trust import plugin_data_dir as _pdd
 
         judge_detail = "no attested sessions for this repo"

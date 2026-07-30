@@ -1095,3 +1095,14 @@ class TestPythonFormatParseWarningSurfaced:
         pf = rules["rules"].get("python_format")
         assert pf is not None, "python_format stanza missing despite a malformed pyproject"
         assert "malformed TOML" in pf.get("parse_warning", "")
+
+    def test_bootstrap_envelope_carries_tool_config_warning(self, tmp_path: Path, monkeypatch):
+        # The parse warning must reach the bootstrap RESPONSE, not only the
+        # persisted rules.json: a caller that never re-reads the artifact (the
+        # /chameleon-init skill, CI) still hears the config is broken.
+        repo = self._py_repo(tmp_path)
+        report = self._bootstrap_with_fake_parse(repo, monkeypatch)
+        assert report.status == "success"
+        env = report.to_dict()
+        warnings = env.get("tool_config_warnings") or []
+        assert any("malformed TOML" in w for w in warnings), sorted(env.keys())

@@ -1044,6 +1044,14 @@ class BootstrapReport:
     canonical selection but contribute to the post-clustering count.
     Always >= 0.
     """
+    tool_config_warnings: list[str] = field(default_factory=list)
+    """Linter/formatter config parse failures surfaced on the bootstrap
+    response (``"<source>: <warning>"``), mirroring the per-source
+    ``parse_warning`` persisted in rules.json. A malformed or unreadable
+    config (torn TOML, broken symlink) otherwise reports bare ``success``
+    with zero extracted rules while the only signal stays buried in the
+    artifact.
+    """
     discovery_hints: list[dict] = field(default_factory=list)
     """BUG-001: when bootstrap fails with
     ``failed_unsupported_language`` on a directory that *looks* like an
@@ -1107,6 +1115,7 @@ class BootstrapReport:
             "workspaces": [_workspace_report_for_envelope(w) for w in self.workspace_reports],
             "workspace_skipped_warnings": list(self.workspace_skipped_warnings),
             "workspace_glob_warnings": list(self.workspace_glob_warnings),
+            "tool_config_warnings": list(self.tool_config_warnings),
             "workspace_potential_paths": list(self.workspace_potential_paths),
         }
         out["language_hint"] = self.language_hint
@@ -3499,6 +3508,16 @@ def _bootstrap_single(
         except Exception:
             wpc5_package_name = None
 
+    # Surface tool-config parse failures on the RESPONSE, not only in the
+    # persisted rules.json: a caller that never re-reads the artifact (the
+    # /chameleon-init skill, CI) must still hear the linter config is broken.
+    # Sanitized: a parser message can quote the offending config line.
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _sanitize_tc
+
+    _tool_config_warnings = [
+        f"{_src}: {_sanitize_tc(str(_warn))}" for _src, _warn in tool_configs.parse_warnings.items()
+    ]
+
     return BootstrapReport(
         status="success",
         archetypes_detected=archetype_count,
@@ -3523,6 +3542,7 @@ def _bootstrap_single(
         sparse_dropped_files=sparse_dropped_files,
         cross_candidates=wpc5_candidates,
         package_name=wpc5_package_name,
+        tool_config_warnings=_tool_config_warnings,
     )
 
 

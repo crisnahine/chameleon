@@ -835,3 +835,27 @@ class TestRuffLineLengthEnforcement:
         )
         res = read_tool_configs(tmp_path)
         assert (res.python_format or {}).get("line_length") is None
+
+
+class TestBrokenSymlinkedPythonConfig:
+    """A dangling config symlink must warn, not read as "no config declared".
+
+    Path.is_file() FOLLOWS symlinks, so a broken pyproject.toml/.ruff.toml
+    link never reached _load_toml's OSError branch -- it was skipped as absent
+    and yielded silent zero rules, indistinguishable from a repo with no
+    linter config at all.
+    """
+
+    def test_broken_symlinked_pyproject_yields_read_warning(self, tmp_path):
+        (tmp_path / "pyproject.toml").symlink_to(tmp_path / "missing-target.toml")
+        res = read_tool_configs(tmp_path)
+        assert res.python_format is None
+        warning = res.parse_warnings.get("python_format", "")
+        assert "pyproject.toml" in warning
+
+    def test_broken_symlinked_ruff_toml_yields_read_warning(self, tmp_path):
+        (tmp_path / ".ruff.toml").symlink_to(tmp_path / "missing-target.toml")
+        res = read_tool_configs(tmp_path)
+        assert res.python_format is None
+        warning = res.parse_warnings.get("python_format", "")
+        assert ".ruff.toml" in warning
