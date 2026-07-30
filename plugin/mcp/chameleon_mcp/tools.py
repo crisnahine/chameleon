@@ -9476,6 +9476,17 @@ def _refresh_repo_locked(repo_path, *, force: bool, analysis_root: Path | None =
                 # derived-from-source artifact, so a missing or older-format
                 # file regenerates from the committed profile at no cost.
                 _sync_conventions_md_from_disk(profile_dir)
+                # The noop early-return must not skip the orphan sweep: a
+                # crashed prior commit's stray `.chameleon.backup-<txn>`
+                # otherwise survives indefinitely precisely because day-to-day
+                # refreshes take this noop path (the sweep is wired into the
+                # bootstrap and partial-refresh paths only).
+                try:
+                    from chameleon_mcp.bootstrap.transaction import cleanup_orphan_tmp_dirs
+
+                    cleanup_orphan_tmp_dirs(profile_dir.parent)
+                except Exception:
+                    pass
                 return _envelope(
                     {
                         "status": "noop",
@@ -9570,6 +9581,15 @@ def _refresh_repo_locked(repo_path, *, force: bool, analysis_root: Path | None =
         )
         # Same mirror self-heal as the production-tip noop above.
         _sync_conventions_md_from_disk(profile_dir)
+        # Same orphan sweep as the production-tip noop above: a crashed prior
+        # commit's stray `.chameleon.backup-<txn>` must not survive just
+        # because every day-to-day refresh noops.
+        try:
+            from chameleon_mcp.bootstrap.transaction import cleanup_orphan_tmp_dirs
+
+            cleanup_orphan_tmp_dirs(profile_dir.parent)
+        except Exception:
+            pass
         noop_data: dict = {
             "status": "noop",
             "reason": "no files changed since last refresh",

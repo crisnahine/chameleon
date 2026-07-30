@@ -249,6 +249,19 @@ class TestRefreshUnderLock:
         assert data["status"] == "noop"
         assert "production" in data["reason"]
 
+    def test_noop_under_lock_still_sweeps_stray_backup(self, tmp_path: Path) -> None:
+        repo = self._bootstrapped_locked_repo(tmp_path)
+        # Control: tip unchanged -> the production-pinned noop early-return,
+        # the second path that used to skip the orphan-backup sweep.
+        assert tools.refresh_repo(str(repo))["data"]["status"] == "noop"
+        stray = repo / ".chameleon.backup-0-deadbeef-1"
+        stray.mkdir()
+        (stray / "COMMITTED").write_text("committed-at=1.0\npid=1\n", encoding="utf-8")
+        (stray / "profile.json").write_text(json.dumps({"schema_version": 8}), encoding="utf-8")
+        env = tools.refresh_repo(str(repo))
+        assert env["data"]["status"] == "noop", "fixture must still hit the locked noop path"
+        assert not stray.exists(), "locked noop refresh left the stray backup dir in place"
+
     def test_rederives_when_production_tip_moves(self, tmp_path: Path) -> None:
         repo = self._bootstrapped_locked_repo(tmp_path)
         _git(repo, "checkout", "-q", "production")
