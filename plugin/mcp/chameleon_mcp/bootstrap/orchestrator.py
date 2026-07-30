@@ -3517,7 +3517,9 @@ def _bootstrap_single(
     # persisted rules.json: a caller that never re-reads the artifact (the
     # /chameleon-init skill, CI) must still hear the linter config is broken.
     # Sanitized (key and value): a parser message can quote the offending
-    # config line, and a planted stanza key can carry tag-boundary tokens.
+    # config line. The keys are engine-fixed constants here, unlike the
+    # doctor surface that reads the committed rules.json back; sanitize anyway
+    # so both surfaces follow one rule.
     from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _sanitize_tc
 
     _tool_config_warnings = [

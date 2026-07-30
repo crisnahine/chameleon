@@ -4163,7 +4163,11 @@ def preflight_and_advise() -> int:
     # deterministic hard-kind secret as an advisory so a pre-trust user is not
     # silently unprotected. A STALE grant (the opt-in revalidation found the
     # profile changed since sign-off) is no longer confirmed-healthy either:
-    # it gets the same advisory posture, still without denying. FP-free: only
+    # it gets the same advisory posture, still without denying. When the
+    # advisory fires it displaces the archetype block for THAT edit (the
+    # shared path early-returns), so a stale edit carrying a secret trades one
+    # edit's pattern guidance for the credential signal -- deliberate: clean
+    # edits are unaffected. FP-free: only
     # the high-precision deterministic kinds reach the hard set (entropy/keyword
     # hits stay out), and an inline chameleon-ignore on the line suppresses it
     # like the trusted deny.

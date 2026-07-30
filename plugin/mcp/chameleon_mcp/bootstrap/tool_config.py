@@ -315,13 +315,13 @@ def _read_python_format(
                 warnings.append(warning)
             break
         if p.is_symlink():
-            # is_file() FOLLOWS symlinks, so a dangling link reads as
-            # "absent" -- a config present but unreadable. Name it like a
-            # malformed one instead of silently extracting zero rules. ruff
-            # would also try this file first and fail, so the pyproject
-            # [tool.ruff] fallback stays skipped (ruff_source set), matching
-            # ruff's no-merge rule.
-            warnings.append(f"could not read {name}: broken symlink")
+            # is_file() FOLLOWS symlinks, so a dangling link (or one pointing
+            # at a directory) reads as "absent" -- a config present but
+            # unreadable. Name it like a malformed one instead of silently
+            # extracting zero rules. ruff would also try this file first and
+            # fail, so the pyproject [tool.ruff] fallback stays skipped
+            # (ruff_source set), matching ruff's no-merge rule.
+            warnings.append(f"could not read {name}: broken symlink or not a regular file")
             ruff_source = name
             break
 
@@ -342,9 +342,9 @@ def _read_python_format(
         if isinstance(tool.get("black"), dict):
             black = tool["black"]
     elif pyproject.is_symlink():
-        # Same broken-link silence as the standalone ruff configs above: a
-        # dangling pyproject.toml is a config present but unreadable.
-        warnings.append("could not read pyproject.toml: broken symlink")
+        # Same unreadable-link silence as the standalone ruff configs above:
+        # a dangling pyproject.toml is a config present but unreadable.
+        warnings.append("could not read pyproject.toml: broken symlink or not a regular file")
 
     if ruff or black:
         ruff_format = ruff.get("format") if isinstance(ruff.get("format"), dict) else {}

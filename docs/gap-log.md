@@ -37,7 +37,7 @@ Already fixed by earlier releases (still listed OPEN above):
 - **Downgraded engine rebuilding a newer-schema profile down** —
   `refresh_repo` refuses a too-new `schema_version` (`_refresh_repo_locked`,
   `plugin/mcp/chameleon_mcp/tools.py:9279-9310`) and
-  `bootstrap_repo(force=True)` applies the same refusal (`tools.py:10787-10812`).
+  `bootstrap_repo(force=True)` applies the same refusal (`tools.py:10784-10820`).
 
 FIX-STAGED this change (branch `deep/gap-fixes`; human re-sign-off pending):
 
