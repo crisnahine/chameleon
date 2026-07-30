@@ -149,3 +149,28 @@ def test_kill_switch_disables_capture_and_write(tmp_path, monkeypatch):
     assert wb is not None
     assert wb["cross_candidates"] == []  # capture gated off
     assert not _cross_index_path(tmp_path, repo).exists()
+
+
+def test_workspace_tool_config_warning_surfaces_in_envelope(tmp_path):
+    # A workspace package's own torn linter config must reach the bootstrap
+    # response: the root-level tool_config_warnings field covers the root
+    # config only, so the fan-out carries each workspace's warnings on its
+    # own entry (and _workspace_report_for_envelope keeps the field verbatim).
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _build_monorepo(repo)
+    _w(repo, "packages/a/.eslintrc.json", "{garbage")
+    report = o.bootstrap_repo(repo)
+
+    wa = _ws(report, "packages/a")
+    assert wa is not None and wa["status"] == "success"
+    warnings = wa.get("tool_config_warnings") or []
+    assert any("malformed JSON in .eslintrc.json" in w for w in warnings), warnings
+
+    env_wa = next(
+        w
+        for w in report.to_dict()["workspaces"]
+        if str(w.get("workspace_path", "")).endswith("packages/a")
+    )
+    env_warnings = env_wa.get("tool_config_warnings") or []
+    assert any("malformed JSON in .eslintrc.json" in w for w in env_warnings), env_warnings

@@ -465,7 +465,10 @@ def select_canonicals(
                     # slot. A docstring is documentation, not structure: an
                     # Expr-ONLY signature is as substance-free as comment-only.
                     # ("Expr" is emitted only by the Python extractors; TS/Ruby
-                    # never produce it.)
+                    # never produce it. The guard is deliberately broader than
+                    # the docstring case: a call-only module -- `main()` at top
+                    # level and nothing else -- is Expr-only too, and it has no
+                    # more structure to imitate than a docstring does.)
                     trivial[i] = True
                 jsx_tag = ("jsx",) if snap.jsx_present else ()
                 sig = (

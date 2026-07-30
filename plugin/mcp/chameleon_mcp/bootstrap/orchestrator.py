@@ -1717,6 +1717,11 @@ def bootstrap_repo(
             "files_processed": ws_report.files_processed,
             "duration_ms": ws_report.duration_ms,
             "error": ws_report.error,
+            # A workspace's own torn linter config must reach the envelope too:
+            # _bootstrap_single computed the warnings into ws_report, and the
+            # root-level field covers the root config only -- dropping them
+            # here keeps a package-level broken config silent on the response.
+            "tool_config_warnings": list(ws_report.tool_config_warnings),
             # WP-C5: cross-workspace JOIN inputs. ws_mono_rel is this workspace's
             # dir relative to the monorepo root, the prefix that re-roots the
             # ws-relative candidate importer paths (and locates this package's dir).
