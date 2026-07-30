@@ -43,9 +43,12 @@ to resolve.
   paginates and defaults to a small page, which silently truncates a busy PR:
   pass `--paginate` to `gh api` on each GitHub endpoint, and follow `next`
   until exhausted on Bitbucket. Include outdated and resolved threads: an
-  outdated comment may still be unaddressed. Then render one coverage line — "Comments fetched: N inline +
-  M general + K review-summary (P outdated/resolved included)" — and carry the
-  count into Step 2. If `gh`/`bbcurl` is absent, unauthenticated, or returns
+  outdated comment may still be unaddressed. Record the per-source counts —
+  how many inline, general, review-summary, and outdated/resolved — and carry
+  them into Step 2; they are RENDERED once, in slot 1 of the adjudication
+  report, whose slots use self-describing placeholders rather than
+  letters, so nothing has to be carried across steps. If
+  `gh`/`bbcurl` is absent, unauthenticated, or returns
   empty, STOP and ask the user to paste — never invent comments.
 - **Jira key**: resolve the PR(s), then as above (see multi-PR below).
 
@@ -66,9 +69,14 @@ checklist item (a multi-ask comment may split into several items, but no
 comment maps to zero). A comment with NO ask — a bot/CI status note, a bare
 "LGTM" review body, an emoji reaction — still gets an item, closed on the spot
 as `informational — no ask, NO ACTION`; it counts in the reconciliation and
-skips Steps 3-8. Render "Comments: N fetched -> M checklist items (K closed
-informational)"; a fetched comment with no item is a self-evident gap to close
-before Step 3.
+skips Steps 3-7 and Step 8 — it is never verified, never adjudicated, and
+never gets a drafted reply — but it DOES get its own row in the adjudication
+table, with verdict `informational`. The table has one row per checklist item,
+so an item that vanished from it would break the very reconciliation this
+paragraph exists to force. Carry the reconciliation counts — comments fetched,
+checklist items, and how many closed informational — into slot 1 of the
+adjudication report, which is where they are rendered; a fetched comment with no
+item is a self-evident gap to close before Step 3.
 
 Each item: reviewer, `file:line` (nullable), the ask, type, and comment-class:
 `inline-current` (line maps to the file), `inline-outdated` (carry `original_line`
@@ -123,8 +131,11 @@ whose record is complete (an incomplete record can only be NEEDS CLARIFICATION):
 4. **Five confirmations** (code-changing verdicts only): one-line answers to
    the five questions at the end of this step.
 
-Render a ledger line in the Step 5 output: "Verification records: M/N complete
-(K routed to NEEDS CLARIFICATION on incomplete records)."
+This record feeds the adjudication report's verification-records slot
+("Verification records: <complete>/<verifiable> complete"), which is where it
+is RENDERED - and note there that <verifiable> excludes the informational
+items, which skip this step by design and so have no record to be incomplete. Keep the per-item
+records as you go; the report is the one place the counts are published.
 
 Run the cited line through the Step 1 hunk map FIRST. Three outcomes:
 - **The file is not in the PR at all** (no entry in the per-file hunk map for that
@@ -302,11 +313,21 @@ as the finding's `claim`/`evidence` — the trace is then adjudicated by the
 refuter instead of merely graded "complete", so a lazy or fabricated trace gets
 refuted rather than laundered:
 
-`chameleon_review(action="refute_finding", params={"repo": <repo.id>, "findings": [{id, file, line, claim, evidence}, ...], "base_ref": <the PR base / merge-base, or the locked production_ref, else "main">})`
+`chameleon_review(action="refute_finding", params={"repo": <repo.id>, "findings": [{id, kind, severity, file, line, claim, evidence}, ...], "base_ref": <the PR base / merge-base, or the locked production_ref, else "main">})`
 
 Each finding MUST carry a unique `id` (verdicts map back by `id`) and `file`/`line`
 (the refuter prefetches that excerpt; omit them and it silently degrades to the
-whole branch diff). TOOL-GROUNDED verdicts are EXEMPT — never send a pushback
+whole branch diff). It must also carry `kind` and `severity`, and neither is
+cosmetic: the refuter renders `kind` verbatim into the adjudication prompt (an
+omitted one reads as a literal `kind: None`, so the refuter is told nothing
+about what class of claim it is judging), and it routes on `severity` to pick
+its model — only `block` / `high` / `critical` escalate to
+`CHAMELEON_REFUTER_MODEL_HIGH`, so an unset severity silently adjudicates your
+highest-stakes pushbacks with the base model. Use the comment's defect class
+for `kind` (`correctness`, `security`, `convention`, `style`) and map the
+item's stake to `severity`: a pushback against a claimed bug or security
+issue, or an AGREE you would implement on a blocking comment, is `block`;
+everything else is `fix`. TOOL-GROUNDED verdicts are EXEMPT — never send a pushback
 backed by `get_callers` / `get_crossfile_context` / `query_symbol_importers` /
 `get_duplication_candidates` / a `lint_file` sink-or-secret hit to the refuter;
 verify those inline (the refuter sees one excerpt and cannot re-derive their
@@ -331,7 +352,10 @@ drafting any reply, so the user never sees a draft the loop would kill.
 One calibration read before the first `refute_finding` batch (advisory,
 fail-open — on any error or an empty ledger, skip silently): call
 `chameleon_telemetry(action="get_finding_fate_stats", params={"repo": <repo.id>})`
-once and read `surfaces["receiving"].lenses` — this repo's own history of
+once and read `surfaces["receiving"].lenses`. The `surfaces` map holds ONLY
+surfaces that have rows, so a repo that has never run this skill has no
+`"receiving"` key at all — that absence is the empty-ledger case, not an
+error. The bucket is this repo's own history of
 reviewer comments by category (`accepted` = applied, `declined` = pushed back,
 `precision` = accepted / (accepted + declined)). Use it for refuter ORDER and
 posture only: a PUSH BACK on a category this repo historically applies
@@ -358,6 +382,64 @@ Drafts only — never auto-post. On GitHub, reply IN the inline comment thread
 top-level PR comment; on Bitbucket, reply on the inline comment's thread via
 `bbcurl`, not a new general comment. Draft first and wait for explicit approval
 before any post.
+
+## Step 7b: The adjudication report (fixed template)
+
+Render these eight slots, in this order, before Step 8 touches anything. A slot
+with nothing to say renders as `<slot>: none - <reason>`, never silently
+dropped — a dropped slot and an empty one are otherwise indistinguishable, and
+an omitted slot makes the report incomplete exactly like an unfilled cell.
+
+The shape is the forcing function, not the prose above it. Requirements that
+live only in a step's paragraphs get followed some rounds and skipped others; a
+requirement that has to be RENDERED as a named line cannot be skipped without
+the omission being visible on the page.
+
+```
+1. Comments: <fetched> fetched (<inline> inline + <general> general + <summary>
+   review-summary; <outdated> outdated/resolved included) -> <items> checklist
+   items (<informational> closed informational)
+2. Verification records: <complete>/<verifiable> complete (<unclear> routed to NEEDS
+   CLARIFICATION on an incomplete record). <verifiable> counts the items that REQUIRE
+   verification - every checklist item except the informational ones, which skip
+   Step 3 by design and so have no record to be incomplete.
+3. Adjudication
+
+   | # | reviewer | file:line | class | ask | verdict | grounded by |
+   |---|----------|-----------|-------|-----|---------|-------------|
+   | 1 | <who>    | a.ts:42   | inline-current | <one line> | PUSH BACK | canonical `x.ts`; get_callers 4 sites |
+   | 2 | <who>    | (none)    | general        | <one line> | NEEDS CLARIFICATION | no tool route: general comment |
+
+   `class` is the Step 2 comment-class. `verdict` is AGREE / PUSH BACK /
+   NEEDS CLARIFICATION / YAGNI / informational. `grounded by` names the tools
+   that actually ran for THAT item, or the sanctioned "no tool route: <reason>"
+   — one row per checklist item, so slot 1's <items> and this table's row count match
+   or the difference is explained here.
+4. Grounding: <rounds> round(s), <changed> labels changed in the final round.
+   Refuter: <refuted> refuted-dropped / <exempt> tool-grounded inline-exempt /
+   <held> held unverified
+   (or "refuter <disabled | unavailable | untrusted> — all code-changing verdicts held").
+5. Finding fates recorded: <accepted> accepted / <declined> declined / <converted> converted
+   (or "fate recording failed: <reason>", or "none - no adjudicated items").
+6. Drafted replies: <per item, the exact text that would be posted — drafts only, nothing posted>
+7. Not verified: <every item whose record stayed incomplete, and what is missing;
+   informational items are NOT listed here - they are unverified by design, not by omission>
+8. Implementation queue: <the approved order, blocking/bugs -> simple -> complex; nothing
+   implemented until the user approves that item>
+```
+
+Two numbers in this report are TRANSCRIPTIONS, never recollections. Slot 5 is
+derived by re-counting your own `record_finding_fate` calls this session (or
+reading the ledger back) immediately before rendering — not from memory of how
+many you meant to make. Slot 1's counts come from the Step 1 fetch results, not
+from an impression of how busy the PR looked. Any universal claim anywhere in
+the report ("every comment", "all items", "throughout") is counted from the
+session record at write time or weakened to the honest subset.
+
+Before sending, run the completeness pass: all 8 slots present in order, slot 3
+has one row per checklist item, slots 1 and 3 reconcile, every `grounded by`
+cell names a tool that actually ran or a sanctioned no-route reason, and no
+verdict of AGREE or PUSH BACK sits on an item whose Step 3 record is incomplete.
 
 ## Step 8: Implement on approval — one at a time
 

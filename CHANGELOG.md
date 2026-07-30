@@ -4,6 +4,96 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.8.0] - 2026-07-29
+
+### Added
+
+- **Two packaged agents for the two highest-variance dispatch roles.** Both
+  were previously composed by hand at every dispatch, which is exactly where
+  quality drifts. `chameleon:recall-lens` owns pr-review's Step 3.9 lenses —
+  the review pipeline's ONLY add-path, and until now an ad-hoc "dispatch a
+  read-only agent" prompt. `chameleon:verifier` owns deep-work's Step 6
+  convergence rounds and adversarial probes, which the skill itself described
+  as having "no packaged agent here". Both carry the role, the anchoring
+  rules, and the output schema in their definitions, so a dispatch prompt now
+  carries only the task-specific inputs.
+- **The verifier has no shell, on purpose.** A review subagent once wrote two
+  rows outside a transaction into a shared test database and handed back a
+  branch whose whole-table ordering assertions failed (v4.5.14 recorded the
+  RED suite). That release answered it with a prose rule; removing `Bash` from
+  the agent makes the class impossible instead of forbidden, and running the
+  gates was already the parent's job.
+- **`tests/unit/test_skill_shape_contracts.py` pins the shapes.** Every
+  hardening the graded-sonnet rounds bought — the 9-slot brief, the 9-slot
+  report, the ladder and experts lines, the per-step `-> verify:` clause —
+  was unguarded by any test and could be edited away with the suite green.
+  Twenty-three contracts now pin them, plus the agent roster, the skill-to-agent
+  dispatch wiring, the reference wiring, and the refuter call shape. Verified
+  by flipping the sources: 11 fail against the pre-change tree. Two adversarial
+  passes then attacked the contracts themselves, and the surviving ceiling is
+  stated in the module docstring rather than overclaimed: these are static text
+  pins over prose files, so they catch accidental regression — a dropped slot,
+  an inverted rule, a loosened tool policy — and cannot be proof against a
+  deliberate rewrite. Behavioural conformance stays the journey harness's job,
+  which still has no deep-work act.
+
+### Fixed
+
+- **receiving-code-review sent the refuter findings with no `kind` and no
+  `severity`.** The refuter renders `kind` verbatim into its adjudication
+  prompt, so every inbound refutation read a literal `kind: None`; and
+  `_refuter_model_for` routes on `severity`, so no pushback could ever
+  escalate to `CHAMELEON_REFUTER_MODEL_HIGH` and the highest-stakes verdicts
+  were adjudicated by the base model. pr-review had the shape right; the
+  inbound side had drifted. deep-work specified no finding shape at all
+  (`refute_finding, ...`), which additionally degraded the refuter to the
+  whole-branch diff for want of `file`/`line`.
+- **pr-review's prior-review line would have printed a dict.** Step 1b read
+  "N findings" off `get_review_history`, whose per-record `findings` is a
+  `{severity: count}` map, not an integer; the records also live under
+  `data.records` (`data.total` is the record count) and carry a `verified`
+  flag the step never checked, so a tamper-flagged row counted as a bar to
+  clear.
+- **`get_autopass_verdict`'s `contract_breaks` was documented nowhere**, so
+  the same caller-contract narrowing could be cited twice — once from there,
+  once from Step 2.9e's `get_contract_breaks` — with no dedupe rule.
+- **`pattern-reviewer` claimed a capability denial the harness cannot
+  enforce.** Commit d282204 replaced that phrasing with an explicit directive
+  after the false-grant claim shipped; one residual survived and is now gone.
+  The agent also routed lint rules it was never told exist
+  (`cross-file-importers`, `removed-export-breaks-importers`) and had no
+  language-scoped-silence caveat, so a TS `child_process.execSync` returning
+  nothing could read as a clean line.
+- **All three fate-stats readers treated an absent surface key as an error.**
+  `surfaces` holds only surfaces with rows, so a first run simply has no key —
+  the normal state, not a failure.
+- **`code-scout` never paged `search_codebase`.** Its default is 10 hits, so
+  every set-shaped answer ("every call path into X") silently reported a
+  recall ceiling as a total.
+
+### Changed
+
+- **deep-work Step 5 renders a build log.** Three graded Rails rounds moved
+  the same honesty defect to whichever place was still free prose (v4.5.14);
+  Step 5 was the last such region — 64 lines of prose with no rendered
+  artifact, holding the baseline and per-step verification obligations. One
+  line per plan step as it lands makes a skipped step visible as a missing
+  line, makes an unrun verify unfillable without fabricating an observed
+  result, and turns the report's not-verified slot into a transcription
+  instead of a recollection of a plan read many turns ago.
+- **receiving-code-review gets the fixed-slot treatment it never had.** It was
+  the only one of the three review skills with no output template at all —
+  442 lines of prose and three render obligations — against a law this repo
+  measured three times over (v4.5.5: checklist-shaped rules followed to the
+  letter, prose rules dropped stochastically). Eight slots now: comment
+  ledger, verification records, a per-item adjudication table naming the tools
+  that actually ran, grounding, fates, drafts, not-verified, and the
+  implementation queue.
+- deep-work's worktree detection and placement mechanics move to
+  `references/worktree-setup.md`, read at the moment the worktree is created —
+  one-time setup detail, and the only block in that skill that is needed at
+  exactly one moment. The rules that bind for all of Step 5 stay in the body.
+
 ## [4.7.3] - 2026-07-29
 
 ### Removed

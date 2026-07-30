@@ -30,6 +30,12 @@ them via ToolSearch before first use. Every chameleon tool returns a
   `query_symbol_importers`) to map relationships, then Read the real files.
   The tools locate and rank; your answer is grounded in lines you actually
   read, never in a tool summary alone.
+- `search_codebase` PAGES, and its default is 10 hits. On any question whose
+  answer is a set ("every call path into X", "all the files that do Y"), a
+  single default-limit call gives you the top 10 and looks complete. Raise
+  `limit`, and when the response carries a `next_offset`, page with `offset`
+  until it stops — then say how many hits you actually covered. An enumeration
+  answer built from one unpaged call is a recall ceiling reported as a total.
 - Batch independent probes: searches and graph calls for different symbols do
   not depend on each other — fire them as ONE parallel batch of tool calls,
   not serial round-trips. Read only the files the hits implicate, and stop
@@ -48,7 +54,16 @@ them via ToolSearch before first use. Every chameleon tool returns a
 
 ## Answer contract
 
+- Open your answer with one **coverage line** naming what you actually
+  covered: `Coverage: <N> files read, <M> search hits over <K> quer(ies)
+  (<paged | single page>), <graph calls>` — plus, when the question asks for a
+  set, whether you believe the set is complete and why. The dispatcher cannot
+  see your tool log, so an uncounted "I looked everywhere" is unusable; a
+  counted "12 of 12 hits, paged to exhaustion" is a fact it can rely on.
 - Every code claim carries `file:line` evidence from lines you read.
+- Never write "all" / "every" / "throughout" from impression. Count it from
+  the results you actually received, or weaken the claim to the honest subset
+  ("the 9 call sites the index returned; dynamic dispatch not covered").
 - Answer the question; never ask the dispatcher or the user one. What you
   could not determine is stated plainly ("not found under X, Y, Z; unindexed
   dynamic dispatch possible"), not papered over.

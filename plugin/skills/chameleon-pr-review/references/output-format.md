@@ -58,7 +58,10 @@ whole-branch diff).
 **Calibration read (advisory, fail-open).** Before the first `refute_finding`
 batch, call
 `chameleon_telemetry(action="get_finding_fate_stats", params={"repo": <repo_id>})`
-once and read `surfaces["pr-review"].lenses` — each lens bucket is
+once and read `surfaces["pr-review"].lenses`. The `surfaces` map holds ONLY
+surfaces that have rows, so a repo whose reviews have not yet recorded a fate
+has no `"pr-review"` key — that absence is the empty-ledger case, not an error.
+Each lens bucket is
 `{accepted, declined, converted, total, precision}`, and because Step 5b records
 a refuted-dropped finding as `declined`, `precision` is this repo's own per-lens
 refuter-survival history. Use it ONLY to order sends within a severity: a lens
