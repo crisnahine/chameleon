@@ -443,10 +443,10 @@ def select_canonicals(
                     pf.path, content
                 )
                 mig_version[i] = _migration_version(content)
-                # An empty / whitespace-only file makes a useless canonical example
-                # (no code to mirror), so rank it last. A non-trivial sibling then
-                # wins, while the trivial file stays eligible as a last resort for a
-                # cluster whose members are ALL trivial.
+                # An empty / whitespace-only file makes a useless canonical
+                # example (no code to mirror), so the pool filter below excludes
+                # it; a cluster whose members are ALL trivial is reported as
+                # lacking a clean canonical rather than serving a blank witness.
                 trivial[i] = not content.strip()
                 lang = detect_language(str(pf.path))
                 snap = extract_dimensions(content, language=lang, file_path=str(pf.path))

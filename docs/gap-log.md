@@ -33,7 +33,7 @@ Already fixed by earlier releases (still listed OPEN above):
   `tests/unit/test_mcp_tools.py:1049`.
 - **Turn-end backstop `Bash mv` write vector** — the Stop backstop now arms
   the destination of `mv`/`cp`/`git mv`/`ln`/`install`/`rsync`/`scp` at any
-  command position (`plugin/mcp/chameleon_mcp/hook_helper.py:4947-4958`).
+  command position (`plugin/mcp/chameleon_mcp/hook_helper.py:4951-4962`).
 - **Downgraded engine rebuilding a newer-schema profile down** —
   `refresh_repo` refuses a too-new `schema_version` (`_refresh_repo_locked`,
   `plugin/mcp/chameleon_mcp/tools.py:9279-9310`) and
@@ -58,8 +58,8 @@ FIX-STAGED this change (branch `deep/gap-fixes`; human re-sign-off pending):
 - **Silent linter-config parse failure (remaining half)** — the bootstrap
   response now carries `tool_config_warnings`; doctor gained a
   `linter_config` check surfacing rules.json `parse_warning`s; a broken
-  config SYMLINK now warns ("could not read …: broken symlink") instead of
-  reading as "no config declared". Pinned by
+  config SYMLINK now warns ("could not read …: broken symlink or not a
+  regular file") instead of reading as "no config declared". Pinned by
   `test_bootstrap_envelope_carries_tool_config_warning`
   (`tests/unit/test_bootstrap_orchestrator.py`),
   `tests/unit/test_doctor_linter_parse_warning.py`, and
