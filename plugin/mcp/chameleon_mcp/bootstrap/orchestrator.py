@@ -3516,11 +3516,13 @@ def _bootstrap_single(
     # Surface tool-config parse failures on the RESPONSE, not only in the
     # persisted rules.json: a caller that never re-reads the artifact (the
     # /chameleon-init skill, CI) must still hear the linter config is broken.
-    # Sanitized: a parser message can quote the offending config line.
+    # Sanitized (key and value): a parser message can quote the offending
+    # config line, and a planted stanza key can carry tag-boundary tokens.
     from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _sanitize_tc
 
     _tool_config_warnings = [
-        f"{_src}: {_sanitize_tc(str(_warn))}" for _src, _warn in tool_configs.parse_warnings.items()
+        f"{_sanitize_tc(str(_src))}: {_sanitize_tc(str(_warn))}"
+        for _src, _warn in tool_configs.parse_warnings.items()
     ]
 
     return BootstrapReport(

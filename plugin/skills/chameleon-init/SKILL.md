@@ -236,7 +236,9 @@ user in one short line each — otherwise a real role silently has no guidance:
   matched nothing; name the path so the user can bootstrap it explicitly.
 - `tool_config_warnings` — a linter/formatter config is present but broken
   (torn TOML/YAML, broken symlink), so its conventions were never extracted.
-  Name the config file and suggest fixing it, then `/chameleon-refresh`.
+  Name the config file and suggest fixing it, then a full re-derive
+  (`refresh_repo` with `force: true` — a noop/partial refresh never re-reads
+  linter configs).
 
 Keep it terse (the counts, not a wall of JSON). Skip a category whose list is
 empty. This is advisory — none of it blocks a successful bootstrap.

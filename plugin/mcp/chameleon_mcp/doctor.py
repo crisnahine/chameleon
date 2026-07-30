@@ -1048,16 +1048,22 @@ def doctor(repo: str | None = None) -> dict:
             _parse_warnings: list[str] = []
             for _src, _stanza in (_rules_map or {}).items():
                 if isinstance(_stanza, dict) and _stanza.get("parse_warning"):
-                    # A parser message can quote the offending config line --
-                    # sanitize before it reaches the model surface.
-                    _parse_warnings.append(f"{_src}: {_san_lc(str(_stanza['parse_warning']))}")
+                    # Key and value are both committed-artifact strings: a
+                    # parser message can quote the offending config line, and
+                    # a planted stanza key can carry tag-boundary tokens --
+                    # sanitize both before the model surface.
+                    _parse_warnings.append(
+                        f"{_san_lc(str(_src))}: {_san_lc(str(_stanza['parse_warning']))}"
+                    )
             if _parse_warnings:
                 linter_status = "warn"
                 linter_detail = (
                     "linter config parse warnings recorded in rules.json: "
                     + "; ".join(_parse_warnings)
                     + ". The config is present but unreadable, so its conventions "
-                    "were not extracted; fix the config, then run /chameleon-refresh."
+                    "were not extracted; fix the config, then force a full "
+                    "re-derive (refresh_repo with force=true or /chameleon-init) "
+                    "-- a noop or partial refresh never re-reads linter configs."
                 )
             else:
                 linter_detail = "no linter config parse warnings"

@@ -33,7 +33,7 @@ Already fixed by earlier releases (still listed OPEN above):
   `tests/unit/test_mcp_tools.py:1049`.
 - **Turn-end backstop `Bash mv` write vector** — the Stop backstop now arms
   the destination of `mv`/`cp`/`git mv`/`ln`/`install`/`rsync`/`scp` at any
-  command position (`plugin/mcp/chameleon_mcp/hook_helper.py:4939-4950`).
+  command position (`plugin/mcp/chameleon_mcp/hook_helper.py:4947-4958`).
 - **Downgraded engine rebuilding a newer-schema profile down** —
   `refresh_repo` refuses a too-new `schema_version` (`_refresh_repo_locked`,
   `plugin/mcp/chameleon_mcp/tools.py:9279-9310`) and
