@@ -105,6 +105,10 @@ def test_all_docstring_cluster_yields_no_witness(tmp_path):
     b = _write(repo, "app/services/b_init.py", '"""Package beta."""\n')
     result = cluster_files([_pf(a), _pf(b)], repo, min_cluster_size=2)
     sel = select_canonicals(result.clusters, repo)
+    assert result.clusters, "fixture must cluster, or the assertions below are vacuous"
+    assert sel.clusters_without_eligible_canonical, (
+        "an all-docstring cluster must report lacking a clean canonical"
+    )
     witnesses = {s.witness_path.name for s in sel.selections.values()}
     assert "a_init.py" not in witnesses
     assert "b_init.py" not in witnesses

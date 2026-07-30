@@ -234,6 +234,9 @@ user in one short line each — otherwise a real role silently has no guidance:
 - `workspace_skipped_warnings` / `workspace_glob_warnings` /
   `nested_profile_warnings` — a monorepo workspace was skipped or a glob
   matched nothing; name the path so the user can bootstrap it explicitly.
+- `tool_config_warnings` — a linter/formatter config is present but broken
+  (torn TOML/YAML, broken symlink), so its conventions were never extracted.
+  Name the config file and suggest fixing it, then `/chameleon-refresh`.
 
 Keep it terse (the counts, not a wall of JSON). Skip a category whose list is
 empty. This is advisory — none of it blocks a successful bootstrap.

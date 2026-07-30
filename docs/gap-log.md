@@ -35,9 +35,9 @@ Already fixed by earlier releases (still listed OPEN above):
   the destination of `mv`/`cp`/`git mv`/`ln`/`install`/`rsync`/`scp` at any
   command position (`plugin/mcp/chameleon_mcp/hook_helper.py:4939-4950`).
 - **Downgraded engine rebuilding a newer-schema profile down** —
-  `refresh_repo` refuses a too-new `schema_version`
-  (`plugin/mcp/chameleon_mcp/tools.py:6631-6651`) and
-  `bootstrap_repo(force=True)` applies the same refusal.
+  `refresh_repo` refuses a too-new `schema_version` (`_refresh_repo_locked`,
+  `plugin/mcp/chameleon_mcp/tools.py:9279-9310`) and
+  `bootstrap_repo(force=True)` applies the same refusal (`tools.py:10787-10812`).
 
 FIX-STAGED this change (branch `deep/gap-fixes`; human re-sign-off pending):
 

@@ -110,9 +110,9 @@ def doctor(repo: str | None = None) -> dict:
     ``production_ref``, ``linter_config``, and the ``profile_artifacts`` /
     ``judge_spawn_health`` / ``advisory_emission`` dead-install detectors) at a
     specific repo root, so a caller like ``/chameleon-status`` gets config for
-    the repo it is statusing rather than whatever the process cwd resolves to. When omitted they resolve
-    from cwd (the original behavior). The global plumbing checks (python, hooks,
-    HMAC key, daemon) ignore it.
+    the repo it is statusing rather than whatever the process cwd resolves to.
+    When omitted they resolve from cwd (the original behavior). The global
+    plumbing checks (python, hooks, HMAC key, daemon) ignore it.
     """
     import platform
     import shutil
