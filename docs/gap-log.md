@@ -17,6 +17,68 @@ Status legend: `OPEN` · `FIX-STAGED` (code landed, awaiting human re-sign-off) 
 
 ---
 
+## Addendum — 2026-07-30 (re-verification of the 2026-07-10 OPEN list)
+
+All eight OPEN items from the 2026-07-10 addendum were re-verified against
+HEAD (4.7.3) before any edit — each "still open" claim had to reproduce as a
+failing test first. The entries above stay as written per the protocol;
+dispositions recorded here.
+
+Already fixed by earlier releases (still listed OPEN above):
+
+- **query_symbol_importers accepting a bare symbol name** — fixed 2026-07-26
+  (`4609620`): a non-path input now returns `found: false` with
+  `reason: "path-not-a-file"` (`plugin/mcp/chameleon_mcp/tools.py:3801-3810`),
+  the same contract as the sibling tools; regression-pinned at
+  `tests/unit/test_mcp_tools.py:1049`.
+- **Turn-end backstop `Bash mv` write vector** — the Stop backstop now arms
+  the destination of `mv`/`cp`/`git mv`/`ln`/`install`/`rsync`/`scp` at any
+  command position (`plugin/mcp/chameleon_mcp/hook_helper.py:4939-4950`).
+- **Downgraded engine rebuilding a newer-schema profile down** —
+  `refresh_repo` refuses a too-new `schema_version`
+  (`plugin/mcp/chameleon_mcp/tools.py:6631-6651`) and
+  `bootstrap_repo(force=True)` applies the same refusal.
+
+FIX-STAGED this change (branch `deep/gap-fixes`; human re-sign-off pending):
+
+- **Stale-trust sessions get no credential advisory** — a `stale` grant now
+  gets the same deterministic credential/eval advisory as `untrusted` (it
+  still never denies): the advisory gate covers `("untrusted", "stale")` and
+  the copy names the actual trust posture. Pinned by
+  `test_stale_trust_still_gets_credential_advisory` and
+  `test_stale_trust_still_gets_eval_advisory`
+  (`tests/unit/test_preflight_secret_deny.py`).
+- **Noop refresh leaves `.chameleon.backup-<txn>` debris** — both noop
+  early-returns (production-pinned and working-tree) now run the orphan sweep
+  before returning, mirroring the bootstrap and partial-refresh paths. Pinned
+  by `test_noop_refresh_sweeps_stray_backup`
+  (`tests/unit/test_refresh_noop_orphan_sweep.py`) and
+  `test_noop_under_lock_still_sweeps_stray_backup`
+  (`tests/unit/test_production_derivation.py`).
+- **Silent linter-config parse failure (remaining half)** — the bootstrap
+  response now carries `tool_config_warnings`; doctor gained a
+  `linter_config` check surfacing rules.json `parse_warning`s; a broken
+  config SYMLINK now warns ("could not read …: broken symlink") instead of
+  reading as "no config declared". Pinned by
+  `test_bootstrap_envelope_carries_tool_config_warning`
+  (`tests/unit/test_bootstrap_orchestrator.py`),
+  `tests/unit/test_doctor_linter_parse_warning.py`, and
+  `TestBrokenSymlinkedPythonConfig` (`tests/unit/test_bootstrap_tool_config.py`).
+- **Catchall clusters serving a trivial canonical** — an Expr-only signature
+  (a module docstring is an `ast.Expr`) is now classified trivial like a
+  comment-only file, so a docstring-only `__init__.py` can no longer win a
+  witness slot. Pinned by `test_docstring_only_loses_witness_to_real_sibling`
+  and `test_all_docstring_cluster_yields_no_witness`
+  (`tests/unit/test_canonical_comment_only_witness.py`).
+
+Scoped out (unchanged):
+
+- **Linter-config distillate fixed key set** — capturing ruff's
+  `select`/`ignore` verbatim is a new artifact contract, as the entry itself
+  notes; feature work, not a bug fix. Remains open by design.
+
+---
+
 ## Addendum — 2026-07-10 (v3 QA campaign: MCP fold + plugin/ restructure)
 
 A 15-agent QA matrix over the v3 tree (48→19 MCP fold, `plugin/` restructure)
