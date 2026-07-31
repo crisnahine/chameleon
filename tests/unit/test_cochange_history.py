@@ -606,12 +606,16 @@ def test_rebased_old_work_does_not_pass_as_this_turns_commit(tmp_path):
     _init(repo)
     old = int(time.time()) - 5 * 86400
     _commit(repo, {"app/base.py": "b"}, "base", old - 86400)
+    # _init runs a bare `git init`, so the first branch is whatever the HOST's
+    # init.defaultBranch says -- main on some machines, master on others. Pin it
+    # rather than assume, or this passes locally and fails on every CI runner.
+    _git(repo, "branch", "-M", "trunk")
     _git(repo, "checkout", "-qb", "feat")
     _commit(repo, {"app/a.py": "x", "app/test_a.py": "t"}, "the pair", old)
-    _git(repo, "checkout", "-q", "main")
+    _git(repo, "checkout", "-q", "trunk")
     _commit(repo, {"app/base.py": "b2"}, "advance", int(time.time()))
     _git(repo, "checkout", "-q", "feat")
-    _git(repo, "rebase", "-q", "main")
+    _git(repo, "rebase", "-q", "trunk")
 
     # Committer date is now; author date is 5 days old and rules.
     assert _recent_commit_rels(repo, {"app/a.py"}) == set()
