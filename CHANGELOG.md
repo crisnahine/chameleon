@@ -4,6 +4,49 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.1] - 2026-07-31
+
+### Fixed
+
+- **The co-change advisory nudged you to edit files you had just committed.**
+  Its "already handled, don't nudge" set was the working-tree diff alone, so a
+  turn that ended by committing its own work left a clean tree and every partner
+  read as forgotten — a module and its test landing in one commit still reported
+  as an omission. Files carried by the turn's own recent commits now count as
+  touched. Four bounds decide what qualifies, each covering a case the others
+  miss: a bounded walk, an author-date window, a per-commit file cap, and an
+  overlap requirement against what the turn's recorder actually saw.
+- **A rebase made week-old work read as this turn's.** `--since` filters on
+  committer date, which `rebase`, `--amend` and `cherry-pick` all rewrite to
+  now, so replaying a branch would silence a live omission for the length of the
+  window. The author date survives all three and is what decides; git has no
+  `--since` for it, so it is re-checked per commit.
+- **One formatter sweep could mute every nudge.** The miner already refuses to
+  LEARN from a commit touching more than `COCHANGE_HISTORY_MAX_FILES_PER_COMMIT`
+  files, because a mass sweep co-occurs everything. Trusting such a commit to
+  SUPPRESS was the same error pointed the other way, and now hits the same cap.
+- **A path beginning with a newline was silently renamed.** Git writes the
+  header/name-list separator onto a commit's FIRST path token only, so stripping
+  a leading newline from every token mangled any later path that genuinely
+  started with one — and a mangled path can collide with a real index key rather
+  than merely failing to match.
+- **The journey harness aborted healthy runs partway.** Its per-act cost
+  ceilings are upper bounds the budget guard sums, but they had drifted far
+  under real cost (one act ran 4.2x over) while the default cap sat at $40 —
+  fractionally below the $40.38 sum of per-act median costs. A full run
+  therefore had roughly even odds of dying mid-way, after the money was spent
+  and with the gate incomplete. Ceilings are re-derived from recorded per-act
+  cost, the derivation is documented where they live so they stop rotting
+  silently, and two tests now pin the default against the ceiling sum in both
+  directions.
+
+### Added
+
+- **`--model` on the journey runner.** Every act spawned its worker through the
+  floating `sonnet` alias with no way to pin it, which is wrong for a release
+  gate whose results are compared across runs. Acts run in-process, so one env
+  var reaches all of them without threading a parameter through each.
+
 ## [4.9.0] - 2026-07-31
 
 ### Added

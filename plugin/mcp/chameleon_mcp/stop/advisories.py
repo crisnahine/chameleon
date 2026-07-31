@@ -212,6 +212,129 @@ def _worktree_modified_rels(git_top: Path) -> set[str] | None:
         return None
 
 
+def _recent_commit_rels(git_top: Path, changed_rels: set[str]) -> set[str]:
+    """Work-tree-top-relative paths carried by commits this turn plausibly made.
+
+    ``_worktree_modified_rels`` sees only the UNCOMMITTED delta, so a turn that
+    ends by committing its own work leaves a clean tree and every partner reads
+    as untouched. The nudge then tells the author to go edit the very files they
+    just committed alongside this one -- a module and its test landing in one
+    commit still reported as an omission. A committed file is the most touched a
+    file gets; it belongs in the same already-handled set as a dirty one.
+
+    Four bounds decide what counts as this turn's commit, each covering a case
+    the others do not:
+
+    * ``-n RECENT_COMMIT_MAX`` keeps this to one bounded walk on the Stop hot
+      path; history is never traversed past a handful of commits.
+    * The AUTHOR date must fall inside the window. ``--since`` bounds the walk
+      cheaply but filters on COMMITTER date, which a rebase, amend or
+      cherry-pick rewrites to now -- replaying a five-commit branch would
+      otherwise present week-old work as this turn's and silence a live
+      omission. Author date survives all three, so it is what decides; git has
+      no ``--since`` for it, hence the per-commit re-check.
+    * A commit carrying more than ``COCHANGE_HISTORY_MAX_FILES_PER_COMMIT``
+      files is skipped. It is the same cap the miner applies when deciding what
+      to LEARN from, for the same reason: a mass reformat or rename sweep
+      co-occurs everything, and one such commit would otherwise silence every
+      nudge for the rest of the window.
+    * A commit counts only when it also carries a file the turn's own recorder
+      saw. Colleagues' commits arriving through a ``git pull`` inside the window
+      would otherwise read as this session's work and silence a real omission.
+
+    The window is the only thing separating this turn's commit from one an
+    EARLIER turn made minutes ago -- at the git level the two are the same event,
+    so a pairing committed just inside the window is attributed here and its
+    nudge is lost. That is why the window is deliberately narrow rather than
+    generous; see COCHANGE_RECENT_COMMIT_WINDOW_MINUTES.
+
+    Returns the empty set -- never None -- when git cannot answer: the caller
+    UNIONS this into the already-touched set, so empty adds nothing and the
+    work-tree-only behavior stands. That is the same fail-open direction the
+    sibling helper's None encodes for its own signal.
+    """
+    try:
+        import time as _time
+
+        from chameleon_mcp._thresholds import threshold_int
+        from chameleon_mcp.cochange_history import _COMMIT_MARK
+        from chameleon_mcp.judge import _git_available, _run_git
+
+        if not changed_rels or not _git_available(git_top):
+            return set()
+        window = max(1, threshold_int("COCHANGE_RECENT_COMMIT_WINDOW_MINUTES"))
+        res = _run_git(
+            [
+                "log",
+                # A rename must contribute BOTH paths: the old name is as touched
+                # as the new one, and either may be an index partner.
+                "--no-renames",
+                # The mark carries the AUTHOR timestamp; --since cannot filter on
+                # it, so it is re-checked per commit below.
+                f"--format={_COMMIT_MARK}%at",
+                "--name-only",
+                "-z",
+                "-n",
+                str(max(1, threshold_int("COCHANGE_RECENT_COMMIT_MAX"))),
+                f"--since={window} minutes ago",
+                "HEAD",
+            ],
+            cwd=git_top,
+        )
+        if res is None or res.returncode != 0:
+            return set()
+
+        # Under -z each path is NUL-terminated, so a name holding a quote, a
+        # backslash or a newline survives intact where line framing would split
+        # or C-quote it. Git writes the header/name-list separator once per
+        # commit, so exactly the FIRST path token of each commit carries a
+        # leading newline -- strip it there only. Stripping it from every token
+        # would silently rename a path that genuinely begins with a newline.
+        groups: list[tuple[int | None, list[str]]] = []
+        current: list[str] | None = None
+        for token in (res.stdout or "").split("\0"):
+            if token.startswith(_COMMIT_MARK):
+                try:
+                    authored = int(token[len(_COMMIT_MARK) :].strip())
+                except ValueError:
+                    authored = None
+                current = []
+                groups.append((authored, current))
+                continue
+            if current is None:
+                continue
+            if not current and token.startswith("\n"):
+                token = token[1:]
+            if token:
+                current.append(token)
+
+        now = _time.time()
+        cutoff = window * 60
+        # A bulk commit is not evidence any particular file was handled by hand.
+        # The miner already refuses to LEARN from one (cochange_history skips a
+        # commit over this same cap, "a mass reformat / rename sweep would
+        # co-occur everything"); trusting it to SUPPRESS instead would let one
+        # formatter sweep silence every nudge for the rest of the window.
+        max_files = max(1, threshold_int("COCHANGE_HISTORY_MAX_FILES_PER_COMMIT"))
+
+        committed: set[str] = set()
+        for authored, group in groups:
+            # --since filters on COMMITTER date, which a rebase, amend or
+            # cherry-pick rewrites to now -- replaying a branch would otherwise
+            # present week-old work as this turn's and silence a live omission.
+            # The author date survives all three, so it is what decides.
+            if authored is None or now - authored > cutoff:
+                continue
+            rels = set(group)
+            if len(rels) > max_files:
+                continue
+            if rels & changed_rels:
+                committed |= rels
+        return committed
+    except Exception:
+        return set()
+
+
 def _session_worktree_top(repo_root: Path, index_top: Path) -> Path:
     """The work-tree top this turn's edits actually live under.
 
@@ -321,7 +444,13 @@ def _cochange_history_advisory_lines(
         from chameleon_mcp.safe_open import contained_rel
 
         # None when git cannot answer, which keeps the pre-check behavior.
-        modified_rels = _worktree_modified_rels(git_top)
+        touched_rels = _worktree_modified_rels(git_top)
+        # A turn that ends by COMMITTING its work leaves a clean tree, so the
+        # uncommitted delta alone reads every partner it just committed as
+        # forgotten. Fold in what this turn's own commits carried.
+        committed_rels = _recent_commit_rels(git_top, changed_rels)
+        if committed_rels:
+            touched_rels = (touched_rels or set()) | committed_rels
 
         items = []
         for it in missing_partners(index, changed_rels):
@@ -329,9 +458,10 @@ def _cochange_history_advisory_lines(
             safe = contained_rel(git_top, partner) if isinstance(partner, str) else None
             if safe is None or not (git_top / safe).is_file():
                 continue
-            # Already changed in the work tree, whoever wrote it. The nudge is
-            # "you forgot this file"; a file that is not forgotten needs none.
-            if modified_rels is not None and safe in modified_rels:
+            # Already changed this turn -- dirty on disk or committed -- whoever
+            # wrote it. The nudge is "you forgot this file"; a file that is not
+            # forgotten needs none.
+            if touched_rels is not None and safe in touched_rels:
                 continue
             items.append(it)
 

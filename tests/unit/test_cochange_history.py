@@ -386,7 +386,13 @@ def test_miner_keys_are_top_relative_from_a_subdir(tmp_path):
 
 
 def _git_consumer_repo(tmp_path, monkeypatch) -> Path:
-    """A committed git work tree carrying the same a.py -> test_a.py pairing."""
+    """A committed git work tree carrying the same a.py -> test_a.py pairing.
+
+    The seed is dated a week back because it stands for the repo's HISTORY, which
+    predates the session. Committed at "now" it would instead be a commit of the
+    pair made moments before Stop -- the shape a turn that commits its own work
+    produces, and indistinguishable from it at the git level.
+    """
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "pd"))
     repo = tmp_path / "repo"
     _init(repo)
@@ -394,7 +400,7 @@ def _git_consumer_repo(tmp_path, monkeypatch) -> Path:
     (repo / "app" / "a.py").write_text("x")
     (repo / "app" / "test_a.py").write_text("t")
     _git(repo, "add", "-A")
-    _git(repo, "commit", "-qm", "seed")
+    _git(repo, "commit", "-qm", "seed", at=int(time.time()) - 7 * 86400)
     index = {
         "schema": 2,
         "root": str(repo),
@@ -460,3 +466,198 @@ def test_worktree_modified_rels_returns_none_not_empty_when_git_cannot_answer(tm
     from chameleon_mcp.stop.advisories import _worktree_modified_rels
 
     assert _worktree_modified_rels(tmp_path) is None
+
+
+# --- a partner this turn COMMITTED is touched, not forgotten ------------------
+
+
+def _write_index(tmp_path, repo, partner: str = "app/test_a.py") -> None:
+    """Persist the a.py -> partner pairing for the Stop consumer to read."""
+    index = {
+        "schema": 2,
+        "root": str(repo),
+        "partners": {"app/a.py": [{"partner": partner, "co": 5, "of": 6, "ratio": 0.833}]},
+    }
+    pd = tmp_path / "pd" / _RID
+    pd.mkdir(parents=True, exist_ok=True)
+    (pd / COCHANGE_HISTORY_FILENAME).write_text(json.dumps(index))
+
+
+@_GIT
+def test_partner_committed_with_the_source_is_not_nudged(tmp_path, monkeypatch):
+    """The regression: a turn that ends by COMMITTING both files leaves a clean
+    tree, so the uncommitted delta sees neither and the partner reads as
+    untouched. Committed is the most touched a file gets -- nudging to go edit
+    the file the user just committed alongside this one is pure noise."""
+    repo = _git_consumer_repo(tmp_path, monkeypatch)
+    (repo / "app" / "a.py").write_text("x edited")
+    (repo / "app" / "test_a.py").write_text("t edited")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "edit the pair together")
+    assert _advisory(repo) == ""
+
+
+@_GIT
+def test_partner_left_out_of_the_commit_is_still_nudged(tmp_path, monkeypatch):
+    """The control: committing the SOURCE must not blanket-silence the check.
+    A partner absent from that commit is exactly the omission to report."""
+    repo = _git_consumer_repo(tmp_path, monkeypatch)
+    (repo / "app" / "a.py").write_text("x edited")
+    _git(repo, "add", "app/a.py")
+    _git(repo, "commit", "-qm", "edit the source alone")
+    assert "app/a.py usually changes with app/test_a.py" in _advisory(repo)
+
+
+@_GIT
+def test_commit_outside_the_recency_window_is_not_this_turn(tmp_path, monkeypatch):
+    """A pair committed together weeks ago is history, not this turn's work. On a
+    low-traffic repo the commit cap alone still reaches that commit, so the
+    window is what keeps a stale pairing from suppressing a live omission."""
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "pd"))
+    repo = tmp_path / "repo"
+    _init(repo)
+    long_ago = int(time.time()) - 30 * 86400
+    _commit(repo, {"app/a.py": "x", "app/test_a.py": "t"}, "paired, weeks ago", long_ago)
+    _write_index(tmp_path, repo)
+    (repo / "app" / "a.py").write_text("x edited now")
+    assert "app/a.py usually changes with app/test_a.py" in _advisory(repo)
+
+
+@_GIT
+def test_commit_beyond_the_walk_bound_is_not_read(tmp_path, monkeypatch):
+    """The walk is capped so the Stop hot path never traverses history. Past the
+    cap a commit is simply not seen, which nudges (fail open), never suppresses."""
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "pd"))
+    monkeypatch.setenv("CHAMELEON_COCHANGE_RECENT_COMMIT_MAX", "1")
+    repo = tmp_path / "repo"
+    _init(repo)
+    now = int(time.time())
+    _commit(repo, {"app/a.py": "x", "app/test_a.py": "t"}, "the pair", now)
+    _commit(repo, {"app/a.py": "x again"}, "the source alone", now)
+    _write_index(tmp_path, repo)
+    assert "app/a.py usually changes with app/test_a.py" in _advisory(repo)
+
+
+@_GIT
+def test_commit_the_turn_had_no_part_in_does_not_suppress(tmp_path, monkeypatch):
+    """A colleague's commit arriving through a `git pull` lands inside the window
+    but is not this session's work. A commit counts only when it also carries a
+    file the turn's own recorder saw, so a partner nobody here touched still
+    surfaces as the omission it is."""
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "pd"))
+    repo = tmp_path / "repo"
+    _init(repo)
+    now = int(time.time())
+    _commit(repo, {"app/a.py": "x"}, "seed", now)
+    _commit(repo, {"app/test_a.py": "t from upstream"}, "pulled in", now)
+    _write_index(tmp_path, repo)
+    (repo / "app" / "a.py").write_text("x edited now")
+    assert "app/a.py usually changes with app/test_a.py" in _advisory(repo)
+
+
+@_GIT
+def test_committed_partner_with_a_hostile_path_is_still_matched(tmp_path, monkeypatch):
+    """NUL framing, not line framing: a name holding a space, a quote or a
+    backslash must still match the index key. A path that fails to parse reads as
+    'not committed', which is the direction that produces the WRONG nudge."""
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "pd"))
+    repo = tmp_path / "repo"
+    _init(repo)
+    partner = 'app/we "ird\\test.py'
+    now = int(time.time())
+    _commit(repo, {"app/a.py": "x", partner: "t"}, "seed", now)
+    _write_index(tmp_path, repo, partner=partner)
+    _commit(repo, {"app/a.py": "x edited", partner: "t edited"}, "edit the pair", now)
+    assert _advisory(repo) == ""
+
+
+def test_recent_commit_rels_fails_open_to_an_empty_set(tmp_path):
+    """Empty, never None: the caller UNIONS this into the already-touched set, so
+    an unanswerable git adds nothing and the work-tree-only behavior stands."""
+    from chameleon_mcp.stop.advisories import _recent_commit_rels
+
+    assert _recent_commit_rels(tmp_path, {"app/a.py"}) == set()
+
+
+@_GIT
+def test_recent_commit_rels_needs_a_recorded_edit_to_attribute_a_commit(tmp_path):
+    from chameleon_mcp.stop.advisories import _recent_commit_rels
+
+    repo = tmp_path / "repo"
+    _init(repo)
+    _commit(repo, {"app/a.py": "x", "app/test_a.py": "t"}, "the pair", int(time.time()))
+    # Nothing recorded this turn -> no commit can be attributed to it.
+    assert _recent_commit_rels(repo, set()) == set()
+    # One recorded file attributes the whole commit, partner included.
+    assert _recent_commit_rels(repo, {"app/a.py"}) == {"app/a.py", "app/test_a.py"}
+
+
+@_GIT
+def test_rebased_old_work_does_not_pass_as_this_turns_commit(tmp_path):
+    """--since filters on COMMITTER date, which a rebase rewrites to now.
+
+    Replaying a branch would otherwise present week-old work as this turn's and
+    silence a live omission -- the costlier direction for this advisory. The
+    author date survives the replay, so it is what decides.
+    """
+    from chameleon_mcp.stop.advisories import _recent_commit_rels
+
+    repo = tmp_path / "repo"
+    _init(repo)
+    old = int(time.time()) - 5 * 86400
+    _commit(repo, {"app/base.py": "b"}, "base", old - 86400)
+    _git(repo, "checkout", "-qb", "feat")
+    _commit(repo, {"app/a.py": "x", "app/test_a.py": "t"}, "the pair", old)
+    _git(repo, "checkout", "-q", "main")
+    _commit(repo, {"app/base.py": "b2"}, "advance", int(time.time()))
+    _git(repo, "checkout", "-q", "feat")
+    _git(repo, "rebase", "-q", "main")
+
+    # Committer date is now; author date is 5 days old and rules.
+    assert _recent_commit_rels(repo, {"app/a.py"}) == set()
+
+
+@_GIT
+def test_a_bulk_sweep_commit_cannot_silence_every_nudge(tmp_path):
+    """The miner refuses to LEARN from a commit over this cap because a mass
+    sweep co-occurs everything; trusting one to SUPPRESS would be the same error
+    pointed the other way, and would mute the advisory for the whole window."""
+    from chameleon_mcp._thresholds import threshold_int
+    from chameleon_mcp.stop.advisories import _recent_commit_rels
+
+    repo = tmp_path / "repo"
+    _init(repo)
+    cap = threshold_int("COCHANGE_HISTORY_MAX_FILES_PER_COMMIT")
+    sweep = {f"app/f{i}.py": "v" for i in range(cap + 5)}
+    sweep.update({"app/a.py": "x", "app/test_a.py": "t"})
+    _commit(repo, sweep, "reformat everything", int(time.time()))
+
+    assert _recent_commit_rels(repo, {"app/a.py"}) == set()
+
+
+@_GIT
+def test_a_path_beginning_with_a_newline_survives_the_z_framing(tmp_path):
+    """Git prefixes the header/name-list separator onto a commit's FIRST path
+    token only. Stripping a leading newline from every token instead renames any
+    LATER path that genuinely starts with one -- and a mangled path can collide
+    with a real index key rather than merely failing to match.
+
+    Ordering is load-bearing: git lists paths byte-sorted, so the tab name sorts
+    ahead of the newline one and takes the separator, leaving "\nlead.py" as a
+    later token whose leading newline is its own.
+    """
+    from chameleon_mcp.stop.advisories import _recent_commit_rels
+
+    repo = tmp_path / "repo"
+    _init(repo)
+    _commit(
+        repo,
+        {"\ttab.py": "x", "\nlead.py": "y", "a.py": "z"},
+        "hostile names",
+        int(time.time()),
+    )
+
+    got = _recent_commit_rels(repo, {"a.py"})
+    assert "\nlead.py" in got, sorted(repr(g) for g in got)
+    assert "lead.py" not in got, "a stripped path can collide with a real index key"
+    assert "\ttab.py" in got, sorted(repr(g) for g in got)

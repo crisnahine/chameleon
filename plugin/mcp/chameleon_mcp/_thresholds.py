@@ -365,6 +365,17 @@ DEFAULTS: Final[dict[str, int | float]] = {
     "COCHANGE_HISTORY_MAX_PARTNERS_PER_FILE": 5,
     "COCHANGE_HISTORY_MAX_FILES": 5_000,
     "COCHANGE_HISTORY_GIT_TIMEOUT_SECONDS": 25,
+    # How far back the co-change advisory looks for commits the CURRENT turn made,
+    # so a partner the turn edited and then committed reads as touched instead of
+    # forgotten. RECENT_COMMIT_MAX bounds the walk on the Stop hot path; the window
+    # keeps a low-traffic repo's handful of recent commits from reaching back weeks.
+    # The window stays SHORT on purpose. Widening it buys little -- a turn commits
+    # and Stop follows within seconds -- while every extra minute lets a commit an
+    # EARLIER turn made silence a live omission, and this advisory holds silence to
+    # be the costlier failure. Half an hour covers a turn that commits mid-way and
+    # keeps working.
+    "COCHANGE_RECENT_COMMIT_MAX": 5,
+    "COCHANGE_RECENT_COMMIT_WINDOW_MINUTES": 30,
     # Cap on the number of distinct callable names recorded in an archetype's
     # signature consensus. Names are kept most-frequent-first so the cap drops the
     # long tail of one-off helpers, not the methods every sibling shares. Wide

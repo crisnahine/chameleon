@@ -130,11 +130,18 @@ def spawn_claude(
     disallowed_tools: list[str] | None = None,
     permission_mode: str = "bypassPermissions",
     timeout_s: int = 900,
-    model: str = "sonnet",
+    model: str | None = None,
     plugin_root: Path | None = None,
     add_dirs: list[Path] | None = None,
 ) -> ClaudeSession:
     """Spawn `claude -p` and capture its stream-json output."""
+    # Every act calls this without a model, so the worker model is a run-wide
+    # property rather than a per-act one. Resolving it here lets the runner's
+    # --model reach all ~20 acts through one env var instead of threading a
+    # parameter through each. The bare "sonnet" alias floats to whatever the
+    # latest Sonnet is, which is wrong for a release gate whose results get
+    # compared across runs -- pass an exact id to pin it.
+    model = model or os.environ.get("CHAMELEON_JOURNEY_MODEL") or "sonnet"
     args = [
         "claude",
         "-p",

@@ -54,13 +54,21 @@ plugin/mcp/.venv/bin/ruff format .         # format
 ### Run the journey harness
 
 ```bash
-plugin/mcp/.venv/bin/python -m tests.journey.runner               # full run (~$33, ~65 min)
+plugin/mcp/.venv/bin/python -m tests.journey.runner               # full run (~$40, ~95 min)
 plugin/mcp/.venv/bin/python -m tests.journey.runner --list        # list acts
 plugin/mcp/.venv/bin/python -m tests.journey.runner --dry-run     # preflight only, no Claude spawn
-plugin/mcp/.venv/bin/python -m tests.journey.runner --max-budget-usd 20
+plugin/mcp/.venv/bin/python -m tests.journey.runner --model claude-sonnet-5   # pin the worker model
+plugin/mcp/.venv/bin/python -m tests.journey.runner --acts 02_init_flow,12_pr_review --max-budget-usd 12
 ```
 
 The journey harness drives real `claude -p` subprocesses against committed seed fixtures. Run before each release. All state is isolated to a per-run dir under `tests/journey/results/`; the developer's own `~/.local/share/chameleon/` is never touched.
+
+`--max-budget-usd` is checked against the sum of the selected acts' ceilings, so a
+cap below that sum refuses to start rather than running partway — pair a small cap
+with `--acts`. Ceilings are upper bounds re-derived from recorded per-act cost (see
+the comment above `_ACTS`), so the default has to clear their sum, not the typical
+spend. Worker model defaults to the floating `sonnet` alias; pin an exact id when
+the results will be compared across runs.
 
 ### Run unit tests for chameleon
 
@@ -168,12 +176,12 @@ Exercise each MCP tool + hook once on a healthy profile: the `qa_*.py` batteries
 - **Schema migrations**: load an old-schema-version profile — migrate or reject cleanly (don't crash).
 
 ### Out of scope for `/qa` (use the right method, don't fake it)
-- **Journey harness** (real `claude -p` editing): `/chameleon-journey` or `tests/journey/runner.py` — ~$33, ~65 min. Run before a release, not on every `/qa`. Ask before spending.
+- **Journey harness** (real `claude -p` editing): `/chameleon-journey` or `tests/journey/runner.py` — ~$40, ~95 min. Run before a release, not on every `/qa`. Ask before spending.
 - **Visual statusline rendering** in the live terminal, and **cross-platform** (Linux / other Python versions): CI matrix + manual, not `/qa`.
 - Say plainly when one of these was NOT run.
 
 ### Rules
-- Prefer the free real-repo test (9 bootstrapped repos in `~/Documents/Projects/Testing Apps/`) over the ~$33 journey harness.
+- Prefer the free real-repo test (9 bootstrapped repos in `~/Documents/Projects/Testing Apps/`) over the ~$40 journey harness.
 - Fix CHAMELEON, not the test, when a test surfaces a gap. Tests enforce the spec.
 - Verify load-bearing claims yourself before relaying them.
 - After any fix: 2-3 rounds of review (read-only `Explore` agents, or back up first — review subagents can mutate the working tree), THEN run the matrix.

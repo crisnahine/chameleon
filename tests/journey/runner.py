@@ -4,7 +4,7 @@ Usage (from the repo root, with PYTHONPATH=.):
   plugin/mcp/.venv/bin/python -m tests.journey.runner               # full run
   plugin/mcp/.venv/bin/python -m tests.journey.runner --list        # list acts
   plugin/mcp/.venv/bin/python -m tests.journey.runner --dry-run     # preflight only
-  plugin/mcp/.venv/bin/python -m tests.journey.runner --max-budget-usd 40
+  plugin/mcp/.venv/bin/python -m tests.journey.runner --max-budget-usd 80
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import os
 import sys
 import time
 from datetime import UTC, datetime
@@ -26,53 +27,71 @@ from tests.journey.harness import preflight  # noqa: E402
 from tests.journey.harness.context import JourneyContext, build_context  # noqa: E402
 from tests.journey.harness.fixtures import setup_fixture  # noqa: E402
 
+# Per-act cost ceilings, in USD. These are UPPER BOUNDS, not estimates: the
+# budget guard sums the ceilings of the acts still to run and aborts when
+# spend-so-far plus that sum passes --max-budget-usd. A ceiling set at an act's
+# typical cost therefore aborts a healthy run roughly half the time, after the
+# money is already spent and with the gate left incomplete.
+#
+# Each is derived from the highest cost that act has actually recorded across
+# the runs under tests/journey/results/, plus ~15%, rounded up to the nearest
+# 0.50. Recompute from the per-act `total_cost_usd` in each run's
+# transcripts/act_*.txt after a batch of acts changes shape; the numbers drifted
+# 4x on 08 before anyone re-derived them, which is what made the guard fire on
+# the wrong act. Ceilings only ever go up here: lowering one on a handful of
+# samples buys a tighter guard at the price of spurious aborts.
 _ACTS = [
     ("00_preflight", "Pre-flight wipe + isolation setup", 0.30, [0]),
     (
         "01_install_mcp_doctor",
         "Install + MCP boot + Doctor + using-chameleon verify",
-        1.20,
+        2.00,
         [1, 2, 3, 4],
     ),
     ("02_init_flow", "Init flow (TS, both auto_rename modes + force=True)", 3.00, [5, 6, 7, 15]),
     ("03_hot_path_drift", "Hot path advisory (Edit + Write)", 2.00, [8, 9]),
-    ("03b_drift_refresh", "Drift injection + refresh recovery", 2.00, [10, 11]),
-    ("04_v060_ux_bundle", "auto_refresh subprocess discipline", 2.00, [12]),
-    ("04b_canonical_trust", "canonical_ref lifecycle + trust.auto_preserve_when", 2.50, [13, 14]),
+    ("03b_drift_refresh", "Drift injection + refresh recovery", 6.50, [10, 11]),
+    ("04_v060_ux_bundle", "auto_refresh subprocess discipline", 3.00, [12]),
+    ("04b_canonical_trust", "canonical_ref lifecycle + trust.auto_preserve_when", 5.00, [13, 14]),
     ("05_teach_status_doctor", "Teach idiom (structured + slug boundary)", 2.00, [16]),
     ("05b_status", "Status v0.6.0 config surface", 1.50, [17]),
     ("05c_doctor", "Doctor stale errors filter", 1.50, [18]),
-    ("06_suppression_callout", "Pause + disable + 4-level precedence", 1.50, [19]),
-    ("06b_callout_hmac", "Callout-detector + HMAC tampering", 2.00, [20, 23]),
-    ("07_rails_parity", "Rails parity", 3.00, [21]),
-    ("08_hooks_security_sanitization", "Hooks + security + sanitization", 2.00, [22, 24, 25, 26]),
+    ("06_suppression_callout", "Pause + disable + 4-level precedence", 3.00, [19]),
+    ("06b_callout_hmac", "Callout-detector + HMAC tampering", 2.50, [20, 23]),
+    ("07_rails_parity", "Rails parity", 4.00, [21]),
+    ("08_hooks_security_sanitization", "Hooks + security + sanitization", 10.00, [22, 24, 25, 26]),
     (
         "09_schema_atomicity_concurrency",
         "Schema + atomicity + concurrency + monorepo",
-        2.50,
+        5.00,
         [27, 28, 29, 30, 31, 32],
     ),
     (
         "10_daemon_observability_resilience",
         "Daemon + observability + resilience",
-        2.00,
+        2.50,
         [33, 34, 35],
     ),
-    ("10b_log_rotation", "Log rotation + auto_refresh.log truncate", 1.50, [36]),
-    ("12_pr_review", "PR review (convention + logic findings, anti-hallucination)", 1.50, [38, 39]),
+    ("10b_log_rotation", "Log rotation + auto_refresh.log truncate", 3.50, [36]),
+    (
+        "12_pr_review",
+        "PR review (convention + logic findings, anti-hallucination)",
+        10.00,
+        [38, 39],
+    ),
     (
         "12b_pr_review_deep",
         "PR review deep paths (secret / migration / dependency-ACK / eval sink)",
-        2.00,
+        9.50,
         [40, 41],
     ),
     (
         "12c_receiving_review",
         "Receiving code review (ground-before-draft, never-ledger, pre-existing gate)",
-        1.50,
+        2.50,
         [42, 43],
     ),
-    ("11_uninstall_cleanup", "Uninstall + cleanup", 0.50, [37]),
+    ("11_uninstall_cleanup", "Uninstall + cleanup", 1.00, [37]),
 ]
 
 
@@ -83,8 +102,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--max-budget-usd",
         type=float,
-        default=40.0,
-        help="Abort if projected cost exceeds (default 40)",
+        default=100.0,
+        help="Abort if projected cost exceeds (default 100)",
+    )
+    p.add_argument(
+        "--model",
+        default="",
+        help=(
+            "Model every act's worker spawns with (default: the 'sonnet' alias). "
+            "Pass an exact id (e.g. claude-sonnet-5) to pin a release gate, since "
+            "the alias floats to whatever the latest Sonnet is and results are "
+            "compared across runs. Cost estimates assume Sonnet pricing."
+        ),
     )
     p.add_argument(
         "--results-dir",
@@ -137,6 +166,12 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+
+    # Set before any act imports: acts run in-process via importlib and each
+    # calls spawn_claude without a model, so this env var is what reaches them.
+    if args.model:
+        os.environ["CHAMELEON_JOURNEY_MODEL"] = args.model
+        print(f"worker model pinned: {args.model}", file=sys.stderr)
 
     results_root = Path(args.results_dir).resolve()
     results_root.mkdir(parents=True, exist_ok=True)
