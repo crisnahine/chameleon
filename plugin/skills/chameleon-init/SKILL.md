@@ -234,11 +234,11 @@ user in one short line each — otherwise a real role silently has no guidance:
 - `workspace_skipped_warnings` / `workspace_glob_warnings` /
   `nested_profile_warnings` — a monorepo workspace was skipped or a glob
   matched nothing; name the path so the user can bootstrap it explicitly.
-- `tool_config_warnings` — a linter/formatter config is present but broken
-  (torn TOML/YAML, broken symlink), so its conventions were never extracted.
-  Name the config file and suggest fixing it, then a full re-derive
-  (`refresh_repo` with `force: true` — a noop/partial refresh never re-reads
-  linter configs).
+- `tool_config_warnings` — part of a linter/formatter config could not be read
+  (torn TOML/YAML, broken symlink), so some or all of its conventions are
+  missing; a tolerant parse still records what it salvaged. Name the config
+  file and suggest fixing it, then a full re-derive (`refresh_repo` with
+  `force: true` — a noop/partial refresh never re-reads linter configs).
 
 Keep it terse (the counts, not a wall of JSON). Skip a category whose list is
 empty. This is advisory — none of it blocks a successful bootstrap.

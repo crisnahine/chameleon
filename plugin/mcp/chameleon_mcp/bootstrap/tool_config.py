@@ -139,6 +139,16 @@ def read_tool_configs(repo_root: Path) -> ToolConfigResult:
                 break
             except json.JSONDecodeError:
                 pass
+            except OSError as exc:
+                # safe_read_capped raises OSError for an unreadable or
+                # non-regular file, and its docstring states the contract:
+                # callers skip such a manifest rather than let it escape. This
+                # reader caught only JSONDecodeError, so a chmod-000 or
+                # directory .prettierrc crashed the whole bootstrap where every
+                # sibling reader fails open with a warning.
+                result.sources["prettier"] = name
+                result.parse_warnings["prettier"] = f"could not read {name}: {exc}"
+                break
     for name in (".prettierrc.js", ".prettierrc.cjs", "prettier.config.js"):
         if (repo_root / name).exists():
             result.sources["prettier"] = result.sources.get("prettier", name)
@@ -173,6 +183,11 @@ def read_tool_configs(repo_root: Path) -> ToolConfigResult:
                 # was dead for JSON. Keep scanning the other formats.
                 result.sources["eslint"] = name
                 result.parse_warnings["eslint"] = f"malformed JSON in {name}: {exc}"
+                break
+            except OSError as exc:
+                # Same skip-don't-escape contract as the prettier reader above.
+                result.sources["eslint"] = name
+                result.parse_warnings["eslint"] = f"could not read {name}: {exc}"
                 break
 
     if result.eslint is None:
@@ -317,13 +332,14 @@ def _read_python_format(
         if p.is_symlink():
             # is_file() FOLLOWS symlinks, so a dangling link (or one pointing
             # at a directory) reads as "absent" -- a config present but
-            # unreadable. Name it like a malformed one instead of silently
-            # extracting zero rules. ruff would also try this file first and
-            # fail, so the pyproject [tool.ruff] fallback stays skipped
-            # (ruff_source set), matching ruff's no-merge rule.
+            # unreadable. Warn instead of silently extracting zero rules, then
+            # keep resolving: ruff's own discovery is is_file()-based too, so a
+            # dangling .ruff.toml is not a config file to it either and it falls
+            # through to ruff.toml, then to pyproject [tool.ruff]. Claiming this
+            # path as ruff_source would suppress that fallback and record the
+            # wrong line length -- black's, or none at all -- for a repo whose
+            # ruff is enforcing a value chameleon can still read.
             warnings.append(f"could not read {name}: broken symlink or not a regular file")
-            ruff_source = name
-            break
 
     black: dict = {}
     pyproject = repo_root / "pyproject.toml"

@@ -1027,6 +1027,15 @@ def doctor(repo: str | None = None) -> dict:
         # recorded only as a per-source parse_warning inside rules.json.
         # get_rules surfaces those; doctor must too, or a degraded linter
         # config passes the health check clean.
+        #
+        # A parse_warning alone is NOT proof of a degraded config. The tolerant
+        # readers report what they had to neutralize while still returning a
+        # full rule set -- ERB in a Rails .rubocop.yml is the common case, and
+        # it is the intended way to write that file, not damage. Warning on it
+        # would make doctor permanently yellow on a healthy repo with nothing
+        # the user could fix. The orchestrator's own stanza shape is the
+        # discriminator: a salvaged parse writes "rules" alongside the note,
+        # a total failure writes the note with no "rules" key at all.
         linter_status = "ok"
         if not (cwd_profile_dir / "profile.json").is_file():
             linter_detail = "no profile in the current directory"
@@ -1045,25 +1054,41 @@ def doctor(repo: str | None = None) -> dict:
                 (cwd_profile_dir / "rules.json").read_text(encoding="utf-8")
             )
             _rules_map = _rules_obj.get("rules") if isinstance(_rules_obj, dict) else None
-            _parse_warnings: list[str] = []
+            _unread: list[str] = []
+            _salvaged: list[str] = []
             for _src, _stanza in (_rules_map or {}).items():
-                if isinstance(_stanza, dict) and _stanza.get("parse_warning"):
-                    # Key and value are both committed-artifact strings: a
-                    # parser message can quote the offending config line, and
-                    # a planted stanza key can carry tag-boundary tokens --
-                    # sanitize both before the model surface.
-                    _parse_warnings.append(
-                        f"{_san_lc(str(_src))}: {_san_lc(str(_stanza['parse_warning']))}"
-                    )
-            if _parse_warnings:
+                if not isinstance(_stanza, dict) or not _stanza.get("parse_warning"):
+                    continue
+                # Key and value are both committed-artifact strings: a parser
+                # message can quote the offending config line, and a planted
+                # stanza key can carry tag-boundary tokens -- sanitize both
+                # before the model surface.
+                _line = f"{_san_lc(str(_src))}: {_san_lc(str(_stanza['parse_warning']))}"
+                if _stanza.get("rules"):
+                    _salvaged.append(_line)
+                else:
+                    _unread.append(_line)
+            if _unread:
                 linter_status = "warn"
                 linter_detail = (
-                    "linter config parse warnings recorded in rules.json: "
-                    + "; ".join(_parse_warnings)
-                    + ". The config is present but unreadable, so its conventions "
-                    "were not extracted; fix the config, then force a full "
-                    "re-derive (refresh_repo with force=true or /chameleon-init) "
-                    "-- a noop or partial refresh never re-reads linter configs."
+                    "linter config could not be read, so none of its conventions "
+                    "were extracted: "
+                    + "; ".join(_unread)
+                    + ". Fix the config, then force a full re-derive (refresh_repo "
+                    "with force=true or /chameleon-init) -- a noop or partial "
+                    "refresh never re-reads linter configs."
+                )
+                if _salvaged:
+                    linter_detail += (
+                        " Separately, a tolerant parse salvaged a full rule set from: "
+                        + "; ".join(_salvaged)
+                        + " (informational, no action needed)."
+                    )
+            elif _salvaged:
+                linter_detail = (
+                    "linter configs all parsed; a tolerant read neutralized "
+                    "something on the way and still extracted a full rule set: "
+                    + "; ".join(_salvaged)
                 )
             else:
                 linter_detail = "no linter config parse warnings"

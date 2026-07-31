@@ -73,3 +73,58 @@ def test_doctor_ok_when_no_linter_parse_warning(tmp_path):
     lc = _linter_check(repo)
     assert lc is not None, "doctor has no linter_config check"
     assert lc["status"] == "ok"
+    # Not just the status: an always-"ok" check would pass the assertion above
+    # while reporting nothing, so pin the reason too.
+    assert "no linter config parse warnings" in lc["detail"]
+
+
+def test_tolerant_parse_that_salvaged_rules_is_not_a_warn(tmp_path):
+    # ERB in a Rails .rubocop.yml is how that file is meant to be written, and
+    # _parse_rubocop_tolerant returns the FULL rule set plus a note saying what
+    # it neutralized. Warning on that note left doctor permanently yellow on a
+    # healthy repo with nothing to fix. The stanza carrying "rules" is what
+    # separates a salvaged read from a config that yielded nothing.
+    repo = _repo_with_rules(
+        tmp_path,
+        {
+            "rules": {
+                "rubocop": {
+                    "source": ".rubocop.yml",
+                    "rules": {"Style/FrozenStringLiteralComment": {"Enabled": True}},
+                    "parse_warning": (
+                        "ERB tags neutralized (templated values appear as 'erb_omitted')"
+                    ),
+                }
+            }
+        },
+    )
+    lc = _linter_check(repo)
+    assert lc is not None, "doctor has no linter_config check"
+    assert lc["status"] == "ok", lc["detail"]
+    assert "erb_omitted" in lc["detail"], "the salvaged note should still be reported"
+
+
+def test_unread_config_warns_even_when_a_sibling_salvaged(tmp_path):
+    # The two classes are independent: a genuinely unreadable config must still
+    # warn while a salvaged sibling rides along as informational.
+    repo = _repo_with_rules(
+        tmp_path,
+        {
+            "rules": {
+                "rubocop": {
+                    "source": ".rubocop.yml",
+                    "rules": {"Style/FrozenStringLiteralComment": {"Enabled": True}},
+                    "parse_warning": "ERB tags neutralized",
+                },
+                "python_format": {
+                    "source": "pyproject.toml",
+                    "parse_warning": "malformed TOML in pyproject.toml: Expected ']'",
+                },
+            }
+        },
+    )
+    lc = _linter_check(repo)
+    assert lc is not None, "doctor has no linter_config check"
+    assert lc["status"] == "warn"
+    assert "malformed TOML" in lc["detail"]
+    assert "ERB tags neutralized" in lc["detail"]

@@ -859,3 +859,50 @@ class TestBrokenSymlinkedPythonConfig:
         assert res.python_format is None
         warning = res.parse_warnings.get("python_format", "")
         assert ".ruff.toml" in warning
+
+    def test_broken_ruff_symlink_still_falls_back_to_pyproject(self, tmp_path):
+        # ruff's own discovery is is_file()-based, so a dangling .ruff.toml is
+        # not a config file to it either: it falls through to [tool.ruff] and
+        # enforces 50. Claiming the dangling path as the resolved ruff source
+        # suppressed that fallback and recorded black's 120 instead.
+        (tmp_path / ".ruff.toml").symlink_to(tmp_path / "missing-target.toml")
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.ruff]\nline-length = 50\n\n[tool.black]\nline-length = 120\n",
+            encoding="utf-8",
+        )
+        res = read_tool_configs(tmp_path)
+        assert (res.python_format or {}).get("line_length") == 50
+        assert (res.sources or {}).get("python_format") == "pyproject.toml"
+        assert ".ruff.toml" in res.parse_warnings.get("python_format", "")
+
+    def test_unreadable_prettier_and_eslint_fail_open_like_their_siblings(self, tmp_path):
+        # safe_read_capped raises OSError for an unreadable or non-regular file
+        # and documents that callers skip such a manifest. The prettier and
+        # eslint JSON readers caught only JSONDecodeError, so a chmod-000
+        # config crashed the whole bootstrap while .rubocop.yml in the same
+        # tree fails open with a warning.
+        for name in (".prettierrc", ".eslintrc.json"):
+            p = tmp_path / name
+            p.write_text("{}", encoding="utf-8")
+            p.chmod(0o000)
+        try:
+            res = read_tool_configs(tmp_path)
+        finally:
+            for name in (".prettierrc", ".eslintrc.json"):
+                (tmp_path / name).chmod(0o644)
+        assert "could not read .prettierrc" in res.parse_warnings.get("prettier", "")
+        assert "could not read .eslintrc.json" in res.parse_warnings.get("eslint", "")
+
+    def test_broken_ruff_symlink_still_reads_valid_sibling_ruff_toml(self, tmp_path):
+        # Same fallthrough one rung earlier: ruff resolves the readable
+        # ruff.toml sitting beside the dangling .ruff.toml, so breaking out of
+        # the candidate loop skipped the file ruff actually obeys.
+        (tmp_path / ".ruff.toml").symlink_to(tmp_path / "missing-target.toml")
+        (tmp_path / "ruff.toml").write_text("line-length = 60\n", encoding="utf-8")
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.black]\nline-length = 120\n", encoding="utf-8"
+        )
+        res = read_tool_configs(tmp_path)
+        assert (res.python_format or {}).get("line_length") == 60
+        assert (res.sources or {}).get("python_format") == "ruff.toml"
+        assert ".ruff.toml" in res.parse_warnings.get("python_format", "")

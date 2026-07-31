@@ -64,6 +64,22 @@ FIX-STAGED this change (branch `deep/gap-fixes`; human re-sign-off pending):
   (`tests/unit/test_bootstrap_orchestrator.py`),
   `tests/unit/test_doctor_linter_parse_warning.py`, and
   `TestBrokenSymlinkedPythonConfig` (`tests/unit/test_bootstrap_tool_config.py`).
+  The warning does NOT claim the config's source slot: ruff's own discovery is
+  `is_file()`-based, so a dangling `.ruff.toml` is not a config file to ruff
+  either and it falls through to `ruff.toml`, then to pyproject `[tool.ruff]`.
+  A first cut set `ruff_source` on the unreadable path, which suppressed that
+  fallback and recorded black's line length (or none) for a repo whose ruff was
+  enforcing a value chameleon could still read. Both fallthrough rungs are now
+  pinned by `test_broken_ruff_symlink_still_falls_back_to_pyproject` and
+  `test_broken_ruff_symlink_still_reads_valid_sibling_ruff_toml`.
+  The doctor check keys on the stanza shape, not on the bare presence of a
+  `parse_warning`: the tolerant readers return a FULL rule set plus a note
+  saying what they neutralized, and ERB in a Rails `.rubocop.yml` is how that
+  file is meant to be written. Warning on that note left doctor permanently
+  yellow on a healthy repo with nothing to fix, so only a stanza carrying no
+  `rules` warns; a salvaged one is reported as informational. Pinned by
+  `test_tolerant_parse_that_salvaged_rules_is_not_a_warn` and
+  `test_unread_config_warns_even_when_a_sibling_salvaged`.
 - **Catchall clusters serving a trivial canonical** — an Expr-only signature
   (a module docstring is an `ast.Expr`) is now classified trivial like a
   comment-only file, so a docstring-only `__init__.py` can no longer win a

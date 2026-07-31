@@ -4,6 +4,60 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.0] - 2026-07-31
+
+### Added
+
+- **`tool_config_warnings` on the bootstrap response.** A linter/formatter
+  config that failed to parse recorded its failure only as a per-source
+  `parse_warning` buried in rules.json, so a caller that never re-reads the
+  artifact — the `/chameleon-init` skill, CI — saw a bare `success` with zero
+  extracted rules. The field rides the root report and each workspace entry of
+  the monorepo fan-out, since the root-level list covers the root config only
+  and a package-level torn config would otherwise stay silent.
+- **A `linter_config` doctor check.** `get_rules` surfaced those parse warnings
+  and doctor did not, so a degraded linter config passed the health check
+  clean. It keys on the stanza shape rather than the bare presence of a
+  warning: the tolerant readers return a FULL rule set plus a note saying what
+  they neutralized, and ERB in a Rails `.rubocop.yml` is how that file is meant
+  to be written. Only a stanza carrying no `rules` warns; a salvaged one is
+  reported as informational, so doctor cannot sit permanently yellow on a
+  healthy repo with nothing to fix.
+
+### Fixed
+
+- **A dangling linter-config symlink read as "no config declared".**
+  `Path.is_file()` follows symlinks, so a broken `pyproject.toml` /`.ruff.toml`
+  link never reached the OSError branch — it was skipped as absent and yielded
+  silent zero rules, indistinguishable from a repo with no linter config at
+  all. It now warns. The warning does NOT claim the config's source slot: ruff's
+  own discovery is `is_file()`-based too, so a dangling `.ruff.toml` is not a
+  config file to ruff either and it falls through to `ruff.toml`, then to
+  pyproject `[tool.ruff]`. Claiming that slot would suppress the fallback and
+  record black's line length, or none at all, for a repo whose ruff is
+  enforcing a value chameleon can still read.
+- **An unreadable `.prettierrc` / `.eslintrc.json` crashed the bootstrap.**
+  Both readers caught only `JSONDecodeError` while `safe_read_capped` raises
+  `OSError` for an unreadable or non-regular file — and its docstring states
+  the contract that callers skip such a manifest. A chmod-000 or directory
+  `.prettierrc` therefore took down all of `bootstrap_repo` where every sibling
+  reader in the same file fails open with a warning.
+- **A noop refresh left `.chameleon.backup-<txn>` debris behind.** The orphan
+  sweep was wired into the bootstrap and partial-refresh paths only, and both
+  noop early-returns returned before reaching it — so a crashed prior commit's
+  stray backup survived indefinitely precisely because day-to-day refreshes
+  take the noop path.
+- **A stale-trust session got no credential or eval advisory.** A stale grant
+  fell between the trusted deny gate and the untrusted advisory gate and
+  surfaced nothing at all. It now gets the same deterministic advisory an
+  untrusted repo gets, still without ever denying, and the copy names the
+  actual trust posture.
+- **A docstring-only module could win a canonical witness slot.** A Python
+  module docstring is an `ast.Expr`, so a docstring-only `__init__.py`
+  re-extracts to a non-empty signature and slipped past the empty-signature
+  guard — a 26-character docstring served as the structural exemplar. An
+  Expr-only signature is now classified trivial like a comment-only file.
+
 ## [4.8.0] - 2026-07-29
 
 ### Added

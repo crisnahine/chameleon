@@ -20,7 +20,7 @@ Run the chameleon-mcp `doctor` action (via the `chameleon_telemetry` dispatcher)
    - If `overall` is `ok`: confirm the install is healthy.
    - If `overall` is `warn`: surface the warn-status checks as informational, note that they typically don't block operation.
      - `profile_artifacts` warn: a generated artifact is missing or corrupt; suggest `/chameleon-refresh` to regenerate.
-     - `linter_config` warn: rules.json records a linter/formatter config parse warning (the config is present but unreadable — torn TOML/YAML or a broken symlink), so its conventions were never extracted; fix the config, then force a full re-derive (`refresh_repo` with `force: true`, or `/chameleon-init`) — a noop or partial refresh never re-reads linter configs.
+     - `linter_config` warn: rules.json records a linter/formatter config parse warning (part of the config could not be read — torn TOML/YAML or a broken symlink), so some or all of its conventions are missing; a tolerant parse still records what it salvaged. Fix the config, then force a full re-derive (`refresh_repo` with `force: true`, or `/chameleon-init`) — a noop or partial refresh never re-reads linter configs.
      - `judge_spawn_health` warn: every recent correctness-judge spawn failed; the turn-end review layer is dead. Check the `claude` binary and auth.
      - `advisory_emission` warn: trusted edits are not resolving archetypes, so per-edit advisories are silent; suggest `/chameleon-refresh` then `/chameleon-status`.
    - If `overall` is `error`: call out each error-status check as a blocker and suggest the relevant fix:
