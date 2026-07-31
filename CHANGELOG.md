@@ -4,6 +4,21 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.2] - 2026-07-31
+
+### Fixed
+
+- **A new test assumed the host's default branch was `main`.** Its helper runs a
+  bare `git init`, so the first branch is whatever `init.defaultBranch` says —
+  `main` on the author's machine, `master` on the runners. The test checked out
+  a branch that did not exist and every `test-python` job failed while the local
+  run stayed green. The fixture now pins the name after the first commit;
+  verified under `init.defaultBranch` of `master`, `main` and `trunk`.
+
+  Test-only: 4.9.1's plugin code is unaffected, and its release never published
+  because the gate correctly refused to build a tarball from a red matrix. The
+  `v4.9.1` tag exists with no release attached; 4.9.2 is 4.9.1 plus this fix.
+
 ## [4.9.1] - 2026-07-31
 
 ### Fixed
