@@ -56,15 +56,21 @@ pub enum Mode {
 
 /// Which matcher evaluates this rule.
 ///
-/// `TreeSitterQuery` and `Regex` are implemented. `AstGrep`, `Semgrep`, and
-/// `Coupling` are declared because the schema is the contract and a consumer
-/// must be able to round-trip a rule this build cannot run; evaluating one
-/// returns an explicit `Unsupported` rather than silently matching nothing. A
-/// rule that quietly never fires is worse than one that says it cannot run.
+/// `TreeSitterQuery` and `Literal` are implemented. `Regex`, `AstGrep`,
+/// `Semgrep`, and `Coupling` are declared because the schema is the contract
+/// and a consumer must be able to round-trip a rule this build cannot run;
+/// evaluating one returns an explicit `Unsupported` rather than silently
+/// matching nothing. A rule that quietly never fires is worse than one that
+/// says it cannot run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Engine {
     TreeSitterQuery,
+    /// Literal substring scan, per line. Named for what it does: an engine
+    /// called `regex` that silently treats `AKIA[0-9A-Z]{16}` as a literal
+    /// finds nothing and reports clean, which is the exact failure this module
+    /// exists to prevent.
+    Literal,
     Regex,
     AstGrep,
     Semgrep,
@@ -239,7 +245,12 @@ pub fn evaluate(
     if !rule.applies_to_path(path) {
         return Ok(Vec::new());
     }
-    if !rule.languages.is_empty() && !rule.languages.iter().any(|l| l == &bound.spec.name) {
+    if !rule.languages.is_empty()
+        && !rule
+            .languages
+            .iter()
+            .any(|l| bound.spec.matches_language(l))
+    {
         return Ok(Vec::new());
     }
     if rule.mode == Mode::Off {
@@ -247,7 +258,7 @@ pub fn evaluate(
     }
 
     match rule.matcher.engine {
-        Engine::Regex => Ok(eval_regex(rule, path, source)),
+        Engine::Literal => Ok(eval_literal(rule, path, source)),
         Engine::TreeSitterQuery => eval_query(rule, path, source, bound),
         other => Err(Unsupported::Engine(other)),
     }
@@ -280,9 +291,9 @@ fn glob_match(pattern: &str, path: &str) -> bool {
 ///
 /// Not a regex engine: the `regex` crate would be one more dependency for what
 /// mined dependency-policy rules actually need, which is "does this line contain
-/// this import". A rule needing real regex should declare `ast-grep` and be
-/// reported unsupported rather than silently mis-evaluated here.
-fn eval_regex(rule: &Rule, path: &str, source: &str) -> Vec<Finding> {
+/// this import". A rule that needs real matching declares `regex` and is
+/// reported `Unsupported` rather than silently mis-evaluated here.
+fn eval_literal(rule: &Rule, path: &str, source: &str) -> Vec<Finding> {
     let needle = &rule.matcher.rule;
     source
         .lines()
@@ -525,6 +536,43 @@ exclude = ["**/tests/**", "scripts/*"]
         assert_eq!(block_threshold(RuleKind::Secret), Some(0.99));
     }
 
+    /// A `.tsx` file must be covered by a rule that names `typescript`. TSX is
+    /// a separate grammar but the same language for rule purposes, and in a
+    /// React repo the alternative silently exempts every component.
+    #[test]
+    fn a_typescript_rule_covers_tsx() {
+        let reg = Registry::load().unwrap();
+        let tsx = reg.by_name("tsx").unwrap();
+        let mut r = load_one();
+        r.languages = vec!["typescript".into()];
+        r.matcher.engine = Engine::Literal;
+        r.matcher.rule = "console.log".into();
+        r.matcher.paths = Paths::default();
+        let found = evaluate(
+            &r,
+            "src/App.tsx",
+            "const A = () => { console.log(1); };\n",
+            tsx,
+        )
+        .unwrap();
+        assert_eq!(found.len(), 1, "a typescript rule must reach .tsx");
+    }
+
+    /// The literal matcher must not masquerade as a regex engine: a secret rule
+    /// written with a real pattern would find nothing and report clean.
+    #[test]
+    fn a_real_regex_is_unsupported_rather_than_silently_literal() {
+        let reg = Registry::load().unwrap();
+        let bound = reg.by_name("python").unwrap();
+        let mut r = load_one();
+        r.matcher.engine = Engine::Regex;
+        r.matcher.rule = "AKIA[0-9A-Z]{16}".into();
+        match evaluate(&r, "app/lib.py", "KEY = 'AKIAIOSFODNN7EXAMPLE'\n", bound) {
+            Err(Unsupported::Engine(Engine::Regex)) => {}
+            other => panic!("expected Unsupported, got {other:?}"),
+        }
+    }
+
     #[test]
     fn an_unrunnable_engine_reports_unsupported_rather_than_clean() {
         let reg = Registry::load().unwrap();
@@ -578,7 +626,7 @@ exclude = ["**/tests/**", "scripts/*"]
     }
 
     #[test]
-    fn a_regex_rule_scans_lines() {
+    fn a_literal_rule_scans_lines() {
         let reg = Registry::load().unwrap();
         let bound = reg.by_name("typescript").unwrap();
         let r = Rule {
@@ -589,7 +637,7 @@ exclude = ["**/tests/**", "scripts/*"]
             severity: Severity::Error,
             mode: Mode::Enforce,
             matcher: Match {
-                engine: Engine::Regex,
+                engine: Engine::Literal,
                 rule: "from \"axios\"".into(),
                 paths: Paths::default(),
             },

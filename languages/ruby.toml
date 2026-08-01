@@ -50,7 +50,10 @@ self_names = ["self"]
 carries_nesting = true
 
 [imports]
+# Ruby has no import statement -- `require` is an ordinary method call, so the
+# call name is the only thing separating an import from `puts`.
 module_nodes = ["call"]
+module_call_names = ["require", "require_relative", "load", "autoload"]
 
 [flags]
 sole_definition_default_export = true

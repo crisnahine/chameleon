@@ -157,10 +157,15 @@ are judgment calls and can never hard-block at any confidence.
   its own `def`/`defmodule` macros as calls because in that grammar they are.
   Those are spec gaps, not engine gaps: closing one is editing a TOML file,
   which is exactly the property this design is for.
-- **`AstGrep`, `Semgrep`, and `Coupling` are declared but not implemented.**
-  Evaluating one returns an explicit `Unsupported` rather than silently
-  matching nothing — a rule that quietly never fires is worse than one that
-  says it cannot run.
+- **`Regex`, `AstGrep`, `Semgrep`, and `Coupling` are declared but not
+  implemented.** Evaluating one returns an explicit `Unsupported` rather than
+  silently matching nothing — a rule that quietly never fires is worse than one
+  that says it cannot run. The implemented substring matcher is named
+  `literal`, for the same reason.
+- **Call-graph resolution is suffix-matching, not real name resolution.** It
+  refuses ambiguity and refuses third-party prefixes, but it has no type
+  information: a `self.method()` binds by name within its file, so two classes
+  in one file defining the same method name share an edge.
 
 ## Adding a language
 
@@ -174,7 +179,7 @@ loads, sits inside the ABI window tree-sitter accepts, and parses.
 ## Development
 
 ```bash
-cargo test                    # 74 tests
+cargo test                    # 78 tests
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 python3 tests/parity.py --chameleon /path/to/chameleon

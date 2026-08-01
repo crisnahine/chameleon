@@ -96,6 +96,16 @@ pub struct ImportSpec {
     /// field. `from __future__ import annotations` parses as its own node kind
     /// with no module path to read, but the module is still `__future__`.
     pub implicit_module: BTreeMap<String, String>,
+    /// When a language expresses imports as ordinary calls (Ruby's `require`),
+    /// only these method names count. Without it every call in the file reads
+    /// as an import -- `puts "x"` becomes a namespace import of `puts` and of
+    /// `"x"`, and both land in the file's export set.
+    pub module_call_names: Vec<String>,
+    /// Node kinds to descend through when collecting imported names. TS nests
+    /// specifiers two levels down (`import_statement > import_clause >
+    /// named_imports > import_specifier`), so a direct-children scan captures
+    /// the whole clause as a single symbol named `{ a, b }`.
+    pub descend_nodes: Vec<String>,
 }
 
 /// How parameter nodes map to the emitted `kind`.
@@ -131,6 +141,12 @@ pub struct ParamSpec {
 pub struct Flags {
     /// Language has a syntactic default export (only TypeScript/JS do).
     pub has_default_export: bool,
+    /// Exports are explicit: only a declaration marked with an export keyword
+    /// is part of the module's public surface. Without this every top-level
+    /// declaration and every imported local is reported as an export, which is
+    /// not merely noisy -- it inverts the set, listing what a module keeps
+    /// private and omitting what it actually exposes.
+    pub explicit_exports: bool,
     /// Language has no export statement, so `default_export_kind` is repurposed
     /// as "the sole top-level definition, when unopposed": one class and no
     /// functions, or one function and no classes. A module with both reports
@@ -152,6 +168,12 @@ pub struct Flags {
 #[serde(deny_unknown_fields)]
 pub struct LanguageSpec {
     pub name: String,
+    /// The family a rule may name to cover this language. TSX is its own
+    /// grammar but the same language for rule purposes; without this, a rule
+    /// declaring `typescript` silently skips every `.tsx` file, which in a
+    /// React repo exempts the whole component tree from every rule.
+    #[serde(default)]
+    pub family: Option<String>,
     pub extensions: Vec<String>,
     /// tree-sitter node kind -> the kind string chameleon's consumers read.
     /// A node mapped to the empty string is recorded as "seen but unnamed" and
@@ -205,6 +227,11 @@ pub struct LanguageSpec {
 }
 
 impl LanguageSpec {
+    /// Whether a rule naming `declared` applies to this language.
+    pub fn matches_language(&self, declared: &str) -> bool {
+        self.name == declared || self.family.as_deref() == Some(declared)
+    }
+
     /// Map a tree-sitter node kind to the emitted top-level kind string.
     /// Returns `None` for a node with no mapping (not top-level-meaningful) and
     /// `Some("")` for one deliberately mapped to nothing.
@@ -330,6 +357,7 @@ impl Registry {
         if let Some(ts) = by_name.get("typescript") {
             let mut tsx_spec = ts.spec.clone();
             tsx_spec.name = "tsx".into();
+            tsx_spec.family = Some("typescript".into());
             tsx_spec.extensions = vec![".tsx".into()];
             tsx_spec.flags.supports_jsx = true;
             let language = grammar_for("tsx").ok_or_else(|| anyhow!("no tsx grammar"))?;

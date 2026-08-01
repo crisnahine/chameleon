@@ -87,7 +87,22 @@ const MAX_CALLERS_PER_CALLEE: usize = 100;
 
 impl CodeIndex {
     /// Build the index from an already-parsed corpus.
+    ///
+    /// Conservative form: no package hint, so a fully-qualified specifier only
+    /// resolves if the corpus paths actually carry the package prefix.
     pub fn build(files: &[ParsedFile]) -> Self {
+        Self::build_with_package(files, "")
+    }
+
+    /// Build with the corpus root's package name.
+    ///
+    /// The hint exists for one case: the caller pointed at the INSIDE of a
+    /// package, so `mypkg.util` has to find a file stored as `util.py`. That
+    /// prefix is the only one droppable. Without the hint, dropping any prefix
+    /// lets `django.db` fall through to a repo file named `db.py` and fabricate
+    /// an edge to it -- exactly the wrong-binding this module promises not to
+    /// make.
+    pub fn build_with_package(files: &[ParsedFile], package: &str) -> Self {
         let mut idx = CodeIndex::default();
 
         // Pass 1: what each file defines and exports, plus the symbol table.
@@ -135,11 +150,17 @@ impl CodeIndex {
         // real corpus paths; a specifier that resolves to zero or many files is
         // dropped rather than guessed at.
         let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        // Either the caller's hint, or a leading segment every path shares.
+        let root_name = if package.is_empty() {
+            common_root_name(&paths)
+        } else {
+            package.to_string()
+        };
         let mut import_targets: HashMap<&str, HashMap<String, String>> = HashMap::new();
         for pf in files {
             let mut local_to_target: HashMap<String, String> = HashMap::new();
             for sym in &pf.import_symbols {
-                if let Some(target) = resolve_module(&sym.module, &paths) {
+                if let Some(target) = resolve_module(&sym.module, &paths, &pf.path, &root_name) {
                     idx.importers
                         .entry(target.clone())
                         .or_default()
@@ -148,7 +169,7 @@ impl CodeIndex {
                 }
             }
             for ns in &pf.namespace_imports {
-                if let Some(target) = resolve_module(&ns.module, &paths) {
+                if let Some(target) = resolve_module(&ns.module, &paths, &pf.path, &root_name) {
                     idx.importers
                         .entry(target.clone())
                         .or_default()
@@ -282,8 +303,31 @@ fn render_signature(sig: &crate::core::CallableSignature) -> String {
 /// Deliberately conservative: a dotted or slashed specifier is turned into a
 /// path suffix and matched against real files. Zero matches or more than one
 /// match both yield `None` -- an ambiguous resolution is not a resolution.
-fn resolve_module(spec: &str, paths: &[&str]) -> Option<String> {
-    let cleaned = spec.trim_start_matches(['.', '/']).replace('.', "/");
+fn resolve_module(spec: &str, paths: &[&str], importer: &str, root_name: &str) -> Option<String> {
+    // A relative specifier is anchored at the importing file's directory. That
+    // anchor is the one piece of information that makes the answer decidable,
+    // so resolving `.util` by global suffix match -- which is what stripping the
+    // dot does -- can bind it to a same-named file anywhere in the repo.
+    if let Some(rest) = spec.strip_prefix('.') {
+        let ups = 1 + rest.chars().take_while(|c| *c == '.').count();
+        let tail = rest.trim_start_matches('.').replace('.', "/");
+        let mut dir: Vec<&str> = importer.split('/').collect();
+        dir.pop(); // the importing file itself
+        for _ in 1..ups {
+            // More dots than directories: the specifier points above the root.
+            dir.pop()?;
+        }
+        let mut anchored = dir.join("/");
+        if !tail.is_empty() {
+            if !anchored.is_empty() {
+                anchored.push('/');
+            }
+            anchored.push_str(&tail);
+        }
+        return unique_suffix_match(&anchored, paths);
+    }
+
+    let cleaned = spec.replace('.', "/");
     if cleaned.is_empty() {
         return None;
     }
@@ -301,9 +345,30 @@ fn resolve_module(spec: &str, paths: &[&str]) -> Option<String> {
             return Some(hit);
         }
         match candidate.split_once('/') {
-            Some((_, rest)) if !rest.is_empty() => candidate = rest,
+            // A leading segment may be dropped ONLY when it names the corpus
+            // root itself -- i.e. the caller pointed at the inside of the
+            // package. Dropping any prefix lets `django.db` fall through to a
+            // repo file called `db.py` and fabricate an edge to it, which is
+            // precisely the wrong-binding this module promises never to make.
+            Some((head, rest)) if !rest.is_empty() && head == root_name => candidate = rest,
             _ => return None,
         }
+    }
+}
+
+/// The corpus root's package name, when every path shares one leading segment.
+///
+/// Empty when they do not, which disables the prefix-dropping walk entirely --
+/// the conservative direction.
+fn common_root_name(paths: &[&str]) -> String {
+    let mut heads = paths.iter().filter_map(|p| p.split('/').next());
+    let Some(first) = heads.next() else {
+        return String::new();
+    };
+    if heads.all(|h| h == first) && paths.iter().any(|p| p.contains('/')) {
+        first.to_string()
+    } else {
+        String::new()
     }
 }
 
@@ -388,6 +453,11 @@ pub fn blast_radius(index: &CodeIndex, file: &str, name: &str, limits: BlastLimi
     let mut chains: Vec<Chain> = Vec::new();
     let mut nodes = 0usize;
     let mut fanout_clipped = false;
+    // Whether the walk actually stopped early. `reached` is deduped while the
+    // cap counts expansions, so any shared caller makes reached < nodes and a
+    // reached-vs-cap comparison reports a truncated walk as complete -- the one
+    // direction a blast radius must never err in.
+    let mut hit_node_cap = false;
 
     let root = ChainHop {
         path: file.to_string(),
@@ -402,7 +472,12 @@ pub fn blast_radius(index: &CodeIndex, file: &str, name: &str, limits: BlastLimi
     while let Some((chain, seen)) = stack.pop() {
         let cur = chain.last().expect("a chain is never empty");
         if chain.len() > limits.depth
-            || nodes >= limits.total_nodes
+            || {
+                if nodes >= limits.total_nodes {
+                    hit_node_cap = true;
+                }
+                nodes >= limits.total_nodes
+            }
             || UNINFORMATIVE.contains(&cur.name.as_str())
         {
             chains.push(chain);
@@ -419,6 +494,7 @@ pub fn blast_radius(index: &CodeIndex, file: &str, name: &str, limits: BlastLimi
         let mut expanded_keys = BTreeSet::new();
         for row in rows {
             if nodes >= limits.total_nodes {
+                hit_node_cap = true;
                 break;
             }
             if expanded.len() >= limits.fanout_per_node {
@@ -462,7 +538,7 @@ pub fn blast_radius(index: &CodeIndex, file: &str, name: &str, limits: BlastLimi
 
     BlastRadius {
         found,
-        truncated: reached.len() >= limits.total_nodes || fanout_clipped,
+        truncated: hit_node_cap || fanout_clipped,
         reached: reached.len(),
         chains,
     }
@@ -655,11 +731,52 @@ mod tests {
                 "from mypkg.util import helper\n\ndef run():\n    return helper()\n",
             ),
         ]);
-        let idx = CodeIndex::build(&files);
+        let idx = CodeIndex::build_with_package(&files, "mypkg");
         let entry = idx
             .callers_of("util.py", "helper")
             .expect("mypkg.util must still resolve to util.py");
         assert_eq!(entry.callers[0].path, "app.py");
+    }
+
+    /// The prefix walk must not turn a third-party import into a repo edge.
+    #[test]
+    fn a_third_party_specifier_does_not_bind_to_a_same_named_repo_file() {
+        let files = corpus(&[
+            ("db.py", "def connect():\n    return 1\n"),
+            (
+                "app.py",
+                "from django.db import connect\n\ndef run():\n    return connect()\n",
+            ),
+        ]);
+        let idx = CodeIndex::build_with_package(&files, "myapp");
+        assert!(
+            idx.callers_of("db.py", "connect").is_none(),
+            "django.db must not resolve to the repo's own db.py"
+        );
+        assert!(idx.importers.is_empty(), "no importer edge either");
+    }
+
+    /// A relative import is anchored at the importing file's directory, not
+    /// matched globally by suffix.
+    #[test]
+    fn a_relative_import_resolves_against_its_own_directory() {
+        let files = corpus(&[
+            ("services/util.py", "def helper():\n    return 1\n"),
+            ("handlers/util.py", "def helper():\n    return 2\n"),
+            (
+                "handlers/app.py",
+                "from .util import helper\n\ndef run():\n    return helper()\n",
+            ),
+        ]);
+        let idx = CodeIndex::build(&files);
+        assert!(
+            idx.callers_of("handlers/util.py", "helper").is_some(),
+            "`.util` must bind the sibling"
+        );
+        assert!(
+            idx.callers_of("services/util.py", "helper").is_none(),
+            "and must not bind the same-named file elsewhere"
+        );
     }
 
     /// The segment walk must not buy resolution at the cost of inventing edges.

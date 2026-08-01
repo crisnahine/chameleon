@@ -51,9 +51,13 @@ module_nodes = ["import_statement"]
 from_nodes = ["import_statement"]
 module_field = "source"
 name_field = "name"
-wildcard_nodes = ["namespace_import"]
+# `import * as x` binds a local; it does NOT open this file's export set.
+wildcard_nodes = ["namespace_export"]
+descend_nodes = ["import_clause", "named_imports"]
 
 [flags]
 has_default_export = true
+explicit_exports = true
 supports_jsx = true
 async_markers = ["async"]
+unwrap_nodes = ["export_statement"]

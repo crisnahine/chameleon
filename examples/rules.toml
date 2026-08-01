@@ -105,8 +105,8 @@ calibrated_confidence = 0.95
 source = "taught"
 
 [rule.match]
-engine = "regex"
-rule = "from \"axios\""
+engine = "literal"
+rule = "axios"
 
 [rule.match.paths]
 exclude = ["src/lib/http.ts", "**/*.test.ts", "**/*.spec.ts"]

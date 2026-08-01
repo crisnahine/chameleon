@@ -86,6 +86,18 @@ fn line_of(node: Node) -> usize {
     node.start_position().row + 1
 }
 
+/// A module specifier's text, without the string delimiters.
+///
+/// In most grammars the specifier IS a string literal, and its node text spans
+/// the quotes. Left in, `"react"` never matches a corpus path and the whole
+/// import graph for that language silently resolves to nothing.
+fn module_text(node: Node, source: &[u8]) -> String {
+    text(node, source)
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'' || c == '`' || c == '<' || c == '>')
+        .to_string()
+}
+
 /// Named child on `field`, when the spec named a field at all.
 fn field_node<'t>(node: Node<'t>, field: &Option<String>) -> Option<Node<'t>> {
     node.child_by_field_name(field.as_deref()?)
@@ -382,16 +394,23 @@ fn walk(
         let mut c = root.walk();
         for child in root.named_children(&mut c) {
             let mut node = child;
-            // Unwrap grammar wrappers (Python's `decorated_definition`) so the
-            // recorded kind is the meaningful inner statement.
-            // The wrapped declaration is the wrapper's LAST named child; the
-            // earlier ones are its decorators.
-            if spec.flags.unwrap_nodes.iter().any(|k| k == node.kind()) {
+            // Unwrap grammar wrappers so the recorded kind is the meaningful
+            // inner statement. The wrapped declaration is the wrapper's LAST
+            // named child; the earlier ones are its decorators (Python) or the
+            // `export` keyword (TypeScript).
+            //
+            // Whether the wrapper was an export marker also decides membership
+            // of the module's public surface. Without that, a TS file reports
+            // its PRIVATE declarations as exports and omits the ones it
+            // actually exposes -- the set is not noisy, it is inverted.
+            let was_wrapped = spec.flags.unwrap_nodes.iter().any(|k| k == node.kind());
+            if was_wrapped {
                 let last = (node.named_child_count() as u32).saturating_sub(1);
                 if let Some(inner) = node.named_child(last) {
                     node = inner;
                 }
             }
+            let is_exported = !spec.flags.explicit_exports || was_wrapped;
             let Some(mapped) = spec.top_level_kind(node.kind()) else {
                 continue;
             };
@@ -417,7 +436,7 @@ fn walk(
             let refined_kind = by_field.or(by_kind).unwrap_or_else(|| mapped.to_string());
             top_level_node_kinds.push(refined_kind.clone());
 
-            if spec.is_function(node.kind()) || spec.is_class(node.kind()) {
+            if (spec.is_function(node.kind()) || spec.is_class(node.kind())) && is_exported {
                 named_export_count += 1;
                 if spec.is_class(node.kind()) {
                     top_level_classes += 1;
@@ -426,8 +445,10 @@ fn walk(
                     top_level_funcs += 1;
                     top_level_func_kind = Some(refined_kind.clone());
                 }
-                if let Some(name) = field_text(node, &spec.fields.name, source) {
-                    export_names.insert(name);
+                if is_exported {
+                    if let Some(name) = field_text(node, &spec.fields.name, source) {
+                        export_names.insert(name);
+                    }
                 }
             }
         }
@@ -826,6 +847,7 @@ fn collect_imports(
 
     // Named form: `from m import a`, `import { a } from "m"`.
     if spec.imports.from_nodes.iter().any(|k| k == kind) {
+        let module_node = field_node(node, &spec.imports.module_field);
         // The implicit map first: a node kind whose module is fixed by the
         // syntax has no field to read, and falling back to the `name` field
         // would record the imported symbol as the module -- which is how
@@ -835,17 +857,30 @@ fn collect_imports(
             .implicit_module
             .get(kind)
             .cloned()
-            .or_else(|| field_text(node, &spec.imports.module_field, source))
+            .or_else(|| module_node.map(|m| module_text(m, source)))
             .unwrap_or_default();
         if module.is_empty() {
             return;
         }
         let mut any_named = false;
-        let module_node = field_node(node, &spec.imports.module_field);
-        let children: Vec<Node> = {
+
+        // Collect the real specifier nodes, descending through the wrappers a
+        // grammar puts between the statement and its bindings.
+        let mut children: Vec<Node> = Vec::new();
+        let mut queue: Vec<Node> = {
             let mut c = node.walk();
             node.named_children(&mut c).collect()
         };
+        while let Some(n) = queue.pop() {
+            if spec.imports.descend_nodes.iter().any(|k| k == n.kind()) {
+                let mut c = n.walk();
+                queue.extend(n.named_children(&mut c));
+            } else {
+                children.push(n);
+            }
+        }
+        children.sort_by_key(|n| n.start_byte());
+
         for child in children {
             // The module path itself is not an imported name, and neither is a
             // trailing `# noqa` comment, which the grammar files as a named
@@ -862,6 +897,27 @@ fn collect_imports(
                 *export_set_open = true;
                 specifiers.push((module.clone(), "namespace".into()));
                 return;
+            }
+            // `import * as ns from "m"` binds a whole module under one name, so
+            // it belongs in namespace_imports. Left in the named list it shows
+            // up as a symbol literally called `* as ns`, which matches nothing.
+            if child.kind() == "namespace_import" {
+                let alias = child
+                    .named_child(0)
+                    .map(|n| text(n, source).to_string())
+                    .unwrap_or_default();
+                if !alias.is_empty() {
+                    if !spec.flags.explicit_exports {
+                        export_names.insert(alias.clone());
+                    }
+                    namespaces.push(NamespaceImport {
+                        alias,
+                        module: module.clone(),
+                        line,
+                    });
+                    specifiers.push((module.clone(), "namespace".into()));
+                    continue;
+                }
             }
             let (name, local) = if spec.imports.alias_nodes.iter().any(|k| k == child.kind()) {
                 let n = child
@@ -881,7 +937,11 @@ fn collect_imports(
                 continue;
             }
             any_named = true;
-            export_names.insert(local.clone());
+            if !spec.flags.explicit_exports {
+                // In Python an imported name really is a module attribute; in
+                // TypeScript it is not exported unless re-exported explicitly.
+                export_names.insert(local.clone());
+            }
             symbols.push(ImportSymbol {
                 name,
                 local,
@@ -897,15 +957,38 @@ fn collect_imports(
 
     // Whole-module form: `import x`, `import x as y`.
     if spec.imports.module_nodes.iter().any(|k| k == kind) {
+        // When a language spells imports as ordinary calls, only the named ones
+        // count. Without this gate every call is an import: `puts "x"` records
+        // namespace imports of `puts` AND of `"x"`, and both poison the file's
+        // export set.
+        if !spec.imports.module_call_names.is_empty() {
+            let callee =
+                field_node(node, &spec.fields.call_function).or_else(|| node.named_child(0));
+            let called = callee
+                .map(|c| text(c, source).to_string())
+                .unwrap_or_default();
+            if !spec.imports.module_call_names.iter().any(|n| n == &called) {
+                return;
+            }
+        }
         let children: Vec<Node> = {
             let mut c = node.walk();
             node.named_children(&mut c).collect()
         };
         for child in children {
+            if spec.skip_subtree_nodes.contains(child.kind()) {
+                continue;
+            }
+            // The callee of a require IS the require, not a module.
+            if !spec.imports.module_call_names.is_empty()
+                && Some(child) == field_node(node, &spec.fields.call_function)
+            {
+                continue;
+            }
             let (module, alias) = if spec.imports.alias_nodes.iter().any(|k| k == child.kind()) {
                 let m = child
                     .named_child(0)
-                    .map(|x| text(x, source).to_string())
+                    .map(|x| module_text(x, source))
                     .unwrap_or_default();
                 let a = child
                     .named_child(1)
@@ -913,14 +996,18 @@ fn collect_imports(
                     .unwrap_or_else(|| m.clone());
                 (m, a)
             } else {
-                let m = text(child, source).to_string();
+                let m = module_text(child, source);
+                // `import a.b.c` binds the FIRST segment: `a`, not `c`. Taking
+                // the last one silently rebinds every dotted import.
                 let a = m.split('.').next().unwrap_or(&m).to_string();
                 (m, a)
             };
             if module.is_empty() {
                 continue;
             }
-            export_names.insert(alias.clone());
+            if !spec.flags.explicit_exports {
+                export_names.insert(alias.clone());
+            }
             namespaces.push(NamespaceImport {
                 alias,
                 module: module.clone(),

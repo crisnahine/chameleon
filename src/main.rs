@@ -319,10 +319,20 @@ fn parse_corpus(root: &Path, limits: &Limits) -> Result<(Vec<chromatophore::Pars
     Ok((parsed, skipped))
 }
 
+/// The directory name the corpus was rooted at.
+///
+/// When a caller points at the inside of a package, this is the prefix that
+/// fully-qualified specifiers carry and the corpus paths do not.
+fn package_hint(root: &Path) -> String {
+    root.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
 fn cmd_index(args: &Args) -> Result<()> {
     let root = PathBuf::from(args.positional.first().context("index needs a directory")?);
     let (files, skipped) = parse_corpus(&root, &args.limits)?;
-    let index = CodeIndex::build(&files);
+    let index = CodeIndex::build_with_package(&files, &package_hint(&root));
     eprintln!("indexed {} files ({skipped} skipped)", files.len());
     println!("{}", serde_json::to_string_pretty(&index)?);
     Ok(())
@@ -334,7 +344,7 @@ fn cmd_blast(args: &Args) -> Result<()> {
     let symbol = args.positional.get(2).context("blast needs a symbol")?;
 
     let (files, _) = parse_corpus(&root, &args.limits)?;
-    let index = CodeIndex::build(&files);
+    let index = CodeIndex::build_with_package(&files, &package_hint(&root));
     let limits = BlastLimits {
         depth: args.depth.clamp(1, 4),
         ..Default::default()
@@ -381,13 +391,21 @@ fn cmd_check(args: &Args) -> Result<()> {
 
     let mut findings = Vec::new();
     let mut unsupported = Vec::new();
+    let mut unreadable: Vec<String> = Vec::new();
     for path in &paths {
         let display = path.to_string_lossy().to_string();
         let Some(bound) = registry.for_path(&display) else {
             continue;
         };
-        let Ok(source) = std::fs::read_to_string(path) else {
-            continue;
+        // Decode lossily rather than skipping. A latin-1 source file used to
+        // vanish silently while still counting toward the "N findings over M
+        // files" denominator, so a secret in it read as checked and clean.
+        let source = match std::fs::read(path) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(e) => {
+                unreadable.push(format!("{}: {e}", path.display()));
+                continue;
+            }
         };
         let rel = path
             .strip_prefix(&root)
@@ -407,11 +425,29 @@ fn cmd_check(args: &Args) -> Result<()> {
         }
     }
 
-    // Rules that could not run are reported, never counted as clean.
+    // Rules that could not run are reported, never counted as clean -- and they
+    // go into the JSON as well as stderr, because a consumer piping stdout is
+    // otherwise told `[]` and cannot tell "all rules ran, nothing found" from
+    // "three rules never ran".
     for note in &unsupported {
         eprintln!("not checked -- {note}");
     }
-    eprintln!("{} finding(s) over {} files", findings.len(), paths.len());
-    println!("{}", serde_json::to_string_pretty(&findings)?);
+    for note in &unreadable {
+        eprintln!("unreadable -- {note}");
+    }
+    eprintln!(
+        "{} finding(s) over {} files ({} rule(s) not run, {} file(s) unreadable)",
+        findings.len(),
+        paths.len(),
+        unsupported.len(),
+        unreadable.len()
+    );
+    let report = serde_json::json!({
+        "findings": findings,
+        "rules_not_run": unsupported,
+        "unreadable_files": unreadable,
+        "files_checked": paths.len() - unreadable.len(),
+    });
+    println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
