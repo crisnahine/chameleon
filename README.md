@@ -169,9 +169,9 @@ are judgment calls and can never hard-block at any confidence.
   |---|---|---|
   | normalized slots | 100% (exports 82%) | 100% (imports 97%) |
   | `class_shapes` | 100% | 100% |
-  | `function_scopes` | 92% | 75% |
+  | `function_scopes` | 92% | 87% |
   | `callable_signatures` | 31% | 85% |
-  | `call_sites` | 86% | 19% |
+  | `call_sites` | 86% | 22% |
 
   Ruby's remaining `call_sites` gap is a long tail of Prism emulation — literal
   receivers, class-body promotion, and row ordering. The mechanics are right
@@ -210,7 +210,7 @@ loads, sits inside the ABI window tree-sitter accepts, and parses.
 ## Development
 
 ```bash
-cargo test                    # 90 tests
+cargo test                    # 109 tests
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 python3 tests/parity.py --chameleon /path/to/chameleon

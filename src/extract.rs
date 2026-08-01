@@ -106,6 +106,24 @@ fn field_node<'t>(node: Node<'t>, field: &Option<String>) -> Option<Node<'t>> {
     node.child_by_field_name(field.as_deref()?)
 }
 
+/// The first node in a declarator chain that carries a parameter list.
+fn parameter_holder<'t>(node: Node<'t>, spec: &LanguageSpec) -> Option<Node<'t>> {
+    let mut n = field_node(node, &spec.fields.name)?;
+    for _ in 0..8 {
+        if field_node(n, &spec.fields.parameters).is_some() {
+            return Some(n);
+        }
+        if !spec.fields.declarator_unwrap.iter().any(|k| k == n.kind()) {
+            return None;
+        }
+        match field_node(n, &spec.fields.name).or_else(|| n.named_child(0)) {
+            Some(inner) if inner.id() != n.id() => n = inner,
+            _ => return None,
+        }
+    }
+    None
+}
+
 /// The node a declaration's name or parameter list really lives on.
 ///
 /// C wraps both in a `function_declarator`, so reading the field once gives
@@ -264,6 +282,16 @@ fn param_of(node: Node, spec: &LanguageSpec, source: &[u8], keyword_only: bool) 
 
 /// Every identifier name bound beneath a node.
 fn collect_bound_names(node: Node, out: &mut Vec<String>, source: &[u8]) {
+    // `self.attr = v` and `cache[key] = 1` bind NOTHING: the left side is a
+    // setter send and an index write. Harvesting their identifiers records
+    // phantom locals, and every later send of that name is then silently
+    // dropped -- the standard Rails `before_validation` shape.
+    if matches!(
+        node.kind(),
+        "call" | "element_reference" | "scope_resolution" | "instance_variable" | "class_variable"
+    ) {
+        return;
+    }
     if node.kind() == "identifier" {
         let t = text(node, source).trim().to_string();
         if !t.is_empty() {
@@ -348,10 +376,13 @@ fn counted_only_params(node: Node, spec: &LanguageSpec) -> usize {
 fn params_of(node: Node, spec: &LanguageSpec, source: &[u8]) -> Vec<Param> {
     // The parameter list may sit on a nested declarator rather than the
     // declaration itself.
-    let holder = field_node(node, &spec.fields.name).unwrap_or(node);
-    let Some(list) = field_node(node, &spec.fields.parameters)
-        .or_else(|| field_node(holder, &spec.fields.parameters))
-    else {
+    // Walk the declarator chain to the first node that actually carries the
+    // parameter list. Descending all the way (as the NAME resolution does)
+    // lands on the bare identifier, which has no parameters -- which is why
+    // every pointer-returning C function reported an arity of 0.
+    let Some(list) = field_node(node, &spec.fields.parameters).or_else(|| {
+        parameter_holder(node, spec).and_then(|h| field_node(h, &spec.fields.parameters))
+    }) else {
         return Vec::new();
     };
     let mut out = Vec::new();
@@ -687,9 +718,16 @@ fn walk(
                     top_level_func_kind = Some(refined_kind.clone());
                 }
                 // `is_exported` is already required to enter this block; the
-                // gate is not repeated here.
-                if let Some(name) = field_text(node, &spec.fields.name, source) {
-                    export_names.insert(name);
+                // gate is not repeated here. The declarator chain is descended
+                // for the same reason the signature does it: C's name field is
+                // a `function_declarator`, so the raw text is
+                // `*make(int a, char *b)` rather than `make`, and an export set
+                // keyed on that matches no importer.
+                if let Some(n) = field_node(node, &spec.fields.name) {
+                    let name = text(declarator_node(n, spec), source).trim().to_string();
+                    if !name.is_empty() {
+                        export_names.insert(name);
+                    }
                 }
             }
         }
@@ -751,7 +789,9 @@ fn walk(
                     .or_else(|| field_text(decl, &spec.fields.name, source))
                     .unwrap_or_default();
                 let bases = base_list(decl, spec, source);
-                if !name.is_empty() {
+                // Capped like callable_signatures: one generated megafile must
+                // not bloat the record.
+                if !name.is_empty() && class_shapes.len() < limits.max_callable_signatures {
                     let e = &spec.emit;
                     class_shapes.push(ClassShape {
                         name: name.clone(),
@@ -951,13 +991,23 @@ fn walk(
         }
 
         // ---- leave (this node had no children, or was skipped) ----
-        leave(
-            node,
-            &mut func_stack,
-            &mut class_stack,
-            &mut function_scopes,
-            spec,
-        );
+        //
+        // Gated on exactly the same condition as enter. A construct whose
+        // keyword token shares its kind string -- tree-sitter-ruby's `if` node
+        // and its anonymous `if` token -- otherwise has the level opened at
+        // enter released by that token before the body is even walked, flooring
+        // every nesting depth at 1. That is a worse error than the double-count
+        // it replaced, and it is invisible to a Python-only parity check because
+        // Python's kinds are all `*_statement`.
+        if !skip && named {
+            leave(
+                node,
+                &mut func_stack,
+                &mut class_stack,
+                &mut function_scopes,
+                spec,
+            );
+        }
 
         loop {
             if cursor.goto_next_sibling() {
@@ -966,13 +1016,16 @@ fn walk(
             if !cursor.goto_parent() {
                 break 'walk;
             }
-            leave(
-                cursor.node(),
-                &mut func_stack,
-                &mut class_stack,
-                &mut function_scopes,
-                spec,
-            );
+            let parent = cursor.node();
+            if parent.is_named() && !spec.skip_subtree_nodes.contains(parent.kind()) {
+                leave(
+                    parent,
+                    &mut func_stack,
+                    &mut class_stack,
+                    &mut function_scopes,
+                    spec,
+                );
+            }
         }
     }
 
@@ -2010,17 +2063,99 @@ mod tests {
 
     /// The bug a Python-only parity check could never see: tree-sitter-ruby's
     /// named `if` node contains an ANONYMOUS `if` keyword token of the same
-    /// kind, so an unguarded set lookup counted every Ruby branch and nesting
-    /// level twice. Python is immune by accident (`if_statement` vs `if`).
+    /// kind. Counting it doubles every branch and nesting level; releasing it
+    /// on leave floors every depth at 1. Python is immune by accident
+    /// (`if_statement` vs `if`), and a single-level case passes under BOTH
+    /// bugs -- only a multi-level one separates them.
     #[test]
-    fn a_keyword_token_is_not_counted_as_its_own_construct() {
-        let rb = parse(
+    fn a_keyword_token_is_neither_counted_nor_released_as_its_own_construct() {
+        let one = parse(
             "ruby",
             "class A\n  def f(x)\n    if x\n      1\n    end\n  end\nend\n",
         );
-        let s = &rb.function_scopes[0];
-        assert_eq!(s.branch_count, 1, "one if is one branch, not two");
-        assert_eq!(s.max_depth, 1, "one if is one level, not two");
+        assert_eq!(one.function_scopes[0].branch_count, 1, "not two");
+        assert_eq!(one.function_scopes[0].max_depth, 1, "not two");
+
+        // Three levels: the double-count reports 6/6, the premature release
+        // reports 3/1, and only a correct walk reports 3/3.
+        let deep = parse(
+            "ruby",
+            "class A\n  def f(x)\n    if x\n      if x > 1\n        if x > 2\n          1\n        end\n      end\n    end\n  end\nend\n",
+        );
+        assert_eq!(deep.function_scopes[0].branch_count, 3);
+        assert_eq!(
+            deep.function_scopes[0].max_depth, 3,
+            "depth must not floor at 1"
+        );
+
+        let py = parse(
+            "python",
+            "def f(x):\n    if x:\n        if x > 1:\n            if x > 2:\n                return 1\n",
+        );
+        assert_eq!(py.function_scopes[0].max_depth, 3);
+    }
+
+    /// `self.attr = v` and `cache[key] = 1` bind nothing: the left side is a
+    /// setter send and an index write. Harvesting their identifiers as locals
+    /// silently drops every later send of those names -- the standard Rails
+    /// `before_validation` shape.
+    #[test]
+    fn a_setter_or_index_target_binds_no_local() {
+        let rb = parse(
+            "ruby",
+            "class A\n  def f\n    self.name = \"x\"\n    name\n    cache[key] = 1\n    cache\n  end\nend\n",
+        );
+        let names: Vec<&str> = rb.call_sites.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"name="), "the setter send: {names:?}");
+        assert!(names.contains(&"name"), "the later read is still a send");
+        assert!(names.contains(&"cache"), "an index target binds nothing");
+        assert!(names.contains(&"key"));
+    }
+
+    /// C nests the parameter list under a declarator chain. Descending all the
+    /// way lands on the bare identifier, which has none, so every
+    /// pointer-returning function reported an arity of 0 into the body-shape
+    /// norms mining votes on.
+    #[test]
+    fn a_pointer_returning_c_function_keeps_its_parameters() {
+        let c = parse(
+            "c",
+            "int *make(int a, char *b) { return 0; }\nint plain(int a, char *b) { return a; }\n",
+        );
+        for sig in &c.callable_signatures {
+            assert_eq!(sig.params.len(), 2, "{} lost its params", sig.name);
+        }
+        assert_eq!(
+            c.named_export_names,
+            vec!["make".to_string(), "plain".to_string()],
+            "an export set keyed on raw declarator text matches no importer"
+        );
+    }
+
+    /// A spec kind no grammar node carries is silently inert. These three were
+    /// misspellings against their own grammars.
+    #[test]
+    fn previously_dead_spec_kinds_are_live() {
+        let hs = parse(
+            "haskell",
+            "classify :: Int -> Int\nclassify x\n  | x > 10 = 1\n  | x > 0 = 2\n  | otherwise = 3\n",
+        );
+        assert!(
+            hs.function_scopes.iter().any(|s| s.branch_count > 0),
+            "Haskell guards are branches"
+        );
+
+        let cs = parse(
+            "csharp",
+            "class A { void f(int[] xs) { foreach (var x in xs) { if (x>0) {} } } }\n",
+        );
+        assert!(
+            cs.function_scopes[0].max_depth >= 2,
+            "foreach opens a level"
+        );
+
+        let php = parse("php", "<?php $f = function ($x) { return $x; };\n");
+        assert_eq!(php.callable_signatures.len(), 1, "a closure is a callable");
     }
 
     /// Ruby has no syntax separating a receiverless send from a local read;

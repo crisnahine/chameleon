@@ -127,7 +127,13 @@ identifier_non_call_parents = [
   "exception_variable",
 ]
 binding_assignment_nodes = ["assignment", "operator_assignment"]
-binding_scope_nodes = ["method_parameters", "block_parameters", "exception_variable"]
+binding_scope_nodes = [
+  "method_parameters",
+  "block_parameters",
+  "lambda_parameters",
+  "exception_variable",
+  "for",
+]
 
 [emit]
 class_kind = true

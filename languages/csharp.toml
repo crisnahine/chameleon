@@ -5,8 +5,8 @@ extensions = [".cs"]
 
 function_nodes = ["method_declaration", "constructor_declaration", "local_function_statement", "lambda_expression"]
 class_nodes = ["class_declaration", "interface_declaration", "struct_declaration", "record_declaration"]
-branch_nodes = ["if_statement", "for_statement", "for_each_statement", "while_statement", "do_statement", "switch_section", "catch_clause", "conditional_expression"]
-nesting_nodes = ["if_statement", "for_statement", "for_each_statement", "while_statement", "do_statement", "switch_statement", "try_statement"]
+branch_nodes = ["if_statement", "for_statement", "foreach_statement", "while_statement", "do_statement", "switch_section", "catch_clause", "conditional_expression"]
+nesting_nodes = ["if_statement", "for_statement", "foreach_statement", "while_statement", "do_statement", "switch_statement", "try_statement"]
 skip_subtree_nodes = ["comment"]
 
 [top_level_kinds]

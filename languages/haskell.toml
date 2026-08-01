@@ -5,7 +5,7 @@ extensions = [".hs"]
 
 function_nodes = ["function"]
 class_nodes = ["class", "instance", "data_type", "newtype"]
-branch_nodes = ["conditional", "alternative", "guard"]
+branch_nodes = ["conditional", "alternative", "guards"]
 nesting_nodes = ["conditional", "case", "do", "let"]
 skip_subtree_nodes = ["comment", "haddock"]
 
