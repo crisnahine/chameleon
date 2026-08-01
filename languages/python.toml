@@ -121,3 +121,21 @@ decorator_nodes = ["decorator"]
 # Python's grammar wraps small statements one level deeper than the meaningful
 # node; unwrapping is what makes top-level kinds match libcst's.
 unwrap_nodes = ["decorated_definition"]
+# Python has no export keyword: every name bound at module level is importable,
+# including assignment targets and names bound inside a top-level try/except
+# import fallback or an `if TYPE_CHECKING` gate.
+export_assignment_nodes = ["assignment"]
+export_descend_nodes = [
+  "expression_statement",
+  "if_statement",
+  "elif_clause",
+  "else_clause",
+  "try_statement",
+  "except_clause",
+  "finally_clause",
+  "for_statement",
+  "while_statement",
+  "with_statement",
+  "block",
+]
+package_index_names = ["__init__.py", "__init__.pyi"]

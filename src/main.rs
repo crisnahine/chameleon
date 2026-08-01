@@ -276,7 +276,7 @@ fn collect_sources(root: &Path, registry: &Registry) -> Result<Vec<PathBuf>> {
                 if !PRUNE.contains(&name.as_ref()) && !name.starts_with('.') {
                     stack.push(path);
                 }
-            } else if registry.for_path(&path.to_string_lossy()).is_some() {
+            } else if ft.is_file() && registry.for_path(&path.to_string_lossy()).is_some() {
                 out.push(path);
                 if out.len() > MAX_SOURCE_FILES {
                     bail!(

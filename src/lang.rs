@@ -338,6 +338,19 @@ pub struct Flags {
     /// Statement wrappers to unwrap when reading top-level kinds. Python's
     /// grammar nests small statements one level deeper than the meaningful node.
     pub unwrap_nodes: Vec<String>,
+    /// Node kinds whose assignment TARGETS are module exports, in a language
+    /// with no export keyword. Every top-level binding is importable in Python,
+    /// so a module's export set is not just its defs and classes.
+    pub export_assignment_nodes: Vec<String>,
+    /// Top-level compound statements to descend when collecting exports. A
+    /// binding inside a `try/except` import fallback, an `if TYPE_CHECKING`, or
+    /// a version gate is still module-level. A def or class body is a new scope
+    /// and is never descended.
+    pub export_descend_nodes: Vec<String>,
+    /// Basenames whose module additionally re-exports its sibling submodules,
+    /// because `from pkg import submodule` resolves on disk whatever the
+    /// package module names.
+    pub package_index_names: Vec<String>,
 }
 
 /// Which optional record fields this language emits.
@@ -678,6 +691,8 @@ impl BoundLanguage {
                 .decorator_nodes
                 .iter()
                 .chain(&s.flags.unwrap_nodes)
+                .chain(&s.flags.export_assignment_nodes)
+                .chain(&s.flags.export_descend_nodes)
                 .map(|k| &**k),
         );
 

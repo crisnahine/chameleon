@@ -24,23 +24,34 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Fields both sides are expected to agree on exactly. `path` and
-# `content_first_200_bytes` are echoes of the input, so comparing them measures
-# nothing; `sha_hint` is host-computed on chameleon's side.
+# Fields both sides are expected to agree on exactly.
 #
 # Keep this list exhaustive over the record. An earlier version omitted
 # `default_export_kind`, which reported a clean 13/13 while that field was
 # wrong on five files -- a harness that silently skips a field is worse than no
-# harness, because it manufactures confidence.
+# harness, because it manufactures confidence. A later one omitted
+# `named_export_names` and `parse_diagnostics_count`, the same way.
+#
+# Exactly two fields are excluded, both for a stated reason rather than a
+# judgment call:
+#
+# - `path` is the join key.
+# - `content_first_200_bytes` is not comparable AGAINST THIS REFERENCE. libcst
+#   decodes first and slices 200 CHARACTERS; the engine slices 200 BYTES. So
+#   does chameleon's own default tree-sitter backend
+#   (`src[:200].decode("utf-8", "replace")`), which is what `integration/
+#   verify.py` compares against -- and it DOES check this field.
 COMPARED = [
     "top_level_node_kinds",
     "default_export_kind",
     "named_export_count",
+    "named_export_names",
     "export_set_open",
     "import_specifiers",
     "import_symbols",
     "namespace_imports",
     "has_jsx",
+    "parse_diagnostics_count",
     "function_scopes",
     "callable_signatures",
     "class_shapes",
@@ -63,6 +74,11 @@ def run_reference(chameleon: Path, paths: list[str]) -> dict[str, dict]:
         text=True,
         timeout=600,
     )
+    # A reference that died (libcst not importable in that venv, say) writes
+    # nothing to stdout, and an empty ground truth makes every rate below read
+    # `0/0 0.0%` rather than failing.
+    if proc.returncode != 0:
+        sys.exit(f"reference dumper failed: {proc.stderr[:400]}")
     return {
         r["path"]: r
         for r in (json.loads(line) for line in proc.stdout.splitlines() if line.strip())

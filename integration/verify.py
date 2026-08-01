@@ -53,10 +53,22 @@ def main() -> int:
     shared = sorted(set(ours_by) & set(theirs_by))
     print(f"  comparable:    {len(shared)}")
 
-    # The eight normalized slots are chameleon's stability contract; extras are
-    # explicitly documented as NOT part of it, so they are reported separately
-    # rather than folded into the pass condition.
+    if not shared:
+        # 0 == 0 makes every per-slot check vacuously true, so a totally dead
+        # engine -- a malformed spec, a missing binary -- would otherwise print
+        # the pass line and exit 0.
+        print("\nNOTHING COMPARED: the engine returned no records for this corpus")
+        return 1
+
+    # Every normalized slot chameleon's ParsedFile carries. Exhaustive on
+    # purpose: an earlier version of the sibling parity harness silently omitted
+    # one field and reported a clean 13/13 while that field was wrong on five
+    # files, so a slot left out here is a slot nothing measures.
+    # `content_first_200_bytes` is included and IS comparable against this
+    # backend: chameleon's tree-sitter extractor slices bytes
+    # (`src[:200].decode(...)`) exactly as the engine does.
     NORMALIZED = [
+        "content_first_200_bytes",
         "top_level_node_kinds",
         "default_export_kind",
         "named_export_count",
@@ -78,7 +90,7 @@ def main() -> int:
                 hits += 1
             elif first_bad is None:
                 first_bad = (path, a, b)
-        rate = hits / len(shared) * 100 if shared else 0.0
+        rate = hits / len(shared) * 100
         print(f"{slot:<28} {hits:>5}/{len(shared):<6} {rate:6.1f}%")
         if hits != len(shared):
             failures += 1
@@ -98,7 +110,7 @@ def main() -> int:
             for p in shared
             if theirs_by[p].extras.get(key) == ours_by[p].extras.get(key)
         )
-        rate = hits / len(shared) * 100 if shared else 0.0
+        rate = hits / len(shared) * 100
         print(f"{key:<28} {hits:>5}/{len(shared):<6} {rate:6.1f}%")
 
     print()

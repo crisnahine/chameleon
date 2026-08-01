@@ -1,7 +1,10 @@
 """A chameleon `Extractor` backed by the chromatophore binary.
 
-Drop this into a chameleon install and register it, and chameleon parses every
-language the engine supports instead of the three its own dumpers cover.
+Drop this into a chameleon install and register it, and chameleon parses the
+language it was constructed for through the engine instead of that language's
+own dump script. Python is the only language whose records are byte-identical to
+chameleon's own (see `verify.py`); Ruby and TypeScript are close but not
+drop-in, so registering those is a deliberate trade, not a free swap.
 
 The whole shim is the spawn plus the record loop, because the engine already
 speaks chameleon's protocol: absolute paths on stdin, one NDJSON record per
@@ -32,6 +35,31 @@ from chameleon_mcp.extractors._base import ExtractorUnavailableError, ParsedFile
 BINARY_ENV = "CHROMATOPHORE_BIN"
 BATCH_TIMEOUT_SECONDS = 600
 
+# What each chameleon language identifier means on disk. Deriving the glob and
+# the detection scan from the language is what stops a `ruby` instance from
+# claiming a repo because it holds a `.py` file, and from then handing the engine
+# a list of Python paths.
+_EXTENSIONS = {
+    "python": ("py", "pyi"),
+    "ruby": ("rb", "rake", "gemspec"),
+    "typescript": ("ts", "mts", "cts", "tsx", "js", "jsx", "mjs", "cjs"),
+    "javascript": ("js", "jsx", "mjs", "cjs"),
+    "go": ("go",),
+    "rust": ("rs",),
+    "java": ("java",),
+    "csharp": ("cs",),
+    "php": ("php",),
+    "swift": ("swift",),
+    "kotlin": ("kt", "kts"),
+    "scala": ("scala", "sc"),
+    "elixir": ("ex", "exs"),
+    "haskell": ("hs",),
+    "lua": ("lua",),
+    "bash": ("sh", "bash"),
+    "c": ("c", "h"),
+    "cpp": ("cc", "cpp", "cxx", "hpp", "hh"),
+}
+
 
 class ChromatophoreUnavailableError(ExtractorUnavailableError):
     """The engine binary is not installed or not executable."""
@@ -60,34 +88,81 @@ class ChromatophoreExtractor:
         # keys on it. Only the parsing backend changes.
         self.language = language
 
+    def _extensions(self) -> tuple[str, ...]:
+        return _EXTENSIONS.get(self.language, ("py",))
+
     def can_handle(self, repo_root: Path) -> bool:
         """True when the engine is installed and the repo holds a file it parses."""
         try:
             _binary()
         except ChromatophoreUnavailableError:
             return False
-        return any(repo_root.rglob("*.py"))
+        for ext in self._extensions():
+            for _ in repo_root.rglob(f"*.{ext}"):
+                return True
+        return False
 
     def parse_repo(
         self,
         repo_root: Path,
-        paths: list[Path] | None = None,
-        glob: str = "**/*.py",
+        glob: str | None = None,
         limit: int | None = None,
+        paths: list[Path] | None = None,
     ) -> ParseResult:
-        candidates = list(paths) if paths is not None else sorted(repo_root.glob(glob))
+        """Parse files under ``repo_root``. Returns ParseResult.
+
+        Argument order is the protocol's, not a convenience: every in-tree
+        caller passes ``paths`` by keyword today, but a positional glob against
+        a swapped signature binds the string to ``paths``, and `list()` of a
+        string explodes it into characters.
+        """
+        if paths is not None:
+            candidates = list(paths)
+        elif glob is not None:
+            candidates = sorted(repo_root.glob(glob))
+        else:
+            candidates = sorted(
+                p for ext in self._extensions() for p in repo_root.glob(f"**/*.{ext}")
+            )
         if limit is not None:
             candidates = candidates[:limit]
         if not candidates:
             return ParseResult(files=[], skipped=[])
 
-        stdin_data = "".join(f"{p.resolve()}\n" for p in candidates)
+        # abspath, NOT resolve(): resolve() follows symlinks, which hands the
+        # engine an already-resolved target and defeats its own symlink refusal.
+        # A repo holding `notes.py -> ~/.aws/credentials` would otherwise be read
+        # and its first 200 bytes carried into the record. The containment check
+        # covers the other direction, a symlinked parent directory, which a
+        # final-component stat cannot see.
+        root = os.path.realpath(repo_root)
+        inside, escaped = [], []
+        for p in candidates:
+            absolute = os.path.abspath(p)
+            real = os.path.realpath(absolute)
+            if real == root or real.startswith(root + os.sep):
+                inside.append((p, absolute))
+            else:
+                escaped.append((p, "path_outside_repo"))
+        if not inside:
+            return ParseResult(files=[], skipped=escaped)
+        candidates = [p for p, _ in inside]
+
+        stdin_data = "".join(f"{absolute}\n" for _, absolute in inside)
         proc = subprocess.Popen(
             [_binary(), "dump"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            # Explicit, because the ambient locale is C in cron, CI and hook
+            # subprocesses, and serde_json emits non-ASCII UTF-8 raw rather than
+            # escaping it. Strict decoding of one CJK comment would raise
+            # UnicodeDecodeError out of communicate() -- not an
+            # ExtractorUnavailableError, so not caught by the degrade path, and
+            # the whole extraction run dies on one file.
+            encoding="utf-8",
+            errors="replace",
             # A neutral cwd and a scrubbed environment: the engine never
             # executes repo code, and this keeps it that way if it ever grows a
             # plugin path.
@@ -104,7 +179,7 @@ class ChromatophoreExtractor:
             timed_out = True
 
         files: list[ParsedFile] = []
-        skipped: list[tuple[Path, str]] = []
+        skipped: list[tuple[Path, str]] = list(escaped)
         for line in stdout_data.splitlines():
             if not line.strip():
                 continue
@@ -132,7 +207,7 @@ class ChromatophoreExtractor:
             if detail:
                 reason = f"{reason}: {detail}"
             for p in candidates:
-                if str(p.resolve()) not in seen:
+                if os.path.abspath(p) not in seen:
                     skipped.append((p, reason))
 
         return ParseResult(files=files, skipped=skipped)
@@ -141,8 +216,8 @@ class ChromatophoreExtractor:
 def _parsed_file_from_record(path: Path, record: dict) -> ParsedFile:
     """Map one wire record onto chameleon's normalized dataclass.
 
-    The eight normalized slots are the stability contract; everything else rides
-    in `extras`.
+    The normalized slots are the stability contract; everything else rides in
+    `extras`.
     """
     # The six core keys are ALWAYS present, empty or not, because that is what
     # chameleon's own in-process extractor does and absent-vs-empty is a real

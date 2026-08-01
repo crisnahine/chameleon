@@ -69,7 +69,7 @@ Build: 24 grammars compile in ~11 s cold. Binary: 39 MB unstripped.
 Two harnesses, because they answer different questions.
 
 `tests/parity.py` compares the wire records against chameleon's libcst dumper.
-**14 of 14 fields match on 125 of 125 files** (the 126th is the file libcst
+**16 of 16 fields match on 125 of 125 files** (the 126th is the file libcst
 refuses at its node ceiling, so there is nothing to compare).
 
 `integration/verify.py` is the stronger one: it runs the shim in
@@ -79,13 +79,18 @@ convention derivation actually consume. Every normalized slot and every extras
 key matches on 126 of 126 files:
 
 ```
-top_level_node_kinds   126/126  100.0%     callable_signatures  126/126  100.0%
-default_export_kind    126/126  100.0%     function_scopes      126/126  100.0%
-named_export_count     126/126  100.0%     class_shapes         126/126  100.0%
-import_specifiers      126/126  100.0%     call_sites           126/126  100.0%
+content_first_200_bytes 126/126 100.0%     callable_signatures  126/126  100.0%
+top_level_node_kinds   126/126  100.0%     function_scopes      126/126  100.0%
+default_export_kind    126/126  100.0%     class_shapes         126/126  100.0%
+named_export_count     126/126  100.0%     call_sites           126/126  100.0%
+import_specifiers      126/126  100.0%
 has_jsx                126/126  100.0%
 parse_diagnostics_count 126/126 100.0%
 ```
+
+Both lists are exhaustive over the record on purpose. An earlier `parity.py`
+omitted `named_export_names`, reported a clean 14 of 14, and hid a field that
+was wrong on 119 of 125 files.
 
 Independent cross-check: on chameleon's own tree the engine derives **232
 callers** for `threshold_int`; chameleon's own committed index says 233. Two
@@ -94,8 +99,10 @@ implementations, one edge apart.
 ## Using it from chameleon
 
 `dump` speaks the protocol chameleon's extractors already use — absolute paths
-on stdin, one NDJSON record per file on stdout — so it is a drop-in for
-`libcst_dump.py`, `prism_dump.rb`, and `ts_dump.mjs` at once:
+on stdin, one NDJSON record per file on stdout. For Python it is a drop-in
+replacement for `libcst_dump.py`; for Ruby and TypeScript it speaks the same
+protocol but does not match those references field for field (see *Honest
+boundaries*), so swapping them in is a trade rather than a free upgrade:
 
 ```bash
 find . -name '*.py' | chromatophore dump
@@ -110,7 +117,8 @@ from chameleon_mcp.extractors.registry import register
 class ChromatophoreExtractor:
     language = "python"
     def can_handle(self, repo_root): ...
-    def parse_repo(self, repo_root, paths=None): ...  # spawn `chromatophore dump`
+    # The protocol's argument order, matching every shipped extractor.
+    def parse_repo(self, repo_root, glob=None, limit=None, paths=None): ...
 
 register(ChromatophoreExtractor)
 ```
@@ -167,7 +175,7 @@ are judgment calls and can never hard-block at any confidence.
 
   | | TypeScript (49 files) | Ruby (150 files) |
   |---|---|---|
-  | normalized slots | 100% (exports 82%) | 100% (imports 97%) |
+  | normalized slots | 100% (exports 82%) | 100% |
   | `class_shapes` | 100% | 100% |
   | `function_scopes` | 92% | 87% |
   | `callable_signatures` | 31% | 85% |
@@ -183,11 +191,14 @@ are judgment calls and can never hard-block at any confidence.
   shipped language parses, and extracts functions, classes, and body shape.
   Call-site classification — separating `obj.method()` from a bare `method()`
   and keeping the receiver — is verified for C, C++, C#, Go, Java, Lua, PHP,
-  Python, Rust, Scala, and TypeScript. Kotlin, Swift, Ruby, and Bash currently
-  record bare calls but lose the receiver on member calls, and Elixir reports
-  its own `def`/`defmodule` macros as calls because in that grammar they are.
-  Those are spec gaps, not engine gaps: closing one is editing a TOML file,
-  which is exactly the property this design is for.
+  Python, Rust, Scala, Swift, TypeScript, Kotlin, and Bash. Elixir reports its
+  own `def`/`defmodule` macros as calls because in that grammar they are, and
+  Haskell records application without a receiver notion. Those are spec gaps,
+  not engine gaps: closing one is editing a TOML file, which is exactly the
+  property this design is for — Swift, Kotlin, Bash, PHP and Lua were each
+  closed that way, and `cargo test` now checks every spec name against its own
+  grammar's symbol table so a misspelled kind fails instead of silently doing
+  nothing.
 - **`Regex`, `AstGrep`, `Semgrep`, and `Coupling` are declared but not
   implemented.** Evaluating one returns an explicit `Unsupported` rather than
   silently matching nothing — a rule that quietly never fires is worse than one
@@ -210,7 +221,7 @@ loads, sits inside the ABI window tree-sitter accepts, and parses.
 ## Development
 
 ```bash
-cargo test                    # 109 tests
+cargo test                    # 129 tests
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 python3 tests/parity.py --chameleon /path/to/chameleon

@@ -815,6 +815,15 @@ fn walk(
                 }
             }
 
+            // A language with no export keyword: every name bound at module
+            // level is importable, so the export set is not just the defs and
+            // classes. Assignment targets and names bound inside a top-level
+            // try/except import fallback or an `if TYPE_CHECKING` gate count
+            // too; a def or class body is a new scope and is never descended.
+            if !spec.flags.explicit_exports {
+                module_bindings(node, spec, source, &mut export_names);
+            }
+
             // `export * from "m"` -- a bare `*` token on the statement.
             if spec
                 .imports
@@ -1119,10 +1128,17 @@ fn walk(
                 }
             }
 
+            // Only a MODULE-LEVEL import re-exports its locals. An import
+            // inside a function body is a local binding, and inside a class body
+            // a class attribute; counting either put names like `threshold_int`
+            // in the export set of 23 modules that do not expose it, so a
+            // phantom-symbol check would accept an import that does not resolve.
+            let module_level = func_stack.is_empty() && class_stack.is_empty();
             collect_imports(
                 node,
                 spec,
                 source,
+                module_level,
                 &mut import_specifiers,
                 &mut import_symbols,
                 &mut namespace_imports,
@@ -1349,6 +1365,45 @@ fn heritage(node: Node, spec: &LanguageSpec, source: &[u8], item: &Option<String
     out
 }
 
+/// Every module-level name a statement binds, in a language with no export
+/// keyword.
+///
+/// Descends the compound statements that are still module scope and stops at a
+/// def or class body, which is not.
+fn module_bindings(node: Node, spec: &LanguageSpec, source: &[u8], out: &mut BTreeSet<String>) {
+    if spec.flags.export_assignment_nodes.is_empty() {
+        return;
+    }
+    let mut queue = vec![node];
+    let mut steps = 0usize;
+    while let Some(n) = queue.pop() {
+        steps += 1;
+        if steps > 4096 {
+            return;
+        }
+        let kind = n.kind();
+        if spec.is_function(kind) || spec.is_class(kind) {
+            continue;
+        }
+        if spec.flags.export_assignment_nodes.iter().any(|k| k == kind) {
+            if let Some(left) = n.child_by_field_name("left") {
+                // Only a plain name binds an importable module attribute:
+                // `obj.attr = 1` and `d[k] = 1` bind nothing new.
+                if left.kind() == "identifier" || left.kind() == "pattern_list" {
+                    let mut names = Vec::new();
+                    collect_bound_names(left, &mut names, source);
+                    out.extend(names);
+                }
+            }
+            continue;
+        }
+        if spec.flags.export_descend_nodes.iter().any(|k| k == kind) {
+            let mut c = n.walk();
+            queue.extend(n.named_children(&mut c));
+        }
+    }
+}
+
 /// Names bound by a variable declaration statement.
 ///
 /// `export const A = 1, B = 2` exports two names, so the declarators are read
@@ -1509,6 +1564,7 @@ fn collect_imports(
     node: Node,
     spec: &LanguageSpec,
     source: &[u8],
+    module_level: bool,
     specifiers: &mut Vec<(String, String)>,
     symbols: &mut Vec<ImportSymbol>,
     namespaces: &mut Vec<NamespaceImport>,
@@ -1584,7 +1640,7 @@ fn collect_imports(
                     .map(|n| text(n, source).to_string())
                     .unwrap_or_default();
                 if !alias.is_empty() {
-                    if !spec.flags.explicit_exports {
+                    if !spec.flags.explicit_exports && module_level {
                         export_names.insert(alias.clone());
                     }
                     namespaces.push(NamespaceImport {
@@ -1610,7 +1666,7 @@ fn collect_imports(
             {
                 let local = text(child, source).to_string();
                 if !local.is_empty() {
-                    if !spec.flags.explicit_exports {
+                    if !spec.flags.explicit_exports && module_level {
                         export_names.insert(local);
                     }
                     specifiers.push((module.clone(), "default".into()));
@@ -1635,7 +1691,7 @@ fn collect_imports(
                 continue;
             }
             any_named = true;
-            if !spec.flags.explicit_exports {
+            if !spec.flags.explicit_exports && module_level {
                 // In Python an imported name really is a module attribute; in
                 // TypeScript it is not exported unless re-exported explicitly.
                 export_names.insert(local.clone());
@@ -1761,7 +1817,7 @@ fn collect_imports(
             if module.is_empty() {
                 continue;
             }
-            if !spec.flags.explicit_exports {
+            if !spec.flags.explicit_exports && module_level {
                 export_names.insert(alias.clone());
             }
             namespaces.push(NamespaceImport {
@@ -2592,6 +2648,27 @@ mod tests {
     fn a_closure_does_not_deepen_the_frame_it_opens() {
         let ex = parse("elixir", "f = fn y -> y end\n");
         assert_eq!(ex.function_scopes[0].max_depth, 0);
+    }
+
+    /// Python has no export keyword, so every name bound at MODULE level is
+    /// importable -- and nothing bound below it is. Missing the assignment
+    /// targets understated the set; counting a function-body import overstated
+    /// it, which is the direction a phantom-symbol check actually acts on.
+    #[test]
+    fn a_module_export_set_is_every_module_level_binding_and_no_other() {
+        let py = parse(
+            "python",
+            "import os\nfrom typing import Any\nX = 1\nY: int = 2\n__all__ = [\"f\"]\nif True:\n    Z = 3\ntry:\n    import ujson as json\nexcept ImportError:\n    import json\ndef f():\n    from .helpers import helper\n    obj.attr = 1\n    return helper\nclass C:\n    from .m import inner\n",
+        );
+        let mut got = py.named_export_names.clone();
+        got.sort();
+        assert_eq!(
+            got,
+            vec!["Any", "C", "X", "Y", "Z", "__all__", "f", "json", "os"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
+        );
     }
 
     /// A spec kind no grammar node carries is silently inert. These three were
