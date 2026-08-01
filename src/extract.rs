@@ -436,6 +436,19 @@ fn walk(
             let refined_kind = by_field.or(by_kind).unwrap_or_else(|| mapped.to_string());
             top_level_node_kinds.push(refined_kind.clone());
 
+            // A value export counts toward the module's public surface as much
+            // as a function does: `export const X = 1` is one exported name.
+            if spec.flags.explicit_exports
+                && is_exported
+                && !spec.is_function(node.kind())
+                && !spec.is_class(node.kind())
+            {
+                for name in declarator_names(node, spec, source) {
+                    named_export_count += 1;
+                    export_names.insert(name);
+                }
+            }
+
             if (spec.is_function(node.kind()) || spec.is_class(node.kind())) && is_exported {
                 named_export_count += 1;
                 if spec.is_class(node.kind()) {
@@ -782,6 +795,27 @@ fn base_list(node: Node, spec: &LanguageSpec, source: &[u8]) -> Vec<String> {
             let t = text(child, source).trim().to_string();
             if !t.is_empty() {
                 out.push(t);
+            }
+        }
+    }
+    out
+}
+
+/// Names bound by a variable declaration statement.
+///
+/// `export const A = 1, B = 2` exports two names, so the declarators are read
+/// individually rather than the statement being counted once.
+fn declarator_names(node: Node, spec: &LanguageSpec, source: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut c = node.walk();
+    for child in node.named_children(&mut c) {
+        if let Some(name) = field_node(child, &spec.fields.name).map(|n| text(n, source)) {
+            if !name.is_empty()
+                && name
+                    .chars()
+                    .all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '$')
+            {
+                out.push(name.to_string());
             }
         }
     }

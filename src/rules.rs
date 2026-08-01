@@ -295,6 +295,11 @@ fn glob_match(pattern: &str, path: &str) -> bool {
 /// reported `Unsupported` rather than silently mis-evaluated here.
 fn eval_literal(rule: &Rule, path: &str, source: &str) -> Vec<Finding> {
     let needle = &rule.matcher.rule;
+    // `"".contains("")` is true, so an empty needle would emit one finding per
+    // line of every file in the corpus, each carrying the rule's severity.
+    if needle.is_empty() {
+        return Vec::new();
+    }
     source
         .lines()
         .enumerate()

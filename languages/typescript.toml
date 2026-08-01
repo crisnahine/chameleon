@@ -22,8 +22,11 @@ module = "ModuleDeclaration"
 internal_module = "ModuleDeclaration"
 import_statement = "ImportDeclaration"
 export_statement = "ExportDeclaration"
-lexical_declaration = "VariableStatement"
-variable_declaration = "VariableStatement"
+# `ts.SyntaxKind[k]` reverse-lookups to the FIRST alias sharing the numeric
+# value, and VariableStatement shares its value with FirstStatement -- so the
+# vocabulary downstream reads is literally "FirstStatement".
+lexical_declaration = "FirstStatement"
+variable_declaration = "FirstStatement"
 expression_statement = "ExpressionStatement"
 if_statement = "IfStatement"
 for_statement = "ForStatement"

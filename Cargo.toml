@@ -17,12 +17,12 @@ path = "src/lib.rs"
 
 [dependencies]
 tree-sitter = "0.26.11"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-toml = "0.9"
-anyhow = "1"
-rayon = "1"
-twox-hash = "2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+toml = "1.1.4"
+anyhow = "1.0.104"
+rayon = "1.12.0"
+twox-hash = "2.1.3"
 
 # Grammars. Every one of these is parse-verified against tree-sitter 0.26.11
 # by the `every_shipped_grammar_loads` test; ABI 14 and 15 both load, since the

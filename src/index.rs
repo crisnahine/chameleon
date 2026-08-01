@@ -160,7 +160,9 @@ impl CodeIndex {
         for pf in files {
             let mut local_to_target: HashMap<String, String> = HashMap::new();
             for sym in &pf.import_symbols {
-                if let Some(target) = resolve_module(&sym.module, &paths, &pf.path, &root_name) {
+                if let Some(target) =
+                    resolve_module(&sym.module, &paths, &pf.path, &root_name, Some(&sym.name))
+                {
                     idx.importers
                         .entry(target.clone())
                         .or_default()
@@ -169,7 +171,8 @@ impl CodeIndex {
                 }
             }
             for ns in &pf.namespace_imports {
-                if let Some(target) = resolve_module(&ns.module, &paths, &pf.path, &root_name) {
+                if let Some(target) = resolve_module(&ns.module, &paths, &pf.path, &root_name, None)
+                {
                     idx.importers
                         .entry(target.clone())
                         .or_default()
@@ -310,28 +313,61 @@ fn render_signature(sig: &crate::core::CallableSignature) -> String {
 /// Deliberately conservative: a dotted or slashed specifier is turned into a
 /// path suffix and matched against real files. Zero matches or more than one
 /// match both yield `None` -- an ambiguous resolution is not a resolution.
-fn resolve_module(spec: &str, paths: &[&str], importer: &str, root_name: &str) -> Option<String> {
+fn resolve_module(
+    spec: &str,
+    paths: &[&str],
+    importer: &str,
+    root_name: &str,
+    submodule: Option<&str>,
+) -> Option<String> {
     // A relative specifier is anchored at the importing file's directory. That
     // anchor is the one piece of information that makes the answer decidable,
     // so resolving `.util` by global suffix match -- which is what stripping the
     // dot does -- can bind it to a same-named file anywhere in the repo.
-    if let Some(rest) = spec.strip_prefix('.') {
-        let ups = 1 + rest.chars().take_while(|c| *c == '.').count();
-        let tail = rest.trim_start_matches('.').replace('.', "/");
+    if spec.starts_with('.') {
+        // Two relative spellings share this branch. Python writes `.util` and
+        // `..pkg.mod`, where the dots are BOTH the level marker and the path
+        // separator. JS writes `./util` and `../util`, where the separator is a
+        // slash. Treating the JS form as dotted produced `src//util`, which
+        // matches no corpus path -- so every relative import in a TS repo
+        // resolved to nothing, which is worse than the bug it replaced.
+        let dots = spec.chars().take_while(|c| *c == '.').count();
+        let rest = spec[dots..].trim_start_matches('/');
+        let tail = if rest.contains('/') {
+            rest.to_string()
+        } else {
+            rest.replace('.', "/")
+        };
+
         let mut dir: Vec<&str> = importer.split('/').collect();
         dir.pop(); // the importing file itself
-        for _ in 1..ups {
+        for _ in 1..dots {
             // More dots than directories: the specifier points above the root.
             dir.pop()?;
         }
-        let mut anchored = dir.join("/");
-        if !tail.is_empty() {
-            if !anchored.is_empty() {
-                anchored.push('/');
+        let base = dir.join("/");
+        let join = |a: &str, b: &str| -> String {
+            match (a.is_empty(), b.is_empty()) {
+                (_, true) => a.to_string(),
+                (true, false) => b.to_string(),
+                _ => format!("{a}/{b}"),
             }
-            anchored.push_str(&tail);
+        };
+
+        // `from . import util` names the submodule in the IMPORTED NAME, not in
+        // the specifier. Without this the whole thing resolves to the package's
+        // own `__init__`, and every call through `util` is then graded against
+        // the package rather than the module that defines it.
+        if tail.is_empty() {
+            if let Some(sub) = submodule {
+                if let Some(hit) = exact_module_match(&join(&base, sub), paths) {
+                    return Some(hit);
+                }
+            }
         }
-        return unique_suffix_match(&anchored, paths);
+        // Exact, not suffix: the anchor is the whole point, and reusing the
+        // suffix matcher lets a root-level `.util` bind `handlers/util.py`.
+        return exact_module_match(&join(&base, &tail), paths);
     }
 
     let cleaned = spec.replace('.', "/");
@@ -360,6 +396,27 @@ fn resolve_module(spec: &str, paths: &[&str], importer: &str, root_name: &str) -
             Some((head, rest)) if !rest.is_empty() && head == root_name => candidate = rest,
             _ => return None,
         }
+    }
+}
+
+/// An exact module match: the path's stem IS this module, or it is that
+/// module's package `__init__`. No suffix matching -- used where an anchor has
+/// already decided the answer.
+fn exact_module_match(candidate: &str, paths: &[&str]) -> Option<String> {
+    let package_form = format!("{candidate}/__init__");
+    let mut hits: Vec<&str> = paths
+        .iter()
+        .copied()
+        .filter(|p| {
+            let stem = p.rsplit_once('.').map(|(s, _)| s).unwrap_or(p);
+            stem == candidate || stem == package_form
+        })
+        .collect();
+    hits.sort_unstable();
+    hits.dedup();
+    match hits.len() {
+        1 => Some(hits[0].to_string()),
+        _ => None,
     }
 }
 
@@ -800,6 +857,102 @@ mod tests {
         let idx = CodeIndex::build(&files);
         assert!(idx.callers_of("one/util.py", "helper").is_none());
         assert!(idx.callers_of("two/util.py", "helper").is_none());
+    }
+
+    /// The JS/TS relative form is slash-delimited, not dot-delimited. Treating
+    /// `./util` as dotted yields `src//util`, which matches nothing -- so every
+    /// relative import in a TS repo resolves to zero, and the cross-file layer
+    /// is silently empty for the language family this engine most needs to serve.
+    #[test]
+    fn slash_relative_imports_resolve() {
+        let files = corpus(&[
+            ("src/util.ts", "export function helper() { return 1; }\n"),
+            (
+                "src/app.ts",
+                "import { helper } from \"./util\";\nexport function run() { return helper(); }\n",
+            ),
+        ]);
+        let idx = CodeIndex::build(&files);
+        let entry = idx
+            .callers_of("src/util.ts", "helper")
+            .expect("./util must resolve to the sibling");
+        assert_eq!(entry.callers[0].path, "src/app.ts");
+    }
+
+    /// `from . import util` names the submodule in the IMPORTED NAME, not in
+    /// the specifier. Resolving the bare `.` binds the package's own
+    /// `__init__`, so every call through `util` is graded against the package
+    /// rather than the module that defines it.
+    #[test]
+    fn a_bare_dot_import_binds_the_submodule_not_the_package() {
+        let files = corpus(&[
+            ("pkg/__init__.py", "\n"),
+            ("pkg/util.py", "def thing():\n    return 1\n"),
+            (
+                "pkg/app.py",
+                "from . import util\n\ndef run():\n    return util.thing()\n",
+            ),
+        ]);
+        let idx = CodeIndex::build(&files);
+        assert!(
+            idx.importers
+                .get("pkg/util.py")
+                .is_some_and(|s| s.contains("pkg/app.py")),
+            "the edge belongs on the submodule; got {:?}",
+            idx.importers
+        );
+        assert!(
+            !idx.importers
+                .get("pkg/__init__.py")
+                .is_some_and(|s| s.contains("pkg/app.py")),
+            "and not on the package __init__"
+        );
+    }
+
+    /// The anchor has to be exact. Reusing the suffix matcher lets a root-level
+    /// `.util` bind a file in an unrelated directory.
+    #[test]
+    fn a_relative_import_does_not_suffix_match_another_directory() {
+        let files = corpus(&[
+            ("handlers/util.py", "def helper():\n    return 1\n"),
+            (
+                "app.py",
+                "from .util import helper\n\ndef run():\n    return helper()\n",
+            ),
+        ]);
+        let idx = CodeIndex::build(&files);
+        assert!(
+            idx.callers_of("handlers/util.py", "helper").is_none(),
+            "a root-level .util must not reach handlers/util.py"
+        );
+    }
+
+    /// Blast truncation is load-bearing and had no test in either direction.
+    #[test]
+    fn blast_reports_truncation_honestly() {
+        let complete = corpus(&[(
+            "a.py",
+            "def leaf():\n    return 1\n\ndef mid():\n    return leaf()\n",
+        )]);
+        let idx = CodeIndex::build(&complete);
+        let br = blast_radius(&idx, "a.py", "leaf", BlastLimits::default());
+        assert!(
+            !br.truncated,
+            "a walk that finished must not claim truncation"
+        );
+
+        // A fanout wider than the per-node cap must report truncated.
+        let mut src = String::from("def leaf():\n    return 1\n");
+        for i in 0..25 {
+            src.push_str(&format!("\ndef c{i}():\n    return leaf()\n"));
+        }
+        let wide = corpus(&[("b.py", &src)]);
+        let idx2 = CodeIndex::build(&wide);
+        let br2 = blast_radius(&idx2, "b.py", "leaf", BlastLimits::default());
+        assert!(
+            br2.truncated,
+            "25 callers past a fanout cap of 10 is truncated"
+        );
     }
 
     #[test]
