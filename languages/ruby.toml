@@ -7,9 +7,42 @@ extensions = [".rb", ".rake", ".gemspec"]
 
 function_nodes = ["method", "singleton_method"]
 class_nodes = ["class", "module", "singleton_class"]
-branch_nodes = ["if", "unless", "while", "until", "for", "when", "in_clause", "rescue"]
-nesting_nodes = ["if", "unless", "while", "until", "for", "case", "begin", "block", "do_block"]
-skip_subtree_nodes = ["comment", "string_content"]
+branch_nodes = [
+  "if",
+  "elsif",
+  "if_modifier",
+  "unless",
+  "unless_modifier",
+  "while",
+  "while_modifier",
+  "until",
+  "until_modifier",
+  "for",
+  "when",
+  "in_clause",
+  "rescue",
+  "conditional",
+]
+nesting_nodes = [
+  "if",
+  "elsif",
+  "if_modifier",
+  "unless",
+  "unless_modifier",
+  "while",
+  "while_modifier",
+  "until",
+  "until_modifier",
+  "for",
+  "case",
+  "case_match",
+  "begin",
+  "block",
+  "do_block",
+  "rescue",
+  "conditional",
+]
+skip_subtree_nodes = ["comment", "string_content", "heredoc_content"]
 
 [top_level_kinds]
 method = "DefNode"
@@ -32,7 +65,13 @@ comment = ""
 positional = ["identifier"]
 optional = ["optional_parameter"]
 rest = ["splat_parameter"]
-keyword_rest = ["hash_splat_parameter"]
+keyword = ["keyword_parameter"]
+keyword_rest = ["hash_splat_parameter", "forward_parameter"]
+# A block parameter fills a slot but is not described.
+counted_only = ["block_parameter"]
+optional_when_field = "value"
+strip_name_suffix = ":"
+keyword_rest_name = "**"
 
 [fields]
 name = "name"
@@ -46,8 +85,58 @@ member_property = "method"
 [calls]
 nodes = ["call"]
 member_nodes = ["call"]
+# Ruby's `call` node carries the receiver and the method as its own fields, so
+# a nested member-expression lookup never fires and every `x.y` recorded as a
+# bare call to `y` -- bound, wrongly, to any same-named method in the file.
+receiver_field = "receiver"
+name_field = "method"
 self_names = ["self"]
 carries_nesting = true
+constant_receiver_nodes = ["constant", "scope_resolution"]
+# Receiver kinds Prism gives a `.name`. A literal or a parenthesized expression
+# has none, and the reference emits no row rather than reading its source span.
+receiver_name_nodes = [
+  "call",
+  "identifier",
+  "instance_variable",
+  "class_variable",
+  "global_variable",
+  "self",
+]
+exclude_method_kinds = ["super", "yield"]
+identifier_names_only = true
+setter_suffix_on_assignment = true
+# Ruby has no syntax separating `params` (a send) from `orders` (a local read);
+# only the binding set tells them apart, and without the promotion the majority
+# of real call rows are missing.
+promote_unbound_identifiers = true
+pseudo_variables = ["__FILE__", "__LINE__", "__ENCODING__"]
+identifier_non_call_parents = [
+  "method",
+  "singleton_method",
+  "alias",
+  "setter",
+  "call",
+  "method_parameters",
+  "block_parameters",
+  "splat_parameter",
+  "hash_splat_parameter",
+  "block_parameter",
+  "class",
+  "module",
+  "exception_variable",
+]
+binding_assignment_nodes = ["assignment", "operator_assignment"]
+binding_scope_nodes = ["method_parameters", "block_parameters", "exception_variable"]
+
+[emit]
+class_kind = true
+class_bases = false
+class_decorators = false
+class_attrs = false
+class_qualified = true
+signature_is_async = false
+signature_decorators = "never"
 
 [imports]
 # Ruby has no import statement -- `require` is an ordinary method call, so the
@@ -56,5 +145,8 @@ module_nodes = ["call"]
 module_call_names = ["require", "require_relative", "load", "autoload"]
 
 [flags]
+# `1.day.freeze` names its receiver by the inner call's method rather than
+# dropping the outer call entirely.
+receiver_from_method = true
 sole_definition_default_export = true
 decorator_nodes = []

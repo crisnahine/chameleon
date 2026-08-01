@@ -61,7 +61,13 @@ descend_nodes = ["import_clause", "named_imports"]
 star_export_nodes = ["export_statement"]
 export_clause_nodes = ["export_clause"]
 
+[emit]
+signature_is_async = false
+signature_decorators = "when_present"
+
 [flags]
+name_from_declarator = true
+self_kind = "this"
 has_default_export = true
 explicit_exports = true
 supports_jsx = true

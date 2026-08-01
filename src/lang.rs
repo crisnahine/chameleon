@@ -76,6 +76,39 @@ pub struct CallSpec {
     pub name_field: Option<String>,
     /// True when call rows should carry a `nesting` list (Ruby constant dispatch).
     pub carries_nesting: bool,
+    /// Receiver node kinds that denote a statically-resolvable constant, which
+    /// the reference records with its own `constant` kind.
+    pub constant_receiver_nodes: Vec<String>,
+    /// Receiver node kinds that HAVE a name. When set, anything else -- a
+    /// literal, a parenthesized expression -- yields no row at all rather than
+    /// a receiver read off its source span.
+    pub receiver_name_nodes: Vec<String>,
+    /// Method node kinds the reference models as something other than a call
+    /// (Ruby's `super` and `yield`), so no row exists for them.
+    pub exclude_method_kinds: Vec<String>,
+    /// Drop sends whose name is not an identifier. Operator sends (`+`, `<<`,
+    /// `[]`) can never be index-resolved and would crowd real calls out of the
+    /// per-file cap.
+    pub identifier_names_only: bool,
+    /// `recv.foo = x` calls the SETTER `foo=`; the grammar drops the `=` that
+    /// is part of the method's real name.
+    pub setter_suffix_on_assignment: bool,
+    /// Promote a bare identifier that is NOT bound in scope to a receiverless
+    /// send. Ruby has no syntax distinguishing `params` (a call) from `orders`
+    /// (a local read); only the binding set tells them apart, so without this
+    /// the majority of real Ruby call rows are missing.
+    pub promote_unbound_identifiers: bool,
+    /// Identifiers the language models as something other than a send whatever
+    /// the scope says (`__FILE__`).
+    pub pseudo_variables: Vec<String>,
+    /// Parent node kinds in which an identifier is a name or a binding rather
+    /// than a send.
+    pub identifier_non_call_parents: Vec<String>,
+    /// Node kinds whose `left`/target names bind a local.
+    pub binding_assignment_nodes: Vec<String>,
+    /// Node kinds that bind every identifier beneath them (parameter lists,
+    /// exception variables).
+    pub binding_scope_nodes: Vec<String>,
 }
 
 /// How import statements are read.
@@ -140,10 +173,25 @@ pub struct ParamSpec {
     pub rest: Vec<String>,
     /// `**kwargs`.
     pub keyword_rest: Vec<String>,
+    /// Explicitly keyword parameters, where the language spells them (Ruby's
+    /// `name:`). Distinct from the separator rule, which makes everything AFTER
+    /// a marker keyword-only.
+    pub keyword: Vec<String>,
     /// A bare `*` or equivalent: parameters after it are keyword-only.
     pub separator: Vec<String>,
     /// Object/array binding patterns, which occupy one positional slot.
     pub destructured: Vec<String>,
+    /// Kinds that fill a parameter slot but emit no shape row -- Ruby's block
+    /// parameter is counted and not described. Getting this wrong shifts
+    /// param_count, which feeds the body-shape norms mining votes on.
+    pub counted_only: Vec<String>,
+    /// A parameter of this kind is optional only when it carries this field.
+    /// Ruby's `kw:` is required; `kw: 2` is not.
+    pub optional_when_field: Option<String>,
+    /// Trailing punctuation to strip from a parameter's name (`kw:` -> `kw`).
+    pub strip_name_suffix: Option<String>,
+    /// Literal name a keyword-rest parameter is recorded under (`**`).
+    pub keyword_rest_name: Option<String>,
     /// Node kinds that wrap the real parameter pattern to carry a type
     /// annotation. `*args: str` is a `typed_parameter` around a splat, so
     /// classifying on the wrapper alone would call a rest parameter positional.
@@ -172,11 +220,57 @@ pub struct Flags {
     pub supports_jsx: bool,
     /// Node kinds that mark a callable `async`.
     pub async_markers: Vec<String>,
+    /// Take an unnamed function's name from the variable it is assigned to.
+    /// `export const getUsers = () => {}` is `getUsers`, not `<anonymous>`, and
+    /// an anonymous name makes every call inside it uncorrelatable.
+    pub name_from_declarator: bool,
+    /// The `kind` string for a self/this-receiver call. TypeScript's reference
+    /// extractor says `this`; Python's says `self`.
+    pub self_kind: Option<String>,
+    /// When the receiver is itself a call, name it by that call's method rather
+    /// than dropping the site. `1.day.freeze` records `freeze` with receiver
+    /// `day` in Ruby's reference extractor; dropping it loses the outer call
+    /// entirely.
+    pub receiver_from_method: bool,
     /// Node kinds carrying a decorator/annotation.
     pub decorator_nodes: Vec<String>,
     /// Statement wrappers to unwrap when reading top-level kinds. Python's
     /// grammar nests small statements one level deeper than the meaningful node.
     pub unwrap_nodes: Vec<String>,
+}
+
+/// Which optional record fields this language emits.
+///
+/// The reference extractors genuinely differ: Ruby's class row carries `kind`
+/// and no `bases`, TypeScript omits `decorators` when empty and has no
+/// `is_async` at all. Emitting a field the reference never carried is a
+/// mismatch even when the value is the obvious default, so this is data rather
+/// than a uniform shape. Defaults reproduce Python, the parity target.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EmitSpec {
+    pub class_kind: bool,
+    pub class_bases: bool,
+    pub class_decorators: bool,
+    pub class_attrs: bool,
+    pub class_qualified: bool,
+    pub signature_is_async: bool,
+    /// `always` | `never` | `when_present`.
+    pub signature_decorators: String,
+}
+
+impl Default for EmitSpec {
+    fn default() -> Self {
+        Self {
+            class_kind: false,
+            class_bases: true,
+            class_decorators: true,
+            class_attrs: true,
+            class_qualified: false,
+            signature_is_async: true,
+            signature_decorators: "always".into(),
+        }
+    }
 }
 
 /// One language's complete description.
@@ -240,6 +334,8 @@ pub struct LanguageSpec {
     pub imports: ImportSpec,
     #[serde(default)]
     pub flags: Flags,
+    #[serde(default)]
+    pub emit: EmitSpec,
 }
 
 impl LanguageSpec {

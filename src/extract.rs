@@ -31,6 +31,9 @@ struct FuncFrame {
     /// Levels opened by chained clauses, keyed by the statement that will
     /// release them. See `chained_nesting_nodes`.
     chained_held: std::collections::HashMap<usize, usize>,
+    /// Names bound in this frame. A method is not a closure, so each frame
+    /// starts fresh rather than inheriting.
+    locals: BTreeSet<String>,
     /// The node this frame belongs to, so the matching leave event pops it.
     node_id: usize,
 }
@@ -174,6 +177,9 @@ fn decorators_of(node: Node, spec: &LanguageSpec, source: &[u8]) -> Vec<String> 
 /// Classify one parameter node against the spec's kind sets.
 fn param_of(node: Node, spec: &LanguageSpec, source: &[u8], keyword_only: bool) -> Option<Param> {
     let p = &spec.params;
+    if p.counted_only.iter().any(|k| k == node.kind()) {
+        return None;
+    }
     // See through a type-carrying wrapper to the pattern underneath, but keep
     // reading the annotation off the wrapper.
     let inner = if p.wrapper.iter().any(|k| k == node.kind()) {
@@ -194,6 +200,13 @@ fn param_of(node: Node, spec: &LanguageSpec, source: &[u8], keyword_only: bool) 
         // to be optional: callers distinguish "may be omitted" from "may be
         // passed by position".
         ("optional", true)
+    } else if p.keyword.iter().any(|k| k == kind_str) {
+        // Required unless it carries a default.
+        let has_default = p
+            .optional_when_field
+            .as_deref()
+            .is_some_and(|f| inner.child_by_field_name(f).is_some());
+        ("keyword", has_default)
     } else if p.destructured.iter().any(|k| k == kind_str) {
         ("destructured", false)
     } else if p.positional.iter().any(|k| k == kind_str) {
@@ -228,7 +241,15 @@ fn param_of(node: Node, spec: &LanguageSpec, source: &[u8], keyword_only: bool) 
     // `*args` / `**kwargs` bind `args` and `kwargs`; the sigil is carried by
     // `kind`, so repeating it in the name would make the binding unmatchable
     // against a call site.
-    let name = raw.trim_start_matches('*').trim().to_string();
+    let mut name = raw.trim_start_matches('*').trim().to_string();
+    if let Some(suffix) = p.strip_name_suffix.as_deref() {
+        name = name.trim_end_matches(suffix).to_string();
+    }
+    if kind == "keyword_rest" {
+        if let Some(placeholder) = p.keyword_rest_name.as_deref() {
+            name = placeholder.to_string();
+        }
+    }
     if name.is_empty() {
         return None;
     }
@@ -239,6 +260,88 @@ fn param_of(node: Node, spec: &LanguageSpec, source: &[u8], keyword_only: bool) 
         kind: kind.to_string(),
         type_annotation: field_text(node, &spec.fields.param_type, source),
     })
+}
+
+/// Every identifier name bound beneath a node.
+fn collect_bound_names(node: Node, out: &mut Vec<String>, source: &[u8]) {
+    if node.kind() == "identifier" {
+        let t = text(node, source).trim().to_string();
+        if !t.is_empty() {
+            out.push(t);
+        }
+        return;
+    }
+    let mut c = node.walk();
+    for child in node.named_children(&mut c) {
+        collect_bound_names(child, out, source);
+    }
+}
+
+/// The name of a bare identifier that is a send rather than a variable read.
+///
+/// Conservative in the safe direction, matching the reference: an identifier is
+/// promoted only when nothing bound it AND the grammar has not already given it
+/// another meaning in this position (a method name, a parameter, a binding).
+fn promotable_send(
+    node: Node,
+    spec: &LanguageSpec,
+    source: &[u8],
+    func_stack: &[FuncFrame],
+    file_locals: &BTreeSet<String>,
+) -> Option<String> {
+    let name = text(node, source).trim().to_string();
+    if name.is_empty() || spec.calls.pseudo_variables.iter().any(|p| p == &name) {
+        return None;
+    }
+    // A method is not a closure: only this frame's bindings are visible.
+    let bound = match func_stack.last() {
+        Some(f) => f.locals.contains(&name),
+        None => file_locals.contains(&name),
+    };
+    if bound {
+        return None;
+    }
+    let parent = node.parent()?;
+    let pk = parent.kind();
+    if spec
+        .calls
+        .identifier_non_call_parents
+        .iter()
+        .any(|k| k == pk)
+    {
+        // A call's RECEIVER is a send in its own right; its METHOD name is
+        // already reported by the call row itself.
+        if pk == "call" {
+            let is_receiver = parent
+                .child_by_field_name("receiver")
+                .is_some_and(|r| r.id() == node.id());
+            return is_receiver.then_some(name);
+        }
+        return None;
+    }
+    // A parameter's NAME is a binding; its DEFAULT VALUE is an ordinary
+    // expression.
+    if matches!(pk, "optional_parameter" | "keyword_parameter") {
+        let is_name = parent
+            .child_by_field_name("name")
+            .is_some_and(|n| n.id() == node.id());
+        return (!is_name).then_some(name);
+    }
+    Some(name)
+}
+
+/// Parameters that occupy a slot without emitting a shape row.
+fn counted_only_params(node: Node, spec: &LanguageSpec) -> usize {
+    if spec.params.counted_only.is_empty() {
+        return 0;
+    }
+    let Some(list) = field_node(node, &spec.fields.parameters) else {
+        return 0;
+    };
+    let mut c = list.walk();
+    list.named_children(&mut c)
+        .filter(|n| spec.params.counted_only.iter().any(|k| k == n.kind()))
+        .count()
 }
 
 /// Every parameter of a callable, in source order.
@@ -324,9 +427,43 @@ fn call_of(
     // Grammars that carry the receiver and name on the call node itself.
     if let Some(name_field) = &spec.calls.name_field {
         if let Some(name_node) = node.child_by_field_name(name_field.as_str()) {
-            let name = text(name_node, source).to_string();
+            // Modelled as something other than a call by the reference
+            // (Ruby's `super` / `yield` are their own node types there).
+            if spec
+                .calls
+                .exclude_method_kinds
+                .iter()
+                .any(|k| k == name_node.kind())
+            {
+                return None;
+            }
+            let mut name = text(name_node, source).to_string();
             if name.is_empty() {
                 return None;
+            }
+            // Operator sends can never be index-resolved, and would crowd real
+            // calls out of the per-file cap.
+            if spec.calls.identifier_names_only
+                && !name.starts_with(|c: char| c.is_alphabetic() || c == '_')
+            {
+                return None;
+            }
+            // `recv.foo = x` calls the SETTER `foo=`; the grammar drops the `=`
+            // that is part of the method's real name. `recv.foo += x` is a
+            // different node type to the reference and contributes no row.
+            if spec.calls.setter_suffix_on_assignment {
+                if let Some(parent) = node.parent() {
+                    let is_target = parent
+                        .child_by_field_name("left")
+                        .is_some_and(|l| l.id() == node.id());
+                    if is_target {
+                        match parent.kind() {
+                            "operator_assignment" => return None,
+                            "assignment" => name.push('='),
+                            _ => {}
+                        }
+                    }
+                }
             }
             let recv = spec
                 .calls
@@ -334,10 +471,50 @@ fn call_of(
                 .as_deref()
                 .and_then(|f| node.child_by_field_name(f));
             return Some(match recv {
+                Some(r)
+                    if spec
+                        .calls
+                        .constant_receiver_nodes
+                        .iter()
+                        .any(|k| k == r.kind()) =>
+                {
+                    // A statically-resolvable constant path.
+                    (
+                        name,
+                        Some(text(r, source).trim().to_string()),
+                        "constant".to_string(),
+                    )
+                }
                 Some(r) => {
-                    let rt = simple_receiver(r, source)?.to_string();
+                    // A receiver with no name -- a literal, a parenthesized
+                    // expression -- yields no row rather than one read off its
+                    // source span.
+                    if !spec.calls.receiver_name_nodes.is_empty()
+                        && !spec.calls.receiver_name_nodes.iter().any(|k| k == r.kind())
+                    {
+                        return None;
+                    }
+                    let rt = match simple_receiver(r, source) {
+                        Some(s) => s.to_string(),
+                        None if spec.flags.receiver_from_method => {
+                            // A chained call: `1.day.freeze` names its receiver
+                            // by the inner call's method.
+                            let m = spec
+                                .calls
+                                .name_field
+                                .as_deref()
+                                .and_then(|f| r.child_by_field_name(f))
+                                .map(|n| text(n, source).to_string())
+                                .unwrap_or_default();
+                            if m.is_empty() {
+                                return None;
+                            }
+                            m
+                        }
+                        None => return None,
+                    };
                     if spec.calls.self_names.iter().any(|s| s == &rt) {
-                        (name, Some(rt), "self".to_string())
+                        (name, Some(rt), self_kind(spec))
                     } else {
                         (name, Some(rt), "member".to_string())
                     }
@@ -362,7 +539,7 @@ fn call_of(
             return None;
         }
         if is_self {
-            return Some((name, Some(recv_text), "self".to_string()));
+            return Some((name, Some(recv_text), self_kind(spec)));
         }
         if spec.calls.super_nodes.iter().any(|k| k == obj.kind()) {
             return Some((name, Some(recv_text), "super".to_string()));
@@ -411,6 +588,7 @@ fn walk(
 
     let mut func_stack: Vec<FuncFrame> = Vec::new();
     let mut class_stack: Vec<ClassFrame> = Vec::new();
+    let mut file_locals: BTreeSet<String> = BTreeSet::new();
 
     // Top-level kinds first: they are the root's own children, so reading them
     // in a separate pass is cheaper and clearer than threading depth through the
@@ -554,8 +732,15 @@ fn walk(
             });
 
         let skip = spec.skip_subtree_nodes.iter().any(|k| k == kind);
+        // Classification applies to NAMED nodes only. A grammar's keyword token
+        // often carries the same kind string as the construct it introduces --
+        // tree-sitter-ruby's `if` node contains an anonymous `if` token -- so an
+        // unguarded set lookup counts every Ruby branch and nesting level twice.
+        // Python is immune by accident (`if_statement` vs `if`), which is
+        // exactly why a Python-only parity check could not see this.
+        let named = node.is_named();
 
-        if !skip {
+        if !skip && named {
             // ---- enter ----
             if spec.flags.supports_jsx && kind.starts_with("jsx_") {
                 has_jsx = true;
@@ -567,13 +752,21 @@ fn walk(
                     .unwrap_or_default();
                 let bases = base_list(decl, spec, source);
                 if !name.is_empty() {
+                    let e = &spec.emit;
                     class_shapes.push(ClassShape {
                         name: name.clone(),
+                        kind: e.class_kind.then(|| class_keyword(decl, spec, source)),
                         start_line: line_of(decl),
                         extends: extends_display(&bases),
-                        bases: bases.clone(),
-                        decorators: decorators_of(decl, spec, source),
-                        class_attrs: class_attrs_of(decl, spec, source),
+                        bases: e.class_bases.then(|| bases.clone()),
+                        decorators: e
+                            .class_decorators
+                            .then(|| decorators_of(decl, spec, source)),
+                        class_attrs: e.class_attrs.then(|| class_attrs_of(decl, spec, source)),
+                        qualified: e
+                            .class_qualified
+                            .then(|| qualified_name(&class_stack, &name))
+                            .flatten(),
                     });
                 }
                 class_stack.push(ClassFrame {
@@ -587,6 +780,15 @@ fn walk(
                 let name = field_node(decl, &spec.fields.name)
                     .map(|n| text(declarator_node(n, spec), source).to_string())
                     .filter(|n| !n.is_empty())
+                    .or_else(|| {
+                        // `const getUsers = () => {}` is named `getUsers`. An
+                        // anonymous name makes every call inside it
+                        // uncorrelatable with the function that contains them.
+                        spec.flags
+                            .name_from_declarator
+                            .then(|| assigned_name(decl, source))
+                            .flatten()
+                    })
                     .unwrap_or_else(|| "<anonymous>".to_string());
                 let params = params_of(decl, spec, source);
                 let decorators = decorators_of(decl, spec, source);
@@ -598,7 +800,10 @@ fn walk(
                         name: name.clone(),
                         params: params.clone(),
                         is_default_export: false,
-                        is_async: is_async(decl, spec, source),
+                        is_async: spec
+                            .emit
+                            .signature_is_async
+                            .then(|| is_async(decl, spec, source)),
                         enclosing_class: enclosing.map(|c| c.name.clone()),
                         // Nesting-qualified: `Outer.Inner` for a nested class,
                         // the bare name for a top-level one.
@@ -610,10 +815,18 @@ fn walk(
                                 .join(".")
                         }),
                         base_class: enclosing.and_then(|c| c.base.clone()),
-                        decorators,
+                        decorators: match spec.emit.signature_decorators.as_str() {
+                            "never" => None,
+                            // TypeScript's reference omits the key when empty; an
+                            // always-present [] is a mismatch, not a tidier default.
+                            "when_present" if decorators.is_empty() => None,
+                            _ => Some(decorators),
+                        },
                         start_line: line_of(decl),
                         end_line: decl.end_position().row + 1,
-                        return_type: field_text(decl, &spec.fields.return_type, source),
+                        return_type: field_text(decl, &spec.fields.return_type, source)
+                            .map(|r| r.trim_start_matches(':').trim().to_string())
+                            .filter(|r| !r.is_empty()),
                     });
                 }
 
@@ -621,11 +834,12 @@ fn walk(
                     name,
                     start_line: line_of(decl),
                     end_line: decl.end_position().row + 1,
-                    param_count: params.len(),
+                    param_count: params.len() + counted_only_params(decl, spec),
                     branch_count: 0,
                     cur_depth: 0,
                     max_depth: 0,
                     chained_held: std::collections::HashMap::new(),
+                    locals: params.iter().map(|p| p.name.clone()).collect(),
                     node_id: node.id(),
                 });
             }
@@ -647,6 +861,52 @@ fn walk(
                     frame.max_depth = frame.max_depth.max(frame.cur_depth);
                     if let Some(parent) = node.parent() {
                         *frame.chained_held.entry(parent.id()).or_insert(0) += 1;
+                    }
+                }
+            }
+
+            // Binding tracking, before the identifier is examined: `x = 1` binds
+            // `x` for everything that follows it in the frame.
+            if spec.calls.promote_unbound_identifiers {
+                let mut bound: Vec<String> = Vec::new();
+                if spec
+                    .calls
+                    .binding_assignment_nodes
+                    .iter()
+                    .any(|k| k == kind)
+                {
+                    if let Some(left) = node.child_by_field_name("left") {
+                        collect_bound_names(left, &mut bound, source);
+                    }
+                }
+                if spec.calls.binding_scope_nodes.iter().any(|k| k == kind) {
+                    collect_bound_names(node, &mut bound, source);
+                }
+                if !bound.is_empty() {
+                    let sink = match func_stack.last_mut() {
+                        Some(f) => &mut f.locals,
+                        None => &mut file_locals,
+                    };
+                    sink.extend(bound);
+                }
+            }
+
+            // A bare identifier that nothing bound is a receiverless send.
+            if spec.calls.promote_unbound_identifiers && kind == "identifier" {
+                if let Some(name) = promotable_send(node, spec, source, &func_stack, &file_locals) {
+                    call_sites_total += 1;
+                    if call_sites.len() < limits.max_call_sites {
+                        call_sites.push(CallSite {
+                            name,
+                            receiver: None,
+                            kind: "bare".to_string(),
+                            line: line_of(node),
+                            caller: func_stack
+                                .last()
+                                .map(|f| f.name.clone())
+                                .unwrap_or_else(|| "<module>".to_string()),
+                            nesting: None,
+                        });
                     }
                 }
             }
@@ -921,6 +1181,54 @@ fn export_clause_names(node: Node, spec: &LanguageSpec, source: &[u8]) -> Vec<St
     out.sort();
     out.dedup();
     out
+}
+
+/// The `kind` string for a self/this-receiver call. TypeScript's reference
+/// extractor says `this`; Python's says `self`.
+fn self_kind(spec: &LanguageSpec) -> String {
+    spec.flags
+        .self_kind
+        .clone()
+        .unwrap_or_else(|| "self".to_string())
+}
+
+/// The variable an unnamed function expression is bound to.
+///
+/// Bounded to the immediate binding forms -- a declarator or a plain assignment
+/// -- so a callback passed as an argument stays anonymous rather than borrowing
+/// an unrelated name from further up the tree.
+fn assigned_name(node: Node, source: &[u8]) -> Option<String> {
+    let parent = node.parent()?;
+    let holder = match parent.kind() {
+        "variable_declarator" | "assignment_expression" | "public_field_definition" => parent,
+        // `export const f = () => {}` nests one more level.
+        _ => return None,
+    };
+    let name = holder
+        .child_by_field_name("name")
+        .or_else(|| holder.child_by_field_name("left"))?;
+    let text = text(name, source).trim().to_string();
+    (!text.is_empty() && !text.contains(['.', '(', '{'])).then_some(text)
+}
+
+/// The `class`/`module` keyword a declaration was introduced with.
+fn class_keyword(node: Node, _spec: &LanguageSpec, _source: &[u8]) -> String {
+    if node.kind().contains("module") {
+        "module".to_string()
+    } else {
+        "class".to_string()
+    }
+}
+
+/// Nesting-qualified name, when it differs from the bare one.
+fn qualified_name(stack: &[ClassFrame], name: &str) -> Option<String> {
+    if stack.is_empty() {
+        return None;
+    }
+    let mut parts: Vec<&str> = stack.iter().map(|f| f.name.as_str()).collect();
+    parts.push(name);
+    let joined = parts.join("::");
+    (joined != name).then_some(joined)
 }
 
 /// Names (never values) of direct class-body assignments.
@@ -1257,9 +1565,15 @@ mod tests {
             "class V(APIView, Mixin):\n    permission_classes = [IsAuthenticated]\n    queryset = None\n",
         );
         let c = &pf.class_shapes[0];
-        assert_eq!(c.bases, vec!["APIView", "Mixin"]);
+        assert_eq!(
+            c.bases.as_deref(),
+            Some(&["APIView".to_string(), "Mixin".to_string()][..])
+        );
         assert_eq!(c.extends.as_deref(), Some("APIView (+1 more)"));
-        assert_eq!(c.class_attrs, vec!["permission_classes", "queryset"]);
+        assert_eq!(
+            c.class_attrs.as_deref(),
+            Some(&["permission_classes".to_string(), "queryset".to_string()][..])
+        );
     }
 
     #[test]
@@ -1692,6 +2006,120 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["Widget", "Box"]
         );
+    }
+
+    /// The bug a Python-only parity check could never see: tree-sitter-ruby's
+    /// named `if` node contains an ANONYMOUS `if` keyword token of the same
+    /// kind, so an unguarded set lookup counted every Ruby branch and nesting
+    /// level twice. Python is immune by accident (`if_statement` vs `if`).
+    #[test]
+    fn a_keyword_token_is_not_counted_as_its_own_construct() {
+        let rb = parse(
+            "ruby",
+            "class A\n  def f(x)\n    if x\n      1\n    end\n  end\nend\n",
+        );
+        let s = &rb.function_scopes[0];
+        assert_eq!(s.branch_count, 1, "one if is one branch, not two");
+        assert_eq!(s.max_depth, 1, "one if is one level, not two");
+    }
+
+    /// Ruby has no syntax separating a receiverless send from a local read;
+    /// only the binding set tells them apart, so without promotion most real
+    /// Ruby call rows are missing -- and with careless promotion, locals become
+    /// phantom calls.
+    #[test]
+    fn ruby_promotes_unbound_identifiers_but_not_locals() {
+        let rb = parse(
+            "ruby",
+            "class A\n  def f(x)\n    helper\n    y = 1\n    y\n    x\n    config.load_defaults\n  end\nend\n",
+        );
+        let names: Vec<&str> = rb.call_sites.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"helper"), "unbound -> a send: {names:?}");
+        assert!(names.contains(&"config"), "a call receiver is a send too");
+        assert!(!names.contains(&"y"), "an assigned local is not a send");
+        assert!(!names.contains(&"x"), "a parameter is not a send");
+    }
+
+    /// `recv.foo = v` calls the setter `foo=`; `recv.foo += v` is a different
+    /// node to the reference and contributes no row at all.
+    #[test]
+    fn ruby_setter_assignment_names_the_setter() {
+        let rb = parse(
+            "ruby",
+            "class A\n  def bot=(v)\n    self.actor_type = v\n    self.count += 1\n  end\nend\n",
+        );
+        let names: Vec<&str> = rb.call_sites.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["actor_type="], "got {names:?}");
+    }
+
+    /// A chained call names its receiver by the inner call's METHOD, not by the
+    /// receiver's source span -- reading the span instead is the single largest
+    /// fidelity error available here.
+    #[test]
+    fn ruby_chained_calls_name_the_receiver_by_its_method() {
+        let rb = parse(
+            "ruby",
+            "class A\n  def f\n    Order.recent.limit(5)\n  end\nend\n",
+        );
+        let rows: Vec<(&str, Option<&str>, &str)> = rb
+            .call_sites
+            .iter()
+            .map(|c| (c.kind.as_str(), c.receiver.as_deref(), c.name.as_str()))
+            .collect();
+        assert!(
+            rows.contains(&("member", Some("recent"), "limit")),
+            "got {rows:?}"
+        );
+        assert!(
+            rows.contains(&("constant", Some("Order"), "recent")),
+            "got {rows:?}"
+        );
+    }
+
+    /// Ruby's class row carries `kind` and no `bases`/`decorators`/`class_attrs`;
+    /// emitting a field the reference never carried is a mismatch even when the
+    /// value is the obvious default.
+    #[test]
+    fn ruby_class_rows_carry_only_the_fields_the_reference_emits() {
+        let rb = parse("ruby", "class Foo < Bar\n  def x; end\nend\n");
+        let c = &rb.class_shapes[0];
+        assert_eq!(c.kind.as_deref(), Some("class"));
+        assert_eq!(c.extends.as_deref(), Some("Bar"));
+        assert!(c.bases.is_none(), "Ruby carries no bases list");
+        assert!(c.decorators.is_none());
+        assert!(c.class_attrs.is_none());
+        // Python still carries all three.
+        let py = parse("python", "class K(Base):\n    x = 1\n");
+        assert!(py.class_shapes[0].bases.is_some());
+        assert!(py.class_shapes[0].class_attrs.is_some());
+        assert!(py.class_shapes[0].kind.is_none());
+    }
+
+    /// `export const getUsers = () => {}` is named `getUsers`. An anonymous name
+    /// makes every call inside it uncorrelatable with its container.
+    #[test]
+    fn an_arrow_function_takes_its_name_from_its_binding() {
+        let ts = parse(
+            "typescript",
+            "export const getUsers = async () => { return fetchAll(); };\n",
+        );
+        assert_eq!(ts.callable_signatures[0].name, "getUsers");
+        assert_eq!(ts.call_sites[0].caller, "getUsers");
+        // A callback argument stays anonymous rather than borrowing a name.
+        let cb = parse("typescript", "run(() => { helper(); });\n");
+        assert!(cb
+            .callable_signatures
+            .iter()
+            .all(|s| s.name == "<anonymous>"));
+    }
+
+    /// The reference vocabulary differs: TypeScript says `this`, Python `self`.
+    #[test]
+    fn the_self_call_kind_follows_the_language() {
+        let ts = parse("typescript", "class A { f() { this.g(); } }\n");
+        assert_eq!(ts.call_sites[0].kind, "this");
+        let py = parse("python", "class A:\n    def f(self):\n        self.g()\n");
+        assert_eq!(py.call_sites[0].kind, "self");
     }
 
     #[test]

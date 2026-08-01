@@ -51,7 +51,11 @@ pub struct CallableSignature {
     pub kind: String,
     pub params: Vec<Param>,
     pub is_default_export: bool,
-    pub is_async: bool,
+    /// Absent for languages whose reference extractor does not model it. The
+    /// dumpers differ here and the difference is load-bearing: an always-present
+    /// `is_async: false` does not match a record that never carried the key.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub is_async: Option<bool>,
     /// Null rather than omitted: the dumpers emit an explicit null for a plain
     /// function, and the harness compares the serialized value.
     pub enclosing_class: Option<String>,
@@ -59,7 +63,8 @@ pub struct CallableSignature {
     /// for a top-level class.
     pub enclosing_class_path: Option<String>,
     pub base_class: Option<String>,
-    pub decorators: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub decorators: Option<Vec<String>>,
     pub start_line: usize,
     pub end_line: usize,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -70,17 +75,26 @@ pub struct CallableSignature {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClassShape {
     pub name: String,
+    /// `class` / `module`, where the language distinguishes them.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub kind: Option<String>,
     pub start_line: usize,
     /// Every base, in source order.
-    pub bases: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub bases: Option<Vec<String>>,
     /// The first base, rendered for display. Multiple inheritance collapses to
     /// `First (+N more)`, matching the dumpers, so a consumer reading a single
     /// string is never silently told the class has one parent when it has four.
     pub extends: Option<String>,
-    pub decorators: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub decorators: Option<Vec<String>>,
     /// Names (never values) of direct class-body assignments. Config attributes
     /// like `permission_classes` are a role signal; their values are not.
-    pub class_attrs: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub class_attrs: Option<Vec<String>>,
+    /// Nesting-qualified name, where it differs from `name`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub qualified: Option<String>,
 }
 
 /// One recorded call edge, before cross-file resolution.
@@ -249,11 +263,11 @@ mod tests {
             kind: "function".into(),
             params: vec![],
             is_default_export: false,
-            is_async: false,
+            is_async: Some(false),
             enclosing_class: None,
             enclosing_class_path: None,
             base_class: None,
-            decorators: vec![],
+            decorators: Some(vec![]),
             start_line: 1,
             end_line: 2,
             return_type: None,

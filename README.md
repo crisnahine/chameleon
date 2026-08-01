@@ -168,15 +168,17 @@ are judgment calls and can never hard-block at any confidence.
   | | TypeScript (49 files) | Ruby (150 files) |
   |---|---|---|
   | normalized slots | 100% (exports 82%) | 100% (imports 97%) |
-  | `class_shapes` | 100% | 0% |
-  | `function_scopes` | 92% | 49% |
-  | `callable_signatures` | 31% | 16% |
-  | `call_sites` | 53% | 15% |
+  | `class_shapes` | 100% | 100% |
+  | `function_scopes` | 92% | 75% |
+  | `callable_signatures` | 31% | 85% |
+  | `call_sites` | 86% | 19% |
 
-  Ruby's `class_shapes` is 0% because chameleon emits a different record there
-  (`{name, kind, start_line, extends, qualified}`) — a real shape difference,
-  not a bug. The rest is per-language spec depth, and closing it is the next
-  piece of work, not something this claims to have done.
+  Ruby's remaining `call_sites` gap is a long tail of Prism emulation — literal
+  receivers, class-body promotion, and row ordering. The mechanics are right
+  (a minimal file matches the reference exactly, including setter naming,
+  chained-call receivers, and locals suppression); what is left is the detail.
+  TypeScript's `callable_signatures` gap is over-emission: it records function
+  expressions its reference does not.
 - **Spec depth varies by language, and the difference is measurable.** Every
   shipped language parses, and extracts functions, classes, and body shape.
   Call-site classification — separating `obj.method()` from a bare `method()`
