@@ -458,10 +458,10 @@ fn walk(
                     top_level_funcs += 1;
                     top_level_func_kind = Some(refined_kind.clone());
                 }
-                if is_exported {
-                    if let Some(name) = field_text(node, &spec.fields.name, source) {
-                        export_names.insert(name);
-                    }
+                // `is_exported` is already required to enter this block; the
+                // gate is not repeated here.
+                if let Some(name) = field_text(node, &spec.fields.name, source) {
+                    export_names.insert(name);
                 }
             }
         }
