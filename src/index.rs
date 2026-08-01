@@ -324,25 +324,42 @@ fn resolve_module(
     // anchor is the one piece of information that makes the answer decidable,
     // so resolving `.util` by global suffix match -- which is what stripping the
     // dot does -- can bind it to a same-named file anywhere in the repo.
+    let conv = ModuleConventions::for_path(importer);
+
     if spec.starts_with('.') {
-        // Two relative spellings share this branch. Python writes `.util` and
-        // `..pkg.mod`, where the dots are BOTH the level marker and the path
-        // separator. JS writes `./util` and `../util`, where the separator is a
-        // slash. Treating the JS form as dotted produced `src//util`, which
-        // matches no corpus path -- so every relative import in a TS repo
-        // resolved to nothing, which is worse than the bug it replaced.
-        let dots = spec.chars().take_while(|c| *c == '.').count();
-        let rest = spec[dots..].trim_start_matches('/');
-        let tail = if rest.contains('/') {
-            rest.to_string()
+        // Two relative spellings, and the level arithmetic differs.
+        //
+        // Python writes `.util` / `..pkg.mod`, where dots are BOTH the level
+        // marker and the separator. JS writes `./util` / `../../lib/util`,
+        // where each `../` is one level and `/` separates.
+        //
+        // Counting only the first run of dots -- which is what a single
+        // `take_while` does -- reads `../../lib/util` as two levels and leaves a
+        // literal `..` in the tail, so it matches nothing. Every import two or
+        // more levels up then contributes no edge at all, silently.
+        let (ups, tail) = if spec.contains('/') {
+            let mut rest = spec;
+            let mut ups = 1usize;
+            loop {
+                if let Some(r) = rest.strip_prefix("./") {
+                    rest = r;
+                } else if let Some(r) = rest.strip_prefix("../") {
+                    rest = r;
+                    ups += 1;
+                } else {
+                    break;
+                }
+            }
+            (ups, rest.trim_start_matches('/').to_string())
         } else {
-            rest.replace('.', "/")
+            let dots = spec.chars().take_while(|c| *c == '.').count();
+            (dots, spec[dots..].replace('.', "/"))
         };
 
         let mut dir: Vec<&str> = importer.split('/').collect();
         dir.pop(); // the importing file itself
-        for _ in 1..dots {
-            // More dots than directories: the specifier points above the root.
+        for _ in 1..ups {
+            // More levels than directories: the specifier points above the root.
             dir.pop()?;
         }
         let base = dir.join("/");
@@ -354,20 +371,23 @@ fn resolve_module(
             }
         };
 
-        // `from . import util` names the submodule in the IMPORTED NAME, not in
-        // the specifier. Without this the whole thing resolves to the package's
-        // own `__init__`, and every call through `util` is then graded against
-        // the package rather than the module that defines it.
         if tail.is_empty() {
-            if let Some(sub) = submodule {
-                if let Some(hit) = exact_module_match(&join(&base, sub), paths) {
-                    return Some(hit);
+            // Python's `from . import util` names the submodule in the imported
+            // name. JS's `from "."` does not -- it means this directory's index
+            // module, and the name is a symbol re-exported from it.
+            if conv.bare_import_names_submodule {
+                if let Some(sub) = submodule {
+                    if let Some(hit) =
+                        exact_module_match(&join(&base, sub), paths, conv.package_index)
+                    {
+                        return Some(hit);
+                    }
                 }
             }
         }
         // Exact, not suffix: the anchor is the whole point, and reusing the
         // suffix matcher lets a root-level `.util` bind `handlers/util.py`.
-        return exact_module_match(&join(&base, &tail), paths);
+        return exact_module_match(&join(&base, &tail), paths, conv.package_index);
     }
 
     let cleaned = spec.replace('.', "/");
@@ -384,7 +404,7 @@ fn resolve_module(
     // cross-file edges" rather than "you pointed me one directory too deep".
     let mut candidate = cleaned.as_str();
     loop {
-        if let Some(hit) = unique_suffix_match(candidate, paths) {
+        if let Some(hit) = unique_suffix_match(candidate, paths, conv.package_index) {
             return Some(hit);
         }
         match candidate.split_once('/') {
@@ -399,11 +419,45 @@ fn resolve_module(
     }
 }
 
+/// How a language spells "the module that a directory stands for", and whether
+/// a bare relative import names a submodule.
+///
+/// Python and JS both write `.`, and they mean different things by it. Python's
+/// `from . import util` names the submodule in the IMPORTED NAME; JS's
+/// `import { x } from "."` means the directory's index module and the name is
+/// just a symbol from it. Applying Python's rule to JS binds a same-named
+/// sibling instead of the barrel, which is a fabricated edge, not an
+/// approximation -- the correct target is not even a candidate.
+#[derive(Debug, Clone, Copy)]
+struct ModuleConventions {
+    /// Basename a directory's own module lives under (`__init__`, `index`).
+    package_index: &'static str,
+    /// Whether a bare relative specifier takes its submodule from the imported
+    /// name.
+    bare_import_names_submodule: bool,
+}
+
+impl ModuleConventions {
+    fn for_path(path: &str) -> Self {
+        let ext = path.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+        match ext {
+            "py" | "pyi" => Self {
+                package_index: "__init__",
+                bare_import_names_submodule: true,
+            },
+            _ => Self {
+                package_index: "index",
+                bare_import_names_submodule: false,
+            },
+        }
+    }
+}
+
 /// An exact module match: the path's stem IS this module, or it is that
 /// module's package `__init__`. No suffix matching -- used where an anchor has
 /// already decided the answer.
-fn exact_module_match(candidate: &str, paths: &[&str]) -> Option<String> {
-    let package_form = format!("{candidate}/__init__");
+fn exact_module_match(candidate: &str, paths: &[&str], package_index: &str) -> Option<String> {
+    let package_form = format!("{candidate}/{package_index}");
     let mut hits: Vec<&str> = paths
         .iter()
         .copied()
@@ -440,8 +494,8 @@ fn common_root_name(paths: &[&str]) -> String {
 ///
 /// Zero matches and many matches are both `None`: an ambiguous resolution is
 /// not a resolution, and picking one would fabricate an edge.
-fn unique_suffix_match(candidate: &str, paths: &[&str]) -> Option<String> {
-    let package_form = format!("{candidate}/__init__");
+fn unique_suffix_match(candidate: &str, paths: &[&str], package_index: &str) -> Option<String> {
+    let package_form = format!("{candidate}/{package_index}");
     let mut hits: Vec<&str> = paths
         .iter()
         .copied()
@@ -952,6 +1006,83 @@ mod tests {
         assert!(
             br2.truncated,
             "25 callers past a fanout cap of 10 is truncated"
+        );
+    }
+
+    /// Counting only the first run of dots reads `../../lib/util` as two levels
+    /// and leaves a literal `..` in the tail, matching nothing -- so every
+    /// import two or more levels up contributes no edge, silently.
+    #[test]
+    fn multi_level_relative_imports_resolve() {
+        let files = corpus(&[
+            ("src/lib/util.ts", "export function helper() { return 1; }\n"),
+            (
+                "src/a/near.ts",
+                "import { helper } from \"../lib/util\";\nexport function near() { return helper(); }\n",
+            ),
+            (
+                "src/a/b/deep.ts",
+                "import { helper } from \"../../lib/util\";\nexport function deep() { return helper(); }\n",
+            ),
+        ]);
+        let idx = CodeIndex::build(&files);
+        let entry = idx
+            .callers_of("src/lib/util.ts", "helper")
+            .expect("both importers resolve");
+        let callers: Vec<&str> = entry.callers.iter().map(|c| c.caller.as_str()).collect();
+        assert!(
+            callers.contains(&"deep"),
+            "two levels up must resolve: {callers:?}"
+        );
+        assert!(
+            callers.contains(&"near"),
+            "one level up must resolve: {callers:?}"
+        );
+    }
+
+    /// Python and JS both write `.` and mean different things. Python's
+    /// `from . import util` names the submodule; JS's `from "."` means the
+    /// directory's index module. Applying Python's rule to JS binds a same-named
+    /// sibling instead of the barrel -- a fabricated edge, since the correct
+    /// target is not even a candidate.
+    #[test]
+    fn a_bare_dot_import_is_language_aware() {
+        let js = corpus(&[
+            ("src/helper.ts", "export function helper() { return 1; }\n"),
+            ("src/index.ts", "export function helper2() { return 2; }\n"),
+            (
+                "src/app.ts",
+                "import { helper2 } from \".\";\nexport function run() { return helper2(); }\n",
+            ),
+        ]);
+        let idx = CodeIndex::build(&js);
+        assert!(
+            idx.importers
+                .get("src/index.ts")
+                .is_some_and(|s| s.contains("src/app.ts")),
+            "JS `from \".\"` means the index module; got {:?}",
+            idx.importers
+        );
+        assert!(
+            !idx.importers.contains_key("src/helper.ts"),
+            "and must not bind the same-named sibling"
+        );
+
+        // Python keeps its own meaning.
+        let py = corpus(&[
+            ("pkg/__init__.py", "\n"),
+            ("pkg/util.py", "def thing():\n    return 1\n"),
+            (
+                "pkg/app.py",
+                "from . import util\n\ndef run():\n    return util.thing()\n",
+            ),
+        ]);
+        let idx2 = CodeIndex::build(&py);
+        assert!(
+            idx2.importers
+                .get("pkg/util.py")
+                .is_some_and(|s| s.contains("pkg/app.py")),
+            "Python `from . import util` still names the submodule"
         );
     }
 
