@@ -162,6 +162,21 @@ are judgment calls and can never hard-block at any confidence.
 - **Parity is measured on Python.** The other 23 languages are verified to
   parse and extract structurally (`cargo test`), not compared against a
   reference implementation, because for most of them none exists.
+- **Ruby and TypeScript are NOT drop-in.** Measured against chameleon's own
+  backend, both match every *normalized* slot but diverge on the extras:
+
+  | | TypeScript (49 files) | Ruby (150 files) |
+  |---|---|---|
+  | normalized slots | 100% (exports 82%) | 100% (imports 97%) |
+  | `class_shapes` | 100% | 0% |
+  | `function_scopes` | 92% | 49% |
+  | `callable_signatures` | 31% | 16% |
+  | `call_sites` | 53% | 15% |
+
+  Ruby's `class_shapes` is 0% because chameleon emits a different record there
+  (`{name, kind, start_line, extends, qualified}`) — a real shape difference,
+  not a bug. The rest is per-language spec depth, and closing it is the next
+  piece of work, not something this claims to have done.
 - **Spec depth varies by language, and the difference is measurable.** Every
   shipped language parses, and extracts functions, classes, and body shape.
   Call-site classification — separating `obj.method()` from a bare `method()`
