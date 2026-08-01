@@ -1,0 +1,43 @@
+# C.
+
+name = "c"
+extensions = [".c", ".h"]
+
+function_nodes = ["function_definition"]
+class_nodes = ["struct_specifier", "union_specifier", "enum_specifier"]
+branch_nodes = ["if_statement", "for_statement", "while_statement", "do_statement", "case_statement", "conditional_expression"]
+nesting_nodes = ["if_statement", "for_statement", "while_statement", "do_statement", "switch_statement"]
+skip_subtree_nodes = ["comment", "string_content"]
+
+[top_level_kinds]
+function_definition = "FunctionDefinition"
+declaration = "Declaration"
+struct_specifier = "StructSpecifier"
+enum_specifier = "EnumSpecifier"
+union_specifier = "UnionSpecifier"
+type_definition = "TypeDefinition"
+preproc_include = "PreprocInclude"
+preproc_def = "PreprocDef"
+comment = ""
+
+[params]
+positional = ["parameter_declaration"]
+
+[fields]
+name = "declarator"
+parameters = "parameters"
+body = "body"
+call_function = "function"
+member_object = "argument"
+member_property = "field"
+param_type = "type"
+
+[calls]
+nodes = ["call_expression"]
+member_nodes = ["field_expression"]
+
+[imports]
+module_nodes = ["preproc_include"]
+module_field = "path"
+
+[flags]

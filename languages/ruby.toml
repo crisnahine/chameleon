@@ -1,0 +1,56 @@
+# Ruby. Kind vocabulary is Prism's node class basenames, matching prism_dump.rb.
+# Zeitwerk means most Ruby files carry no import statement at all, so the import
+# section reads require/require_relative and nothing else pretends otherwise.
+
+name = "ruby"
+extensions = [".rb", ".rake", ".gemspec"]
+
+function_nodes = ["method", "singleton_method"]
+class_nodes = ["class", "module", "singleton_class"]
+branch_nodes = ["if", "unless", "while", "until", "for", "when", "in_clause", "rescue"]
+nesting_nodes = ["if", "unless", "while", "until", "for", "case", "begin", "block", "do_block"]
+skip_subtree_nodes = ["comment", "string_content"]
+
+[top_level_kinds]
+method = "DefNode"
+singleton_method = "DefNode"
+class = "ClassNode"
+singleton_class = "ClassNode"
+module = "ModuleNode"
+call = "CallNode"
+assignment = "LocalVariableWriteNode"
+if = "IfNode"
+unless = "UnlessNode"
+while = "WhileNode"
+case = "CaseNode"
+begin = "BeginNode"
+comment = ""
+
+# Ruby blocks raise nesting but are not their own frame, matching prism_dump.
+
+[params]
+positional = ["identifier"]
+optional = ["optional_parameter"]
+rest = ["splat_parameter"]
+keyword_rest = ["hash_splat_parameter"]
+
+[fields]
+name = "name"
+parameters = "parameters"
+body = "body"
+superclass = "superclass"
+call_function = "method"
+member_object = "receiver"
+member_property = "method"
+
+[calls]
+nodes = ["call"]
+member_nodes = ["call"]
+self_names = ["self"]
+carries_nesting = true
+
+[imports]
+module_nodes = ["call"]
+
+[flags]
+decorator_nodes = []

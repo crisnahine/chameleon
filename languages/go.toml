@@ -1,0 +1,43 @@
+# Go.
+
+name = "go"
+extensions = [".go"]
+
+function_nodes = ["function_declaration", "method_declaration", "func_literal"]
+class_nodes = ["type_declaration"]
+branch_nodes = ["if_statement", "for_statement", "expression_case", "type_case", "communication_case"]
+nesting_nodes = ["if_statement", "for_statement", "expression_switch_statement", "type_switch_statement", "select_statement"]
+skip_subtree_nodes = ["comment", "raw_string_literal"]
+
+[top_level_kinds]
+function_declaration = "FuncDecl"
+method_declaration = "FuncDecl"
+type_declaration = "TypeDecl"
+import_declaration = "ImportDecl"
+var_declaration = "VarDecl"
+const_declaration = "ConstDecl"
+package_clause = "PackageClause"
+comment = ""
+
+[params]
+positional = ["parameter_declaration"]
+rest = ["variadic_parameter_declaration"]
+
+[fields]
+name = "name"
+parameters = "parameters"
+body = "body"
+return_type = "result"
+call_function = "function"
+member_object = "operand"
+member_property = "field"
+
+[calls]
+nodes = ["call_expression"]
+member_nodes = ["selector_expression"]
+
+[imports]
+module_nodes = ["import_declaration"]
+module_field = "path"
+
+[flags]

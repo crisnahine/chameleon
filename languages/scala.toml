@@ -1,0 +1,44 @@
+# Scala.
+
+name = "scala"
+extensions = [".scala", ".sc"]
+
+function_nodes = ["function_definition", "function_declaration"]
+class_nodes = ["class_definition", "object_definition", "trait_definition"]
+branch_nodes = ["if_expression", "case_clause", "while_expression", "for_expression"]
+nesting_nodes = ["if_expression", "match_expression", "while_expression", "for_expression", "try_expression"]
+skip_subtree_nodes = ["comment", "string_content"]
+
+[top_level_kinds]
+function_definition = "FunctionDefinition"
+class_definition = "ClassDefinition"
+object_definition = "ObjectDefinition"
+trait_definition = "TraitDefinition"
+import_declaration = "ImportDeclaration"
+package_clause = "PackageClause"
+val_definition = "ValDefinition"
+comment = ""
+
+[params]
+positional = ["parameter"]
+
+[fields]
+name = "name"
+parameters = "parameters"
+body = "body"
+return_type = "return_type"
+call_function = "function"
+member_object = "value"
+member_property = "field"
+param_type = "type"
+
+[calls]
+nodes = ["call_expression"]
+member_nodes = ["field_expression"]
+self_names = ["this"]
+
+[imports]
+module_nodes = ["import_declaration"]
+
+[flags]
+decorator_nodes = ["annotation"]

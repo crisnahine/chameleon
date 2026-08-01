@@ -1,0 +1,49 @@
+# Java.
+
+name = "java"
+extensions = [".java"]
+
+function_nodes = ["method_declaration", "constructor_declaration", "lambda_expression"]
+class_nodes = ["class_declaration", "interface_declaration", "enum_declaration", "record_declaration"]
+branch_nodes = ["if_statement", "for_statement", "enhanced_for_statement", "while_statement", "do_statement", "switch_block_statement_group", "catch_clause", "ternary_expression"]
+nesting_nodes = ["if_statement", "for_statement", "enhanced_for_statement", "while_statement", "do_statement", "switch_expression", "try_statement"]
+skip_subtree_nodes = ["line_comment", "block_comment"]
+
+[top_level_kinds]
+class_declaration = "ClassDeclaration"
+interface_declaration = "InterfaceDeclaration"
+enum_declaration = "EnumDeclaration"
+record_declaration = "RecordDeclaration"
+import_declaration = "ImportDeclaration"
+package_declaration = "PackageDeclaration"
+method_declaration = "MethodDeclaration"
+line_comment = ""
+block_comment = ""
+
+[params]
+positional = ["formal_parameter"]
+rest = ["spread_parameter"]
+
+[fields]
+name = "name"
+parameters = "parameters"
+body = "body"
+return_type = "type"
+superclass = "superclass"
+call_function = "name"
+member_object = "object"
+member_property = "field"
+param_type = "type"
+
+[calls]
+nodes = ["method_invocation"]
+member_nodes = ["field_access"]
+constructor_nodes = ["object_creation_expression"]
+self_names = ["this"]
+super_nodes = ["super"]
+
+[imports]
+module_nodes = ["import_declaration"]
+
+[flags]
+decorator_nodes = ["annotation", "marker_annotation"]

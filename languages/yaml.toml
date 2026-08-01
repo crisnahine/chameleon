@@ -1,0 +1,14 @@
+# YAML. Config and CI-pipeline evidence.
+
+name = "yaml"
+extensions = [".yaml", ".yml"]
+
+skip_subtree_nodes = ["comment"]
+
+[top_level_kinds]
+block_mapping = "BlockMapping"
+block_sequence = "BlockSequence"
+document = "Document"
+comment = ""
+
+[flags]

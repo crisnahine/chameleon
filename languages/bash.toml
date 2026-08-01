@@ -1,0 +1,29 @@
+# Bash. Shell has no class or import concept; the spec says so by omission
+# rather than by inventing one.
+
+name = "bash"
+extensions = [".sh", ".bash"]
+
+function_nodes = ["function_definition"]
+branch_nodes = ["if_statement", "elif_clause", "for_statement", "while_statement", "case_item"]
+nesting_nodes = ["if_statement", "for_statement", "while_statement", "case_statement", "subshell"]
+skip_subtree_nodes = ["comment"]
+
+[top_level_kinds]
+function_definition = "FunctionDefinition"
+variable_assignment = "VariableAssignment"
+command = "Command"
+if_statement = "IfStatement"
+for_statement = "ForStatement"
+while_statement = "WhileStatement"
+case_statement = "CaseStatement"
+comment = ""
+
+[fields]
+name = "name"
+body = "body"
+
+[calls]
+nodes = ["command"]
+
+[flags]

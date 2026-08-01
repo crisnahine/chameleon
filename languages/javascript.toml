@@ -1,0 +1,59 @@
+# JavaScript. Same consumer vocabulary as TypeScript, minus the type nodes.
+
+name = "javascript"
+extensions = [".js", ".jsx", ".mjs", ".cjs"]
+
+function_nodes = ["function_declaration", "generator_function_declaration", "function_expression", "arrow_function", "method_definition"]
+class_nodes = ["class_declaration", "class"]
+branch_nodes = ["if_statement", "for_statement", "for_in_statement", "while_statement", "do_statement", "switch_case", "catch_clause", "ternary_expression"]
+nesting_nodes = ["if_statement", "for_statement", "for_in_statement", "while_statement", "do_statement", "switch_statement", "try_statement"]
+skip_subtree_nodes = ["comment", "string_fragment"]
+
+[top_level_kinds]
+function_declaration = "FunctionDeclaration"
+generator_function_declaration = "FunctionDeclaration"
+class_declaration = "ClassDeclaration"
+import_statement = "ImportDeclaration"
+export_statement = "ExportDeclaration"
+lexical_declaration = "VariableStatement"
+variable_declaration = "VariableStatement"
+expression_statement = "ExpressionStatement"
+if_statement = "IfStatement"
+for_statement = "ForStatement"
+while_statement = "WhileStatement"
+try_statement = "TryStatement"
+return_statement = "ReturnStatement"
+comment = ""
+
+[params]
+positional = ["identifier"]
+rest = ["rest_pattern"]
+destructured = ["object_pattern", "array_pattern"]
+
+[fields]
+name = "name"
+parameters = "parameters"
+body = "body"
+superclass = "superclass"
+call_function = "function"
+member_object = "object"
+member_property = "property"
+
+[calls]
+nodes = ["call_expression"]
+member_nodes = ["member_expression"]
+constructor_nodes = ["new_expression"]
+self_names = ["this"]
+super_nodes = ["super"]
+
+[imports]
+module_nodes = ["import_statement"]
+from_nodes = ["import_statement"]
+module_field = "source"
+name_field = "name"
+wildcard_nodes = ["namespace_import"]
+
+[flags]
+has_default_export = true
+supports_jsx = true
+async_markers = ["async"]

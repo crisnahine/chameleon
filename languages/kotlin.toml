@@ -1,0 +1,44 @@
+# Kotlin. The grammar is the maintained -ng fork; upstream stalled in 2024.
+
+name = "kotlin"
+extensions = [".kt", ".kts"]
+
+function_nodes = ["function_declaration", "anonymous_function", "lambda_literal"]
+class_nodes = ["class_declaration", "object_declaration"]
+branch_nodes = ["if_expression", "when_entry", "while_statement", "for_statement", "catch_block"]
+nesting_nodes = ["if_expression", "when_expression", "while_statement", "for_statement", "try_expression"]
+skip_subtree_nodes = ["comment", "line_comment", "multiline_comment"]
+
+[top_level_kinds]
+function_declaration = "FunctionDeclaration"
+class_declaration = "ClassDeclaration"
+object_declaration = "ObjectDeclaration"
+import = "ImportDeclaration"
+package_header = "PackageHeader"
+property_declaration = "PropertyDeclaration"
+comment = ""
+line_comment = ""
+
+[params]
+positional = ["parameter", "class_parameter"]
+
+[fields]
+name = "name"
+parameters = "parameters"
+body = "body"
+call_function = "function"
+member_object = "target"
+member_property = "name"
+
+[calls]
+nodes = ["call_expression"]
+member_nodes = ["navigation_expression"]
+self_names = ["this"]
+super_nodes = ["super"]
+
+[imports]
+module_nodes = ["import"]
+
+[flags]
+async_markers = ["suspend"]
+decorator_nodes = ["annotation"]

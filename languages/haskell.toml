@@ -1,0 +1,35 @@
+# Haskell.
+
+name = "haskell"
+extensions = [".hs"]
+
+function_nodes = ["function"]
+class_nodes = ["class", "instance", "data_type", "newtype"]
+branch_nodes = ["conditional", "alternative", "guard"]
+nesting_nodes = ["conditional", "case", "do", "let"]
+skip_subtree_nodes = ["comment", "haddock"]
+
+[top_level_kinds]
+function = "Function"
+signature = "Signature"
+data_type = "DataType"
+newtype = "Newtype"
+class = "Class"
+instance = "Instance"
+import = "Import"
+type_synonym = "TypeSynonym"
+comment = ""
+
+[fields]
+name = "name"
+parameters = "patterns"
+call_function = "function"
+
+[calls]
+nodes = ["apply"]
+
+[imports]
+module_nodes = ["import"]
+module_field = "module"
+
+[flags]

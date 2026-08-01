@@ -1,0 +1,25 @@
+# Elixir. Almost everything is a `call` in this grammar, including `def` and
+# `defmodule`, so the top-level vocabulary is deliberately coarse.
+
+name = "elixir"
+extensions = [".ex", ".exs"]
+
+function_nodes = ["anonymous_function"]
+branch_nodes = ["stab_clause"]
+nesting_nodes = ["do_block", "anonymous_function"]
+skip_subtree_nodes = ["comment", "quoted_content"]
+
+[top_level_kinds]
+call = "Call"
+alias = "Alias"
+comment = ""
+
+[fields]
+call_function = "target"
+member_object = "operand"
+
+[calls]
+nodes = ["call"]
+member_nodes = ["dot"]
+
+[flags]

@@ -1,0 +1,42 @@
+# Swift.
+
+name = "swift"
+extensions = [".swift"]
+
+function_nodes = ["function_declaration", "init_declaration", "deinit_declaration", "lambda_literal"]
+class_nodes = ["class_declaration", "protocol_declaration"]
+branch_nodes = ["if_statement", "for_statement", "while_statement", "guard_statement", "switch_entry", "catch_block"]
+nesting_nodes = ["if_statement", "for_statement", "while_statement", "switch_statement", "do_statement"]
+skip_subtree_nodes = ["comment", "multiline_comment"]
+
+[top_level_kinds]
+function_declaration = "FunctionDeclaration"
+class_declaration = "ClassDeclaration"
+protocol_declaration = "ProtocolDeclaration"
+import_declaration = "ImportDeclaration"
+property_declaration = "PropertyDeclaration"
+comment = ""
+
+[params]
+positional = ["parameter"]
+
+[fields]
+name = "name"
+parameters = "parameters"
+body = "body"
+call_function = "function"
+member_object = "target"
+member_property = "name"
+
+[calls]
+nodes = ["call_expression"]
+member_nodes = ["navigation_expression"]
+self_names = ["self"]
+super_nodes = ["super"]
+
+[imports]
+module_nodes = ["import_declaration"]
+
+[flags]
+async_markers = ["async"]
+decorator_nodes = ["attribute"]
