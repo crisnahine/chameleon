@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};
 
 use crate::lang::BoundLanguage;
+use crate::mine::ArchetypeIndex;
 
 /// What kind of knowledge this rule encodes. The bridge to the taxonomy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -191,6 +192,35 @@ impl Rule {
         }
     }
 
+    /// Whether this rule's cohort scope admits `path`.
+    ///
+    /// An omitted list and `["*"]` both mean repo-wide and consult nothing, so
+    /// the common rule never forces a mining pass. A cohort-scoped rule on an
+    /// unmined tree is an error, not a silent skip: the alternative is a rule
+    /// that reports clean because it never ran.
+    fn applies_to_archetype(
+        &self,
+        path: &str,
+        archetypes: &ArchetypeIndex,
+    ) -> std::result::Result<bool, Unsupported> {
+        if self.archetypes.is_empty() || self.archetypes.iter().any(|a| a == "*") {
+            return Ok(true);
+        }
+        let Some(tag) = archetypes.get(path) else {
+            return Err(Unsupported::UnknownArchetype {
+                rule: self.id.clone(),
+                path: path.to_string(),
+            });
+        };
+        // Either the role label or the disambiguated id. `mine` splits one role
+        // into controller, controller-2, ...; the label is what a rule author
+        // writes and it has to reach all of them.
+        Ok(self
+            .archetypes
+            .iter()
+            .any(|a| a == &tag.label || a == &tag.id))
+    }
+
     fn applies_to_path(&self, path: &str) -> bool {
         if self
             .matcher
@@ -230,6 +260,14 @@ pub struct Finding {
 pub enum Unsupported {
     Engine(Engine),
     BadQuery(String),
+    /// The rule is scoped to a cohort, but this file's cohort is unknown --
+    /// the tree was not mined. Reported rather than skipped: a cohort-scoped
+    /// rule that quietly evaluates nothing is the same silent-clean failure
+    /// this module exists to prevent.
+    UnknownArchetype {
+        rule: String,
+        path: String,
+    },
 }
 
 /// Evaluate one rule against one file.
@@ -241,10 +279,14 @@ pub fn evaluate(
     path: &str,
     source: &str,
     bound: &BoundLanguage,
+    archetypes: &ArchetypeIndex,
 ) -> std::result::Result<Vec<Finding>, Unsupported> {
     if !rule.applies_to_path(path) {
         return Ok(Vec::new());
     }
+    // Language mismatch is decidable without cohort data, so it outranks the
+    // cohort gate -- a Python rule must not demand mining before it can decline
+    // a Go file.
     if !rule.languages.is_empty()
         && !rule
             .languages
@@ -254,6 +296,9 @@ pub fn evaluate(
         return Ok(Vec::new());
     }
     if rule.mode == Mode::Off {
+        return Ok(Vec::new());
+    }
+    if !rule.applies_to_archetype(path, archetypes)? {
         return Ok(Vec::new());
     }
 
@@ -386,6 +431,7 @@ pub fn load_rules(doc: &str) -> Result<Vec<Rule>> {
 mod tests {
     use super::*;
     use crate::lang::Registry;
+    use crate::mine::ArchetypeTag;
 
     fn rule_toml() -> &'static str {
         r#"
@@ -408,6 +454,12 @@ rule = '(call function: (identifier) @violation (#eq? @violation "print"))'
 [rule.match.paths]
 exclude = ["**/tests/**", "scripts/*"]
 "#
+    }
+
+    /// An empty cohort index: every test rule below is repo-wide, so none of
+    /// them consults it.
+    fn no_cohorts() -> ArchetypeIndex {
+        ArchetypeIndex::new()
     }
 
     fn load_one() -> Rule {
@@ -436,7 +488,7 @@ exclude = ["**/tests/**", "scripts/*"]
         let bound = reg.by_name("python").unwrap();
         let r = load_one();
         let src = "def f():\n    print('a')\n    logger('b')\n    other('c')\n";
-        let found = evaluate(&r, "app/lib.py", src, bound).unwrap();
+        let found = evaluate(&r, "app/lib.py", src, bound, &no_cohorts()).unwrap();
         assert_eq!(
             found.len(),
             1,
@@ -454,7 +506,7 @@ exclude = ["**/tests/**", "scripts/*"]
         r.matcher.rule =
             r#"((call function: (identifier) @violation) (#match? @violation "^log_"))"#.into();
         let src = "def f():\n    log_start()\n    print('x')\n    log_end()\n";
-        let found = evaluate(&r, "app/lib.py", src, bound).unwrap();
+        let found = evaluate(&r, "app/lib.py", src, bound, &no_cohorts()).unwrap();
         assert_eq!(found.len(), 2, "only the log_* calls; got {found:?}");
     }
 
@@ -464,7 +516,7 @@ exclude = ["**/tests/**", "scripts/*"]
         let bound = reg.by_name("python").unwrap();
         let r = load_one();
         let src = "def f():\n    \"\"\"never call print() here\"\"\"\n    print('x')\n";
-        let found = evaluate(&r, "app/lib.py", src, bound).unwrap();
+        let found = evaluate(&r, "app/lib.py", src, bound, &no_cohorts()).unwrap();
         assert_eq!(
             found.len(),
             1,
@@ -479,13 +531,20 @@ exclude = ["**/tests/**", "scripts/*"]
         let bound = reg.by_name("python").unwrap();
         let r = load_one();
         let src = "print('x')\n";
-        assert!(evaluate(&r, "app/tests/test_x.py", src, bound)
+        assert!(
+            evaluate(&r, "app/tests/test_x.py", src, bound, &no_cohorts())
+                .unwrap()
+                .is_empty()
+        );
+        assert!(evaluate(&r, "scripts/run.py", src, bound, &no_cohorts())
             .unwrap()
             .is_empty());
-        assert!(evaluate(&r, "scripts/run.py", src, bound)
-            .unwrap()
-            .is_empty());
-        assert_eq!(evaluate(&r, "app/lib.py", src, bound).unwrap().len(), 1);
+        assert_eq!(
+            evaluate(&r, "app/lib.py", src, bound, &no_cohorts())
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -493,7 +552,7 @@ exclude = ["**/tests/**", "scripts/*"]
         let reg = Registry::load().unwrap();
         let go = reg.by_name("go").unwrap();
         let r = load_one();
-        assert!(evaluate(&r, "main.go", "package m\n", go)
+        assert!(evaluate(&r, "main.go", "package m\n", go, &no_cohorts())
             .unwrap()
             .is_empty());
     }
@@ -504,9 +563,11 @@ exclude = ["**/tests/**", "scripts/*"]
         let bound = reg.by_name("python").unwrap();
         let mut r = load_one();
         r.mode = Mode::Off;
-        assert!(evaluate(&r, "app/lib.py", "print('x')\n", bound)
-            .unwrap()
-            .is_empty());
+        assert!(
+            evaluate(&r, "app/lib.py", "print('x')\n", bound, &no_cohorts())
+                .unwrap()
+                .is_empty()
+        );
     }
 
     /// The core of calibrated blocking: enforce alone is not enough.
@@ -558,6 +619,7 @@ exclude = ["**/tests/**", "scripts/*"]
             "src/App.tsx",
             "const A = () => { console.log(1); };\n",
             tsx,
+            &no_cohorts(),
         )
         .unwrap();
         assert_eq!(found.len(), 1, "a typescript rule must reach .tsx");
@@ -572,7 +634,13 @@ exclude = ["**/tests/**", "scripts/*"]
         let mut r = load_one();
         r.matcher.engine = Engine::Regex;
         r.matcher.rule = "AKIA[0-9A-Z]{16}".into();
-        match evaluate(&r, "app/lib.py", "KEY = 'AKIAIOSFODNN7EXAMPLE'\n", bound) {
+        match evaluate(
+            &r,
+            "app/lib.py",
+            "KEY = 'AKIAIOSFODNN7EXAMPLE'\n",
+            bound,
+            &no_cohorts(),
+        ) {
             Err(Unsupported::Engine(Engine::Regex)) => {}
             other => panic!("expected Unsupported, got {other:?}"),
         }
@@ -584,7 +652,7 @@ exclude = ["**/tests/**", "scripts/*"]
         let bound = reg.by_name("python").unwrap();
         let mut r = load_one();
         r.matcher.engine = Engine::Semgrep;
-        match evaluate(&r, "app/lib.py", "print('x')\n", bound) {
+        match evaluate(&r, "app/lib.py", "print('x')\n", bound, &no_cohorts()) {
             Err(Unsupported::Engine(Engine::Semgrep)) => {}
             other => panic!("expected an explicit Unsupported, got {other:?}"),
         }
@@ -597,7 +665,7 @@ exclude = ["**/tests/**", "scripts/*"]
         let mut r = load_one();
         r.matcher.rule = "(this is not a valid query".into();
         assert!(matches!(
-            evaluate(&r, "app/lib.py", "x = 1\n", bound),
+            evaluate(&r, "app/lib.py", "x = 1\n", bound, &no_cohorts()),
             Err(Unsupported::BadQuery(_))
         ));
     }
@@ -630,6 +698,141 @@ exclude = ["**/tests/**", "scripts/*"]
         assert!(!glob_match("**/tests/**", "app/lib.py"));
     }
 
+    fn indexed(rows: &[(&str, &str, &str)]) -> ArchetypeIndex {
+        rows.iter()
+            .map(|(path, id, label)| {
+                (
+                    path.to_string(),
+                    ArchetypeTag {
+                        id: id.to_string(),
+                        label: label.to_string(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// The whole point of the field: a cohort-scoped rule must not fire outside
+    /// its cohort. Before this gate existed it fired on every file in the repo,
+    /// which for an enforce-mode rule means blocking edits in cohorts it was
+    /// never calibrated against.
+    #[test]
+    fn a_cohort_scoped_rule_fires_only_in_its_cohort() {
+        let reg = Registry::load().unwrap();
+        let bound = reg.by_name("python").unwrap();
+        let idx = indexed(&[
+            ("app/services/order.py", "service", "service"),
+            ("app/api/users.py", "controller", "controller"),
+        ]);
+        let mut r = load_one();
+        r.archetypes = vec!["service".into()];
+        r.matcher.paths = Paths::default();
+        let src = "print('x')\n";
+
+        assert_eq!(
+            evaluate(&r, "app/services/order.py", src, bound, &idx)
+                .unwrap()
+                .len(),
+            1,
+            "fires inside the cohort"
+        );
+        assert!(
+            evaluate(&r, "app/api/users.py", src, bound, &idx)
+                .unwrap()
+                .is_empty(),
+            "and not outside it"
+        );
+    }
+
+    /// `mine` splits one role into `controller`, `controller-2`, ...; the label
+    /// is what a rule author writes and it has to reach all of them.
+    #[test]
+    fn a_disambiguated_cohort_matches_by_label_and_by_id() {
+        let reg = Registry::load().unwrap();
+        let bound = reg.by_name("python").unwrap();
+        let idx = indexed(&[("app/api/users.py", "controller-7", "controller")]);
+        let src = "print('x')\n";
+        for scope in ["controller", "controller-7"] {
+            let mut r = load_one();
+            r.archetypes = vec![scope.into()];
+            r.matcher.paths = Paths::default();
+            assert_eq!(
+                evaluate(&r, "app/api/users.py", src, bound, &idx)
+                    .unwrap()
+                    .len(),
+                1,
+                "{scope} must reach this cohort"
+            );
+        }
+        let mut r = load_one();
+        r.archetypes = vec!["controller-8".into()];
+        r.matcher.paths = Paths::default();
+        assert!(evaluate(&r, "app/api/users.py", src, bound, &idx)
+            .unwrap()
+            .is_empty());
+    }
+
+    /// An unmined tree must be REPORTED, not treated as "not in this cohort".
+    /// A cohort-scoped rule that quietly evaluates nothing is the same
+    /// silent-clean failure this module exists to prevent.
+    #[test]
+    fn a_cohort_rule_on_an_unmined_tree_is_reported_not_skipped() {
+        let reg = Registry::load().unwrap();
+        let bound = reg.by_name("python").unwrap();
+        let mut r = load_one();
+        r.archetypes = vec!["service".into()];
+        r.matcher.paths = Paths::default();
+        assert!(matches!(
+            evaluate(
+                &r,
+                "app/services/order.py",
+                "print('x')\n",
+                bound,
+                &no_cohorts()
+            ),
+            Err(Unsupported::UnknownArchetype { .. })
+        ));
+    }
+
+    /// Proves the gate did not over-correct into "nothing runs until the tree is
+    /// mined". An omitted list and ["*"] both mean repo-wide.
+    #[test]
+    fn repo_wide_rules_need_no_cohort_data() {
+        let reg = Registry::load().unwrap();
+        let bound = reg.by_name("python").unwrap();
+        let src = "print('x')\n";
+        let mut r = load_one();
+        r.matcher.paths = Paths::default();
+        assert_eq!(
+            evaluate(&r, "app/lib.py", src, bound, &no_cohorts())
+                .unwrap()
+                .len(),
+            1
+        );
+        r.archetypes = Vec::new();
+        assert_eq!(
+            evaluate(&r, "app/lib.py", src, bound, &no_cohorts())
+                .unwrap()
+                .len(),
+            1,
+            "an omitted archetypes field must not silently disable the rule"
+        );
+    }
+
+    /// Gate ORDER: a language mismatch is decidable without cohort data, so it
+    /// must outrank the cohort gate. Otherwise a Python rule demands mining
+    /// before it can decline a Go file.
+    #[test]
+    fn a_language_mismatch_outranks_an_unknown_cohort() {
+        let reg = Registry::load().unwrap();
+        let go = reg.by_name("go").unwrap();
+        let mut r = load_one();
+        r.archetypes = vec!["service".into()];
+        assert!(evaluate(&r, "main.go", "package m\n", go, &no_cohorts())
+            .unwrap()
+            .is_empty());
+    }
+
     #[test]
     fn a_literal_rule_scans_lines() {
         let reg = Registry::load().unwrap();
@@ -656,7 +859,7 @@ exclude = ["**/tests/**", "scripts/*"]
             metadata: BTreeMap::new(),
         };
         let src = "import axios from \"axios\";\nconst x = 1;\n";
-        let found = evaluate(&r, "src/a.ts", src, bound).unwrap();
+        let found = evaluate(&r, "src/a.ts", src, bound, &no_cohorts()).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].line, 1);
         assert!(

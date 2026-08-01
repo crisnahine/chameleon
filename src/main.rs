@@ -389,6 +389,27 @@ fn cmd_check(args: &Args) -> Result<()> {
     let registry = Registry::load()?;
     let paths = collect_sources(&root, &registry)?;
 
+    // Mine only when a rule actually needs cohorts. A repo-wide rule set -- the
+    // common case -- must not pay for a clustering pass it never reads.
+    let needs_cohorts = rule_set
+        .iter()
+        .any(|r| !r.archetypes.is_empty() && !r.archetypes.iter().any(|a| a == "*"));
+    let archetypes = if needs_cohorts {
+        let (files, _) = parse_corpus(&root, &args.limits)?;
+        let cohorts = mine::cluster(&files);
+        eprintln!(
+            "mined {} cohorts for {} archetype-scoped rule(s)",
+            cohorts.len(),
+            rule_set
+                .iter()
+                .filter(|r| !r.archetypes.is_empty() && !r.archetypes.iter().any(|a| a == "*"))
+                .count()
+        );
+        mine::archetype_index(&cohorts)
+    } else {
+        mine::ArchetypeIndex::new()
+    };
+
     let mut findings = Vec::new();
     let mut unsupported = Vec::new();
     let mut unreadable: Vec<String> = Vec::new();
@@ -413,10 +434,22 @@ fn cmd_check(args: &Args) -> Result<()> {
             .to_string_lossy()
             .to_string();
         for rule in &rule_set {
-            match rules::evaluate(rule, &rel, &source, bound) {
+            match rules::evaluate(rule, &rel, &source, bound, &archetypes) {
                 Ok(mut f) => findings.append(&mut f),
                 Err(reason) => {
-                    let note = format!("{}: {reason:?}", rule.id);
+                    // Aggregated per rule: an unmined tree would otherwise emit
+                    // one line per file for the same cause.
+                    let note = match &reason {
+                        rules::Unsupported::UnknownArchetype { rule, .. } => format!(
+                            "{rule}: scoped to {:?} but the tree has no mined cohorts",
+                            rule_set
+                                .iter()
+                                .find(|r| &r.id == rule)
+                                .map(|r| r.archetypes.clone())
+                                .unwrap_or_default()
+                        ),
+                        other => format!("{}: {other:?}", rule.id),
+                    };
                     if !unsupported.contains(&note) {
                         unsupported.push(note);
                     }

@@ -73,7 +73,12 @@ fn cluster_key(pf: &ParsedFile) -> ClusterKey {
 /// A cohort of files that play the same role.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Archetype {
+    /// Disambiguated, unique: `controller`, `controller-2`, ...
     pub name: String,
+    /// The role before disambiguation. This is the name a rule author writes,
+    /// and it has to reach every cohort that plays the role -- otherwise a rule
+    /// scoped to `controller` silently misses `controller-2`.
+    pub label: String,
     pub members: Vec<String>,
     /// The file to teach from: maximally typical, recently touched, real.
     pub witness: Option<String>,
@@ -169,6 +174,7 @@ pub fn cluster(files: &[ParsedFile]) -> Vec<Archetype> {
             let witness = select_witness(&members);
             let conventions = derive_conventions(&members);
             Archetype {
+                label: name.clone(),
                 name,
                 witness,
                 conventions,
@@ -396,6 +402,38 @@ fn derive_conventions(members: &[&ParsedFile]) -> Vec<Convention> {
     out
 }
 
+/// file path -> the cohort it belongs to.
+///
+/// Total over every mined file by construction, so a path missing from it means
+/// the tree was not mined -- which the rule gate must report rather than treat
+/// as "not in this cohort".
+pub type ArchetypeIndex = HashMap<String, ArchetypeTag>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchetypeTag {
+    /// The disambiguated cohort id (`controller-7`).
+    pub id: String,
+    /// The role label (`controller`).
+    pub label: String,
+}
+
+/// Project mined cohorts into a path lookup.
+pub fn archetype_index(cohorts: &[Archetype]) -> ArchetypeIndex {
+    let mut out = HashMap::new();
+    for a in cohorts {
+        for m in &a.members {
+            out.insert(
+                m.clone(),
+                ArchetypeTag {
+                    id: a.name.clone(),
+                    label: a.label.clone(),
+                },
+            );
+        }
+    }
+    out
+}
+
 /// Nearest-rank percentile, 1-indexed.
 fn percentile(sorted: &[usize], pct: f64) -> usize {
     if sorted.is_empty() {
@@ -522,6 +560,25 @@ mod tests {
             archetypes.iter().all(|a| a.conventions.is_empty()),
             "under-supported cohorts must stay silent"
         );
+    }
+
+    /// Every mined file must resolve to exactly one cohort: a path the index
+    /// drops becomes an UnknownArchetype refusal downstream.
+    #[test]
+    fn the_archetype_index_covers_every_mined_file() {
+        let files = two_cohorts();
+        let cohorts = cluster(&files);
+        let idx = archetype_index(&cohorts);
+        assert_eq!(idx.len(), files.len(), "the projection must be total");
+        for pf in &files {
+            let tag = idx
+                .get(&pf.path)
+                .unwrap_or_else(|| panic!("{} uncovered", pf.path));
+            assert!(!tag.label.is_empty());
+            assert!(!tag.id.is_empty());
+        }
+        let big = cohorts.iter().max_by_key(|a| a.members.len()).unwrap();
+        assert_eq!(big.label, "service");
     }
 
     #[test]
