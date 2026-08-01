@@ -37,6 +37,9 @@ member_object = "argument"
 member_property = "field"
 param_type = "type"
 
+[child_kinds]
+superclass = "base_class_clause"
+
 [calls]
 nodes = ["call_expression"]
 member_nodes = ["field_expression"]
@@ -48,3 +51,5 @@ module_nodes = ["preproc_include"]
 module_field = "path"
 
 [flags]
+# An access specifier is not a base class.
+heritage_skip_nodes = ["access_specifier"]

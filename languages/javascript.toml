@@ -110,3 +110,4 @@ explicit_exports = true
 supports_jsx = true
 async_markers = ["async"]
 unwrap_nodes = ["export_statement"]
+heritage_trailing_identifier = true

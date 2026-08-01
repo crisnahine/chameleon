@@ -26,6 +26,8 @@ positional = ["parameter", "class_parameter"]
 name = "name"
 
 [child_kinds]
+superclass = "delegation_specifiers"
+superclass_item = "delegation_specifier"
 # kotlin-ng's `function_declaration` has only a `name` field; parameters, body,
 # callee and receiver are all positional children, so reading them as fields
 # left every Kotlin file with zero calls and zero parameters.
@@ -45,5 +47,7 @@ super_nodes = ["super_expression"]
 module_nodes = ["import"]
 
 [flags]
+# A delegation specifier carries the constructor call: `: Base()`.
+heritage_trailing_identifier = true
 async_markers = ["suspend"]
 decorator_nodes = ["annotation"]

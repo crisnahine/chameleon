@@ -349,7 +349,22 @@ fn cmd_blast(args: &Args) -> Result<()> {
         depth: args.depth.clamp(1, 4),
         ..Default::default()
     };
-    let result = blast_radius(&index, file, symbol, limits);
+    // The index is keyed on repo-relative paths (parse_corpus strips the root),
+    // while `dump` and `parse` both take ABSOLUTE ones. Passing FILE through
+    // verbatim made `blast /repo /repo/src/x.ts f` answer `found: false` -- the
+    // "no such symbol" answer -- for a symbol that plainly exists.
+    let rel = file
+        .strip_prefix(&format!("{}/", root.display()))
+        .or_else(|| file.strip_prefix("./"))
+        .unwrap_or(file);
+    if !index.exports.contains_key(rel) {
+        anyhow::bail!(
+            "{rel} is not in the index ({} files indexed); pass a path relative to {}",
+            index.exports.len(),
+            root.display()
+        );
+    }
+    let result = blast_radius(&index, rel, symbol, limits);
 
     println!("{}", serde_json::to_string_pretty(&result)?);
     if !result.found {

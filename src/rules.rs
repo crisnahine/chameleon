@@ -978,6 +978,24 @@ exclude = ["**/tests/**", "scripts/*"]
         assert!(!glob_match("/", "a.py"));
     }
 
+    /// A query with no captures parses, matches everything, and reports
+    /// nothing -- so the rule reads CLEAN forever. `Unsupported` exists for
+    /// exactly this: a rule that quietly never fires is worse than one that
+    /// says it cannot run.
+    #[test]
+    fn a_query_that_can_never_report_is_refused() {
+        let reg = Registry::load().unwrap();
+        let py = reg.by_name("python").unwrap();
+        let mut r = load_one();
+        r.languages = vec!["python".into()];
+        r.matcher.engine = Engine::TreeSitterQuery;
+        r.matcher.rule = "(call)".into();
+        assert!(matches!(
+            evaluate(&r, "a.py", "f()\n", py, &no_cohorts()),
+            Err(Unsupported::BadQuery(_))
+        ));
+    }
+
     #[test]
     fn a_literal_rule_scans_lines() {
         let reg = Registry::load().unwrap();

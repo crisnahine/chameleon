@@ -188,6 +188,11 @@ pub struct ImportSpec {
     /// Without them the bare `*` reads as an open export set, so the file claims
     /// it re-exports everything AND loses the one name it actually binds.
     pub star_export_alias_nodes: Vec<String>,
+    /// Whether an import statement BINDS its alias as a local name. Python's
+    /// `import x` and JS's `import * as x` do; Ruby's `require "config"` does
+    /// not -- it loads a file, and the constants it defines have nothing to do
+    /// with the path. Default true, because most languages bind.
+    pub binds_local: Option<bool>,
     /// Node kinds that bind the module under a single default name
     /// (`import Button from "./m"`). The reference records the specifier as
     /// `default` and collects NO named symbol for it, so treating the binding as
@@ -350,6 +355,19 @@ pub struct Flags {
     pub receiver_from_method: bool,
     /// Node kinds carrying a decorator/annotation.
     pub decorator_nodes: Vec<String>,
+    /// Node kinds inside a heritage clause that are NOT a base: C++'s
+    /// `access_specifier` (`public`), C#'s constructor `argument_list`. Reading
+    /// them made `class D : public Base` report two parents.
+    pub heritage_skip_nodes: Vec<String>,
+    /// Reduce a base/interface name to its trailing identifier, dropping any
+    /// namespace qualifier and type arguments. TypeScript's reference records
+    /// `core.Base` and `Base<T>` both as `Base`; Python's keeps the dotted form.
+    pub heritage_trailing_identifier: bool,
+    /// An imported name is also a module attribute, so it belongs in the export
+    /// set. True of Python and nothing else -- a C `#include <stdio.h>` and a
+    /// Java `import java.util.List` bind nothing importable, and counting them
+    /// put `stdio` and `java` in a still-closed export set.
+    pub imports_are_exports: bool,
     /// Node kinds that HOLD the decorators rather than being one. Java files
     /// its annotations inside a `modifiers` child, so they are a grandchild of
     /// the declaration and a direct-children scan finds none.
@@ -732,6 +750,7 @@ impl BoundLanguage {
                 .chain(&s.flags.unwrap_nodes)
                 .chain(&s.flags.decorator_container_nodes)
                 .chain(&s.flags.export_wrapper_nodes)
+                .chain(&s.flags.heritage_skip_nodes)
                 .chain(&s.flags.export_assignment_nodes)
                 .chain(&s.flags.export_descend_nodes)
                 .map(|k| &**k),

@@ -215,6 +215,11 @@ are judgment calls and can never hard-block at any confidence.
   closed that way, and `cargo test` now checks every spec name against its own
   grammar's symbol table so a misspelled kind fails instead of silently doing
   nothing.
+- **Convention mining does not span directories.** A cohort's key includes its
+  literal parent directory, so nine identical `apps/*/services/*.py` files form
+  three cohorts of three rather than one of nine, and none clears the
+  five-file floor. Rule scoping is unaffected (all three carry the same label);
+  what is lost is the conventions those nine files would have voted on.
 - **`Regex`, `AstGrep`, `Semgrep`, and `Coupling` are declared but not
   implemented.** Evaluating one returns an explicit `Unsupported` rather than
   silently matching nothing — a rule that quietly never fires is worse than one
@@ -244,7 +249,7 @@ loads, sits inside the ABI window tree-sitter accepts, and parses.
 ## Development
 
 ```bash
-cargo test                    # 147 tests
+cargo test                    # 152 tests
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 python3 tests/parity.py --chameleon /path/to/chameleon

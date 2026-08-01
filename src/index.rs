@@ -257,7 +257,10 @@ impl CodeIndex {
                             .split(['.', '/'])
                             .next()
                             .is_some_and(|head| head == ns.alias);
-                    if !dotted_head {
+                    // Ruby's `require` binds no local at all, so a later
+                    // `config.fetch` is an ordinary variable and grading it
+                    // against the required file is a fabricated edge.
+                    if !dotted_head && import_binds_local(&pf.path) {
                         // A namespace bind has no single exported name; the
                         // member call supplies it. It is a module bind by
                         // construction.
@@ -593,6 +596,25 @@ fn resolve_module(
             _ => return None,
         }
     }
+}
+
+/// Whether an import statement in this file BINDS its alias as a local name.
+///
+/// Python's `import x` and JS's `import * as x` do. Ruby's `require "config"`
+/// does not -- it loads a file, and the constants it defines have nothing to do
+/// with the path -- so a later `config.fetch` is an ordinary local variable, and
+/// grading it against the required file is a fabricated edge.
+///
+/// Read from the registry rather than carried on the wire: the reference
+/// dumpers have no such field, and adding one would put a standing exclusion in
+/// the differential harness.
+fn import_binds_local(path: &str) -> bool {
+    static REG: std::sync::LazyLock<Option<crate::lang::Registry>> =
+        std::sync::LazyLock::new(|| crate::lang::Registry::load().ok());
+    REG.as_ref()
+        .and_then(|r| r.for_path(path))
+        .and_then(|b| b.spec.imports.binds_local)
+        .unwrap_or(true)
 }
 
 /// Whether a relative specifier's trailing dot-segment is an extension the

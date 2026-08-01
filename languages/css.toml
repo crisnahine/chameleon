@@ -12,7 +12,5 @@ import_statement = "ImportStatement"
 keyframes_statement = "KeyframesStatement"
 comment = ""
 
-[imports]
-module_nodes = ["import_statement"]
 
 [flags]

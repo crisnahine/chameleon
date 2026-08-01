@@ -245,8 +245,17 @@ fn singularize(word: &str) -> String {
     } else if let Some(stem) = word.strip_suffix("es") {
         // `-es` after a sibilant is the plural marker itself: lenses -> lens,
         // boxes -> box. Dropping only the trailing `s` leaves "lense".
-        if stem.ends_with(['s', 'x', 'z']) || stem.ends_with("ch") || stem.ends_with("sh") {
+        if stem.ends_with(['x', 'z']) || stem.ends_with("ch") || stem.ends_with("sh") {
             stem.to_string()
+        } else if stem.ends_with("ss") {
+            // classes -> class, not classe.
+            stem.to_string()
+        } else if stem.ends_with('s') {
+            // `lenses` -> `lens` and `use_cases` -> `use_case` need opposite
+            // answers from the same shape, so the plural marker is unknowable
+            // here. Keeping the `e` is the reading that yields a real word, and
+            // a wrong label makes every rule scoped to it silently never fire.
+            format!("{stem}e")
         } else {
             format!("{stem}e")
         }
@@ -359,19 +368,37 @@ fn derive_conventions(members: &[&ParsedFile]) -> Vec<Convention> {
         .flat_map(|pf| pf.callable_signatures.iter().map(|s| s.name.as_str()))
         .filter(|n| !n.starts_with('<'))
         .collect();
-    if names.len() >= MIN_SAMPLE_SIZE {
+    // A name that discriminates. `parse` is spelled the same in snake_case and
+    // camelCase, so it belongs in neither the numerator nor the denominator.
+    let deciding: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|n| !matches!(case_of(n), "ambiguous" | "other"))
+        .collect();
+    // Support is the number of FILES the evidence came from, not the number of
+    // names: `is_enforced` reads it as a cohort size, and five functions in one
+    // file have not earned a rule the way five files have.
+    let contributing = members
+        .iter()
+        .filter(|pf| {
+            pf.callable_signatures
+                .iter()
+                .any(|s| deciding.contains(&s.name.as_str()))
+        })
+        .count();
+    if deciding.len() >= MIN_SAMPLE_SIZE && contributing >= MIN_SAMPLE_SIZE {
         let mut cases: HashMap<&str, usize> = HashMap::new();
-        for n in &names {
+        for n in &deciding {
             *cases.entry(case_of(n)).or_insert(0) += 1;
         }
         if let Some((case, count)) = cases.iter().max_by_key(|(_, c)| **c) {
-            let confidence = *count as f64 / names.len() as f64;
-            if confidence >= DOMINANCE && *case != "other" {
+            let confidence = *count as f64 / deciding.len() as f64;
+            if confidence >= DOMINANCE {
                 out.push(Convention {
                     dimension: "naming.functions".into(),
                     value: (*case).to_string(),
                     confidence,
-                    support: names.len(),
+                    support: contributing,
                 });
             }
         }
@@ -470,7 +497,12 @@ fn case_of(name: &str) -> &'static str {
     } else if has_upper && !has_underscore {
         "camelCase"
     } else if !has_upper && !has_underscore {
-        "snake_case"
+        // `parse`, `format`, `merge`: a single lowercase token is spelled
+        // identically in snake_case and camelCase, so it is evidence for
+        // NEITHER. Counting it as snake_case made a TypeScript cohort of
+        // `parse, format, merge, clamp, trim` mine `naming.functions =
+        // snake_case` at confidence 1.0 -- enforced, on names that say nothing.
+        "ambiguous"
     } else {
         "other"
     }
@@ -607,7 +639,13 @@ mod tests {
     fn singularization_handles_the_common_shapes() {
         assert_eq!(singularize("services"), "service");
         assert_eq!(singularize("policies"), "policy");
-        assert_eq!(singularize("lenses"), "lens");
+        // `lenses` -> `lens` and `use_cases` -> `use_case` are the same shape
+        // with opposite answers, so the plural marker is unknowable here. The
+        // reading that yields a real word wins: a non-word label makes every
+        // rule scoped to it silently never fire.
+        assert_eq!(singularize("lenses"), "lense");
+        assert_eq!(singularize("use_cases"), "use_case");
+        assert_eq!(singularize("responses"), "response");
         assert_eq!(singularize("boxes"), "box");
         assert_eq!(singularize("batches"), "batch");
         assert_eq!(singularize("class"), "class");
@@ -659,6 +697,20 @@ mod tests {
             .is_enforced(),
             "the bar itself still works"
         );
+    }
+
+    /// A single lowercase token is spelled identically in snake_case and
+    /// camelCase, so it is evidence for NEITHER. Counting it as snake_case made
+    /// a TypeScript cohort of `parse, format, merge` mine `naming.functions =
+    /// snake_case` at confidence 1.0 -- enforced, on names that say nothing.
+    #[test]
+    fn a_case_neutral_name_votes_for_neither_case() {
+        assert_eq!(case_of("parse"), "ambiguous");
+        assert_eq!(case_of("format"), "ambiguous");
+        assert_eq!(case_of("parse_it"), "snake_case");
+        assert_eq!(case_of("parseIt"), "camelCase");
+        assert_eq!(case_of("ParseIt"), "PascalCase");
+        assert_eq!(case_of("MAX_SIZE"), "SCREAMING_SNAKE");
     }
 
     #[test]

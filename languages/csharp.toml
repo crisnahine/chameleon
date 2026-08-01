@@ -33,6 +33,9 @@ member_object = "expression"
 member_property = "name"
 param_type = "type"
 
+[child_kinds]
+superclass = "base_list"
+
 [calls]
 nodes = ["invocation_expression"]
 member_nodes = ["member_access_expression"]
@@ -44,5 +47,7 @@ super_nodes = ["base"]
 module_nodes = ["using_directive"]
 
 [flags]
+# An access specifier is not a base class.
+heritage_skip_nodes = ["argument_list"]
 async_markers = ["async"]
 decorator_nodes = ["attribute_list"]

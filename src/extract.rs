@@ -1434,6 +1434,16 @@ fn heritage(node: Node, spec: &LanguageSpec, source: &[u8], item: &Option<String
     if named.is_empty() && clause_scoped {
         return out;
     }
+    // A heritage entry that carries a `value` field IS that value: Python wraps a
+    // generic base in a `subscript` whose value is the base, and TypeScript's
+    // `extends_clause` carries the expression on `value` with `type_arguments`
+    // alongside. Reading every named child made `extends BaseStore<State>` say
+    // `BaseStore (+1 more)` -- the exact lie extends_display exists to prevent,
+    // on a class with ONE parent.
+    let named: Vec<Node> = named
+        .into_iter()
+        .map(|n| n.child_by_field_name("value").unwrap_or(n))
+        .collect();
     if named.is_empty() {
         let t = text(sup, source).trim_start_matches('<').trim().to_string();
         if !t.is_empty() {
@@ -1445,7 +1455,29 @@ fn heritage(node: Node, spec: &LanguageSpec, source: &[u8], item: &Option<String
             if child.kind().contains("keyword") {
                 continue;
             }
-            let t = text(child, source).trim().to_string();
+            if spec
+                .flags
+                .heritage_skip_nodes
+                .iter()
+                .any(|k| k == child.kind())
+            {
+                continue;
+            }
+            let raw = text(child, source).trim();
+            let t = if spec.flags.heritage_trailing_identifier {
+                // `core.Base` and `ns.Iface<T>` both record as their trailing
+                // identifier, matching the reference's nameFromExpr.
+                raw.split(['<', '('])
+                    .next()
+                    .unwrap_or(raw)
+                    .rsplit(['.', ':'])
+                    .next()
+                    .unwrap_or(raw)
+                    .trim()
+                    .to_string()
+            } else {
+                raw.to_string()
+            };
             if !t.is_empty() {
                 out.push(t);
             }
@@ -1711,12 +1743,26 @@ fn class_attrs_of(node: Node, spec: &LanguageSpec, source: &[u8]) -> Vec<String>
             }
         }
         if inner.kind() == "assignment" || inner.kind() == "field_declaration" {
-            if let Some(left) = inner
+            // The member's NAME, not its type and not its modifiers. A C or C++
+            // `field_declaration` carries `declarator` and `type` and no `left`,
+            // so the first named child is the TYPE -- `struct Box { int w; }`
+            // reported `class_attrs: ["int"]` -- and Java's first named child is
+            // its `modifiers` node, reporting `["private"]`. class_attrs is
+            // documented as a role signal, so that is fabricated evidence.
+            let named = inner
                 .child_by_field_name("left")
-                .or_else(|| inner.named_child(0))
-            {
-                if left.named_child_count() == 0 {
-                    let name = text(left, source).trim().to_string();
+                .or_else(|| inner.child_by_field_name("declarator"))
+                .or_else(|| field_node(inner, &spec.fields.name))
+                .map(|n| declarator_node(n, spec));
+            if let Some(left) = named {
+                // A declarator may still wrap the name one level down
+                // (`variable_declarator` in Java, `init_declarator` in C).
+                let leaf = field_node(left, &spec.fields.name)
+                    .or_else(|| left.child_by_field_name("declarator"))
+                    .map(|n| declarator_node(n, spec))
+                    .unwrap_or(left);
+                if leaf.named_child_count() == 0 {
+                    let name = text(leaf, source).trim().to_string();
                     if !name.is_empty() {
                         out.push(name);
                     }
@@ -1836,7 +1882,7 @@ fn collect_imports(
                     .map(|n| text(n, source).to_string())
                     .unwrap_or_default();
                 if !alias.is_empty() {
-                    if !spec.flags.explicit_exports && module_level {
+                    if spec.flags.imports_are_exports && module_level {
                         export_names.insert(alias.clone());
                     }
                     namespaces.push(NamespaceImport {
@@ -1864,7 +1910,7 @@ fn collect_imports(
             {
                 let local = text(child, source).to_string();
                 if !local.is_empty() {
-                    if !spec.flags.explicit_exports && module_level {
+                    if spec.flags.imports_are_exports && module_level {
                         export_names.insert(local);
                     }
                     any_default = true;
@@ -1892,9 +1938,11 @@ fn collect_imports(
             if type_only_statement || has_type_marker(child, spec) {
                 continue;
             }
-            if !spec.flags.explicit_exports && module_level {
-                // In Python an imported name really is a module attribute; in
-                // TypeScript it is not exported unless re-exported explicitly.
+            // In Python an imported name really is a module attribute. Nowhere
+            // else: a C `#include <stdio.h>` and a Java `import java.util.List`
+            // bind nothing importable, and counting them put `stdio` and `java`
+            // in a still-closed export set.
+            if spec.flags.imports_are_exports && module_level {
                 export_names.insert(local.clone());
             }
             symbols.push(ImportSymbol {
@@ -2036,7 +2084,7 @@ fn collect_imports(
             if module.is_empty() {
                 continue;
             }
-            if !spec.flags.explicit_exports && module_level {
+            if spec.flags.imports_are_exports && module_level {
                 export_names.insert(alias.clone());
             }
             namespaces.push(NamespaceImport {
@@ -2867,6 +2915,85 @@ mod tests {
     fn a_closure_does_not_deepen_the_frame_it_opens() {
         let ex = parse("elixir", "f = fn y -> y end\n");
         assert_eq!(ex.function_scopes[0].max_depth, 0);
+    }
+
+    /// A heritage entry is the base, not the clause around it. `extends
+    /// BaseStore<State>` reported `BaseStore (+1 more)` -- the exact lie
+    /// extends_display exists to prevent, on a class with ONE parent -- and
+    /// Python recorded the subscripted text its reference unwraps.
+    #[test]
+    fn a_generic_or_qualified_base_records_as_its_own_name() {
+        let py = parse(
+            "python",
+            "class UserRepo(BaseRepository[User]):\n    pass\n",
+        );
+        assert_eq!(
+            py.class_shapes[0].bases.as_deref(),
+            Some(&["BaseRepository".to_string()][..])
+        );
+
+        let ts = parse(
+            "typescript",
+            "export class Store extends BaseStore<State> implements ns.Iface<T> {}\nclass C extends core.Base {}\n",
+        );
+        assert_eq!(ts.class_shapes[0].extends.as_deref(), Some("BaseStore"));
+        assert_eq!(
+            ts.class_shapes[0].implements.as_deref(),
+            Some(&["Iface".to_string()][..]),
+            "the reference records the trailing identifier"
+        );
+        assert_eq!(ts.class_shapes[1].extends.as_deref(), Some("Base"));
+
+        // A language whose spec named no superclass slot answered `null` --
+        // always-serialized, so a positive claim of no base class.
+        for (lang, src, want) in [
+            ("cpp", "class Derived : public Base { };", "Base"),
+            ("php", "<?php\nclass D extends Base {}\n", "Base"),
+            ("swift", "class D: Base {}", "Base"),
+            ("kotlin", "class D : Base() {}", "Base"),
+            ("scala", "class D extends Base {}", "Base"),
+        ] {
+            let pf = parse(lang, src);
+            assert_eq!(
+                pf.class_shapes[0].extends.as_deref(),
+                Some(want),
+                "{lang} lost its base"
+            );
+        }
+    }
+
+    /// `class_attrs` is documented as a role signal, so reading the member's
+    /// TYPE or its modifiers is fabricated evidence, not an empty slot.
+    #[test]
+    fn class_attrs_records_member_names_not_types_or_modifiers() {
+        let cpp = parse("cpp", "class Box { int w; float h; };");
+        assert_eq!(
+            cpp.class_shapes[0].class_attrs.as_deref(),
+            Some(&["w".to_string(), "h".to_string()][..])
+        );
+        let java = parse("java", "class U { private int count; public String name; }");
+        assert_eq!(
+            java.class_shapes[0].class_attrs.as_deref(),
+            Some(&["count".to_string(), "name".to_string()][..])
+        );
+    }
+
+    /// An imported name is a module attribute in Python and nowhere else. A C
+    /// `#include <stdio.h>` binds nothing importable, and counting it put
+    /// `stdio` in a still-closed export set.
+    #[test]
+    fn an_include_or_java_import_is_not_an_export() {
+        let c = parse("c", "#include <stdio.h>\nint f(void) { return 0; }\n");
+        assert_eq!(c.named_export_names, vec!["f".to_string()]);
+
+        let java = parse("java", "import java.util.List;\nclass U {}\n");
+        assert_eq!(java.named_export_names, vec!["U".to_string()]);
+
+        // Python still treats one as a module attribute.
+        let py = parse("python", "import os\n\ndef f():\n    pass\n");
+        let mut names = py.named_export_names.clone();
+        names.sort();
+        assert_eq!(names, vec!["f", "os"]);
     }
 
     /// Unwrapping and EXPORTING are different questions. `declare` is an

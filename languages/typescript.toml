@@ -136,3 +136,5 @@ decorator_nodes = ["decorator"]
 unwrap_nodes = ["export_statement", "ambient_declaration"]
 # `declare` is an ambient declaration, not an export.
 export_wrapper_nodes = ["export_statement"]
+# The reference records `core.Base` and `Base<T>` both as `Base`.
+heritage_trailing_identifier = true

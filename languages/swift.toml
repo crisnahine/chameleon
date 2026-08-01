@@ -29,6 +29,9 @@ body = "body"
 member_object = "target"
 member_property = "suffix"
 
+[child_kinds]
+superclass = "inheritance_specifier"
+
 [calls]
 nodes = ["call_expression"]
 member_nodes = ["navigation_expression"]

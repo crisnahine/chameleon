@@ -124,6 +124,8 @@ unwrap_nodes = ["decorated_definition"]
 # Python has no export keyword: every name bound at module level is importable,
 # including assignment targets and names bound inside a top-level try/except
 # import fallback or an `if TYPE_CHECKING` gate.
+# An imported name really IS a module attribute in Python.
+imports_are_exports = true
 export_assignment_nodes = ["assignment"]
 export_descend_nodes = [
   "expression_statement",

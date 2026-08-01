@@ -153,6 +153,9 @@ module_nodes = ["call"]
 module_call_names = ["require", "require_relative", "autoload"]
 descend_nodes = ["argument_list"]
 relative_call_names = ["require_relative"]
+# `require "config"` loads a file; it binds no name, and the constants it
+# defines have nothing to do with the path.
+binds_local = false
 
 [imports.module_call_kinds]
 require = "default"

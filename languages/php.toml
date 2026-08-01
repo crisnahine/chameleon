@@ -34,6 +34,9 @@ member_object = "object"
 member_property = "name"
 param_type = "type"
 
+[child_kinds]
+superclass = "base_clause"
+
 [calls]
 nodes = ["function_call_expression", "member_call_expression", "scoped_call_expression"]
 member_nodes = ["member_access_expression"]
