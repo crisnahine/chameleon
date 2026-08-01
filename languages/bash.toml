@@ -24,6 +24,9 @@ name = "name"
 body = "body"
 
 [calls]
+# The callee is wrapped in `command_name`, so every Bash call was dropped and
+# the record read as a verified-empty script.
 nodes = ["command"]
+callee_unwrap = ["command_name"]
 
 [flags]

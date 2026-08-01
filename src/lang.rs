@@ -17,8 +17,34 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::{anyhow, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use tree_sitter::Language;
+
+/// A slot the walker reads off a node, written in the spec as one field name or
+/// several tried in order.
+///
+/// Grammars name the same slot differently across the node kinds that carry it:
+/// Lua puts a dotted access's property on `field` and a method call's on
+/// `method`, and PHP puts an instance call's receiver on `object` and a static
+/// call's on `scope`. One name per slot silently loses the other kind -- and
+/// loses it as a WRONG row rather than a missing one, since `Foo::create()`
+/// then records as a bare call to `create` and binds to any same-named
+/// function.
+pub type FieldNames = Vec<String>;
+
+/// Accept either `field = "x"` or `field = ["x", "y"]`.
+fn one_or_many<'de, D: Deserializer<'de>>(d: D) -> Result<FieldNames, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match OneOrMany::deserialize(d)? {
+        OneOrMany::One(s) => vec![s],
+        OneOrMany::Many(v) => v,
+    })
+}
 
 /// Field names the walker asks a node for. Every one is optional: a spec that
 /// omits `name_field` simply yields unnamed declarations rather than failing.
@@ -32,18 +58,27 @@ pub struct Fields {
     /// off `name`; sharing one field made every C and C++ type shape vanish.
     pub class_name: Option<String>,
     /// Field holding a callable's parameter list.
-    pub parameters: Option<String>,
+    #[serde(deserialize_with = "one_or_many")]
+    pub parameters: FieldNames,
     /// Field holding a declaration's body.
-    pub body: Option<String>,
+    #[serde(deserialize_with = "one_or_many")]
+    pub body: FieldNames,
     /// Field holding a declared return type.
     pub return_type: Option<String>,
+    /// Field holding the declaration an export statement wraps.
+    #[serde(deserialize_with = "one_or_many")]
+    pub declaration: FieldNames,
     /// Field holding a class's superclass/base list.
-    pub superclass: Option<String>,
+    #[serde(deserialize_with = "one_or_many")]
+    pub superclass: FieldNames,
     /// Field holding a call's callee expression.
-    pub call_function: Option<String>,
+    #[serde(deserialize_with = "one_or_many")]
+    pub call_function: FieldNames,
     /// On a member expression: the receiver, then the property.
-    pub member_object: Option<String>,
-    pub member_property: Option<String>,
+    #[serde(deserialize_with = "one_or_many")]
+    pub member_object: FieldNames,
+    #[serde(deserialize_with = "one_or_many")]
+    pub member_property: FieldNames,
     /// Field holding a parameter's type annotation.
     pub param_type: Option<String>,
     /// Node kinds to descend through when reading a declaration's name or
@@ -58,8 +93,21 @@ pub struct Fields {
 pub struct CallSpec {
     /// Node kinds that are a call.
     pub nodes: Vec<String>,
+    /// Node kinds to descend through when reading a member access's receiver or
+    /// property. Swift nests the property one level deeper, in a
+    /// `navigation_suffix`, so the property reads as `.g` rather than `g`.
+    pub member_unwrap: Vec<String>,
+    /// The receiver and the property are the member node's first two named
+    /// children, with no fields naming them (kotlin-ng's
+    /// `navigation_expression`). Every such call is otherwise dropped.
+    pub member_positional: bool,
     /// Node kinds that are a member access (`a.b`), used to split receiver/name.
     pub member_nodes: Vec<String>,
+    /// Node kinds to descend through when reading the CALLEE. Bash nests a
+    /// command's name in a `command_name` wrapper, so the callee resolves to a
+    /// node with named children and every Bash call is dropped -- a record that
+    /// reads as a verified-empty script rather than an unsupported one.
+    pub callee_unwrap: Vec<String>,
     /// Node kinds that are a constructor call (`new Foo()`).
     pub constructor_nodes: Vec<String>,
     /// Receiver texts that mean "this object" (`self`, `this`, `cls`).
@@ -72,10 +120,9 @@ pub struct CallSpec {
     /// `member_call_expression` the same. Without these the receiver is lost and
     /// `obj.method()` records as a bare call to `method`, which is not merely
     /// less precise -- it is wrong, and it binds the edge to the wrong symbol.
-    pub receiver_field: Option<String>,
+    #[serde(deserialize_with = "one_or_many")]
+    pub receiver_field: FieldNames,
     pub name_field: Option<String>,
-    /// True when call rows should carry a `nesting` list (Ruby constant dispatch).
-    pub carries_nesting: bool,
     /// Receiver node kinds that denote a statically-resolvable constant, which
     /// the reference records with its own `constant` kind.
     pub constant_receiver_nodes: Vec<String>,
@@ -104,8 +151,13 @@ pub struct CallSpec {
     /// Parent node kinds in which an identifier is a name or a binding rather
     /// than a send.
     pub identifier_non_call_parents: Vec<String>,
-    /// Node kinds whose `left`/target names bind a local.
+    /// Node kinds whose target names bind a local.
     pub binding_assignment_nodes: Vec<String>,
+    /// Fields on those nodes that hold the binding target. Defaults to `left`;
+    /// Ruby's `for` binds on `pattern`, and binding the whole node instead makes
+    /// the loop body's sends read as locals for the rest of the method.
+    #[serde(deserialize_with = "one_or_many")]
+    pub binding_target_fields: FieldNames,
     /// Node kinds that bind every identifier beneath them (parameter lists,
     /// exception variables).
     pub binding_scope_nodes: Vec<String>,
@@ -127,8 +179,12 @@ pub struct ImportSpec {
     pub from_nodes: Vec<String>,
     /// Field on those nodes holding the module path.
     pub module_field: Option<String>,
-    /// Field holding the imported name.
-    pub name_field: Option<String>,
+    /// Node kinds that bind the module under a single default name
+    /// (`import Button from "./m"`). The reference records the specifier as
+    /// `default` and collects NO named symbol for it, so treating the binding as
+    /// a named import both mislabels the specifier and invents a symbol the
+    /// module never exported.
+    pub default_binding_nodes: Vec<String>,
     /// Node kinds wrapping an `as` alias.
     pub alias_nodes: Vec<String>,
     /// Node kinds that open the export set (`export * from`, `from x import *`).
@@ -196,6 +252,39 @@ pub struct ParamSpec {
     /// annotation. `*args: str` is a `typed_parameter` around a splat, so
     /// classifying on the wrapper alone would call a rest parameter positional.
     pub wrapper: Vec<String>,
+    /// The declaration node IS the parameter list: the parameters are its own
+    /// direct children rather than living in a container. Swift's
+    /// `function_declaration` carries `parameter` children with no list node and
+    /// no field, so without this every Swift function reports an arity of 0 into
+    /// the body-shape norms mining votes on.
+    pub inline: bool,
+}
+
+/// Direct-child fallbacks for slots a grammar carries no FIELD for.
+///
+/// A field lookup is exact and cheap, so it stays the first choice. But several
+/// grammars express a slot purely by child position -- Kotlin's
+/// `function_declaration` has only a `name` field and holds its parameters in a
+/// `function_value_parameters` child, and TypeScript hangs a class's bases off a
+/// `class_heritage` child. Without a fallback those languages parse cleanly and
+/// report the slot as empty, which reads downstream as a positive claim: a class
+/// with no base, a function with no parameters.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ChildKinds {
+    pub parameters: Option<String>,
+    /// The clause inside the heritage node naming declared interfaces.
+    pub implements_item: Option<String>,
+    /// The clause INSIDE the heritage node that names the base classes.
+    /// TypeScript's `class_heritage` holds an `extends_clause` and an
+    /// `implements_clause`, and reading the heritage node's children directly
+    /// yields the literal text `extends B`.
+    pub superclass_item: Option<String>,
+    pub body: Option<String>,
+    pub superclass: Option<String>,
+    pub call_function: Option<String>,
+    pub member_object: Option<String>,
+    pub member_property: Option<String>,
 }
 
 /// Per-language switches for behavior that is a real language difference rather
@@ -251,6 +340,7 @@ pub struct Flags {
 pub struct EmitSpec {
     pub class_kind: bool,
     pub class_bases: bool,
+    pub class_implements: bool,
     pub class_decorators: bool,
     pub class_attrs: bool,
     pub class_qualified: bool,
@@ -264,6 +354,7 @@ impl Default for EmitSpec {
         Self {
             class_kind: false,
             class_bases: true,
+            class_implements: false,
             class_decorators: true,
             class_attrs: true,
             class_qualified: false,
@@ -324,10 +415,18 @@ pub struct LanguageSpec {
     /// the consumers record as a distinct kind from a plain one.
     #[serde(default)]
     pub top_level_refine_field: BTreeMap<String, BTreeMap<String, String>>,
+    /// Node kind of what `export default` wraps -> the emitted kind string, for
+    /// the expression forms `top_level_kinds` does not cover. `export default
+    /// foo` is an `Identifier` to the reference, and a bare identifier is not a
+    /// top-level statement kind.
+    #[serde(default)]
+    pub default_export_kinds: BTreeMap<String, String>,
     #[serde(default)]
     pub params: ParamSpec,
     #[serde(default)]
     pub fields: Fields,
+    #[serde(default)]
+    pub child_kinds: ChildKinds,
     #[serde(default)]
     pub calls: CallSpec,
     #[serde(default)]
@@ -431,6 +530,204 @@ fn grammar_for(name: &str) -> Option<Language> {
 pub struct BoundLanguage {
     pub spec: LanguageSpec,
     pub language: Language,
+}
+
+impl BoundLanguage {
+    /// Every node kind and field name this spec names that its grammar does not
+    /// have.
+    ///
+    /// A spec entry is matched by string against the tree, so a name the grammar
+    /// spells differently is not an error -- it is a line that never fires. The
+    /// feature it was written for is then silently absent, and the record looks
+    /// like an honest "this file has none of those" rather than a bug: three
+    /// such entries shipped for four rounds (`guard` for Haskell's `guards`,
+    /// `for_each_statement` for C#'s `foreach_statement`,
+    /// `anonymous_function_creation_expression` for PHP's `anonymous_function`)
+    /// and were each found by hand, one at a time. Asking the grammar's own
+    /// symbol table turns the whole class into a test failure.
+    ///
+    /// Only kinds and fields are checkable this way. A spec also carries TEXT
+    /// (`self_names`, `async_markers`, `pseudo_variables`, `module_call_names`)
+    /// which the grammar has no table for.
+    pub fn spec_problems(&self) -> Vec<String> {
+        let s = &self.spec;
+        let mut out = Vec::new();
+
+        // Named OR anonymous: a spec legitimately names an anonymous token when
+        // the slot it checks is reached by field rather than by the walk. C#
+        // spells `base.g()`'s receiver as a bare `base` token, and matching it
+        // is how that call is classified `super`.
+        let mut kind = |label: &str, kinds: &mut dyn Iterator<Item = &str>| {
+            for k in kinds {
+                if self.language.id_for_node_kind(k, true) == 0
+                    && self.language.id_for_node_kind(k, false) == 0
+                {
+                    out.push(format!("{label}: no node kind `{k}`"));
+                }
+            }
+        };
+
+        kind(
+            "top_level_kinds",
+            &mut s.top_level_kinds.keys().map(|k| &**k),
+        );
+        kind("function_nodes", &mut s.function_nodes.iter().map(|k| &**k));
+        kind("class_nodes", &mut s.class_nodes.iter().map(|k| &**k));
+        kind("branch_nodes", &mut s.branch_nodes.iter().map(|k| &**k));
+        kind("nesting_nodes", &mut s.nesting_nodes.iter().map(|k| &**k));
+        kind(
+            "chained_nesting_nodes",
+            &mut s.chained_nesting_nodes.iter().map(|k| &**k),
+        );
+        kind(
+            "skip_subtree_nodes",
+            &mut s.skip_subtree_nodes.iter().map(|k| &**k),
+        );
+        kind(
+            "top_level_refine",
+            &mut s
+                .top_level_refine
+                .iter()
+                .flat_map(|(k, v)| std::iter::once(&**k).chain(v.keys().map(|c| &**c))),
+        );
+        kind(
+            "top_level_refine_field",
+            &mut s.top_level_refine_field.keys().map(|k| &**k),
+        );
+        kind(
+            "default_export_kinds",
+            &mut s.default_export_kinds.keys().map(|k| &**k),
+        );
+        let p = &s.params;
+        kind(
+            "params",
+            &mut [
+                &p.positional,
+                &p.optional,
+                &p.rest,
+                &p.keyword_rest,
+                &p.keyword,
+                &p.separator,
+                &p.destructured,
+                &p.counted_only,
+                &p.wrapper,
+            ]
+            .into_iter()
+            .flatten()
+            .map(|k| &**k),
+        );
+        kind(
+            "fields.declarator_unwrap",
+            &mut s.fields.declarator_unwrap.iter().map(|k| &**k),
+        );
+        let c = &s.calls;
+        kind(
+            "calls",
+            &mut [
+                &c.nodes,
+                &c.member_nodes,
+                &c.constructor_nodes,
+                &c.callee_unwrap,
+                &c.member_unwrap,
+                &c.super_nodes,
+                &c.constant_receiver_nodes,
+                &c.receiver_name_nodes,
+                &c.exclude_method_kinds,
+                &c.identifier_non_call_parents,
+                &c.binding_assignment_nodes,
+                &c.binding_scope_nodes,
+            ]
+            .into_iter()
+            .flatten()
+            .map(|k| &**k),
+        );
+        let i = &s.imports;
+        kind(
+            "imports",
+            &mut [
+                &i.module_nodes,
+                &i.from_nodes,
+                &i.alias_nodes,
+                &i.wildcard_nodes,
+                &i.star_export_nodes,
+                &i.export_clause_nodes,
+                &i.descend_nodes,
+                &i.default_binding_nodes,
+            ]
+            .into_iter()
+            .flatten()
+            .map(|k| &**k)
+            .chain(i.implicit_module.keys().map(|k| &**k)),
+        );
+        kind(
+            "flags",
+            &mut s
+                .flags
+                .decorator_nodes
+                .iter()
+                .chain(&s.flags.unwrap_nodes)
+                .map(|k| &**k),
+        );
+
+        let ck = &s.child_kinds;
+        kind(
+            "child_kinds",
+            &mut [
+                &ck.parameters,
+                &ck.body,
+                &ck.superclass,
+                &ck.superclass_item,
+                &ck.implements_item,
+                &ck.call_function,
+                &ck.member_object,
+                &ck.member_property,
+            ]
+            .into_iter()
+            .flatten()
+            .map(|k| &**k),
+        );
+
+        let f = &s.fields;
+        let mut field = |label: &str, names: &mut dyn Iterator<Item = &str>| {
+            for n in names {
+                if self.language.field_id_for_name(n).is_none() {
+                    out.push(format!("{label}: no field `{n}`"));
+                }
+            }
+        };
+        for (label, name) in [
+            ("fields.name", &f.name),
+            ("fields.class_name", &f.class_name),
+            ("fields.return_type", &f.return_type),
+            ("fields.param_type", &f.param_type),
+            ("calls.name_field", &c.name_field),
+            ("imports.module_field", &i.module_field),
+            ("params.optional_when_field", &p.optional_when_field),
+        ] {
+            field(label, &mut name.iter().map(|n| &**n));
+        }
+        for (label, names) in [
+            ("fields.declaration", &f.declaration),
+            ("fields.parameters", &f.parameters),
+            ("fields.body", &f.body),
+            ("fields.superclass", &f.superclass),
+            ("fields.call_function", &f.call_function),
+            ("fields.member_object", &f.member_object),
+            ("fields.member_property", &f.member_property),
+            ("calls.receiver_field", &c.receiver_field),
+            ("calls.binding_target_fields", &c.binding_target_fields),
+        ] {
+            field(label, &mut names.iter().map(|n| &**n));
+        }
+        for (node, by_field) in &s.top_level_refine_field {
+            let label = format!("top_level_refine_field[{node}]");
+            field(&label, &mut by_field.keys().map(|n| &**n));
+        }
+
+        out.sort();
+        out.dedup();
+        out
+    }
 }
 
 /// Every language the binary can parse, indexed by name and by extension.
@@ -561,6 +858,21 @@ mod tests {
                 "{name}: failed to parse empty input"
             );
         }
+    }
+
+    /// Every spec name checked against its own grammar's symbol table. A spec
+    /// entry the grammar does not have is a feature that silently does nothing,
+    /// and it reads downstream as an honest absence rather than a bug.
+    #[test]
+    fn no_spec_names_a_kind_or_field_its_grammar_lacks() {
+        let reg = Registry::load().unwrap();
+        let mut bad = Vec::new();
+        for name in reg.names() {
+            for p in reg.by_name(name).unwrap().spec_problems() {
+                bad.push(format!("{name}: {p}"));
+            }
+        }
+        assert!(bad.is_empty(), "dead spec entries:\n  {}", bad.join("\n  "));
     }
 
     #[test]

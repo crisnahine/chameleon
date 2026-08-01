@@ -46,11 +46,28 @@ name = "name"
 parameters = "parameters"
 body = "body"
 return_type = "return_type"
-superclass = "superclass"
+declaration = "declaration"
 call_function = "function"
 member_object = "object"
 member_property = "property"
 param_type = "type"
+
+[child_kinds]
+# No TS/JS class node has a `superclass` FIELD: the bases hang off a
+# `class_heritage` child. Reading the field left every class in the corpus with
+# `extends: null` and `bases: []` -- a positive claim of no base class.
+superclass = "class_heritage"
+superclass_item = "extends_clause"
+implements_item = "implements_clause"
+
+[default_export_kinds]
+identifier = "Identifier"
+arrow_function = "ArrowFunction"
+function_expression = "FunctionExpression"
+call_expression = "CallExpression"
+object = "ObjectLiteralExpression"
+array = "ArrayLiteralExpression"
+new_expression = "NewExpression"
 
 [calls]
 nodes = ["call_expression"]
@@ -63,8 +80,9 @@ super_nodes = ["super"]
 module_nodes = ["import_statement"]
 from_nodes = ["import_statement"]
 module_field = "source"
-name_field = "name"
 alias_nodes = ["import_specifier"]
+# `import Button from "m"` binds the module default, not a named export.
+default_binding_nodes = ["identifier"]
 # `import * as x` binds a local; it does NOT open this file's export set.
 # `export * from` is what does, and it is an export_statement.
 wildcard_nodes = ["namespace_export"]
@@ -73,6 +91,10 @@ star_export_nodes = ["export_statement"]
 export_clause_nodes = ["export_clause"]
 
 [emit]
+# The reference emits `implements` and neither `bases` nor `class_attrs`.
+class_bases = false
+class_implements = true
+class_attrs = false
 signature_is_async = false
 signature_decorators = "when_present"
 

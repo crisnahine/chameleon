@@ -7,7 +7,7 @@ function_nodes = ["function_declaration", "anonymous_function", "lambda_literal"
 class_nodes = ["class_declaration", "object_declaration"]
 branch_nodes = ["if_expression", "when_entry", "while_statement", "for_statement", "catch_block"]
 nesting_nodes = ["if_expression", "when_expression", "while_statement", "for_statement", "try_expression"]
-skip_subtree_nodes = ["comment", "line_comment", "multiline_comment"]
+skip_subtree_nodes = ["line_comment", "block_comment"]
 
 [top_level_kinds]
 function_declaration = "FunctionDeclaration"
@@ -16,25 +16,33 @@ object_declaration = "ObjectDeclaration"
 import = "ImportDeclaration"
 package_header = "PackageHeader"
 property_declaration = "PropertyDeclaration"
-comment = ""
 line_comment = ""
+block_comment = ""
 
 [params]
 positional = ["parameter", "class_parameter"]
 
 [fields]
 name = "name"
-parameters = "parameters"
-body = "body"
-call_function = "function"
-member_object = "target"
-member_property = "name"
+
+[child_kinds]
+# kotlin-ng's `function_declaration` has only a `name` field; parameters, body,
+# callee and receiver are all positional children, so reading them as fields
+# left every Kotlin file with zero calls and zero parameters.
+parameters = "function_value_parameters"
+body = "function_body"
+call_function = "expression"
+member_object = "expression"
+member_property = "identifier"
 
 [calls]
 nodes = ["call_expression"]
 member_nodes = ["navigation_expression"]
+# kotlin-ng names neither side of a navigation: they are the first two
+# named children.
+member_positional = true
 self_names = ["this"]
-super_nodes = ["super"]
+super_nodes = ["super_expression"]
 
 [imports]
 module_nodes = ["import"]

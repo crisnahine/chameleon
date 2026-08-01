@@ -91,7 +91,6 @@ member_nodes = ["call"]
 receiver_field = "receiver"
 name_field = "method"
 self_names = ["self"]
-carries_nesting = true
 constant_receiver_nodes = ["constant", "scope_resolution"]
 # Receiver kinds Prism gives a `.name`. A literal or a parenthesized expression
 # has none, and the reference emits no row rather than reading its source span.
@@ -126,13 +125,16 @@ identifier_non_call_parents = [
   "module",
   "exception_variable",
 ]
-binding_assignment_nodes = ["assignment", "operator_assignment"]
+binding_assignment_nodes = ["assignment", "operator_assignment", "for"]
+# `for i in items` binds only `i`. Binding the whole node harvested the
+# iterable AND the loop body, so every send inside the loop -- and every
+# send of those names after it -- read as a local for the rest of the method.
+binding_target_fields = ["left", "pattern"]
 binding_scope_nodes = [
   "method_parameters",
   "block_parameters",
   "lambda_parameters",
   "exception_variable",
-  "for",
 ]
 
 [emit]

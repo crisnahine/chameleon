@@ -106,7 +106,6 @@ self_names = ["self", "cls"]
 module_nodes = ["import_statement"]
 from_nodes = ["import_from_statement", "future_import_statement"]
 module_field = "module_name"
-name_field = "name"
 alias_nodes = ["aliased_import"]
 wildcard_nodes = ["wildcard_import"]
 

@@ -86,6 +86,11 @@ pub struct ClassShape {
     /// `First (+N more)`, matching the dumpers, so a consumer reading a single
     /// string is never silently told the class has one parent when it has four.
     pub extends: Option<String>,
+    /// Interfaces the class declares, where the language separates them from
+    /// bases. TypeScript's reference extractor emits `implements` and no
+    /// `bases`, so folding the two together would put `Iface` in the base list.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub implements: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub decorators: Option<Vec<String>>,
     /// Names (never values) of direct class-body assignments. Config attributes

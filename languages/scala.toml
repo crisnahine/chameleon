@@ -7,7 +7,7 @@ function_nodes = ["function_definition", "function_declaration"]
 class_nodes = ["class_definition", "object_definition", "trait_definition"]
 branch_nodes = ["if_expression", "case_clause", "while_expression", "for_expression"]
 nesting_nodes = ["if_expression", "match_expression", "while_expression", "for_expression", "try_expression"]
-skip_subtree_nodes = ["comment", "string_content"]
+skip_subtree_nodes = ["comment", "string"]
 
 [top_level_kinds]
 function_definition = "FunctionDefinition"

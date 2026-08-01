@@ -17,7 +17,8 @@ newtype = "Newtype"
 class = "Class"
 instance = "Instance"
 import = "Import"
-type_synonym = "TypeSynonym"
+# The grammar itself spells this `type_synomym`.
+type_synomym = "TypeSynonym"
 comment = ""
 
 [fields]

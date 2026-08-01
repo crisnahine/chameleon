@@ -29,7 +29,7 @@ parameters = "parameters"
 body = "body"
 call_function = "name"
 member_object = "table"
-member_property = "field"
+member_property = ["field", "method"]
 
 [calls]
 nodes = ["function_call"]

@@ -37,7 +37,7 @@ param_type = "type"
 [calls]
 nodes = ["function_call_expression", "member_call_expression", "scoped_call_expression"]
 member_nodes = ["member_access_expression"]
-receiver_field = "object"
+receiver_field = ["object", "scope"]
 name_field = "name"
 constructor_nodes = ["object_creation_expression"]
 self_names = ["$this", "self", "static"]

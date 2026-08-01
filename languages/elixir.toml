@@ -16,7 +16,8 @@ comment = ""
 
 [fields]
 call_function = "target"
-member_object = "operand"
+member_object = "left"
+member_property = "right"
 
 [calls]
 nodes = ["call"]

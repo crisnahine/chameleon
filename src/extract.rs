@@ -106,11 +106,50 @@ fn field_node<'t>(node: Node<'t>, field: &Option<String>) -> Option<Node<'t>> {
     node.child_by_field_name(field.as_deref()?)
 }
 
+/// The first of several candidate fields the node actually carries.
+///
+/// Grammars spell one slot differently across the node kinds that carry it, so
+/// the spec lists every name and the first hit wins.
+fn any_field<'t>(node: Node<'t>, fields: &[String]) -> Option<Node<'t>> {
+    fields.iter().find_map(|f| node.child_by_field_name(f))
+}
+
+/// Descend through pure wrapper kinds to the node that carries the real name.
+///
+/// Bash wraps a command's name in `command_name`; Swift nests a member access's
+/// property inside a `navigation_suffix`, where reading it directly yields `.g`
+/// rather than `g`. Bounded for the same reason the declarator chain is: a
+/// malformed tree need not be finite.
+fn unwrap_kinds<'t>(node: Node<'t>, kinds: &[String]) -> Node<'t> {
+    let mut n = node;
+    for _ in 0..4 {
+        if !kinds.iter().any(|k| k == n.kind()) {
+            return n;
+        }
+        match n.named_child(0) {
+            Some(inner) if inner.id() != n.id() => n = inner,
+            _ => return n,
+        }
+    }
+    n
+}
+
+/// A slot resolved by field, or failing that by direct child kind.
+fn slot<'t>(node: Node<'t>, fields: &[String], child: &Option<String>) -> Option<Node<'t>> {
+    if let Some(n) = any_field(node, fields) {
+        return Some(n);
+    }
+    let want = child.as_deref()?;
+    let mut c = node.walk();
+    let found = node.named_children(&mut c).find(|n| n.kind() == want);
+    found
+}
+
 /// The first node in a declarator chain that carries a parameter list.
 fn parameter_holder<'t>(node: Node<'t>, spec: &LanguageSpec) -> Option<Node<'t>> {
     let mut n = field_node(node, &spec.fields.name)?;
     for _ in 0..8 {
-        if field_node(n, &spec.fields.parameters).is_some() {
+        if any_field(n, &spec.fields.parameters).is_some() {
             return Some(n);
         }
         if !spec.fields.declarator_unwrap.iter().any(|k| k == n.kind()) {
@@ -161,33 +200,49 @@ fn extends_display(bases: &[String]) -> Option<String> {
 
 /// Decorators attached to a declaration.
 ///
-/// A decorated declaration is usually wrapped by the grammar (Python's
-/// `decorated_definition`), so the decorators are siblings under the parent
-/// rather than children of the declaration itself; both layouts are checked.
+/// A decorator is either a child of the declaration (Java's `modifiers`) or an
+/// immediately PRECEDING sibling of it -- Python nests both inside a
+/// `decorated_definition` wrapper, Rust and Scala leave them loose in the
+/// enclosing block. Only the contiguous run of decorator siblings directly
+/// before the declaration counts. Scanning the whole parent block instead
+/// attributed a sibling's attribute to every declaration around it: with
+/// `#[test] fn a() {} fn helper() {}`, `helper` came back decorated `test`, and
+/// a file-level `#[derive(Debug)]` decorated everything in the file. Decorators
+/// are a primary archetype signal, so that is fabricated cluster evidence.
 fn decorators_of(node: Node, spec: &LanguageSpec, source: &[u8]) -> Vec<String> {
     if spec.flags.decorator_nodes.is_empty() {
         return Vec::new();
     }
-    let mut out = Vec::new();
-    let mut collect = |parent: Node| {
-        let mut c = parent.walk();
-        for child in parent.children(&mut c) {
-            if spec.flags.decorator_nodes.iter().any(|k| k == child.kind()) {
-                let raw = text(child, source).trim_start_matches('@').trim();
-                // `@app.route("/x")` records as `app.route`: the call arguments
-                // are data, and keying on them would make every route a
-                // distinct decorator.
-                let name = raw.split(['(', '\n']).next().unwrap_or(raw).trim();
-                if !name.is_empty() {
-                    out.push(name.to_string());
-                }
-            }
-        }
+    let is_decorator = |n: &Node| spec.flags.decorator_nodes.iter().any(|k| k == n.kind());
+    let name_of = |n: Node| {
+        // `@app.route("/x")` records as `app.route` and `#[derive(Debug)]` as
+        // `derive`: the arguments are data, and keying on them would make every
+        // route and every derive list a distinct decorator.
+        let raw = text(n, source)
+            .trim()
+            .trim_start_matches("#[")
+            .trim_start_matches('@')
+            .trim_start_matches('[')
+            .trim();
+        raw.split(['(', '\n', '[', ']'])
+            .next()
+            .unwrap_or(raw)
+            .trim()
+            .to_string()
     };
-    if let Some(parent) = node.parent() {
-        collect(parent);
+
+    let mut out = Vec::new();
+    let mut prev = node.prev_named_sibling();
+    while let Some(p) = prev.filter(is_decorator) {
+        out.push(name_of(p));
+        prev = p.prev_named_sibling();
     }
-    collect(node);
+    out.reverse();
+
+    let mut c = node.walk();
+    out.extend(node.children(&mut c).filter(is_decorator).map(name_of));
+
+    out.retain(|n| !n.is_empty());
     out.dedup();
     out
 }
@@ -280,28 +335,43 @@ fn param_of(node: Node, spec: &LanguageSpec, source: &[u8], keyword_only: bool) 
     })
 }
 
+/// The target field an assignment binds through, when a spec names none.
+static LEFT_FIELD: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| "left".to_string());
+
 /// Every identifier name bound beneath a node.
+///
+/// Explicitly stacked rather than recursive, for the same reason the main walk
+/// is: the input is arbitrary repo source, and a deeply nested destructuring
+/// pattern (`a, (a, (a, ...)) = x`) is small enough in bytes and node count to
+/// clear both the file-size and node-ceiling guards while being thousands of
+/// levels deep. A stack overflow aborts the process rather than unwinding, so
+/// one such file would kill the run for every remaining path in the corpus.
 fn collect_bound_names(node: Node, out: &mut Vec<String>, source: &[u8]) {
-    // `self.attr = v` and `cache[key] = 1` bind NOTHING: the left side is a
-    // setter send and an index write. Harvesting their identifiers records
-    // phantom locals, and every later send of that name is then silently
-    // dropped -- the standard Rails `before_validation` shape.
-    if matches!(
-        node.kind(),
-        "call" | "element_reference" | "scope_resolution" | "instance_variable" | "class_variable"
-    ) {
-        return;
-    }
-    if node.kind() == "identifier" {
-        let t = text(node, source).trim().to_string();
-        if !t.is_empty() {
-            out.push(t);
+    let mut queue = vec![node];
+    while let Some(n) = queue.pop() {
+        // `self.attr = v` and `cache[key] = 1` bind NOTHING: the left side is a
+        // setter send and an index write. Harvesting their identifiers records
+        // phantom locals, and every later send of that name is then silently
+        // dropped -- the standard Rails `before_validation` shape.
+        if matches!(
+            n.kind(),
+            "call"
+                | "element_reference"
+                | "scope_resolution"
+                | "instance_variable"
+                | "class_variable"
+        ) {
+            continue;
         }
-        return;
-    }
-    let mut c = node.walk();
-    for child in node.named_children(&mut c) {
-        collect_bound_names(child, out, source);
+        if n.kind() == "identifier" {
+            let t = text(n, source).trim().to_string();
+            if !t.is_empty() {
+                out.push(t);
+            }
+            continue;
+        }
+        let mut c = n.walk();
+        queue.extend(n.named_children(&mut c));
     }
 }
 
@@ -363,7 +433,7 @@ fn counted_only_params(node: Node, spec: &LanguageSpec) -> usize {
     if spec.params.counted_only.is_empty() {
         return 0;
     }
-    let Some(list) = field_node(node, &spec.fields.parameters) else {
+    let Some(list) = any_field(node, &spec.fields.parameters) else {
         return 0;
     };
     let mut c = list.walk();
@@ -380,11 +450,20 @@ fn params_of(node: Node, spec: &LanguageSpec, source: &[u8]) -> Vec<Param> {
     // parameter list. Descending all the way (as the NAME resolution does)
     // lands on the bare identifier, which has no parameters -- which is why
     // every pointer-returning C function reported an arity of 0.
-    let Some(list) = field_node(node, &spec.fields.parameters).or_else(|| {
-        parameter_holder(node, spec).and_then(|h| field_node(h, &spec.fields.parameters))
-    }) else {
-        return Vec::new();
-    };
+    let list =
+        match slot(node, &spec.fields.parameters, &spec.child_kinds.parameters).or_else(|| {
+            parameter_holder(node, spec)
+                .and_then(|h| slot(h, &spec.fields.parameters, &spec.child_kinds.parameters))
+        }) {
+            Some(l) => l,
+            // Swift hangs `parameter` nodes straight off the declaration with no
+            // list node and no field, so the declaration itself is the list. Only
+            // kinds the spec classifies as parameters are picked up, and the
+            // declaration's other children (modifiers, type parameters, the body)
+            // classify as nothing.
+            None if spec.params.inline => node,
+            None => return Vec::new(),
+        };
     let mut out = Vec::new();
     let mut keyword_only = false;
     let mut cursor = list.walk();
@@ -450,8 +529,12 @@ fn call_of(
         .iter()
         .any(|k| k == node.kind())
     {
-        let callee =
-            field_node(node, &spec.fields.call_function).or_else(|| node.named_child(0))?;
+        let callee = slot(
+            node,
+            &spec.fields.call_function,
+            &spec.child_kinds.call_function,
+        )
+        .or_else(|| node.named_child(0))?;
         return Some((text(callee, source).to_string(), None, "new".to_string()));
     }
 
@@ -496,11 +579,7 @@ fn call_of(
                     }
                 }
             }
-            let recv = spec
-                .calls
-                .receiver_field
-                .as_deref()
-                .and_then(|f| node.child_by_field_name(f));
+            let recv = any_field(node, &spec.calls.receiver_field);
             return Some(match recv {
                 Some(r)
                     if spec
@@ -555,11 +634,35 @@ fn call_of(
         }
     }
 
-    let callee = field_node(node, &spec.fields.call_function).or_else(|| node.named_child(0))?;
+    let mut callee = slot(
+        node,
+        &spec.fields.call_function,
+        &spec.child_kinds.call_function,
+    )
+    .or_else(|| node.named_child(0))?;
+    callee = unwrap_kinds(callee, &spec.calls.callee_unwrap);
 
     if spec.calls.member_nodes.iter().any(|k| k == callee.kind()) {
-        let obj = field_node(callee, &spec.fields.member_object)?;
-        let prop = field_node(callee, &spec.fields.member_property)?;
+        // Fields first; a grammar that names neither (kotlin-ng) puts the
+        // receiver and the property in the first two named-child slots.
+        let (obj, prop) = if spec.calls.member_positional {
+            (callee.named_child(0)?, callee.named_child(1)?)
+        } else {
+            (
+                slot(
+                    callee,
+                    &spec.fields.member_object,
+                    &spec.child_kinds.member_object,
+                )?,
+                slot(
+                    callee,
+                    &spec.fields.member_property,
+                    &spec.child_kinds.member_property,
+                )?,
+            )
+        };
+        let obj = unwrap_kinds(obj, &spec.calls.member_unwrap);
+        let prop = unwrap_kinds(prop, &spec.calls.member_unwrap);
         let name = text(prop, source).to_string();
         let recv_text = text(obj, source).to_string();
 
@@ -612,6 +715,7 @@ fn walk(
     let mut has_jsx = false;
     let mut named_export_count = 0usize;
     let mut call_sites_total = 0usize;
+    let mut default_export_kind: Option<String> = None;
     let mut top_level_funcs = 0usize;
     let mut top_level_classes = 0usize;
     let mut top_level_func_kind: Option<String> = None;
@@ -638,6 +742,27 @@ fn walk(
             // its PRIVATE declarations as exports and omits the ones it
             // actually exposes -- the set is not noisy, it is inverted.
             let was_wrapped = spec.flags.unwrap_nodes.iter().any(|k| k == node.kind());
+            // `export default ...` is the module's default export, NOT one of
+            // its named ones. Both halves matter: the record's
+            // `default_export_kind` is what a consumer resolves a default import
+            // against, and counting the declaration among the named exports puts
+            // a name in the export set that no `import { X }` can ever bind.
+            let is_default_export = spec.flags.has_default_export && {
+                let mut dc = node.walk();
+                let has = node.children(&mut dc).any(|ch| ch.kind() == "default");
+                has
+            };
+            if is_default_export && default_export_kind.is_none() {
+                let inner = any_field(node, &spec.fields.declaration)
+                    .or_else(|| node.named_child(node.named_child_count() as u32 - 1));
+                default_export_kind = inner.and_then(|i| {
+                    spec.default_export_kinds
+                        .get(i.kind())
+                        .cloned()
+                        .or_else(|| spec.top_level_kind(i.kind()).map(str::to_string))
+                        .filter(|k| !k.is_empty())
+                });
+            }
             if was_wrapped {
                 let last = (node.named_child_count() as u32).saturating_sub(1);
                 if let Some(inner) = node.named_child(last) {
@@ -651,7 +776,7 @@ fn walk(
                     }
                 }
             }
-            let is_exported = !spec.flags.explicit_exports || was_wrapped;
+            let is_exported = (!spec.flags.explicit_exports || was_wrapped) && !is_default_export;
             let Some(mapped) = spec.top_level_kind(node.kind()) else {
                 continue;
             };
@@ -799,6 +924,9 @@ fn walk(
                         start_line: line_of(decl),
                         extends: extends_display(&bases),
                         bases: e.class_bases.then(|| bases.clone()),
+                        implements: e
+                            .class_implements
+                            .then(|| implements_list(decl, spec, source)),
                         decorators: e
                             .class_decorators
                             .then(|| decorators_of(decl, spec, source)),
@@ -809,11 +937,18 @@ fn walk(
                             .flatten(),
                     });
                 }
-                class_stack.push(ClassFrame {
-                    name,
-                    base: bases.first().cloned(),
-                    node_id: node.id(),
-                });
+                // Ruby's `class << self` and Rust's `impl` carry no name, and a
+                // frame with an empty one puts an empty `enclosing_class` on
+                // every method inside it and an empty segment in the class path
+                // -- both always-serialized, so they are wrong values rather
+                // than absent ones.
+                if !name.is_empty() {
+                    class_stack.push(ClassFrame {
+                        name,
+                        base: bases.first().cloned(),
+                        node_id: node.id(),
+                    });
+                }
             }
 
             if spec.is_function(decl.kind()) && !opened_by_wrapper {
@@ -885,10 +1020,15 @@ fn walk(
             }
 
             if let Some(frame) = func_stack.last_mut() {
+                // A node listed as BOTH a callable and a nesting level (Elixir's
+                // `anonymous_function`) would otherwise deepen the frame it just
+                // opened, so every closure starts its own body one level down
+                // and a one-line `fn` reports a depth of 1.
+                let opened_here = frame.node_id == node.id();
                 if spec.branch_nodes.contains(kind) {
                     frame.branch_count += 1;
                 }
-                if spec.nesting_nodes.contains(kind) {
+                if spec.nesting_nodes.contains(kind) && !opened_here {
                     frame.cur_depth += 1;
                     frame.max_depth = frame.max_depth.max(frame.cur_depth);
                 }
@@ -915,8 +1055,13 @@ fn walk(
                     .iter()
                     .any(|k| k == kind)
                 {
-                    if let Some(left) = node.child_by_field_name("left") {
-                        collect_bound_names(left, &mut bound, source);
+                    let targets: &[String] = if spec.calls.binding_target_fields.is_empty() {
+                        std::slice::from_ref(&LEFT_FIELD)
+                    } else {
+                        &spec.calls.binding_target_fields
+                    };
+                    if let Some(target) = any_field(node, targets) {
+                        collect_bound_names(target, &mut bound, source);
                     }
                 }
                 if spec.calls.binding_scope_nodes.iter().any(|k| k == kind) {
@@ -1042,8 +1187,9 @@ fn walk(
     let content_first_200_bytes =
         String::from_utf8_lossy(&source[..source.len().min(200)]).to_string();
 
-    // Unopposed sole definition; a module holding both a class and a function
-    // reports nothing, since neither is what the file is for.
+    // A language with no export statement repurposes the field as "the sole
+    // top-level definition, when unopposed"; a module holding both a class and a
+    // function reports nothing, since neither is what the file is for.
     let default_export_kind = if spec.flags.sole_definition_default_export {
         match (top_level_classes, top_level_funcs) {
             (1, 0) => top_level_class_kind,
@@ -1051,7 +1197,7 @@ fn walk(
             _ => None,
         }
     } else {
-        None
+        default_export_kind
     };
 
     ParsedFile {
@@ -1096,7 +1242,10 @@ fn leave(
     spec: &LanguageSpec,
 ) {
     if let Some(frame) = func_stack.last_mut() {
-        let mut release = usize::from(spec.nesting_nodes.contains(node.kind()));
+        // Gated on the same condition as the enter-side increment: a node that
+        // opened this frame never deepened it, so it releases nothing.
+        let opened_here = frame.node_id == node.id();
+        let mut release = usize::from(spec.nesting_nodes.contains(node.kind()) && !opened_here);
         release += frame.chained_held.remove(&node.id()).unwrap_or(0);
         frame.cur_depth = frame.cur_depth.saturating_sub(release);
     }
@@ -1142,12 +1291,44 @@ fn is_async(node: Node, spec: &LanguageSpec, source: &[u8]) -> bool {
 
 /// Base classes of a class node, in source order.
 fn base_list(node: Node, spec: &LanguageSpec, source: &[u8]) -> Vec<String> {
-    let Some(sup) = field_node(node, &spec.fields.superclass) else {
+    heritage(node, spec, source, &spec.child_kinds.superclass_item)
+}
+
+/// Interfaces a class declares, where the grammar separates them from bases.
+fn implements_list(node: Node, spec: &LanguageSpec, source: &[u8]) -> Vec<String> {
+    match &spec.child_kinds.implements_item {
+        Some(_) => heritage(node, spec, source, &spec.child_kinds.implements_item),
+        None => Vec::new(),
+    }
+}
+
+fn heritage(node: Node, spec: &LanguageSpec, source: &[u8], item: &Option<String>) -> Vec<String> {
+    let Some(sup) = slot(node, &spec.fields.superclass, &spec.child_kinds.superclass) else {
         return Vec::new();
     };
     let mut out = Vec::new();
     let mut c = sup.walk();
-    let named: Vec<Node> = sup.named_children(&mut c).collect();
+    let mut named: Vec<Node> = sup.named_children(&mut c).collect();
+    // The heritage node holds CLAUSES, not bases: reading its children directly
+    // yields the literal text `extends B`, and it would count an
+    // `implements_clause` as a base class.
+    let clause_scoped = item.is_some();
+    if let Some(item) = item.as_deref() {
+        named = named
+            .iter()
+            .filter(|n| n.kind() == item)
+            .flat_map(|n| {
+                let mut ic = n.walk();
+                n.named_children(&mut ic).collect::<Vec<_>>()
+            })
+            .collect();
+    }
+    // A clause-scoped read that matched nothing means the class declares none of
+    // that relation. Falling back to the heritage node's raw text would answer
+    // "what does it implement?" with `extends A`.
+    if named.is_empty() && clause_scoped {
+        return out;
+    }
     if named.is_empty() {
         let t = text(sup, source).trim_start_matches('<').trim().to_string();
         if !t.is_empty() {
@@ -1290,7 +1471,7 @@ fn qualified_name(stack: &[ClassFrame], name: &str) -> Option<String> {
 /// role signal, what it is set to is application data.
 fn class_attrs_of(node: Node, spec: &LanguageSpec, source: &[u8]) -> Vec<String> {
     const MAX_CLASS_ATTRS: usize = 50;
-    let Some(body) = field_node(node, &spec.fields.body) else {
+    let Some(body) = slot(node, &spec.fields.body, &spec.child_kinds.body) else {
         return Vec::new();
     };
     let mut out = Vec::new();
@@ -1415,6 +1596,27 @@ fn collect_imports(
                     continue;
                 }
             }
+            // `import Button from "./m"` binds the module's DEFAULT export. The
+            // reference records the specifier as `default` and collects no named
+            // symbol, so treating the binding as a named import both mislabels
+            // the specifier and invents a symbol `./m` never exported -- which a
+            // phantom-import check then reports as a hallucinated binding on
+            // every default import in the corpus.
+            if spec
+                .imports
+                .default_binding_nodes
+                .iter()
+                .any(|k| k == child.kind())
+            {
+                let local = text(child, source).to_string();
+                if !local.is_empty() {
+                    if !spec.flags.explicit_exports {
+                        export_names.insert(local);
+                    }
+                    specifiers.push((module.clone(), "default".into()));
+                    continue;
+                }
+            }
             let (name, local) = if spec.imports.alias_nodes.iter().any(|k| k == child.kind()) {
                 let n = child
                     .named_child(0)
@@ -1447,6 +1649,12 @@ fn collect_imports(
         }
         if any_named {
             specifiers.push((module, "named".into()));
+        } else if specifiers.last().is_none_or(|(m, _)| m != &module) {
+            // A side-effect import (`import "./polyfill"`) has no clause at all.
+            // Emitting nothing loses the edge entirely, and a polyfill or a CSS
+            // side-effect import is exactly the dependency a blast radius has to
+            // see, since nothing else in the file references it.
+            specifiers.push((module, "namespace".into()));
         }
         return;
     }
@@ -1458,8 +1666,12 @@ fn collect_imports(
         // namespace imports of `puts` AND of `"x"`, and both poison the file's
         // export set.
         if !spec.imports.module_call_names.is_empty() {
-            let callee =
-                field_node(node, &spec.fields.call_function).or_else(|| node.named_child(0));
+            let callee = slot(
+                node,
+                &spec.fields.call_function,
+                &spec.child_kinds.call_function,
+            )
+            .or_else(|| node.named_child(0));
             let called = callee
                 .map(|c| text(c, source).to_string())
                 .unwrap_or_default();
@@ -1477,7 +1689,12 @@ fn collect_imports(
             }
             // The callee of a require IS the require, not a module.
             if !spec.imports.module_call_names.is_empty()
-                && Some(child) == field_node(node, &spec.fields.call_function)
+                && Some(child)
+                    == slot(
+                        node,
+                        &spec.fields.call_function,
+                        &spec.child_kinds.call_function,
+                    )
             {
                 continue;
             }
@@ -2130,6 +2347,204 @@ mod tests {
             vec!["make".to_string(), "plain".to_string()],
             "an export set keyed on raw declarator text matches no importer"
         );
+    }
+
+    /// The reference records a default import as a `default` specifier and
+    /// collects NO named symbol for it. Calling it a named import also invents
+    /// a symbol the module never exported, which a phantom-import check then
+    /// reports as a hallucinated binding on every default import in the corpus.
+    #[test]
+    fn a_default_import_is_not_a_named_one() {
+        let ts = parse(
+            "typescript",
+            "import Button from \"./Button\";\nimport \"./polyfill\";\nimport { a, b as c } from \"./m\";\n",
+        );
+        assert_eq!(
+            ts.import_specifiers,
+            vec![
+                ("./Button".to_string(), "default".to_string()),
+                ("./polyfill".to_string(), "namespace".to_string()),
+                ("./m".to_string(), "named".to_string()),
+            ],
+            "a side-effect import is an edge too"
+        );
+        let names: Vec<&str> = ts.import_symbols.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["a", "b"], "no phantom `Button`");
+    }
+
+    /// No TS/JS class node has a `superclass` FIELD -- the bases hang off a
+    /// `class_heritage` child -- so reading the field left every class in the
+    /// corpus claiming, positively, to have no base.
+    #[test]
+    fn a_typescript_class_reports_its_base_and_its_interfaces_apart() {
+        let ts = parse(
+            "typescript",
+            "export default class U extends B implements I {}\nexport class O extends A {}\n",
+        );
+        let u = &ts.class_shapes[0];
+        assert_eq!(u.extends.as_deref(), Some("B"));
+        assert_eq!(u.implements.as_deref(), Some(&["I".to_string()][..]));
+        assert_eq!(u.bases, None, "the reference emits no `bases` for TS");
+        // A clause-scoped read that matches nothing must not fall back to the
+        // heritage node's raw text, which would answer "implements?" with
+        // `extends A`.
+        assert_eq!(ts.class_shapes[1].implements.as_deref(), Some(&[][..]));
+
+        // `export default` is the default export, NOT a named one.
+        assert_eq!(ts.default_export_kind.as_deref(), Some("ClassDeclaration"));
+        assert_eq!(ts.named_export_names, vec!["O".to_string()]);
+    }
+
+    /// An attribute is a standalone sibling in Rust and Scala, so scanning the
+    /// enclosing block attributed it to every declaration around it. Decorators
+    /// are a primary archetype signal, so that is fabricated cluster evidence.
+    #[test]
+    fn a_decorator_belongs_only_to_the_declaration_it_precedes() {
+        let rs = parse(
+            "rust",
+            "#[derive(Debug)]\nstruct S;\nmod m {\n    #[test]\n    fn a() {}\n    fn helper() {}\n}\n",
+        );
+        let by_name = |n: &str| {
+            rs.callable_signatures
+                .iter()
+                .find(|s| s.name == n)
+                .unwrap_or_else(|| panic!("{n} missing"))
+                .decorators
+                .clone()
+                .unwrap_or_default()
+        };
+        assert_eq!(by_name("a"), vec!["test".to_string()]);
+        assert!(
+            by_name("helper").is_empty(),
+            "a sibling's attribute is not its own"
+        );
+        assert_eq!(
+            rs.class_shapes[0].decorators.as_deref(),
+            Some(&["derive".to_string()][..]),
+            "the arguments are data; `derive(Debug)` keys as `derive`"
+        );
+
+        // Python nests both in a wrapper, where the decorator is still the
+        // declaration's own preceding sibling.
+        let py = parse("python", "@app.route(\"/x\")\ndef f():\n    pass\n");
+        assert_eq!(
+            py.callable_signatures[0].decorators.as_deref(),
+            Some(&["app.route".to_string()][..])
+        );
+    }
+
+    /// `for i in items` binds `i`. Binding the whole node harvested the iterable
+    /// and the entire loop body, so every send inside the loop -- and every send
+    /// of those names for the rest of the method -- was silently dropped.
+    #[test]
+    fn a_ruby_for_loop_binds_only_its_loop_variable() {
+        let rb = parse(
+            "ruby",
+            "class Foo\n  def f\n    for i in items\n      helper\n    end\n    helper\n  end\nend\n",
+        );
+        let names: Vec<&str> = rb.call_sites.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["items", "helper", "helper"]);
+        assert!(!names.contains(&"i"), "the loop variable is bound");
+    }
+
+    /// A class node with no resolvable name opened a frame anyway, putting an
+    /// empty `enclosing_class` on every method inside it and an empty segment in
+    /// the class path -- both always-serialized, so wrong values not absent ones.
+    #[test]
+    fn an_unnamed_class_node_opens_no_frame() {
+        let rb = parse(
+            "ruby",
+            "class Foo\n  class << self\n    def bar; end\n  end\nend\n",
+        );
+        let bar = rb
+            .callable_signatures
+            .iter()
+            .find(|s| s.name == "bar")
+            .expect("bar");
+        assert_eq!(bar.enclosing_class.as_deref(), Some("Foo"));
+        assert_eq!(bar.enclosing_class_path.as_deref(), Some("Foo"));
+    }
+
+    /// Every one of these languages emitted an empty slot that read downstream
+    /// as a verified absence: no calls at all, or an arity of 0.
+    #[test]
+    fn the_positional_grammars_still_yield_calls_and_parameters() {
+        let sw = parse(
+            "swift",
+            "class A: B { func f(x: Int, y: String) { super.g(); self.h(); obj.k() } }",
+        );
+        assert_eq!(sw.callable_signatures[0].params.len(), 2, "swift arity");
+        assert_eq!(
+            sw.call_sites
+                .iter()
+                .map(|c| (c.name.as_str(), c.kind.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("g", "super"), ("h", "self"), ("k", "member")]
+        );
+
+        let kt = parse(
+            "kotlin",
+            "class A : B() { fun f(x: Int, y: String) { super.g(); this.h(); obj.k() } }",
+        );
+        assert_eq!(kt.callable_signatures[0].params.len(), 2, "kotlin arity");
+        assert_eq!(
+            kt.call_sites
+                .iter()
+                .map(|c| (c.name.as_str(), c.kind.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("g", "super"), ("h", "self"), ("k", "member")]
+        );
+
+        // Bash wraps the callee in `command_name`, so every call was dropped and
+        // the record read as a verified-empty script.
+        let sh = parse("bash", "build() { make all; }\nbuild\n");
+        assert_eq!(
+            sh.call_sites
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["make", "build"]
+        );
+    }
+
+    /// A receiver read off the wrong field is worse than a missing one: the row
+    /// still exists, classified `bare`, and binds to any same-named function.
+    #[test]
+    fn a_static_or_method_receiver_is_never_silently_dropped() {
+        let php = parse(
+            "php",
+            "<?php\nclass A { function f() { Foo::create(); $this->g(); $obj->h(); } }\n",
+        );
+        assert_eq!(
+            php.call_sites
+                .iter()
+                .map(|c| (c.name.as_str(), c.receiver.as_deref()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("create", Some("Foo")),
+                ("g", Some("$this")),
+                ("h", Some("$obj"))
+            ]
+        );
+
+        // Lua names a dotted access's property `field` and a method call's
+        // `method`; one name per slot loses the other kind entirely.
+        let lua = parse("lua", "function f() obj:m(); tbl.n() end\n");
+        assert_eq!(
+            lua.call_sites
+                .iter()
+                .map(|c| (c.name.as_str(), c.receiver.as_deref()))
+                .collect::<Vec<_>>(),
+            vec![("m", Some("obj")), ("n", Some("tbl"))]
+        );
+    }
+
+    /// A node listed as both a callable and a nesting level deepened the frame
+    /// it had just opened, so a one-line closure reported a depth of 1.
+    #[test]
+    fn a_closure_does_not_deepen_the_frame_it_opens() {
+        let ex = parse("elixir", "f = fn y -> y end\n");
+        assert_eq!(ex.function_scopes[0].max_depth, 0);
     }
 
     /// A spec kind no grammar node carries is silently inert. These three were

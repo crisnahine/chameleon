@@ -26,7 +26,7 @@ positional = ["parameter_declaration"]
 [fields]
 name = "declarator"
 class_name = "name"
-declarator_unwrap = ["function_declarator", "pointer_declarator", "reference_declarator"]
+declarator_unwrap = ["function_declarator", "pointer_declarator"]
 parameters = "parameters"
 body = "body"
 call_function = "function"

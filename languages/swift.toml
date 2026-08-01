@@ -19,20 +19,23 @@ comment = ""
 
 [params]
 positional = ["parameter"]
+# Swift hangs `parameter` nodes straight off the declaration: no list node, no
+# field. Without this every Swift function reported an arity of 0.
+inline = true
 
 [fields]
 name = "name"
-parameters = "parameters"
 body = "body"
-call_function = "function"
 member_object = "target"
-member_property = "name"
+member_property = "suffix"
 
 [calls]
 nodes = ["call_expression"]
 member_nodes = ["navigation_expression"]
+# The property lives one level down, in a `navigation_suffix`.
+member_unwrap = ["navigation_suffix"]
 self_names = ["self"]
-super_nodes = ["super"]
+super_nodes = ["super_expression"]
 
 [imports]
 module_nodes = ["import_declaration"]
