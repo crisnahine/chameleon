@@ -315,21 +315,57 @@ pub fn evaluate(
 /// a dependency this layer does not need, and a half-correct one that silently
 /// mismatches paths would be worse than an obvious limitation.
 fn glob_match(pattern: &str, path: &str) -> bool {
-    let mut p = pattern;
-    // `**/x` means "at any depth"; `x/**` means "anything under x".
-    p = p.strip_prefix("**/").unwrap_or(p);
-    if let Some(dir) = p.strip_suffix("/**") {
-        let seg = dir.trim_start_matches("*/").trim_start_matches('*');
-        return path == seg
-            || path.starts_with(&format!("{seg}/"))
-            || path.contains(&format!("/{seg}/"));
+    // A bare name with no separator matches the BASENAME at any depth, which is
+    // what `*.spec.ts` is always meant to say.
+    if !pattern.contains('/') {
+        let base = path.rsplit('/').next().unwrap_or(path);
+        return segment_match(pattern, base);
     }
-    match (p.starts_with('*'), p.ends_with('*')) {
-        (true, true) => path.contains(p.trim_matches('*')),
-        (true, false) => path.ends_with(p.trim_start_matches('*')),
-        (false, true) => path.starts_with(p.trim_end_matches('*')),
-        (false, false) => path == p || path.ends_with(&format!("/{p}")),
+    // A literal path is exact. Matching it by suffix as well reads as
+    // convenient and silently over-excludes: `scripts/run.py` would also
+    // exclude `vendor/scripts/run.py`.
+    if !pattern.contains('*') {
+        return pattern == path;
     }
+    let pat: Vec<&str> = pattern.split('/').collect();
+    let seg: Vec<&str> = path.split('/').collect();
+    segments_match(&pat, &seg)
+}
+
+/// `**` spans zero or more path segments; everything else matches one.
+fn segments_match(pat: &[&str], seg: &[&str]) -> bool {
+    match pat.first() {
+        None => seg.is_empty(),
+        Some(&"**") => (0..=seg.len()).any(|i| segments_match(&pat[1..], &seg[i..])),
+        Some(p) => {
+            !seg.is_empty() && segment_match(p, seg[0]) && segments_match(&pat[1..], &seg[1..])
+        }
+    }
+}
+
+/// One segment. `*` matches any run of characters that are not a separator --
+/// so `src/*/handlers.py` is a single directory, not any depth.
+fn segment_match(pat: &str, s: &str) -> bool {
+    let parts: Vec<&str> = pat.split('*').collect();
+    if parts.len() == 1 {
+        return pat == s;
+    }
+    let Some(rest) = s.strip_prefix(parts[0]) else {
+        return false;
+    };
+    let mut rest = rest;
+    let last = parts.len() - 1;
+    for (i, part) in parts.iter().enumerate().skip(1) {
+        if i == last {
+            // The trailing literal must not re-consume the leading one.
+            return rest.len() >= part.len() && rest.ends_with(part);
+        }
+        match rest.find(part) {
+            Some(idx) => rest = &rest[idx + part.len()..],
+            None => return false,
+        }
+    }
+    true
 }
 
 /// A deliberately literal line scan.
@@ -696,6 +732,32 @@ exclude = ["**/tests/**", "scripts/*"]
         assert!(glob_match("*.spec.ts", "src/a.spec.ts"));
         assert!(glob_match("src/lib/http.ts", "src/lib/http.ts"));
         assert!(!glob_match("**/tests/**", "app/lib.py"));
+    }
+
+    /// A `*` anywhere but the ends used to fall through to exact/suffix
+    /// equality, so `src/*/handlers.py` matched nothing and the rule reported
+    /// clean forever.
+    #[test]
+    fn a_mid_pattern_star_matches_one_segment() {
+        assert!(glob_match("src/*/handlers.py", "src/api/handlers.py"));
+        assert!(glob_match("src/*/handlers.py", "src/web/handlers.py"));
+        assert!(
+            !glob_match("src/*/handlers.py", "src/a/b/handlers.py"),
+            "a single * is one segment, not any depth"
+        );
+        assert!(glob_match("**/handlers.py", "src/a/b/handlers.py"));
+        assert!(glob_match("app_*_test.py", "x/app_user_test.py"));
+        assert!(!glob_match("app_*_test.py", "x/app_user.py"));
+    }
+
+    /// A literal path is exact. Suffix-matching it silently over-excludes.
+    #[test]
+    fn a_literal_path_pattern_does_not_over_exclude() {
+        assert!(glob_match("scripts/run.py", "scripts/run.py"));
+        assert!(
+            !glob_match("scripts/run.py", "vendor/scripts/run.py"),
+            "an exclude must not reach into vendor/"
+        );
     }
 
     fn indexed(rows: &[(&str, &str, &str)]) -> ArchetypeIndex {
