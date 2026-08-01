@@ -71,11 +71,24 @@ module_field = "source"
 alias_nodes = ["import_specifier"]
 # `import Button from "m"` binds the module default, not a named export.
 default_binding_nodes = ["identifier"]
+star_export_alias_nodes = ["namespace_export"]
 # `import * as x` binds a local; it does NOT open this file's export set.
-wildcard_nodes = ["namespace_export"]
+wildcard_nodes = []
 descend_nodes = ["import_clause", "named_imports"]
 star_export_nodes = ["export_statement"]
 export_clause_nodes = ["export_clause"]
+
+# `export default <expression>` is an ExportAssignment to the reference, not an
+# ExportDeclaration; a declaration form unwraps before this table is consulted.
+[top_level_refine.export_statement]
+identifier = "ExportAssignment"
+arrow_function = "ExportAssignment"
+function_expression = "ExportAssignment"
+call_expression = "ExportAssignment"
+object = "ExportAssignment"
+array = "ExportAssignment"
+new_expression = "ExportAssignment"
+member_expression = "ExportAssignment"
 
 [emit]
 # The reference emits `implements` and neither `bases` nor `class_attrs`.

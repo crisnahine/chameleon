@@ -79,14 +79,16 @@ convention derivation actually consume. Every normalized slot and every extras
 key matches on 126 of 126 files:
 
 ```
-content_first_200_bytes 126/126 100.0%     callable_signatures  126/126  100.0%
-sha_hint               126/126  100.0%     function_scopes      126/126  100.0%
-top_level_node_kinds   126/126  100.0%     class_shapes         126/126  100.0%
-default_export_kind    126/126  100.0%     call_sites           126/126  100.0%
-named_export_count     126/126  100.0%     call_sites_total     126/126  100.0%
-import_specifiers      126/126  100.0%     import_symbols       126/126  100.0%
-has_jsx                126/126  100.0%     namespace_imports    126/126  100.0%
-parse_diagnostics_count 126/126 100.0%     named_export_names   126/126  100.0%
+content_first_200_bytes 126/126 100.0%     callable_signatures   126/126 100.0%
+sha_hint               126/126  100.0%     function_scopes       126/126 100.0%
+top_level_node_kinds   126/126  100.0%     class_shapes          126/126 100.0%
+default_export_kind    126/126  100.0%     call_sites            126/126 100.0%
+named_export_count     126/126  100.0%     call_sites_total      126/126 100.0%
+import_specifiers      126/126  100.0%     call_sites_truncated  126/126 100.0%
+has_jsx                126/126  100.0%     import_symbols        126/126 100.0%
+parse_diagnostics_count 126/126 100.0%     namespace_imports     126/126 100.0%
+                                           named_export_names    126/126 100.0%
+                                           export_set_open       126/126 100.0%
 ```
 
 Both lists are exhaustive over the record on purpose. An earlier `parity.py`
@@ -118,17 +120,20 @@ of the registry:
 from chameleon_mcp.extractors.registry import EXTRACTORS
 from chameleon_extractor import ChromatophoreExtractor
 
-EXTRACTORS.insert(0, ChromatophoreExtractor)
+EXTRACTORS.insert(len(EXTRACTORS) - 1, ChromatophoreExtractor)
 ```
 
-Two details the seam does not make obvious, both verified against
+Three details the seam does not make obvious, all verified against
 `extractors/registry.py`. `register()` APPENDS, and the shipped `PythonExtractor`
 already claims any repo holding one `.py` file, so an appended entry is never
-reached. And `select_extractor` swaps in chameleon's in-process
-`TreeSitterExtractor` for python, ruby and typescript whatever the registry says
-— so the engine runs only with `CHAMELEON_TREE_SITTER=0` set. Without both, a
-user sees chameleon behave identically and concludes it worked, while the engine
-parsed nothing.
+reached. The position is ahead of `PythonExtractor` and *behind* the TypeScript
+and Ruby detectors, because `select_extractor` instantiates with no arguments —
+so this class always builds with `language="python"`, and at index 0 it would
+claim a TS monorepo that happens to hold one `scripts/gen.py`. And
+`select_extractor` swaps in chameleon's in-process `TreeSitterExtractor` for
+python, ruby and typescript whatever the registry says — so the engine runs only
+with `CHAMELEON_TREE_SITTER=0` set. Without all three, a user sees chameleon
+behave identically and concludes it worked, while the engine parsed nothing.
 
 Adding a language chameleon does not yet support needs one edit in its core —
 `_EXTENSIONS_BY_LANGUAGE` in `bootstrap/orchestrator.py`, which is the single
@@ -182,7 +187,7 @@ are judgment calls and can never hard-block at any confidence.
 
   | | TypeScript (49 files) | Ruby (150 files) |
   |---|---|---|
-  | normalized slots | 100% (exports 82%) | 100% |
+  | normalized slots | 100% | 100% |
   | `class_shapes` | 100% | 100% |
   | `function_scopes` | 92% | 87% |
   | `callable_signatures` | 31% | 85% |
@@ -235,7 +240,7 @@ loads, sits inside the ABI window tree-sitter accepts, and parses.
 ## Development
 
 ```bash
-cargo test                    # 136 tests
+cargo test                    # 140 tests
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 python3 tests/parity.py --chameleon /path/to/chameleon

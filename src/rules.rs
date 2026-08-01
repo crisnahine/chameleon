@@ -329,7 +329,15 @@ fn glob_match(pattern: &str, path: &str) -> bool {
         .trim_start_matches('/');
     let owned;
     let pattern = if let Some(dir) = pattern.strip_suffix('/') {
-        owned = format!("{dir}/**");
+        // An UNANCHORED directory name means that directory at any depth: in a
+        // monorepo, `node_modules/` has to exclude `packages/app/node_modules/`
+        // too, or the rule evaluates -- and at enforce confidence blocks in --
+        // every vendored file. An anchored one stays at the root.
+        owned = if anchored {
+            format!("{dir}/**")
+        } else {
+            format!("**/{dir}/**")
+        };
         owned.as_str()
     } else {
         pattern
@@ -933,12 +941,17 @@ exclude = ["**/tests/**", "scripts/*"]
             ("/src/**", "src/api/handlers.py"),
             ("./src/*.py", "src/handlers.py"),
             ("src/**", "src/api/handlers.py"),
+            // A vendored directory nested in a monorepo package.
+            ("node_modules/", "packages/app/node_modules/pkg/index.js"),
+            ("/node_modules/", "node_modules/pkg/index.js"),
         ] {
             assert!(glob_match(pattern, path), "{pattern} should match {path}");
         }
         for (pattern, path) in [
             ("node_modules/", "app/main.py"),
             ("/src/**", "tests/api/handlers.py"),
+            // Anchored: the ROOT node_modules only.
+            ("/node_modules/", "packages/app/node_modules/pkg/index.js"),
             // Anchored: the ROOT setup.py, not every setup.py in the tree.
             ("/setup.py", "vendor/pkg/setup.py"),
             ("./setup.py", "vendor/pkg/setup.py"),

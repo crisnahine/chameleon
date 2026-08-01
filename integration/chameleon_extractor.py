@@ -13,13 +13,23 @@ file on stdout. Nothing here reshapes the records.
     from chameleon_mcp.extractors.registry import EXTRACTORS
     from chameleon_extractor import ChromatophoreExtractor
 
-    EXTRACTORS.insert(0, ChromatophoreExtractor)
+    EXTRACTORS.insert(len(EXTRACTORS) - 1, ChromatophoreExtractor)
 
-`insert(0, ...)` rather than `register(...)`: register APPENDS, and the shipped
-PythonExtractor already claims any repo holding one `.py` file, so an appended
-entry is never reached. Front of the list is also not enough on its own --
-`select_extractor` swaps in chameleon's in-process `TreeSitterExtractor` for
-python, ruby and typescript whatever the registry says, so the engine only runs
+Three details the seam does not make obvious, all verified against
+`extractors/registry.py`.
+
+`register()` APPENDS, and the shipped `PythonExtractor` already claims any repo
+holding one `.py` file, so an appended entry is never reached.
+
+The position is ahead of `PythonExtractor` and BEHIND the TypeScript and Ruby
+detectors, because `select_extractor` instantiates with no arguments
+(`ext = ext_cls()`), so this class always builds with `language="python"`. At
+index 0 it would claim a TS monorepo that happens to hold one `scripts/gen.py`,
+and chameleon branches archetype naming, framework layers and lint gates on
+`.language`.
+
+And `select_extractor` swaps in chameleon's in-process `TreeSitterExtractor` for
+python, ruby and typescript whatever the registry says, so the engine runs only
 with `CHAMELEON_TREE_SITTER=0` set.
 
 `verify.py` in this directory checks that what the engine emits survives
@@ -247,10 +257,10 @@ def _parsed_file_from_record(path: Path, record: dict) -> ParsedFile:
     The normalized slots are the stability contract; everything else rides in
     `extras`.
     """
-    # The six core keys are ALWAYS present, empty or not, because that is what
-    # chameleon's own in-process extractor does and absent-vs-empty is a real
-    # distinction downstream. The optional keys follow the dump scripts and are
-    # omitted when empty.
+    # Every key is ALWAYS present, empty or not, because that is what chameleon's
+    # own in-process extractor does and absent-vs-empty is a real distinction
+    # downstream. The engine serializes all ten unconditionally, so `record.get`
+    # never introduces a third state.
     always = (
         "function_scopes",
         "callable_signatures",

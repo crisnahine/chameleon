@@ -261,8 +261,12 @@ fn decorators_of(node: Node, spec: &LanguageSpec, source: &[u8]) -> Vec<String> 
         }
     }
 
+    // No dedup: a decorator node has one parent, so it is either a direct child
+    // or a container grandchild and a true duplicate is structurally impossible.
+    // Collapsing repeats instead loses real ones -- two
+    // `@pytest.mark.parametrize` stacked on one test is the common shape, and
+    // the reference emits both.
     out.retain(|n| !n.is_empty());
-    out.dedup();
     out
 }
 
@@ -843,8 +847,8 @@ fn walk(
                             .filter(|n| !n.is_empty()),
                     );
                 }
+                named_export_count += declarator_count(node, spec).max(named.len().min(1));
                 for name in named {
-                    named_export_count += 1;
                     export_names.insert(name);
                 }
             }
@@ -866,7 +870,14 @@ fn walk(
                 .any(|k| k == node.kind())
             {
                 let mut c = node.walk();
-                if node.children(&mut c).any(|ch| ch.kind() == "*") {
+                let kids: Vec<Node> = node.children(&mut c).collect();
+                let aliased = kids.iter().any(|ch| {
+                    spec.imports
+                        .star_export_alias_nodes
+                        .iter()
+                        .any(|k| k == ch.kind())
+                });
+                if !aliased && kids.iter().any(|ch| ch.kind() == "*") {
                     export_set_open = true;
                 }
             }
@@ -874,6 +885,23 @@ fn walk(
             for name in export_clause_names(node, spec, source) {
                 named_export_count += 1;
                 export_names.insert(name);
+            }
+            // `export * as ns from "m"` binds `ns` and re-exports a whole
+            // module; the reference records the NAME without counting it as one
+            // of this module's own declarations. Reading a bare identifier off
+            // the export statement instead would make `export default router` a
+            // named export of `router`.
+            for alias in &spec.imports.star_export_alias_nodes {
+                let mut c = node.walk();
+                let kids: Vec<Node> = node.named_children(&mut c).collect();
+                for k in kids.into_iter().filter(|k| k.kind() == alias.as_str()) {
+                    if let Some(name) = k.named_child(0).map(|n| text(n, source).trim().to_string())
+                    {
+                        if !name.is_empty() {
+                            export_names.insert(name);
+                        }
+                    }
+                }
             }
 
             if (spec.is_function(node.kind()) || spec.is_class(node.kind())) && is_exported {
@@ -1467,18 +1495,55 @@ fn declarator_names(node: Node, spec: &LanguageSpec, source: &[u8]) -> Vec<Strin
     }
     let mut out = Vec::new();
     let mut c = node.walk();
-    for child in node.named_children(&mut c) {
-        if let Some(name) = field_node(child, &spec.fields.name).map(|n| text(n, source)) {
+    let declarators: Vec<Node> = node.named_children(&mut c).collect();
+    for child in declarators {
+        let Some(bound) = field_node(child, &spec.fields.name) else {
+            continue;
+        };
+        // A binding PATTERN names several: `export const { a, b } = obj` exports
+        // both, and reading the field's text yields the literal `{ a, b }`,
+        // which the identifier filter then drops -- leaving a closed export set
+        // missing real exports, the phantom-binding direction.
+        let mut queue = vec![bound];
+        let mut steps = 0usize;
+        while let Some(n) = queue.pop() {
+            steps += 1;
+            if steps > 256 {
+                break;
+            }
+            let name = text(n, source);
             if !name.is_empty()
                 && name
                     .chars()
                     .all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '$')
             {
                 out.push(name.to_string());
+                continue;
             }
+            let mut pc = n.walk();
+            queue.extend(n.named_children(&mut pc));
         }
     }
+    out.sort();
+    out.dedup();
     out
+}
+
+/// How many declarations a variable statement makes.
+///
+/// The reference counts declarations, not bound names: `export const { a, b } =
+/// obj` is ONE exported declaration that happens to bind two.
+fn declarator_count(node: Node, spec: &LanguageSpec) -> usize {
+    if !matches!(
+        node.kind(),
+        "lexical_declaration" | "variable_declaration" | "variable_statement"
+    ) {
+        return 0;
+    }
+    let mut c = node.walk();
+    node.named_children(&mut c)
+        .filter(|ch| field_node(*ch, &spec.fields.name).is_some())
+        .count()
 }
 
 /// Names listed in an explicit export clause (`export { a, b as c }`).
@@ -1605,6 +1670,21 @@ fn class_attrs_of(node: Node, spec: &LanguageSpec, source: &[u8]) -> Vec<String>
     out
 }
 
+/// Whether a node carries a type-only marker among its direct children.
+fn has_type_marker(node: Node, spec: &LanguageSpec) -> bool {
+    if spec.imports.type_only_markers.is_empty() {
+        return false;
+    }
+    let mut c = node.walk();
+    let found = node.children(&mut c).any(|ch| {
+        spec.imports
+            .type_only_markers
+            .iter()
+            .any(|k| k == ch.kind())
+    });
+    found
+}
+
 /// Read one node's import contribution, if it is an import at all.
 #[allow(clippy::too_many_arguments)]
 fn collect_imports(
@@ -1642,6 +1722,10 @@ fn collect_imports(
         if module.is_empty() {
             return;
         }
+        // `import type { T } from "m"` references a type position, so it binds
+        // no value: the reference emits the specifier row and no symbol at all.
+        // A symbol row for one seeds a call edge that can never fire.
+        let type_only_statement = has_type_marker(node, spec);
         let mut any_named = false;
         let mut any_default = false;
         let mut any_namespace = false;
@@ -1740,6 +1824,9 @@ fn collect_imports(
                 continue;
             }
             any_named = true;
+            if type_only_statement || has_type_marker(child, spec) {
+                continue;
+            }
             if !spec.flags.explicit_exports && module_level {
                 // In Python an imported name really is a module attribute; in
                 // TypeScript it is not exported unless re-exported explicitly.
@@ -2369,7 +2456,7 @@ mod tests {
         );
         let kinds = &pf.top_level_node_kinds;
         assert_eq!(
-            kinds.iter().filter(|k| *k == "ExportDeclaration").count(),
+            kinds.iter().filter(|k| k.starts_with("Export")).count(),
             3,
             "all three export forms must survive: {kinds:?}"
         );
@@ -2715,6 +2802,70 @@ mod tests {
     fn a_closure_does_not_deepen_the_frame_it_opens() {
         let ex = parse("elixir", "f = fn y -> y end\n");
         assert_eq!(ex.function_scopes[0].max_depth, 0);
+    }
+
+    /// The reference emits ONE specifier row per import statement, collects no
+    /// symbol for a type-only binding, names a `export * as ns` alias without
+    /// counting it, and calls `export default <expression>` an ExportAssignment.
+    /// Each of those was wrong in a different direction, and the export ones all
+    /// leave a CLOSED set missing real names -- the phantom-binding direction.
+    #[test]
+    fn the_typescript_export_and_import_surface_matches_the_reference() {
+        let ts = parse(
+            "typescript",
+            "export const { a, b } = obj;\nexport * as ns from \"./m\";\nexport default router;\nimport type { T } from \"./types\";\nimport { type U, real } from \"./m2\";\n",
+        );
+        assert_eq!(
+            ts.top_level_node_kinds,
+            vec![
+                "FirstStatement",
+                "ExportDeclaration",
+                "ExportAssignment",
+                "ImportDeclaration",
+                "ImportDeclaration"
+            ]
+        );
+        let mut names = ts.named_export_names.clone();
+        names.sort();
+        assert_eq!(names, vec!["a", "b", "ns"], "a pattern binds both names");
+        assert_eq!(ts.named_export_count, 1, "one exported DECLARATION");
+        assert!(
+            !ts.export_set_open,
+            "`export * as ns` binds, it does not open"
+        );
+        assert_eq!(
+            ts.import_symbols
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["real"],
+            "a type-only binding is not a value"
+        );
+        assert_eq!(ts.default_export_kind.as_deref(), Some("Identifier"));
+
+        // The bare form still opens the set.
+        let star = parse("typescript", "export * from \"./o\";\n");
+        assert!(star.export_set_open);
+    }
+
+    /// A decorator node has one parent, so a true duplicate is structurally
+    /// impossible and the dedup only ever destroyed real repeats -- two
+    /// `@pytest.mark.parametrize` stacked on one test is the common shape.
+    #[test]
+    fn stacked_identical_decorators_are_both_recorded() {
+        let py = parse(
+            "python",
+            "@pytest.mark.parametrize(\"a\", [1])\n@pytest.mark.parametrize(\"b\", [2])\ndef f():\n    pass\n",
+        );
+        assert_eq!(
+            py.callable_signatures[0].decorators.as_deref(),
+            Some(
+                &[
+                    "pytest.mark.parametrize".to_string(),
+                    "pytest.mark.parametrize".to_string()
+                ][..]
+            )
+        );
     }
 
     /// Only a variable declaration binds names through `declarator_names`, so an

@@ -179,6 +179,15 @@ pub struct ImportSpec {
     pub from_nodes: Vec<String>,
     /// Field on those nodes holding the module path.
     pub module_field: Option<String>,
+    /// Marker kinds that make an import (or one of its specifiers) TYPE-ONLY.
+    /// `import type { T }` and `import { type T }` reference a type position,
+    /// not a value binding, so removing the export does not break them -- and a
+    /// symbol row for one seeds a call edge that can never fire.
+    pub type_only_markers: Vec<String>,
+    /// Node kinds that give a star export a NAME (`export * as ns from "m"`).
+    /// Without them the bare `*` reads as an open export set, so the file claims
+    /// it re-exports everything AND loses the one name it actually binds.
+    pub star_export_alias_nodes: Vec<String>,
     /// Node kinds that bind the module under a single default name
     /// (`import Button from "./m"`). The reference records the specifier as
     /// `default` and collects NO named symbol for it, so treating the binding as
@@ -700,6 +709,8 @@ impl BoundLanguage {
                 &i.export_clause_nodes,
                 &i.descend_nodes,
                 &i.default_binding_nodes,
+                &i.type_only_markers,
+                &i.star_export_alias_nodes,
             ]
             .into_iter()
             .flatten()
@@ -855,6 +866,13 @@ impl Registry {
             }
         }
         best.and_then(|(name, _)| self.by_name.get(name))
+    }
+
+    /// Every extension the engine can parse, lower-cased and dot-prefixed.
+    pub fn extensions(&self) -> Vec<&str> {
+        let mut out: Vec<&str> = self.by_extension.keys().map(String::as_str).collect();
+        out.sort_unstable();
+        out
     }
 
     pub fn names(&self) -> Vec<&str> {

@@ -21,6 +21,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -48,8 +49,12 @@ def main() -> int:
     print(f"  chromatophore: {len(ours.files)} parsed, {len(ours.skipped)} skipped")
     print(f"  chameleon:     {len(theirs.files)} parsed, {len(theirs.skipped)} skipped")
 
-    ours_by = {str(f.path): f for f in ours.files}
-    theirs_by = {str(f.path): f for f in theirs.files}
+    # Absolute on both sides: the shim feeds the engine abspaths and the engine
+    # echoes them, while the backend keeps the candidate path as given -- so a
+    # relative --chameleon made the two key sets disjoint and a working engine
+    # reported as dead.
+    ours_by = {os.path.abspath(f.path): f for f in ours.files}
+    theirs_by = {os.path.abspath(f.path): f for f in theirs.files}
     shared = sorted(set(ours_by) & set(theirs_by))
     print(f"  comparable:    {len(shared)}")
 
@@ -124,10 +129,14 @@ def main() -> int:
         )
         rate = hits / len(shared) * 100
         print(f"{key:<28} {hits:>5}/{len(shared):<6} {rate:6.1f}%")
+        # Counted, not just printed. A loop that only prints is the same
+        # manufactured confidence as a slot left out of the list.
+        if hits != len(shared):
+            failures += 1
 
     print()
     if failures:
-        print(f"NOT A DROP-IN: {failures} normalized slot(s) diverge")
+        print(f"NOT A DROP-IN: {failures} compared field(s) diverge")
         return 1
     print("DROP-IN: every normalized slot is identical to chameleon's own extractor")
     return 0

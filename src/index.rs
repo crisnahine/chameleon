@@ -13,7 +13,7 @@
 //! evidence of dead code.** Dynamic dispatch, reflection, and calls through an
 //! instance are all invisible here.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -278,10 +278,21 @@ impl CodeIndex {
                         let Some(recv) = site.receiver.as_deref() else {
                             continue;
                         };
-                        if let Some((target, _)) = imports.and_then(|m| m.get(recv)) {
+                        if let Some((target, exported)) = imports.and_then(|m| m.get(recv)) {
+                            // ONLY a module binding. A namespace import carries
+                            // an empty exported name, and a bare relative import
+                            // binds the module under its own basename -- anything
+                            // else is a VALUE the importer named, and
+                            // `User.create()` is then a class static, not a
+                            // module attribute. Treating it as one bound the call
+                            // to a module-level `create` that never runs.
+                            let is_module_binding = exported.is_empty()
+                                || index_stem(target).rsplit('/').next() == Some(exported.as_str());
                             // A module-attribute call names its own member, so
                             // the call site's name is the right one here.
-                            if export_contains(&idx.exports, target, &site.name) {
+                            if is_module_binding
+                                && export_contains(&idx.exports, target, &site.name)
+                            {
                                 push(target, &site.name, Grade::ModuleAttribute);
                             }
                         }
@@ -410,9 +421,9 @@ fn resolve_module(
         // `take_while` does -- reads `../../lib/util` as two levels and leaves a
         // literal `..` in the tail, so it matches nothing. Every import two or
         // more levels up then contributes no edge at all, silently.
-        // A trailing dot-segment that MIGHT be an extension. Tried only after
-        // the literal tail fails, so `./my.config` still resolves to a real
-        // `my.config` module and only falls back to `my` if none exists.
+        // A trailing dot-segment that IS an extension the engine parses. Tried
+        // only after the literal tail fails, so a module whose name really
+        // contains a dot keeps precedence.
         let mut extensionless: Option<String> = None;
         let (ups, tail) = if spec.contains('/') {
             let mut rest = spec;
@@ -550,16 +561,26 @@ fn resolve_module(
 /// Whether a relative specifier's trailing dot-segment is an extension the
 /// index has already stemmed away, rather than part of the module name.
 ///
-/// Every shipped language reaches the relative branch, so a fixed list silently
-/// dropped PHP's `require './helper.php'`, Bash's `source ./lib.sh` and Lua's
-/// `./mod.lua`. The test is shape, not membership: an extension is short and
-/// alphanumeric, which `config` in `./my.config` also satisfies -- so the caller
-/// only strips when the stripped form actually resolves.
+/// Membership in the registry, not a shape test. Every shipped language reaches
+/// the relative branch, so a fixed JS/TS/Python/Ruby list silently dropped PHP's
+/// `require './helper.php'` and Lua's `./mod.lua` -- but a pure shape test is
+/// worse than either, because it strips extensions the engine does NOT parse:
+/// `import logo from "./logo.svg"` then resolved to a `logo.ts` sitting next to
+/// it, which is a fabricated edge to a module the language never loads. An
+/// extension the engine parses is one the index really has stemmed away; any
+/// other trailing segment is part of the name.
 fn looks_like_extension(ext: &str) -> bool {
-    !ext.is_empty()
-        && ext.len() <= 5
-        && ext.chars().all(|c| c.is_ascii_alphanumeric())
-        && ext.chars().any(|c| c.is_ascii_alphabetic())
+    static PARSED: std::sync::LazyLock<HashSet<String>> = std::sync::LazyLock::new(|| {
+        crate::lang::Registry::load()
+            .map(|r| {
+                r.extensions()
+                    .iter()
+                    .filter_map(|e| e.strip_prefix('.').map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    });
+    PARSED.contains(&ext.to_ascii_lowercase())
 }
 
 /// Corpus paths bucketed by their final segment, so a specifier is checked
@@ -1087,6 +1108,73 @@ mod tests {
         assert!(idx.callers_of("requests.py", "get").is_some());
     }
 
+    /// An extension the ENGINE does not parse is part of the module name, not a
+    /// stemmed suffix. A shape test admitted `svg`, `vue`, `mdx` and the rest,
+    /// so `import logo from "./logo.svg"` resolved to a `logo.ts` sitting next
+    /// to it -- an edge to a module the language never loads.
+    #[test]
+    fn an_asset_import_does_not_bind_a_same_stemmed_source_file() {
+        let files = corpus(&[
+            ("src/logo.ts", "export function logo() { return 1; }\n"),
+            (
+                "src/App.tsx",
+                "import { logo } from \"./logo.svg\";\nexport function App() { return logo(); }\n",
+            ),
+        ]);
+        let idx = CodeIndex::build(&files);
+        assert!(idx.importers.is_empty(), "{:?}", idx.importers);
+
+        // The case the strip exists for -- a source extension the engine does
+        // parse, which the index really has stemmed away -- still resolves.
+        let esm = corpus(&[
+            ("src/util.ts", "export function help() { return 1; }\n"),
+            (
+                "src/app.ts",
+                "import { help } from \"./util.js\";\nexport function run() { return help(); }\n",
+            ),
+        ]);
+        let idx = CodeIndex::build(&esm);
+        assert!(idx.callers_of("src/util.ts", "help").is_some());
+    }
+
+    /// A class static is not a module attribute. Discarding the exported name
+    /// made every imported local read as a module binding, so `User.create()`
+    /// bound a module-level `create` that the call never reaches.
+    #[test]
+    fn an_imported_class_is_not_a_module_binding() {
+        let files = corpus(&[
+            (
+                "pkg/models.py",
+                "def create(x):\n    return x\n\nclass User:\n    @staticmethod\n    def create(d):\n        return d\n",
+            ),
+            (
+                "pkg/app.py",
+                "from pkg.models import User\n\ndef run():\n    return User.create({})\n",
+            ),
+        ]);
+        let idx = CodeIndex::build(&files);
+        assert!(
+            idx.callers_of("pkg/models.py", "create").is_none(),
+            "the module-level create is not what User.create() calls"
+        );
+
+        // A real module binding still resolves: `from . import util` names the
+        // SUBMODULE, so `util` is the module and `util.thing()` is genuinely a
+        // module attribute.
+        let ns = corpus(&[
+            ("pkg/util.py", "def thing():\n    return 1\n"),
+            (
+                "pkg/main.py",
+                "from . import util\n\ndef run():\n    return util.thing()\n",
+            ),
+        ]);
+        let idx = CodeIndex::build(&ns);
+        assert!(
+            idx.callers_of("pkg/util.py", "thing").is_some(),
+            "a submodule bind is still a module attribute"
+        );
+    }
+
     /// The candidate the prefix-drop loop PRODUCES is root-anchored by
     /// construction, so suffix-matching it puts the library case straight back:
     /// indexing a checkout named `redis`, `from redis.client import Redis` drops
@@ -1126,7 +1214,7 @@ mod tests {
     /// every chain it can see then reported the result as complete.
     #[test]
     fn a_radius_built_on_capped_rows_is_not_reported_complete() {
-        let mut files = corpus(&[("a.py", "def leaf():\n    return 1\n")]);
+        let files = corpus(&[("a.py", "def leaf():\n    return 1\n")]);
         // Mark the corpus as having lost call sites to the per-file cap, the
         // way a generated megafile does.
         let mut idx = CodeIndex::build(&files);
@@ -1136,7 +1224,6 @@ mod tests {
             blast_radius(&idx, "a.py", "leaf", BlastLimits::default()).truncated,
             "a file that lost call sites can hold callers this radius cannot see"
         );
-        files.clear();
     }
 
     /// Node ESM and TS NodeNext require the extension on a relative specifier,
