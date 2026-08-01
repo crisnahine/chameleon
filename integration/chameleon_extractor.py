@@ -187,9 +187,10 @@ class ChromatophoreExtractor:
             # the whole extraction run dies on one file.
             encoding="utf-8",
             errors="replace",
-            # A neutral cwd and a scrubbed environment: the engine never
-            # executes repo code, and this keeps it that way if it ever grows a
-            # plugin path.
+            # A scrubbed environment: the engine never executes repo code, and
+            # this keeps it that way if it ever grows a plugin path. The cwd is
+            # the repo because every path arrives absolute on stdin, so nothing
+            # is resolved against it.
             cwd=str(repo_root),
             env={k: v for k, v in os.environ.items() if not k.startswith("PYTHON")},
         )

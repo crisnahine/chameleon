@@ -805,10 +805,23 @@ fn walk(
                 // identifier, and unwrapping those dropped the statement from the
                 // record entirely rather than recording it as an export.
                 let nested = spec.flags.unwrap_nodes.iter().any(|k| k == inner.kind());
-                if spec.top_level_kind(inner.kind()).is_none() && !nested {
+                // A kind mapped to the empty string is deliberately dropped
+                // (`comment`), not a declaration to descend into.
+                if spec.top_level_kind(inner.kind()).is_none_or(str::is_empty) && !nested {
                     break;
                 }
-                was_wrapped = true;
+                // Unwrapping and EXPORTING are different questions. `declare` is
+                // an ambient declaration, and reading every wrapper as an export
+                // made an unexported global in a `.d.ts` a claimed export.
+                let exports = if spec.flags.export_wrapper_nodes.is_empty() {
+                    true
+                } else {
+                    spec.flags
+                        .export_wrapper_nodes
+                        .iter()
+                        .any(|k| k == node.kind())
+                };
+                was_wrapped |= exports;
                 node = inner;
                 if !nested {
                     break;
@@ -1553,8 +1566,6 @@ fn declarator_names(
                     }
                     continue;
                 }
-                // A computed key (`{ [k]: v }`) names no binding at all.
-                "computed_property_name" => continue,
                 _ => {}
             }
             let name = text(n, source);
@@ -1833,8 +1844,11 @@ fn collect_imports(
                         module: module.clone(),
                         line,
                     });
-                    continue;
                 }
+                // Terminal either way: on error-recovered source with no alias,
+                // falling through recorded the raw text `* as` as an imported
+                // name and flipped the statement's specifier to `named`.
+                continue;
             }
             // `import Button from "./m"` binds the module's DEFAULT export. The
             // reference records the specifier as `default` and collects no named
@@ -2853,6 +2867,34 @@ mod tests {
     fn a_closure_does_not_deepen_the_frame_it_opens() {
         let ex = parse("elixir", "f = fn y -> y end\n");
         assert_eq!(ex.function_scopes[0].max_depth, 0);
+    }
+
+    /// Unwrapping and EXPORTING are different questions. `declare` is an
+    /// ambient declaration, and reading every wrapper as an export made every
+    /// unexported global in a `.d.ts` a claimed export -- in a set still marked
+    /// authoritative, so a phantom-symbol check would accept an import of it.
+    #[test]
+    fn an_ambient_declaration_is_not_an_export() {
+        let ts = parse(
+            "typescript",
+            "declare const X: string;\ndeclare function f(): void;\ndeclare class C {}\ndeclare global { interface W {} }\nexport declare const Y: number;\n",
+        );
+        assert_eq!(
+            ts.named_export_names,
+            vec!["Y".to_string()],
+            "only the EXPORTED declare is an export"
+        );
+        assert_eq!(ts.named_export_count, 1);
+        assert_eq!(
+            ts.top_level_node_kinds,
+            vec![
+                "FirstStatement",
+                "FunctionDeclaration",
+                "ClassDeclaration",
+                "ModuleDeclaration",
+                "FirstStatement"
+            ]
+        );
     }
 
     /// A binding pattern's property KEY and DEFAULT VALUE bind nothing:

@@ -58,6 +58,15 @@ def main() -> int:
     shared = sorted(set(ours_by) & set(theirs_by))
     print(f"  comparable:    {len(shared)}")
 
+    # A file the backend parsed and the engine refused leaves `shared` silently,
+    # and every rate below is then a fraction of what survived. A drop-in that
+    # drops files is not a drop-in.
+    missing = sorted(set(theirs_by) - set(ours_by))
+    if missing:
+        print(f"  ENGINE REFUSED {len(missing)} file(s) chameleon parsed:")
+        for path in missing[:5]:
+            print(f"    {Path(path).name}")
+
     if not shared:
         # 0 == 0 makes every per-slot check vacuously true, so a totally dead
         # engine -- a malformed spec, a missing binary -- would otherwise print
@@ -86,7 +95,7 @@ def main() -> int:
     print()
     print(f"{'normalized slot':<28} {'match':>12}   rate")
     print("-" * 56)
-    failures = 0
+    failures = len(missing)
     for slot in NORMALIZED:
         hits = 0
         first_bad = None

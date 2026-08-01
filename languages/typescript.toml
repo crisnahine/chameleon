@@ -100,6 +100,11 @@ export_clause_nodes = ["export_clause"]
 
 # `export default <expression>` is an ExportAssignment to the reference, not an
 # ExportDeclaration; a declaration form unwraps before this table is consulted.
+# `declare global { ... }` is a ModuleDeclaration to the reference; every other
+# ambient form unwraps to the declaration it wraps.
+[top_level_refine.ambient_declaration]
+statement_block = "ModuleDeclaration"
+
 [top_level_refine.export_statement]
 identifier = "ExportAssignment"
 arrow_function = "ExportAssignment"
@@ -129,3 +134,5 @@ decorator_nodes = ["decorator"]
 # `export function f()` is a FunctionDeclaration with an export modifier in
 # the TS AST, so unwrapping matches the vocabulary consumers already read.
 unwrap_nodes = ["export_statement", "ambient_declaration"]
+# `declare` is an ambient declaration, not an export.
+export_wrapper_nodes = ["export_statement"]

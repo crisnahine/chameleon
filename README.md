@@ -45,8 +45,10 @@ All figures from this machine (M-series, 11 cores), on chameleon's own
 | `chromatophore dump` | **0.097 s** | **0.77 ms** |
 
 That is 8.4x chameleon's current extractor and 104x its libcst fallback. The
-gap is native traversal plus all cores; the engine is also the only one of the
-three that parses `tools.py`, which libcst refuses at its node ceiling.
+gap is native traversal plus all cores; the engine also parses `tools.py`, which
+libcst refuses at its node ceiling. (Chameleon's own tree-sitter backend parses
+it too -- the differential harness compares against the libcst dumper, not
+against chameleon as a whole.)
 
 At scale, on mastodon (4,008 Ruby/TS/JS files, one symlink refused):
 
@@ -242,7 +244,7 @@ loads, sits inside the ABI window tree-sitter accepts, and parses.
 ## Development
 
 ```bash
-cargo test                    # 144 tests
+cargo test                    # 147 tests
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 python3 tests/parity.py --chameleon /path/to/chameleon

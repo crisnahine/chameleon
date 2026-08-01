@@ -246,9 +246,23 @@ impl CodeIndex {
                         .entry(target.clone())
                         .or_default()
                         .insert(pf.path.clone());
-                    // A namespace bind has no single exported name; the member
-                    // call supplies it. It is a module bind by construction.
-                    local_to_target.insert(ns.alias.clone(), (target, String::new(), true));
+                    // `import a.b` binds the TOP package `a`, while the specifier
+                    // resolved to `a/b`. Binding the local to that target made
+                    // `a.thing()` grade against `a/b.py` instead of `a/__init__`.
+                    // The importers edge is still right -- the file really is
+                    // imported -- so only the call binding is skipped.
+                    let dotted_head = ns.module.contains(['.', '/'])
+                        && ns
+                            .module
+                            .split(['.', '/'])
+                            .next()
+                            .is_some_and(|head| head == ns.alias);
+                    if !dotted_head {
+                        // A namespace bind has no single exported name; the
+                        // member call supplies it. It is a module bind by
+                        // construction.
+                        local_to_target.insert(ns.alias.clone(), (target, String::new(), true));
+                    }
                 }
             }
             import_targets.insert(pf.path.as_str(), local_to_target);
@@ -584,26 +598,35 @@ fn resolve_module(
 /// Whether a relative specifier's trailing dot-segment is an extension the
 /// index has already stemmed away, rather than part of the module name.
 ///
-/// Membership in the registry, not a shape test. Every shipped language reaches
-/// the relative branch, so a fixed JS/TS/Python/Ruby list silently dropped PHP's
-/// `require './helper.php'` and Lua's `./mod.lua` -- but a pure shape test is
-/// worse than either, because it strips extensions the engine does NOT parse:
-/// `import logo from "./logo.svg"` then resolved to a `logo.ts` sitting next to
-/// it, which is a fabricated edge to a module the language never loads. An
-/// extension the engine parses is one the index really has stemmed away; any
-/// other trailing segment is part of the name.
+/// Membership in the registry's CODE languages, not a shape test. Every shipped
+/// language reaches the relative branch, so a fixed JS/TS/Python/Ruby list
+/// silently dropped PHP's `require './helper.php'` and Lua's `./mod.lua` -- but a
+/// pure shape test is worse than either, because it strips extensions no
+/// language rewrites: `import logo from "./logo.svg"` resolved to a `logo.ts`
+/// sitting next to it, a fabricated edge to a module the language never loads.
+///
+/// Data formats are excluded for the same reason even though the engine parses
+/// them. `./util.js` naming a `util.ts` is a real language rule -- TypeScript
+/// emits `.js` and NodeNext requires the emitted name -- while `./config.json`
+/// naming a `config.ts` is not a rule at all, just two files sharing a stem.
 fn looks_like_extension(ext: &str) -> bool {
-    static PARSED: std::sync::LazyLock<HashSet<String>> = std::sync::LazyLock::new(|| {
-        crate::lang::Registry::load()
-            .map(|r| {
-                r.extensions()
-                    .iter()
-                    .filter_map(|e| e.strip_prefix('.').map(str::to_string))
-                    .collect()
+    static REWRITABLE: std::sync::LazyLock<HashSet<String>> = std::sync::LazyLock::new(|| {
+        let Ok(reg) = crate::lang::Registry::load() else {
+            return HashSet::new();
+        };
+        reg.extensions()
+            .iter()
+            .filter(|e| {
+                reg.for_path(&format!("x{e}")).is_some_and(|b| {
+                    // A spec that declares no callables and no types describes a
+                    // data format, and an import of one is an asset import.
+                    !b.spec.function_nodes.is_empty() || !b.spec.class_nodes.is_empty()
+                })
             })
-            .unwrap_or_default()
+            .filter_map(|e| e.strip_prefix('.').map(str::to_string))
+            .collect()
     });
-    PARSED.contains(&ext.to_ascii_lowercase())
+    REWRITABLE.contains(&ext.to_ascii_lowercase())
 }
 
 /// Corpus paths bucketed by their final segment, so a specifier is checked
@@ -1129,6 +1152,44 @@ mod tests {
         ]);
         let idx = CodeIndex::build(&rooted);
         assert!(idx.callers_of("requests.py", "get").is_some());
+    }
+
+    /// `import a.b` binds the TOP package `a`, while the specifier resolves to
+    /// `a/b`. Binding the local to that target graded `a.thing()` against
+    /// `a/b.py` instead of `a/__init__.py`.
+    #[test]
+    fn a_dotted_import_binds_the_package_not_the_leaf() {
+        let files = corpus(&[
+            ("mypkg/__init__.py", "def thing():\n    return 1\n"),
+            ("mypkg/util.py", "def thing():\n    return 2\n"),
+            (
+                "app.py",
+                "import mypkg.util\n\ndef run():\n    return mypkg.thing()\n",
+            ),
+        ]);
+        let idx = CodeIndex::build(&files);
+        assert!(
+            idx.callers_of("mypkg/util.py", "thing").is_none(),
+            "mypkg.thing is not mypkg.util.thing"
+        );
+        // The file really is imported, so that edge stays.
+        assert!(idx.importers.contains_key("mypkg/util.py"));
+    }
+
+    /// A data format is an asset, not a module the index has stemmed. `./util.js`
+    /// naming a `util.ts` is a real language rule -- TypeScript emits `.js` --
+    /// while `./config.json` naming a `config.ts` is two files sharing a stem.
+    #[test]
+    fn a_data_import_does_not_bind_a_same_stemmed_source_file() {
+        let files = corpus(&[
+            ("src/config.ts", "export function load() { return 1; }\n"),
+            (
+                "src/app.ts",
+                "import * as cfg from \"./config.json\";\nexport function run() { return cfg.load(); }\n",
+            ),
+        ]);
+        let idx = CodeIndex::build(&files);
+        assert!(idx.importers.is_empty(), "{:?}", idx.importers);
     }
 
     /// Whether a local names a MODULE is recorded where the resolution happens.

@@ -445,6 +445,15 @@ fn eval_query(
 ) -> std::result::Result<Vec<Finding>, Unsupported> {
     let query = Query::new(&bound.language, &rule.matcher.rule)
         .map_err(|e| Unsupported::BadQuery(format!("{e:?}")))?;
+    // A query with no captures parses, matches, and yields nothing -- the rule
+    // then reports CLEAN forever. A rule that quietly never fires is worse than
+    // one that says it cannot run, which is the whole reason `Unsupported`
+    // exists rather than an empty finding list.
+    if query.capture_names().is_empty() {
+        return Err(Unsupported::BadQuery(
+            "query declares no captures, so it can never report a finding".into(),
+        ));
+    }
 
     let mut parser = Parser::new();
     parser

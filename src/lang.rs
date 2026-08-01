@@ -357,6 +357,12 @@ pub struct Flags {
     /// Statement wrappers to unwrap when reading top-level kinds. Python's
     /// grammar nests small statements one level deeper than the meaningful node.
     pub unwrap_nodes: Vec<String>,
+    /// Which of those wrappers also mean "this declaration is EXPORTED".
+    /// Empty means every unwrap node does, which is right for a language whose
+    /// only wrapper is its export statement. TypeScript has two: `declare` is an
+    /// ambient declaration, not an export, and conflating them made every
+    /// unexported global in a `.d.ts` a claimed export.
+    pub export_wrapper_nodes: Vec<String>,
     /// Node kinds whose assignment TARGETS are module exports, in a language
     /// with no export keyword. Every top-level binding is importable in Python,
     /// so a module's export set is not just its defs and classes.
@@ -725,6 +731,7 @@ impl BoundLanguage {
                 .iter()
                 .chain(&s.flags.unwrap_nodes)
                 .chain(&s.flags.decorator_container_nodes)
+                .chain(&s.flags.export_wrapper_nodes)
                 .chain(&s.flags.export_assignment_nodes)
                 .chain(&s.flags.export_descend_nodes)
                 .map(|k| &**k),
