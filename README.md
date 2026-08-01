@@ -92,9 +92,11 @@ Both lists are exhaustive over the record on purpose. An earlier `parity.py`
 omitted `named_export_names`, reported a clean 14 of 14, and hid a field that
 was wrong on 119 of 125 files.
 
-Independent cross-check: on chameleon's own tree the engine derives **232
-callers** for `threshold_int`; chameleon's own committed index says 233. Two
-implementations, one edge apart.
+Independent cross-check: on chameleon's own tree the engine derives **267
+callers** for `threshold_int`. Chameleon's own committed index says 233, and
+`grep -c 'threshold_int('` over the same tree finds 277 textual occurrences, a
+handful of which sit in comments and string literals. Both indexes undercount;
+the engine undercounts less.
 
 ## Using it from chameleon
 
