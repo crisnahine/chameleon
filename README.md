@@ -142,6 +142,15 @@ are judgment calls and can never hard-block at any confidence.
 - **Parity is measured on Python.** The other 23 languages are verified to
   parse and extract structurally (`cargo test`), not compared against a
   reference implementation, because for most of them none exists.
+- **Spec depth varies by language, and the difference is measurable.** Every
+  shipped language parses, and extracts functions, classes, and body shape.
+  Call-site classification — separating `obj.method()` from a bare `method()`
+  and keeping the receiver — is verified for C, C++, C#, Go, Java, Lua, PHP,
+  Python, Rust, Scala, and TypeScript. Kotlin, Swift, Ruby, and Bash currently
+  record bare calls but lose the receiver on member calls, and Elixir reports
+  its own `def`/`defmodule` macros as calls because in that grammar they are.
+  Those are spec gaps, not engine gaps: closing one is editing a TOML file,
+  which is exactly the property this design is for.
 - **`AstGrep`, `Semgrep`, and `Coupling` are declared but not implemented.**
   Evaluating one returns an explicit `Unsupported` rather than silently
   matching nothing — a rule that quietly never fires is worse than one that

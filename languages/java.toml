@@ -38,6 +38,8 @@ param_type = "type"
 [calls]
 nodes = ["method_invocation"]
 member_nodes = ["field_access"]
+receiver_field = "object"
+name_field = "name"
 constructor_nodes = ["object_creation_expression"]
 self_names = ["this"]
 super_nodes = ["super"]

@@ -58,6 +58,14 @@ pub struct CallSpec {
     pub self_names: Vec<String>,
     /// Node kinds that denote a superclass call.
     pub super_nodes: Vec<String>,
+    /// Some grammars put the receiver and the method name directly on the call
+    /// node instead of nesting a member expression under it: Java's
+    /// `method_invocation` carries `object` and `name`, and PHP's
+    /// `member_call_expression` the same. Without these the receiver is lost and
+    /// `obj.method()` records as a bare call to `method`, which is not merely
+    /// less precise -- it is wrong, and it binds the edge to the wrong symbol.
+    pub receiver_field: Option<String>,
+    pub name_field: Option<String>,
     /// True when call rows should carry a `nesting` list (Ruby constant dispatch).
     pub carries_nesting: bool,
 }

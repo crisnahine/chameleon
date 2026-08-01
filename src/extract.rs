@@ -236,6 +236,31 @@ fn params_of(node: Node, spec: &LanguageSpec, source: &[u8]) -> Vec<Param> {
     out
 }
 
+/// The receiver text, when the receiver is a single name rather than a chain.
+///
+/// Only a simple identifier receiver is ever recorded: `a.b.c()` must yield no
+/// edge rather than a guessed one. A leaf node is the common case, but some
+/// grammars wrap a plain variable in one more node (PHP's `$obj` is a
+/// `variable_name` around a `name`), so a single leaf child whose text carries
+/// no access operator counts as simple too. Anything else is a chain.
+fn simple_receiver<'a>(node: Node, source: &'a [u8]) -> Option<&'a str> {
+    let t = text(node, source);
+    match node.named_child_count() {
+        0 => Some(t),
+        1 => {
+            let only = node.named_child(0)?;
+            let unwrapped = only.named_child_count() == 0
+                && !t.contains('.')
+                && !t.contains("->")
+                && !t.contains("::")
+                && !t.contains('(')
+                && !t.contains('[');
+            unwrapped.then_some(t)
+        }
+        _ => None,
+    }
+}
+
 /// Split a call node into (name, receiver, kind), or `None` to record nothing.
 ///
 /// Returning `None` is the common and correct outcome for anything the engine
@@ -259,6 +284,32 @@ fn call_of(
         return Some((text(callee, source).to_string(), None, "new".to_string()));
     }
 
+    // Grammars that carry the receiver and name on the call node itself.
+    if let Some(name_field) = &spec.calls.name_field {
+        if let Some(name_node) = node.child_by_field_name(name_field.as_str()) {
+            let name = text(name_node, source).to_string();
+            if name.is_empty() {
+                return None;
+            }
+            let recv = spec
+                .calls
+                .receiver_field
+                .as_deref()
+                .and_then(|f| node.child_by_field_name(f));
+            return Some(match recv {
+                Some(r) => {
+                    let rt = simple_receiver(r, source)?.to_string();
+                    if spec.calls.self_names.iter().any(|s| s == &rt) {
+                        (name, Some(rt), "self".to_string())
+                    } else {
+                        (name, Some(rt), "member".to_string())
+                    }
+                }
+                None => (name, None, "bare".to_string()),
+            });
+        }
+    }
+
     let callee = field_node(node, &spec.fields.call_function).or_else(|| node.named_child(0))?;
 
     if spec.calls.member_nodes.iter().any(|k| k == callee.kind()) {
@@ -267,12 +318,13 @@ fn call_of(
         let name = text(prop, source).to_string();
         let recv_text = text(obj, source).to_string();
 
-        // Only a simple identifier receiver is recorded. `svc.api.deep.sync()`
-        // has a member expression as its receiver and is dropped.
-        if obj.named_child_count() > 0 && !spec.calls.self_names.iter().any(|s| s == &recv_text) {
+        // `svc.api.deep.sync()` has a member expression as its receiver and is
+        // dropped rather than guessed at.
+        let is_self = spec.calls.self_names.iter().any(|s| s == &recv_text);
+        if !is_self && simple_receiver(obj, source).is_none() {
             return None;
         }
-        if spec.calls.self_names.iter().any(|s| s == &recv_text) {
+        if is_self {
             return Some((name, Some(recv_text), "self".to_string()));
         }
         if spec.calls.super_nodes.iter().any(|k| k == obj.kind()) {
@@ -1212,6 +1264,48 @@ mod tests {
         assert_eq!(pf.call_sites.len(), 10);
         assert_eq!(pf.call_sites_total, 50, "the true count survives the cap");
         assert!(pf.call_sites_truncated);
+    }
+
+    /// Grammars that put `object`/`name` on the call node itself must still
+    /// yield a receiver. Losing it is not merely less precise -- `obj.method()`
+    /// records as a bare call to `method` and binds the edge to the wrong
+    /// symbol, which is how a blast radius comes to lie.
+    #[test]
+    fn receiver_on_the_call_node_is_read_not_lost() {
+        let java = parse(
+            "java",
+            "class A { void f() { helper(); obj.method(); this.own(); a.b.c(); } }",
+        );
+        let got: Vec<(&str, Option<&str>, &str)> = java
+            .call_sites
+            .iter()
+            .map(|c| (c.kind.as_str(), c.receiver.as_deref(), c.name.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("bare", None, "helper"),
+                ("member", Some("obj"), "method"),
+                ("self", Some("this"), "own"),
+            ],
+            "the a.b.c() chain must be dropped, not guessed"
+        );
+    }
+
+    /// PHP wraps a plain `$obj` in a `variable_name` node, so a strict
+    /// leaf-only receiver test drops a perfectly simple receiver.
+    #[test]
+    fn a_singly_wrapped_receiver_still_counts_as_simple() {
+        let php = parse(
+            "php",
+            "<?php function f() { helper(); $obj->method(); $a->b->c(); }",
+        );
+        let got: Vec<(&str, Option<&str>)> = php
+            .call_sites
+            .iter()
+            .map(|c| (c.name.as_str(), c.receiver.as_deref()))
+            .collect();
+        assert_eq!(got, vec![("helper", None), ("method", Some("$obj"))]);
     }
 
     #[test]
