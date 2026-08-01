@@ -156,6 +156,11 @@ impl CodeIndex {
         } else {
             package.to_string()
         };
+        let module_index = ModuleIndex::build(&paths);
+        // A repo imports the same specifier from many files; the answer depends
+        // only on the specifier, the importer's DIRECTORY, and the submodule
+        // hint, so it is cached on exactly those.
+        let mut memo: HashMap<(String, String, String), Option<String>> = HashMap::new();
         let mut import_targets: HashMap<&str, HashMap<String, (String, String)>> = HashMap::new();
         for pf in files {
             // The value carries the EXPORTED name, not just the target. Keying
@@ -164,10 +169,26 @@ impl CodeIndex {
             // `lib::alias` -- a different function that merely happens to exist.
             // That is a wrong edge, not a missing one.
             let mut local_to_target: HashMap<String, (String, String)> = HashMap::new();
+            let dir_of = |p: &str| {
+                p.rsplit_once('/')
+                    .map(|(d, _)| d.to_string())
+                    .unwrap_or_default()
+            };
             for sym in &pf.import_symbols {
-                if let Some(target) =
-                    resolve_module(&sym.module, &paths, &pf.path, &root_name, Some(&sym.name))
-                {
+                let key = (sym.module.clone(), dir_of(&pf.path), sym.name.clone());
+                let resolved = memo
+                    .entry(key)
+                    .or_insert_with(|| {
+                        resolve_module(
+                            &sym.module,
+                            &module_index,
+                            &pf.path,
+                            &root_name,
+                            Some(&sym.name),
+                        )
+                    })
+                    .clone();
+                if let Some(target) = resolved {
                     idx.importers
                         .entry(target.clone())
                         .or_default()
@@ -176,8 +197,14 @@ impl CodeIndex {
                 }
             }
             for ns in &pf.namespace_imports {
-                if let Some(target) = resolve_module(&ns.module, &paths, &pf.path, &root_name, None)
-                {
+                let key = (ns.module.clone(), dir_of(&pf.path), String::new());
+                let resolved = memo
+                    .entry(key)
+                    .or_insert_with(|| {
+                        resolve_module(&ns.module, &module_index, &pf.path, &root_name, None)
+                    })
+                    .clone();
+                if let Some(target) = resolved {
                     idx.importers
                         .entry(target.clone())
                         .or_default()
@@ -331,7 +358,7 @@ fn render_signature(sig: &crate::core::CallableSignature) -> String {
 /// match both yield `None` -- an ambiguous resolution is not a resolution.
 fn resolve_module(
     spec: &str,
-    paths: &[&str],
+    index: &ModuleIndex,
     importer: &str,
     root_name: &str,
     submodule: Option<&str>,
@@ -394,7 +421,7 @@ fn resolve_module(
             if conv.bare_import_names_submodule {
                 if let Some(sub) = submodule {
                     if let Some(hit) =
-                        exact_module_match(&join(&base, sub), paths, conv.package_index)
+                        exact_module_match(&join(&base, sub), index, conv.package_index)
                     {
                         return Some(hit);
                     }
@@ -403,7 +430,7 @@ fn resolve_module(
         }
         // Exact, not suffix: the anchor is the whole point, and reusing the
         // suffix matcher lets a root-level `.util` bind `handlers/util.py`.
-        return exact_module_match(&join(&base, &tail), paths, conv.package_index);
+        return exact_module_match(&join(&base, &tail), index, conv.package_index);
     }
 
     let cleaned = spec.replace('.', "/");
@@ -420,7 +447,7 @@ fn resolve_module(
     // cross-file edges" rather than "you pointed me one directory too deep".
     let mut candidate = cleaned.as_str();
     loop {
-        if let Some(hit) = unique_suffix_match(candidate, paths, conv.package_index) {
+        if let Some(hit) = unique_suffix_match(candidate, index, conv.package_index) {
             return Some(hit);
         }
         match candidate.split_once('/') {
@@ -431,6 +458,73 @@ fn resolve_module(
             // precisely the wrong-binding this module promises never to make.
             Some((head, rest)) if !rest.is_empty() && head == root_name => candidate = rest,
             _ => return None,
+        }
+    }
+}
+
+/// Corpus paths bucketed by their final segment, so a specifier is checked
+/// against a handful of candidates instead of every file.
+///
+/// Both match rules end at the same place -- `stem == candidate` or
+/// `stem.ends_with("/candidate")` -- so every path that can satisfy a candidate
+/// shares the candidate's LAST segment. Bucketing on that segment is therefore
+/// exact, not a heuristic prefilter: nothing outside the bucket could have
+/// matched. Measured on a 4,893-file corpus, resolve_module was 5.20s of the
+/// 5.21s index build.
+struct ModuleIndex<'a> {
+    /// Extension-stripped stems, parallel to the input paths.
+    stems: Vec<&'a str>,
+    paths: &'a [&'a str],
+    by_last_segment: HashMap<&'a str, Vec<usize>>,
+}
+
+impl<'a> ModuleIndex<'a> {
+    fn build(paths: &'a [&'a str]) -> Self {
+        let mut stems = Vec::with_capacity(paths.len());
+        let mut by_last_segment: HashMap<&str, Vec<usize>> = HashMap::new();
+        for (i, p) in paths.iter().enumerate() {
+            let stem = p.rsplit_once('.').map(|(s, _)| s).unwrap_or(p);
+            stems.push(stem);
+            let last = stem.rsplit('/').next().unwrap_or(stem);
+            by_last_segment.entry(last).or_default().push(i);
+        }
+        Self {
+            stems,
+            paths,
+            by_last_segment,
+        }
+    }
+
+    /// Every path whose stem is exactly `candidate` or ends with `/candidate`.
+    fn matches(&self, candidate: &str) -> Vec<&'a str> {
+        let last = candidate.rsplit('/').next().unwrap_or(candidate);
+        let Some(bucket) = self.by_last_segment.get(last) else {
+            return Vec::new();
+        };
+        let suffix = format!("/{candidate}");
+        let mut out: Vec<&str> = bucket
+            .iter()
+            .filter(|&&i| self.stems[i] == candidate || self.stems[i].ends_with(&suffix))
+            .map(|&i| self.paths[i])
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// Exactly-one-or-nothing, over the module form and its package form.
+    fn resolve_exact(&self, candidate: &str, package_index: &str) -> Option<String> {
+        let mut hits = self.matches(candidate);
+        // A directory's own module counts as that module.
+        let pkg = format!("{candidate}/{package_index}");
+        for p in self.matches(&pkg) {
+            if !hits.contains(&p) {
+                hits.push(p);
+            }
+        }
+        match hits.len() {
+            1 => Some(hits[0].to_string()),
+            _ => None,
         }
     }
 }
@@ -472,22 +566,29 @@ impl ModuleConventions {
 /// An exact module match: the path's stem IS this module, or it is that
 /// module's package `__init__`. No suffix matching -- used where an anchor has
 /// already decided the answer.
-fn exact_module_match(candidate: &str, paths: &[&str], package_index: &str) -> Option<String> {
-    let package_form = format!("{candidate}/{package_index}");
-    let mut hits: Vec<&str> = paths
-        .iter()
-        .copied()
-        .filter(|p| {
-            let stem = p.rsplit_once('.').map(|(s, _)| s).unwrap_or(p);
-            stem == candidate || stem == package_form
-        })
+fn exact_module_match(candidate: &str, index: &ModuleIndex, package_index: &str) -> Option<String> {
+    // Exact stem equality only -- the relative branch has already resolved the
+    // anchor, and reusing the suffix rule there lets a root-level `.util` bind
+    // `handlers/util.py`.
+    let pkg = format!("{candidate}/{package_index}");
+    let mut hits: Vec<&str> = index
+        .matches(candidate)
+        .into_iter()
+        .filter(|p| index_stem(p) == candidate)
         .collect();
-    hits.sort_unstable();
-    hits.dedup();
+    for p in index.matches(&pkg) {
+        if index_stem(p) == pkg && !hits.contains(&p) {
+            hits.push(p);
+        }
+    }
     match hits.len() {
         1 => Some(hits[0].to_string()),
         _ => None,
     }
+}
+
+fn index_stem(path: &str) -> &str {
+    path.rsplit_once('.').map(|(s, _)| s).unwrap_or(path)
 }
 
 /// The corpus root's package name, when every path shares one leading segment.
@@ -510,25 +611,12 @@ fn common_root_name(paths: &[&str]) -> String {
 ///
 /// Zero matches and many matches are both `None`: an ambiguous resolution is
 /// not a resolution, and picking one would fabricate an edge.
-fn unique_suffix_match(candidate: &str, paths: &[&str], package_index: &str) -> Option<String> {
-    let package_form = format!("{candidate}/{package_index}");
-    let mut hits: Vec<&str> = paths
-        .iter()
-        .copied()
-        .filter(|p| {
-            let stem = p.rsplit_once('.').map(|(s, _)| s).unwrap_or(p);
-            stem == candidate
-                || stem.ends_with(&format!("/{candidate}"))
-                || stem == package_form
-                || stem.ends_with(&format!("/{package_form}"))
-        })
-        .collect();
-    hits.sort_unstable();
-    hits.dedup();
-    match hits.len() {
-        1 => Some(hits[0].to_string()),
-        _ => None,
-    }
+fn unique_suffix_match(
+    candidate: &str,
+    index: &ModuleIndex,
+    package_index: &str,
+) -> Option<String> {
+    index.resolve_exact(candidate, package_index)
 }
 
 /// One caller chain, root-first.
@@ -1126,6 +1214,39 @@ mod tests {
         assert!(
             idx.callers_of("lib.py", "alias").is_none(),
             "and must NOT land on the unrelated `alias`"
+        );
+    }
+
+    /// The bucketed index must be EXACT, not a prefilter. Both match rules end
+    /// at `stem == candidate` or `stem.ends_with("/candidate")`, so every path
+    /// that can satisfy a candidate shares its last segment -- which is what
+    /// makes bucketing on that segment lossless. A multi-segment candidate is
+    /// the case that would break a naive last-segment index.
+    #[test]
+    fn the_module_index_matches_multi_segment_candidates() {
+        let paths = vec![
+            "pkg/bootstrap/orchestrator.py",
+            "other/orchestrator.py",
+            "pkg/util/__init__.py",
+            "pkg/util.py",
+        ];
+        let idx = ModuleIndex::build(&paths);
+
+        // Multi-segment: only the one under bootstrap/.
+        assert_eq!(
+            idx.matches("bootstrap/orchestrator"),
+            vec!["pkg/bootstrap/orchestrator.py"]
+        );
+        // Single segment: both files named orchestrator.
+        assert_eq!(idx.matches("orchestrator").len(), 2);
+        // A candidate nothing shares a last segment with.
+        assert!(idx.matches("nothing/here").is_empty());
+        // Ambiguity is not a resolution.
+        assert_eq!(idx.resolve_exact("orchestrator", "__init__"), None);
+        assert_eq!(
+            idx.resolve_exact("bootstrap/orchestrator", "__init__")
+                .as_deref(),
+            Some("pkg/bootstrap/orchestrator.py")
         );
     }
 

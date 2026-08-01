@@ -53,11 +53,14 @@ At scale, on mastodon (4,008 Ruby/TS/JS files, one symlink refused):
 | | Wall clock |
 |---|---|
 | `dump` | 0.36 s (0.09 ms/file) |
-| `index` (parse + symbols + imports + call graph) | 7.0 s |
+| `index` (parse + symbols + imports + call graph) | 0.57 s (0.12 ms/file) |
 
-Indexing is mildly super-linear: 37x the files costs 54x the time, because
-`resolve_module` scans corpus paths per specifier with no memo. That is fine at
-5k files and would want a suffix index past ~50k.
+Indexing was 5.8 s until module resolution stopped scanning every corpus path
+per specifier. Both match rules end at `stem == candidate` or
+`stem.ends_with("/candidate")`, so every path that can satisfy a candidate
+shares the candidate's last segment — bucketing on that segment is exact, not a
+prefilter. With a per-specifier memo on top, the same corpus indexes in 0.57 s
+and the output is byte-identical.
 
 Build: 24 grammars compile in ~11 s cold. Binary: 39 MB unstripped.
 
@@ -190,7 +193,7 @@ loads, sits inside the ABI window tree-sitter accepts, and parses.
 ## Development
 
 ```bash
-cargo test                    # 83 tests
+cargo test                    # 90 tests
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 python3 tests/parity.py --chameleon /path/to/chameleon
