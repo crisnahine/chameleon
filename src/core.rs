@@ -251,8 +251,15 @@ impl Default for Limits {
     }
 }
 
-/// xxhash64 of the file bytes, hex. Chameleon computes this host-side today;
-/// the engine has the bytes in hand already, so it emits it and saves the reread.
+/// xxhash64 of the file bytes, hex.
+///
+/// NOT a wire field, deliberately: `sha_hint` feeds chameleon's drift cache and
+/// every shipped extractor computes it host-side, so the integration shim does
+/// the same and matches byte for byte. Putting it on the wire would add a field
+/// the reference dumpers do not have, which the differential harness would then
+/// have to exclude -- a standing hole in the one thing that keeps this honest.
+/// The cost is a re-read per file on the shim's side, and that is the right
+/// trade. Kept here because it is the engine's own definition of the digest.
 pub fn sha_hint(bytes: &[u8]) -> String {
     format!("{:016x}", twox_hash::XxHash64::oneshot(0, bytes))
 }

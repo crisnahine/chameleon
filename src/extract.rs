@@ -764,7 +764,7 @@ fn walk(
             // of the module's public surface. Without that, a TS file reports
             // its PRIVATE declarations as exports and omits the ones it
             // actually exposes -- the set is not noisy, it is inverted.
-            let was_wrapped = spec.flags.unwrap_nodes.iter().any(|k| k == node.kind());
+            let mut was_wrapped = false;
             // `export default ...` is the module's default export, NOT one of
             // its named ones. Both halves matter: the record's
             // `default_export_kind` is what a consumer resolves a default import
@@ -787,17 +787,31 @@ fn walk(
                         .filter(|k| !k.is_empty())
                 });
             }
-            if was_wrapped {
+            // A loop, because wrappers nest: `export declare const X` is an
+            // export_statement around an ambient_declaration around the real
+            // declaration, and stopping at one level left the name unread while
+            // the export set still claimed, authoritatively, not to have it.
+            for _ in 0..4 {
+                if !spec.flags.unwrap_nodes.iter().any(|k| k == node.kind()) {
+                    break;
+                }
                 let last = (node.named_child_count() as u32).saturating_sub(1);
-                if let Some(inner) = node.named_child(last) {
-                    // Unwrap only when the inner node is itself a meaningful
-                    // top-level kind. `export { x }`, `export * from` and
-                    // `export default x` wrap a clause or a bare identifier, and
-                    // unwrapping those dropped the statement from the record
-                    // entirely rather than recording it as an export.
-                    if spec.top_level_kind(inner.kind()).is_some() {
-                        node = inner;
-                    }
+                let Some(inner) = node.named_child(last) else {
+                    break;
+                };
+                // Unwrap only when the inner node is itself a meaningful
+                // top-level kind, or is another wrapper. `export { x }`,
+                // `export * from` and `export default x` wrap a clause or a bare
+                // identifier, and unwrapping those dropped the statement from the
+                // record entirely rather than recording it as an export.
+                let nested = spec.flags.unwrap_nodes.iter().any(|k| k == inner.kind());
+                if spec.top_level_kind(inner.kind()).is_none() && !nested {
+                    break;
+                }
+                was_wrapped = true;
+                node = inner;
+                if !nested {
+                    break;
                 }
             }
             let is_exported = (!spec.flags.explicit_exports || was_wrapped) && !is_default_export;
@@ -833,7 +847,7 @@ fn walk(
                 && !spec.is_function(node.kind())
                 && !spec.is_class(node.kind())
             {
-                let mut named = declarator_names(node, spec, source);
+                let mut named = declarator_names(node, spec, source, &mut export_set_open);
                 // A declaration that is neither a variable nor a callable still
                 // exports its own name: `export interface Props`, `export type
                 // T`, `export enum E`, `export namespace N`. Missing them left a
@@ -1479,11 +1493,19 @@ fn module_bindings(
     }
 }
 
+/// Bounded like every other walk here: a binding pattern is arbitrary source.
+const MAX_PATTERN_WALK_STEPS: usize = 256;
+
 /// Names bound by a variable declaration statement.
 ///
 /// `export const A = 1, B = 2` exports two names, so the declarators are read
 /// individually rather than the statement being counted once.
-fn declarator_names(node: Node, spec: &LanguageSpec, source: &[u8]) -> Vec<String> {
+fn declarator_names(
+    node: Node,
+    spec: &LanguageSpec,
+    source: &[u8],
+    truncated: &mut bool,
+) -> Vec<String> {
     // Only a variable declaration binds names this way. Without the gate this
     // walks an enum body and reports its MEMBERS as the module's exports, so
     // `export enum E { A }` exported `A` and not `E`.
@@ -1508,8 +1530,32 @@ fn declarator_names(node: Node, spec: &LanguageSpec, source: &[u8]) -> Vec<Strin
         let mut steps = 0usize;
         while let Some(n) = queue.pop() {
             steps += 1;
-            if steps > 256 {
+            if steps > MAX_PATTERN_WALK_STEPS {
+                // Short of the real set; reporting it as closed would let a
+                // phantom-symbol check flag names the module genuinely exports.
+                *truncated = true;
                 break;
+            }
+            // `{ a: renamed }` binds `renamed`, not `a`, and `{ a = 1 }` binds
+            // `a`, not `1`. Descending every named child harvested the property
+            // KEY and the DEFAULT VALUE as exports, so the module claimed names
+            // it does not have -- in a set still marked authoritative.
+            match n.kind() {
+                "pair_pattern" => {
+                    if let Some(v) = n.child_by_field_name("value") {
+                        queue.push(v);
+                    }
+                    continue;
+                }
+                "object_assignment_pattern" | "assignment_pattern" => {
+                    if let Some(l) = n.child_by_field_name("left").or_else(|| n.named_child(0)) {
+                        queue.push(l);
+                    }
+                    continue;
+                }
+                // A computed key (`{ [k]: v }`) names no binding at all.
+                "computed_property_name" => continue,
+                _ => {}
             }
             let name = text(n, source);
             if !name.is_empty()
@@ -1769,6 +1815,11 @@ fn collect_imports(
             // up as a symbol literally called `* as ns`, which matches nothing.
             if child.kind() == "namespace_import" {
                 any_namespace = true;
+                if type_only_statement {
+                    // `import type * as T from "m"` must not seed call-edge
+                    // resolution; the specifier kind stays `namespace`.
+                    continue;
+                }
                 let alias = child
                     .named_child(0)
                     .map(|n| text(n, source).to_string())
@@ -2802,6 +2853,82 @@ mod tests {
     fn a_closure_does_not_deepen_the_frame_it_opens() {
         let ex = parse("elixir", "f = fn y -> y end\n");
         assert_eq!(ex.function_scopes[0].max_depth, 0);
+    }
+
+    /// A binding pattern's property KEY and DEFAULT VALUE bind nothing:
+    /// `{ a: renamed }` binds `renamed` and `{ a = 1 }` binds `a`. Harvesting
+    /// every named child put names in the export set the module does not have,
+    /// in a set still marked authoritative.
+    #[test]
+    fn a_binding_pattern_exports_what_it_binds_and_nothing_else() {
+        let ts = parse(
+            "typescript",
+            "export const { a: renamed } = o;\nexport const { retries = DEF } = opts;\nexport const [first, ...rest] = xs;\n",
+        );
+        let mut got = ts.named_export_names.clone();
+        got.sort();
+        assert_eq!(got, vec!["first", "renamed", "rest", "retries"]);
+        assert_eq!(ts.named_export_count, 3, "three exported declarations");
+    }
+
+    /// A type-only namespace import must not seed call-edge resolution, and an
+    /// import attribute is not an imported name -- on a side-effect import it
+    /// also flipped the specifier kind from `namespace` to `named`.
+    #[test]
+    fn a_type_namespace_and_an_import_attribute_bind_nothing() {
+        let ts = parse(
+            "typescript",
+            "import type * as T from \"./types\";\nimport \"./x.css\" with { type: \"css\" };\nimport { y } from \"./m\" with { type: \"json\" };\n",
+        );
+        assert!(
+            ts.namespace_imports.is_empty(),
+            "{:?}",
+            ts.namespace_imports
+        );
+        assert_eq!(
+            ts.import_symbols
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["y"]
+        );
+        assert_eq!(
+            ts.import_specifiers,
+            vec![
+                ("./types".to_string(), "namespace".to_string()),
+                ("./x.css".to_string(), "namespace".to_string()),
+                ("./m".to_string(), "named".to_string()),
+            ]
+        );
+    }
+
+    /// An ANONYMOUS default export is a declaration to the reference, not an
+    /// assignment; and `export declare` nests one wrapper deeper, so stopping at
+    /// one level left a `.d.ts` claiming an empty export set.
+    #[test]
+    fn an_anonymous_default_and_an_ambient_declaration_are_both_read() {
+        let anon = parse("typescript", "export default function () {}\n");
+        assert_eq!(anon.top_level_node_kinds, vec!["FunctionDeclaration"]);
+        assert_eq!(
+            anon.default_export_kind.as_deref(),
+            Some("FunctionDeclaration")
+        );
+
+        let cls = parse("typescript", "export default class {}\n");
+        assert_eq!(cls.top_level_node_kinds, vec!["ClassDeclaration"]);
+        assert_eq!(cls.default_export_kind.as_deref(), Some("ClassDeclaration"));
+
+        let ambient = parse(
+            "typescript",
+            "export declare const API_URL: string;\nexport declare function f(): void;\n",
+        );
+        assert_eq!(
+            ambient.top_level_node_kinds,
+            vec!["FirstStatement", "FunctionDeclaration"]
+        );
+        let mut names = ambient.named_export_names.clone();
+        names.sort();
+        assert_eq!(names, vec!["API_URL", "f"]);
     }
 
     /// The reference emits ONE specifier row per import statement, collects no

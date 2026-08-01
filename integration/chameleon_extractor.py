@@ -10,10 +10,10 @@ The whole shim is the spawn plus the record loop, because the engine already
 speaks chameleon's protocol: absolute paths on stdin, one NDJSON record per
 file on stdout. Nothing here reshapes the records.
 
-    from chameleon_mcp.extractors.registry import EXTRACTORS
+    from chameleon_mcp.extractors.registry import EXTRACTORS, PythonExtractor
     from chameleon_extractor import ChromatophoreExtractor
 
-    EXTRACTORS.insert(len(EXTRACTORS) - 1, ChromatophoreExtractor)
+    EXTRACTORS.insert(EXTRACTORS.index(PythonExtractor), ChromatophoreExtractor)
 
 Three details the seam does not make obvious, all verified against
 `extractors/registry.py`.
@@ -26,7 +26,9 @@ detectors, because `select_extractor` instantiates with no arguments
 (`ext = ext_cls()`), so this class always builds with `language="python"`. At
 index 0 it would claim a TS monorepo that happens to hold one `scripts/gen.py`,
 and chameleon branches archetype naming, framework layers and lint gates on
-`.language`.
+`.language`. Anchored to `PythonExtractor` rather than to a length, because
+`register()` appends: any other extractor registered first moves a
+`len(EXTRACTORS) - 1` insert BEHIND Python, which is the silent no-op above.
 
 And `select_extractor` swaps in chameleon's in-process `TreeSitterExtractor` for
 python, ruby and typescript whatever the registry says, so the engine runs only

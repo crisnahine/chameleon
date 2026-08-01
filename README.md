@@ -27,7 +27,7 @@ learns a language's name.
 | Layer | Module | What it gives you |
 |---|---|---|
 | Wire contract | `core` | The `ParsedFile` record chameleon's consumers already read |
-| Languages | `lang` | 24 declarative specs bound to tree-sitter grammars |
+| Languages | `lang` | 23 declarative specs, 24 bound grammars (tsx clones the TS spec) |
 | Extraction | `extract` | One iterative walk producing a record per file |
 | Intelligence | `index` | Symbols, imports, call graph, blast radius |
 | Mining | `mine` | Archetype clustering, convention voting, witness selection |
@@ -53,7 +53,7 @@ At scale, on mastodon (4,008 Ruby/TS/JS files, one symlink refused):
 | | Wall clock |
 |---|---|
 | `dump` | 0.36 s (0.09 ms/file) |
-| `index` (parse + symbols + imports + call graph) | 0.57 s (0.12 ms/file) |
+| `index` (parse + symbols + imports + call graph) | 0.57 s (0.14 ms/file) |
 
 Indexing was 5.8 s until module resolution stopped scanning every corpus path
 per specifier. Both match rules end at `stem == candidate` or
@@ -113,14 +113,14 @@ boundaries*), so swapping them in is a trade rather than a free upgrade:
 find . -name '*.py' | chromatophore dump
 ```
 
-Wiring it in is a `parse_repo` that spawns this binary instead, put at the FRONT
-of the registry:
+Wiring it in is a `parse_repo` that spawns this binary instead, inserted ahead of
+`PythonExtractor`:
 
 ```python
-from chameleon_mcp.extractors.registry import EXTRACTORS
+from chameleon_mcp.extractors.registry import EXTRACTORS, PythonExtractor
 from chameleon_extractor import ChromatophoreExtractor
 
-EXTRACTORS.insert(len(EXTRACTORS) - 1, ChromatophoreExtractor)
+EXTRACTORS.insert(EXTRACTORS.index(PythonExtractor), ChromatophoreExtractor)
 ```
 
 Three details the seam does not make obvious, all verified against
@@ -129,7 +129,9 @@ already claims any repo holding one `.py` file, so an appended entry is never
 reached. The position is ahead of `PythonExtractor` and *behind* the TypeScript
 and Ruby detectors, because `select_extractor` instantiates with no arguments —
 so this class always builds with `language="python"`, and at index 0 it would
-claim a TS monorepo that happens to hold one `scripts/gen.py`. And
+claim a TS monorepo that happens to hold one `scripts/gen.py`. It is anchored to
+`PythonExtractor` rather than to a length, because `register()` appends: any
+other extractor registered first would move a `len - 1` insert behind Python. And
 `select_extractor` swaps in chameleon's in-process `TreeSitterExtractor` for
 python, ruby and typescript whatever the registry says — so the engine runs only
 with `CHAMELEON_TREE_SITTER=0` set. Without all three, a user sees chameleon
@@ -240,7 +242,7 @@ loads, sits inside the ABI window tree-sitter accepts, and parses.
 ## Development
 
 ```bash
-cargo test                    # 140 tests
+cargo test                    # 144 tests
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 python3 tests/parity.py --chameleon /path/to/chameleon

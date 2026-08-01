@@ -7,11 +7,14 @@ function_nodes = ["function_declaration", "generator_function_declaration", "fun
 class_nodes = ["class_declaration", "class"]
 branch_nodes = ["if_statement", "for_statement", "for_in_statement", "while_statement", "do_statement", "switch_case", "catch_clause", "ternary_expression"]
 nesting_nodes = ["if_statement", "for_statement", "for_in_statement", "while_statement", "do_statement", "switch_statement", "try_statement"]
-skip_subtree_nodes = ["comment", "string_fragment"]
+skip_subtree_nodes = ["comment", "string_fragment", "import_attribute"]
 
 [top_level_kinds]
 function_declaration = "FunctionDeclaration"
 generator_function_declaration = "FunctionDeclaration"
+function_expression = "FunctionDeclaration"
+generator_function = "FunctionDeclaration"
+class = "ClassDeclaration"
 class_declaration = "ClassDeclaration"
 import_statement = "ImportDeclaration"
 export_statement = "ExportDeclaration"
@@ -50,8 +53,9 @@ superclass = "class_heritage"
 
 [default_export_kinds]
 identifier = "Identifier"
+class = "ClassDeclaration"
+function_expression = "FunctionDeclaration"
 arrow_function = "ArrowFunction"
-function_expression = "FunctionExpression"
 call_expression = "CallExpression"
 object = "ObjectLiteralExpression"
 array = "ArrayLiteralExpression"

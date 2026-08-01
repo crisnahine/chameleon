@@ -85,6 +85,17 @@ pub struct SymbolDef {
 /// Per-symbol caller cap. The `total` field keeps the real number.
 const MAX_CALLERS_PER_CALLEE: usize = 100;
 
+/// What one import bound: the target file, the name the TARGET exports, and
+/// whether the local names a MODULE rather than a value.
+type ImportBinding = (String, String, bool);
+
+/// (specifier, importer dir, importer extension, imported name). Everything
+/// `resolve_module` branches on, and nothing else.
+type MemoKey = (String, String, String, String);
+
+/// A resolved target, and whether the local it binds names a module.
+type Resolution = (String, bool);
+
 impl CodeIndex {
     /// Build the index from an already-parsed corpus.
     ///
@@ -164,15 +175,21 @@ impl CodeIndex {
         // resolve_module branches on ModuleConventions::for_path, so `src/app.py`
         // and `src/app.ts` importing `.` want different answers and would
         // otherwise share a slot -- the TS file getting the Python module.
-        let mut memo: HashMap<(String, String, String, String), Option<String>> = HashMap::new();
-        let mut import_targets: HashMap<&str, HashMap<String, (String, String)>> = HashMap::new();
+        let mut memo: HashMap<MemoKey, Option<Resolution>> = HashMap::new();
+        let mut import_targets: HashMap<&str, HashMap<String, ImportBinding>> = HashMap::new();
         for pf in files {
             // The value carries the EXPORTED name, not just the target. Keying
             // on the local alone discards which symbol was imported, so
             // `from lib import real as alias` graded `alias()` against
             // `lib::alias` -- a different function that merely happens to exist.
             // That is a wrong edge, not a missing one.
-            let mut local_to_target: HashMap<String, (String, String)> = HashMap::new();
+            // The third element is "this local names a MODULE, not a value".
+            // Recorded where the resolution happens rather than re-derived from
+            // the path afterwards: a basename comparison gets it wrong in BOTH
+            // directions -- a package resolves to its `__init__`, whose basename
+            // is never the module name, and a named value import of `util` from
+            // `util.ts` looks exactly like a module bind.
+            let mut local_to_target: HashMap<String, ImportBinding> = HashMap::new();
             let dir_of = |p: &str| {
                 p.rsplit_once('/')
                     .map(|(d, _)| d.to_string())
@@ -202,12 +219,13 @@ impl CodeIndex {
                         )
                     })
                     .clone();
-                if let Some(target) = resolved {
+                if let Some((target, is_submodule)) = resolved {
                     idx.importers
                         .entry(target.clone())
                         .or_default()
                         .insert(pf.path.clone());
-                    local_to_target.insert(sym.local.clone(), (target, sym.name.clone()));
+                    local_to_target
+                        .insert(sym.local.clone(), (target, sym.name.clone(), is_submodule));
                 }
             }
             for ns in &pf.namespace_imports {
@@ -223,14 +241,14 @@ impl CodeIndex {
                         resolve_module(&ns.module, &module_index, &pf.path, &root_name, None)
                     })
                     .clone();
-                if let Some(target) = resolved {
+                if let Some((target, _)) = resolved {
                     idx.importers
                         .entry(target.clone())
                         .or_default()
                         .insert(pf.path.clone());
                     // A namespace bind has no single exported name; the member
-                    // call supplies it.
-                    local_to_target.insert(ns.alias.clone(), (target, String::new()));
+                    // call supplies it. It is a module bind by construction.
+                    local_to_target.insert(ns.alias.clone(), (target, String::new(), true));
                 }
             }
             import_targets.insert(pf.path.as_str(), local_to_target);
@@ -260,7 +278,7 @@ impl CodeIndex {
                     "bare" => {
                         if own.is_some_and(|d| d.contains(site.name.as_str())) {
                             push(&pf.path, &site.name, Grade::SameFile);
-                        } else if let Some((target, exported)) =
+                        } else if let Some((target, exported, _)) =
                             imports.and_then(|m| m.get(&site.name))
                         {
                             // The edge lands on the EXPORTED name, which is what
@@ -278,19 +296,18 @@ impl CodeIndex {
                         let Some(recv) = site.receiver.as_deref() else {
                             continue;
                         };
-                        if let Some((target, exported)) = imports.and_then(|m| m.get(recv)) {
-                            // ONLY a module binding. A namespace import carries
-                            // an empty exported name, and a bare relative import
-                            // binds the module under its own basename -- anything
-                            // else is a VALUE the importer named, and
-                            // `User.create()` is then a class static, not a
-                            // module attribute. Treating it as one bound the call
-                            // to a module-level `create` that never runs.
-                            let is_module_binding = exported.is_empty()
-                                || index_stem(target).rsplit('/').next() == Some(exported.as_str());
+                        if let Some((target, _, is_module_binding)) =
+                            imports.and_then(|m| m.get(recv))
+                        {
+                            // ONLY a module binding. A named VALUE import is not
+                            // one: `from pkg.models import User` then
+                            // `User.create()` is a class static, and grading it
+                            // as a module attribute bound the call to a
+                            // module-level `create` it never reaches.
+                            //
                             // A module-attribute call names its own member, so
                             // the call site's name is the right one here.
-                            if is_module_binding
+                            if *is_module_binding
                                 && export_contains(&idx.exports, target, &site.name)
                             {
                                 push(target, &site.name, Grade::ModuleAttribute);
@@ -403,7 +420,7 @@ fn resolve_module(
     importer: &str,
     root_name: &str,
     submodule: Option<&str>,
-) -> Option<String> {
+) -> Option<(String, bool)> {
     // A relative specifier is anchored at the importing file's directory. That
     // anchor is the one piece of information that makes the answer decidable,
     // so resolving `.util` by global suffix match -- which is what stripping the
@@ -486,7 +503,12 @@ fn resolve_module(
                     if let Some(hit) =
                         exact_module_match(&join(&base, sub), index, conv.package_index)
                     {
-                        return Some(hit);
+                        // The imported NAME was the module. That is the one form
+                        // where a local really does name a module, and it holds
+                        // whether the submodule is a file or a package
+                        // directory -- a package resolves to its `__init__`,
+                        // whose basename is never the module name.
+                        return Some((hit, true));
                     }
                 }
             }
@@ -494,13 +516,14 @@ fn resolve_module(
         // Exact, not suffix: the anchor is the whole point, and reusing the
         // suffix matcher lets a root-level `.util` bind `handlers/util.py`.
         if let Some(hit) = exact_module_match(&join(&base, &tail), index, conv.package_index) {
-            return Some(hit);
+            return Some((hit, false));
         }
         // Node ESM and TS NodeNext REQUIRE the extension on a relative
         // specifier (`./util.js`), while every stem in the index has it
         // stripped -- so a whole repo's relative imports resolved to nothing.
         return extensionless
-            .and_then(|stem| exact_module_match(&join(&base, &stem), index, conv.package_index));
+            .and_then(|stem| exact_module_match(&join(&base, &stem), index, conv.package_index))
+            .map(|hit| (hit, false));
     }
 
     let cleaned = spec.replace('.', "/");
@@ -523,7 +546,7 @@ fn resolve_module(
     // language would resolve that to the installed package, which is not in the
     // corpus at all. Only a corpus-root-anchored file can satisfy it.
     if !cleaned.contains('/') {
-        return exact_module_match(&cleaned, index, conv.package_index);
+        return exact_module_match(&cleaned, index, conv.package_index).map(|hit| (hit, false));
     }
 
     let mut candidate = cleaned.as_str();
@@ -540,8 +563,8 @@ fn resolve_module(
         } else {
             unique_suffix_match(candidate, index, conv.package_index)
         };
-        if hit.is_some() {
-            return hit;
+        if let Some(hit) = hit {
+            return Some((hit, false));
         }
         match candidate.split_once('/') {
             // A leading segment may be dropped ONLY when it names the corpus
@@ -1106,6 +1129,46 @@ mod tests {
         ]);
         let idx = CodeIndex::build(&rooted);
         assert!(idx.callers_of("requests.py", "get").is_some());
+    }
+
+    /// Whether a local names a MODULE is recorded where the resolution happens.
+    /// Re-deriving it from the path afterwards is wrong in BOTH directions: a
+    /// package resolves to its `__init__`, whose basename is never the module
+    /// name, and a named value import of `util` from `util.ts` looks exactly
+    /// like a module bind.
+    #[test]
+    fn only_a_real_module_bind_grades_a_member_call() {
+        // A package submodule. The target is `util/__init__.py`, so any
+        // basename comparison says "not a module" and drops a real edge.
+        let pkg = corpus(&[
+            ("util/__init__.py", "def thing():\n    return 1\n"),
+            (
+                "app.py",
+                "from . import util\n\ndef run():\n    return util.thing()\n",
+            ),
+        ]);
+        let idx = CodeIndex::build(&pkg);
+        assert!(
+            idx.callers_of("util/__init__.py", "thing").is_some(),
+            "a package submodule is still a module"
+        );
+
+        // A named VALUE import whose local happens to match the file stem.
+        let value = corpus(&[
+            (
+                "src/util.ts",
+                "export const util = { run: () => 1 };\nexport function run() { return 2; }\n",
+            ),
+            (
+                "src/app.ts",
+                "import { util } from \"./util\";\nexport function go() { return util.run(); }\n",
+            ),
+        ]);
+        let idx = CodeIndex::build(&value);
+        assert!(
+            idx.callers_of("src/util.ts", "run").is_none(),
+            "util.run() calls the object's member, not the module-level run"
+        );
     }
 
     /// An extension the ENGINE does not parse is part of the module name, not a
