@@ -150,13 +150,12 @@ signature_decorators = "never"
 # Ruby has no import statement -- `require` is an ordinary method call, so the
 # call name is the only thing separating an import from `puts`.
 module_nodes = ["call"]
-module_call_names = ["require", "require_relative", "load", "autoload"]
+module_call_names = ["require", "require_relative", "autoload"]
 descend_nodes = ["argument_list"]
 relative_call_names = ["require_relative"]
 
 [imports.module_call_kinds]
 require = "default"
-load = "default"
 require_relative = "namespace"
 autoload = "named"
 

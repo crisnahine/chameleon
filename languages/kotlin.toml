@@ -31,9 +31,6 @@ name = "name"
 # left every Kotlin file with zero calls and zero parameters.
 parameters = "function_value_parameters"
 body = "function_body"
-call_function = "expression"
-member_object = "expression"
-member_property = "identifier"
 
 [calls]
 nodes = ["call_expression"]

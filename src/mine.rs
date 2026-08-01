@@ -619,17 +619,38 @@ mod tests {
     /// the same certainty marker as a 100%-conforming naming rule.
     #[test]
     fn a_percentile_does_not_report_itself_as_enforced() {
-        let spans = [1usize, 3, 40, 200, 800];
+        // Read off a REAL mined cohort, not a hand-built literal: the defect was
+        // the value derive_conventions emits, so a test that constructs its own
+        // Convention passes whatever that function does.
+        let arch = cluster(&two_cohorts());
+        let shapes: Vec<&Convention> = arch
+            .iter()
+            .flat_map(|a| &a.conventions)
+            .filter(|c| c.dimension.starts_with("shape.line_span."))
+            .collect();
+        assert!(
+            !shapes.is_empty(),
+            "the cohort must mine a shape convention"
+        );
+        for c in shapes {
+            assert!(
+                !c.is_enforced(),
+                "{} claims {} conformance; a percentile's is fixed at the percentile",
+                c.dimension,
+                c.confidence
+            );
+        }
+    }
+
+    #[test]
+    fn the_enforced_bar_itself_still_works() {
         let p50 = Convention {
             dimension: "shape.line_span.p50".into(),
-            value: percentile(&spans, 0.5).to_string(),
+            value: "40".into(),
             confidence: 0.5,
-            support: spans.len(),
+            support: 5,
         };
-        assert!(
-            !p50.is_enforced(),
-            "half the cohort conforms, not all of it"
-        );
+        assert!(!p50.is_enforced());
         assert!(
             Convention {
                 confidence: 1.0,

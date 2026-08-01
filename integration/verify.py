@@ -69,6 +69,7 @@ def main() -> int:
     # (`src[:200].decode(...)`) exactly as the engine does.
     NORMALIZED = [
         "content_first_200_bytes",
+        "sha_hint",
         "top_level_node_kinds",
         "default_export_kind",
         "named_export_count",
@@ -101,7 +102,18 @@ def main() -> int:
 
     # extras carry the heavy payload (signatures, call sites, body shape).
     print()
-    extras_keys = ["callable_signatures", "function_scopes", "class_shapes", "call_sites"]
+    extras_keys = [
+        "callable_signatures",
+        "function_scopes",
+        "class_shapes",
+        "call_sites",
+        "call_sites_total",
+        "call_sites_truncated",
+        "import_symbols",
+        "namespace_imports",
+        "named_export_names",
+        "export_set_open",
+    ]
     print(f"{'extras key':<28} {'match':>12}   rate")
     print("-" * 56)
     for key in extras_keys:

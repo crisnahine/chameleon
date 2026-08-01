@@ -11,9 +11,16 @@ speaks chameleon's protocol: absolute paths on stdin, one NDJSON record per
 file on stdout. Nothing here reshapes the records.
 
     from chameleon_mcp.extractors.registry import EXTRACTORS
-    from chromatophore_extractor import ChromatophoreExtractor
+    from chameleon_extractor import ChromatophoreExtractor
 
     EXTRACTORS.insert(0, ChromatophoreExtractor)
+
+`insert(0, ...)` rather than `register(...)`: register APPENDS, and the shipped
+PythonExtractor already claims any repo holding one `.py` file, so an appended
+entry is never reached. Front of the list is also not enough on its own --
+`select_extractor` swaps in chameleon's in-process `TreeSitterExtractor` for
+python, ruby and typescript whatever the registry says, so the engine only runs
+with `CHAMELEON_TREE_SITTER=0` set.
 
 `verify.py` in this directory checks that what the engine emits survives
 chameleon's own `_parsed_file_from_record` unchanged, which is the only claim
@@ -31,6 +38,11 @@ from pathlib import Path
 # Reuse chameleon's own types so the shim cannot drift from the contract it
 # claims to satisfy.
 from chameleon_mcp.extractors._base import ExtractorUnavailableError, ParsedFile, ParseResult
+
+try:
+    import xxhash
+except ImportError:  # pragma: no cover - chameleon pins it; a host may not
+    xxhash = None
 
 BINARY_ENV = "CHROMATOPHORE_BIN"
 BATCH_TIMEOUT_SECONDS = 600
@@ -213,6 +225,22 @@ class ChromatophoreExtractor:
         return ParseResult(files=files, skipped=skipped)
 
 
+def _sha_hint(path: Path) -> str | None:
+    """The host-side digest chameleon's own extractors carry.
+
+    Not a wire field: `sha_hint` feeds drift-cache invalidation and every shipped
+    extractor computes it from the file's bytes on the host. Leaving it None made
+    the shim diverge from the backend on every single file, in a slot the
+    normalized contract declares.
+    """
+    if xxhash is None:
+        return None
+    try:
+        return xxhash.xxh64(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
 def _parsed_file_from_record(path: Path, record: dict) -> ParsedFile:
     """Map one wire record onto chameleon's normalized dataclass.
 
@@ -238,7 +266,7 @@ def _parsed_file_from_record(path: Path, record: dict) -> ParsedFile:
         "export_set_open",
     )
     extras = {key: record.get(key) for key in always}
-    extras.update({key: record[key] for key in when_present if record.get(key)})
+    extras.update({key: record.get(key) for key in when_present})
 
     return ParsedFile(
         path=path,
@@ -249,5 +277,6 @@ def _parsed_file_from_record(path: Path, record: dict) -> ParsedFile:
         import_specifiers=tuple(tuple(pair) for pair in record.get("import_specifiers") or ()),
         has_jsx=bool(record.get("has_jsx")),
         parse_diagnostics_count=int(record.get("parse_diagnostics_count") or 0),
+        sha_hint=_sha_hint(path),
         extras=extras,
     )

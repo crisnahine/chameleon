@@ -80,12 +80,13 @@ key matches on 126 of 126 files:
 
 ```
 content_first_200_bytes 126/126 100.0%     callable_signatures  126/126  100.0%
-top_level_node_kinds   126/126  100.0%     function_scopes      126/126  100.0%
-default_export_kind    126/126  100.0%     class_shapes         126/126  100.0%
-named_export_count     126/126  100.0%     call_sites           126/126  100.0%
-import_specifiers      126/126  100.0%
-has_jsx                126/126  100.0%
-parse_diagnostics_count 126/126 100.0%
+sha_hint               126/126  100.0%     function_scopes      126/126  100.0%
+top_level_node_kinds   126/126  100.0%     class_shapes         126/126  100.0%
+default_export_kind    126/126  100.0%     call_sites           126/126  100.0%
+named_export_count     126/126  100.0%     call_sites_total     126/126  100.0%
+import_specifiers      126/126  100.0%     import_symbols       126/126  100.0%
+has_jsx                126/126  100.0%     namespace_imports    126/126  100.0%
+parse_diagnostics_count 126/126 100.0%     named_export_names   126/126  100.0%
 ```
 
 Both lists are exhaustive over the record on purpose. An earlier `parity.py`
@@ -110,20 +111,24 @@ boundaries*), so swapping them in is a trade rather than a free upgrade:
 find . -name '*.py' | chromatophore dump
 ```
 
-Wiring it in is a `parse_repo` that spawns this binary instead, registered
-through the existing seam:
+Wiring it in is a `parse_repo` that spawns this binary instead, put at the FRONT
+of the registry:
 
 ```python
-from chameleon_mcp.extractors.registry import register
+from chameleon_mcp.extractors.registry import EXTRACTORS
+from chameleon_extractor import ChromatophoreExtractor
 
-class ChromatophoreExtractor:
-    language = "python"
-    def can_handle(self, repo_root): ...
-    # The protocol's argument order, matching every shipped extractor.
-    def parse_repo(self, repo_root, glob=None, limit=None, paths=None): ...
-
-register(ChromatophoreExtractor)
+EXTRACTORS.insert(0, ChromatophoreExtractor)
 ```
+
+Two details the seam does not make obvious, both verified against
+`extractors/registry.py`. `register()` APPENDS, and the shipped `PythonExtractor`
+already claims any repo holding one `.py` file, so an appended entry is never
+reached. And `select_extractor` swaps in chameleon's in-process
+`TreeSitterExtractor` for python, ruby and typescript whatever the registry says
+— so the engine runs only with `CHAMELEON_TREE_SITTER=0` set. Without both, a
+user sees chameleon behave identically and concludes it worked, while the engine
+parsed nothing.
 
 Adding a language chameleon does not yet support needs one edit in its core —
 `_EXTENSIONS_BY_LANGUAGE` in `bootstrap/orchestrator.py`, which is the single
@@ -206,10 +211,17 @@ are judgment calls and can never hard-block at any confidence.
   silently matching nothing — a rule that quietly never fires is worse than one
   that says it cannot run. The implemented substring matcher is named
   `literal`, for the same reason.
-- **Call-graph resolution is suffix-matching, not real name resolution.** It
-  refuses ambiguity and refuses third-party prefixes, but it has no type
-  information: a `self.method()` binds by name within its file, so two classes
-  in one file defining the same method name share an edge.
+- **Call-graph resolution is path matching, not real name resolution.** It has
+  no type information: a `self.method()` binds by name within its file, so two
+  classes in one file defining the same method name share an edge.
+- **A bare one-segment specifier resolves only against a corpus-root file, and
+  that costs real recall.** `import requests` cannot be told apart from a repo
+  module named `requests`, and binding it to `app/clients/requests.py` — a local
+  wrapper named after the library it wraps is the common shape — is a fabricated
+  edge, which criterion 1 says is the worst defect this layer can have. The cost
+  is named: a Python `src/`-flat layout doing `from models import db`, a TS
+  `baseUrl` import of `"utils"`, and a Ruby `$LOAD_PATH` `require 'helper'` all
+  resolve to nothing rather than to a guess.
 
 ## Adding a language
 
@@ -223,7 +235,7 @@ loads, sits inside the ABI window tree-sitter accepts, and parses.
 ## Development
 
 ```bash
-cargo test                    # 129 tests
+cargo test                    # 136 tests
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 python3 tests/parity.py --chameleon /path/to/chameleon

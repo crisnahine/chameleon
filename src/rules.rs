@@ -322,6 +322,7 @@ fn glob_match(pattern: &str, path: &str) -> bool {
     // an exact compare against the full path -- so an `exclude` of
     // `node_modules/` excluded nothing and the rule then evaluated, and blocked
     // in, every vendored file).
+    let anchored = pattern.starts_with('/') || pattern.starts_with("./");
     let pattern = pattern
         .strip_prefix("./")
         .unwrap_or(pattern)
@@ -337,8 +338,12 @@ fn glob_match(pattern: &str, path: &str) -> bool {
         return false;
     }
     // A bare name with no separator matches the BASENAME at any depth, which is
-    // what `*.spec.ts` is always meant to say.
-    if !pattern.contains('/') {
+    // what `*.spec.ts` is always meant to say. An ANCHORED one does not: an
+    // author writing `/setup.py` means the root file, and letting it fall into
+    // the basename branch would silently exclude every `setup.py` in the tree --
+    // trading the under-match this normalization fixed for an over-match in the
+    // direction this function refuses just below.
+    if !pattern.contains('/') && !anchored {
         let base = path.rsplit('/').next().unwrap_or(path);
         return segment_match(pattern, base);
     }
@@ -934,12 +939,19 @@ exclude = ["**/tests/**", "scripts/*"]
         for (pattern, path) in [
             ("node_modules/", "app/main.py"),
             ("/src/**", "tests/api/handlers.py"),
+            // Anchored: the ROOT setup.py, not every setup.py in the tree.
+            ("/setup.py", "vendor/pkg/setup.py"),
+            ("./setup.py", "vendor/pkg/setup.py"),
         ] {
             assert!(
                 !glob_match(pattern, path),
                 "{pattern} must not match {path}"
             );
         }
+        assert!(
+            glob_match("/setup.py", "setup.py"),
+            "the root file still matches"
+        );
         // An empty pattern is not a match-everything.
         assert!(!glob_match("/", "a.py"));
     }

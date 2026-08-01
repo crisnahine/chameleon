@@ -441,7 +441,7 @@ fn cmd_check(args: &Args) -> Result<()> {
                     // one line per file for the same cause.
                     let note = match &reason {
                         rules::Unsupported::UnknownArchetype { rule, .. } => format!(
-                            "{rule}: scoped to {:?} but the tree has no mined cohorts",
+                            "{rule}: scoped to {:?} but their paths are not in the mined cohort index (an unparseable file is not mined)",
                             rule_set
                                 .iter()
                                 .find(|r| &r.id == rule)

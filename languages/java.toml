@@ -49,3 +49,5 @@ module_nodes = ["import_declaration"]
 
 [flags]
 decorator_nodes = ["annotation", "marker_annotation"]
+# Java files annotations inside `modifiers`, one level below the declaration.
+decorator_container_nodes = ["modifiers"]

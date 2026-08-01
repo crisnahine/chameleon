@@ -240,7 +240,26 @@ fn decorators_of(node: Node, spec: &LanguageSpec, source: &[u8]) -> Vec<String> 
     out.reverse();
 
     let mut c = node.walk();
-    out.extend(node.children(&mut c).filter(is_decorator).map(name_of));
+    let own: Vec<Node> = node.children(&mut c).collect();
+    for child in own {
+        if is_decorator(&child) {
+            out.push(name_of(child));
+        } else if spec
+            .flags
+            .decorator_container_nodes
+            .iter()
+            .any(|k| k == child.kind())
+        {
+            // Java files its annotations inside `modifiers`, so they are a
+            // GRANDchild of the declaration. Reading only direct children left
+            // every Spring, JPA and JUnit type claiming zero annotations --
+            // decorators are a primary archetype signal, so that is not a gap
+            // but a wrong answer.
+            let mut gc = child.walk();
+            let inner: Vec<Node> = child.children(&mut gc).collect();
+            out.extend(inner.into_iter().filter(|n| is_decorator(n)).map(name_of));
+        }
+    }
 
     out.retain(|n| !n.is_empty());
     out.dedup();
@@ -753,8 +772,9 @@ fn walk(
                 has
             };
             if is_default_export && default_export_kind.is_none() {
-                let inner = any_field(node, &spec.fields.declaration)
-                    .or_else(|| node.named_child(node.named_child_count() as u32 - 1));
+                let inner = any_field(node, &spec.fields.declaration).or_else(|| {
+                    node.named_child((node.named_child_count() as u32).saturating_sub(1))
+                });
                 default_export_kind = inner.and_then(|i| {
                     spec.default_export_kinds
                         .get(i.kind())
@@ -809,7 +829,21 @@ fn walk(
                 && !spec.is_function(node.kind())
                 && !spec.is_class(node.kind())
             {
-                for name in declarator_names(node, spec, source) {
+                let mut named = declarator_names(node, spec, source);
+                // A declaration that is neither a variable nor a callable still
+                // exports its own name: `export interface Props`, `export type
+                // T`, `export enum E`, `export namespace N`. Missing them left a
+                // TypeScript types module with an authoritative EMPTY export
+                // set, so every `import { Props }` from it reads as a
+                // hallucinated binding.
+                if named.is_empty() {
+                    named.extend(
+                        field_node(node, &spec.fields.name)
+                            .map(|n| text(n, source).trim().to_string())
+                            .filter(|n| !n.is_empty()),
+                    );
+                }
+                for name in named {
                     named_export_count += 1;
                     export_names.insert(name);
                 }
@@ -821,7 +855,7 @@ fn walk(
             // try/except import fallback or an `if TYPE_CHECKING` gate count
             // too; a def or class body is a new scope and is never descended.
             if !spec.flags.explicit_exports {
-                module_bindings(node, spec, source, &mut export_names);
+                module_bindings(node, spec, source, &mut export_names, &mut export_set_open);
             }
 
             // `export * from "m"` -- a bare `*` token on the statement.
@@ -1365,12 +1399,22 @@ fn heritage(node: Node, spec: &LanguageSpec, source: &[u8], item: &Option<String
     out
 }
 
+/// Bound like every other walk here: the input is arbitrary repo source, and a
+/// generated constants block can hold thousands of top-level statements.
+const MAX_EXPORT_WALK_STEPS: usize = 4096;
+
 /// Every module-level name a statement binds, in a language with no export
 /// keyword.
 ///
 /// Descends the compound statements that are still module scope and stops at a
 /// def or class body, which is not.
-fn module_bindings(node: Node, spec: &LanguageSpec, source: &[u8], out: &mut BTreeSet<String>) {
+fn module_bindings(
+    node: Node,
+    spec: &LanguageSpec,
+    source: &[u8],
+    out: &mut BTreeSet<String>,
+    truncated: &mut bool,
+) {
     if spec.flags.export_assignment_nodes.is_empty() {
         return;
     }
@@ -1378,7 +1422,10 @@ fn module_bindings(node: Node, spec: &LanguageSpec, source: &[u8], out: &mut BTr
     let mut steps = 0usize;
     while let Some(n) = queue.pop() {
         steps += 1;
-        if steps > 4096 {
+        if steps > MAX_EXPORT_WALK_STEPS {
+            // Short of the real set. Reporting it as closed would let a
+            // phantom-symbol check flag names the module genuinely exports.
+            *truncated = true;
             return;
         }
         let kind = n.kind();
@@ -1596,6 +1643,8 @@ fn collect_imports(
             return;
         }
         let mut any_named = false;
+        let mut any_default = false;
+        let mut any_namespace = false;
 
         // Collect the real specifier nodes, descending through the wrappers a
         // grammar puts between the statement and its bindings.
@@ -1635,6 +1684,7 @@ fn collect_imports(
             // it belongs in namespace_imports. Left in the named list it shows
             // up as a symbol literally called `* as ns`, which matches nothing.
             if child.kind() == "namespace_import" {
+                any_namespace = true;
                 let alias = child
                     .named_child(0)
                     .map(|n| text(n, source).to_string())
@@ -1648,7 +1698,6 @@ fn collect_imports(
                         module: module.clone(),
                         line,
                     });
-                    specifiers.push((module.clone(), "namespace".into()));
                     continue;
                 }
             }
@@ -1669,7 +1718,7 @@ fn collect_imports(
                     if !spec.flags.explicit_exports && module_level {
                         export_names.insert(local);
                     }
-                    specifiers.push((module.clone(), "default".into()));
+                    any_default = true;
                     continue;
                 }
             }
@@ -1703,15 +1752,26 @@ fn collect_imports(
                 line,
             });
         }
-        if any_named {
-            specifiers.push((module, "named".into()));
-        } else if specifiers.last().is_none_or(|(m, _)| m != &module) {
+        // ONE row per import statement, in the reference's precedence: a
+        // default binding wins, then a named clause, and anything else -- a
+        // namespace bind or a clause-less side-effect import -- is `namespace`.
+        // Pushing a row per clause made `import React, { useState } from "m"`
+        // emit two, and a side-effect import that repeated the previous
+        // statement's module emitted none.
+        let kind = if any_default {
+            "default"
+        } else if any_named {
+            "named"
+        } else if any_namespace {
+            "namespace"
+        } else {
             // A side-effect import (`import "./polyfill"`) has no clause at all.
             // Emitting nothing loses the edge entirely, and a polyfill or a CSS
             // side-effect import is exactly the dependency a blast radius has to
             // see, since nothing else in the file references it.
-            specifiers.push((module, "namespace".into()));
-        }
+            "namespace"
+        };
+        specifiers.push((module, kind.into()));
         return;
     }
 
@@ -1808,10 +1868,17 @@ fn collect_imports(
                     .unwrap_or_else(|| m.clone());
                 (m, a)
             } else {
-                let m = module_text(child, source);
+                // The path may sit on a field of the spec node rather than being
+                // its whole text: Go's `import_spec` carries `path`, so reading
+                // the span yielded `f "strings"` as a module name.
+                let m = field_node(child, &spec.imports.module_field)
+                    .map(|n| module_text(n, source))
+                    .unwrap_or_else(|| module_text(child, source));
                 // `import a.b.c` binds the FIRST segment: `a`, not `c`. Taking
                 // the last one silently rebinds every dotted import.
-                let a = m.split('.').next().unwrap_or(&m).to_string();
+                let a = field_text(child, &spec.imports.alias_field, source)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| m.split('.').next().unwrap_or(&m).to_string());
                 (m, a)
             };
             if module.is_empty() {
@@ -2648,6 +2715,106 @@ mod tests {
     fn a_closure_does_not_deepen_the_frame_it_opens() {
         let ex = parse("elixir", "f = fn y -> y end\n");
         assert_eq!(ex.function_scopes[0].max_depth, 0);
+    }
+
+    /// Only a variable declaration binds names through `declarator_names`, so an
+    /// exported interface, type alias, enum or namespace fell through every
+    /// branch -- leaving a TypeScript types module with an authoritative EMPTY
+    /// export set, which reads as "every import from me is hallucinated".
+    #[test]
+    fn an_exported_type_declaration_is_part_of_the_export_set() {
+        let ts = parse(
+            "typescript",
+            "export interface Props { a: number }\nexport type T = string;\nexport enum E { A, B }\nexport const X = 1;\ninterface Hidden {}\n",
+        );
+        let mut got = ts.named_export_names.clone();
+        got.sort();
+        assert_eq!(got, vec!["E", "Props", "T", "X"]);
+        assert_eq!(ts.named_export_count, 4);
+        assert!(
+            !got.contains(&"Hidden".to_string()),
+            "unexported stays private"
+        );
+        assert!(
+            !got.contains(&"A".to_string()),
+            "an enum member is not an export"
+        );
+    }
+
+    /// One specifier row per import STATEMENT, in the reference's precedence.
+    /// A row per clause made a mixed import emit two, and the intra-statement
+    /// dedup compared against the globally-last row, so a side-effect import
+    /// repeating the previous statement's module emitted none.
+    #[test]
+    fn a_mixed_import_emits_exactly_one_specifier() {
+        let ts = parse(
+            "typescript",
+            "import React, { useState } from \"react\";\nimport Button from \"./m\";\nimport \"./m\";\nimport * as ns from \"lodash\";\n",
+        );
+        assert_eq!(
+            ts.import_specifiers,
+            vec![
+                ("react".to_string(), "default".to_string()),
+                ("./m".to_string(), "default".to_string()),
+                ("./m".to_string(), "namespace".to_string()),
+                ("lodash".to_string(), "namespace".to_string()),
+            ]
+        );
+        let names: Vec<&str> = ts.import_symbols.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["useState"], "a default binding is not a symbol");
+    }
+
+    /// Java files its annotations inside a `modifiers` child, so they are a
+    /// GRANDchild of the declaration; a direct-children scan found none and
+    /// every Spring, JPA and JUnit type claimed zero annotations.
+    #[test]
+    fn a_java_annotation_inside_modifiers_is_still_a_decorator() {
+        let java = parse(
+            "java",
+            "@Entity\nclass User {\n  @Override\n  public void f() {}\n  public void plain() {}\n}\n",
+        );
+        assert_eq!(
+            java.class_shapes[0].decorators.as_deref(),
+            Some(&["Entity".to_string()][..])
+        );
+        let dec = |n: &str| {
+            java.callable_signatures
+                .iter()
+                .find(|s| s.name == n)
+                .unwrap()
+                .decorators
+                .clone()
+                .unwrap_or_default()
+        };
+        assert_eq!(dec("f"), vec!["Override".to_string()]);
+        assert!(dec("plain").is_empty(), "still not a sibling's annotation");
+    }
+
+    /// A grouped `import ( ... )` nests its specs, and the path sits on a
+    /// FIELD -- so reading the node's span made the whole parenthesized block
+    /// one module name and every Go import edge resolved to nothing.
+    #[test]
+    fn a_go_import_block_yields_one_module_per_spec() {
+        let go = parse(
+            "go",
+            "package m\n\nimport (\n\t\"fmt\"\n\t\"os\"\n)\n\nimport f \"strings\"\n",
+        );
+        assert_eq!(
+            go.import_specifiers,
+            vec![
+                ("fmt".to_string(), "namespace".to_string()),
+                ("os".to_string(), "namespace".to_string()),
+                ("strings".to_string(), "namespace".to_string()),
+            ]
+        );
+        assert_eq!(
+            go.namespace_imports
+                .iter()
+                .map(|n| n.alias.as_str())
+                .collect::<Vec<_>>(),
+            vec!["fmt", "os", "f"],
+            "an aliased import binds the alias"
+        );
     }
 
     /// Python has no export keyword, so every name bound at MODULE level is

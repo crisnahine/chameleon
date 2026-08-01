@@ -38,6 +38,10 @@ member_nodes = ["selector_expression"]
 
 [imports]
 module_nodes = ["import_declaration"]
+# A grouped `import ( ... )` nests its specs; without the descent the whole
+# parenthesized block became one module path.
+descend_nodes = ["import_spec_list"]
+alias_field = "name"
 module_field = "path"
 
 [flags]

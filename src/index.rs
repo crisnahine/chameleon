@@ -410,6 +410,10 @@ fn resolve_module(
         // `take_while` does -- reads `../../lib/util` as two levels and leaves a
         // literal `..` in the tail, so it matches nothing. Every import two or
         // more levels up then contributes no edge at all, silently.
+        // A trailing dot-segment that MIGHT be an extension. Tried only after
+        // the literal tail fails, so `./my.config` still resolves to a real
+        // `my.config` module and only falls back to `my` if none exists.
+        let mut extensionless: Option<String> = None;
         let (ups, tail) = if spec.contains('/') {
             let mut rest = spec;
             let mut ups = 1usize;
@@ -437,8 +441,8 @@ fn resolve_module(
             // stripped -- so a whole repo's relative imports resolved to
             // nothing.
             if let Some((stem, ext)) = tail.rsplit_once('.') {
-                if !stem.is_empty() && SOURCE_EXTENSIONS.contains(&ext) {
-                    tail = stem.to_string();
+                if !stem.is_empty() && looks_like_extension(ext) {
+                    extensionless = Some(stem.to_string());
                 }
             }
             (ups, tail)
@@ -478,7 +482,14 @@ fn resolve_module(
         }
         // Exact, not suffix: the anchor is the whole point, and reusing the
         // suffix matcher lets a root-level `.util` bind `handlers/util.py`.
-        return exact_module_match(&join(&base, &tail), index, conv.package_index);
+        if let Some(hit) = exact_module_match(&join(&base, &tail), index, conv.package_index) {
+            return Some(hit);
+        }
+        // Node ESM and TS NodeNext REQUIRE the extension on a relative
+        // specifier (`./util.js`), while every stem in the index has it
+        // stripped -- so a whole repo's relative imports resolved to nothing.
+        return extensionless
+            .and_then(|stem| exact_module_match(&join(&base, &stem), index, conv.package_index));
     }
 
     let cleaned = spec.replace('.', "/");
@@ -505,9 +516,21 @@ fn resolve_module(
     }
 
     let mut candidate = cleaned.as_str();
+    let mut dropped = false;
     loop {
-        if let Some(hit) = unique_suffix_match(candidate, index, conv.package_index) {
-            return Some(hit);
+        // Only the ORIGINAL specifier is suffix-matched. Once a leading segment
+        // has been dropped, what remains is anchored at the corpus root by
+        // construction, and suffix-matching it puts the library case back:
+        // indexing a checkout named `redis`, `from redis.client import Redis`
+        // dropped `redis` and then bound `client` to `app/client.py` anywhere in
+        // the tree. The installed package is not in the corpus at all.
+        let hit = if dropped {
+            exact_module_match(candidate, index, conv.package_index)
+        } else {
+            unique_suffix_match(candidate, index, conv.package_index)
+        };
+        if hit.is_some() {
+            return hit;
         }
         match candidate.split_once('/') {
             // A leading segment may be dropped ONLY when it names the corpus
@@ -515,16 +538,29 @@ fn resolve_module(
             // package. Dropping any prefix lets `django.db` fall through to a
             // repo file called `db.py` and fabricate an edge to it, which is
             // precisely the wrong-binding this module promises never to make.
-            Some((head, rest)) if !rest.is_empty() && head == root_name => candidate = rest,
+            Some((head, rest)) if !rest.is_empty() && head == root_name => {
+                candidate = rest;
+                dropped = true;
+            }
             _ => return None,
         }
     }
 }
 
-/// Extensions a relative specifier may spell out and the index still stems away.
-const SOURCE_EXTENSIONS: &[&str] = &[
-    "js", "mjs", "cjs", "jsx", "ts", "mts", "cts", "tsx", "py", "pyi", "rb",
-];
+/// Whether a relative specifier's trailing dot-segment is an extension the
+/// index has already stemmed away, rather than part of the module name.
+///
+/// Every shipped language reaches the relative branch, so a fixed list silently
+/// dropped PHP's `require './helper.php'`, Bash's `source ./lib.sh` and Lua's
+/// `./mod.lua`. The test is shape, not membership: an extension is short and
+/// alphanumeric, which `config` in `./my.config` also satisfies -- so the caller
+/// only strips when the stripped form actually resolves.
+fn looks_like_extension(ext: &str) -> bool {
+    !ext.is_empty()
+        && ext.len() <= 5
+        && ext.chars().all(|c| c.is_ascii_alphanumeric())
+        && ext.chars().any(|c| c.is_ascii_alphabetic())
+}
 
 /// Corpus paths bucketed by their final segment, so a specifier is checked
 /// against a handful of candidates instead of every file.
@@ -748,6 +784,13 @@ pub fn blast_radius(index: &CodeIndex, file: &str, name: &str, limits: BlastLimi
     // reached-vs-cap comparison reports a truncated walk as complete -- the one
     // direction a blast radius must never err in.
     let mut hit_node_cap = false;
+    // The walk's caps are not the only way a radius can be short. A symbol with
+    // more than MAX_CALLERS_PER_CALLEE callers keeps only the first 100 rows,
+    // and a file that hit the per-file call-site cap recorded no row at all for
+    // the sites past it -- so a walk that finishes every chain it can see is
+    // still incomplete. Reporting that as complete is the one direction this
+    // must never err in.
+    let mut rows_truncated = !index.capped_files.is_empty();
     // Same reasoning for the DEPTH clip: a chain cut at the limit whose tip
     // still has unvisited callers is an understated radius, and understating is
     // the one direction this must never err in.
@@ -785,8 +828,9 @@ pub fn blast_radius(index: &CodeIndex, file: &str, name: &str, limits: BlastLimi
             continue;
         }
 
-        let mut rows: Vec<&CallerRow> = index
-            .callers_of(&cur.path, &cur.name)
+        let entry = index.callers_of(&cur.path, &cur.name);
+        rows_truncated |= entry.is_some_and(|e| e.truncated);
+        let mut rows: Vec<&CallerRow> = entry
             .map(|e| e.callers.iter().collect())
             .unwrap_or_default();
         rows.sort_by(|a, b| (&a.path, &a.caller, a.line).cmp(&(&b.path, &b.caller, b.line)));
@@ -839,7 +883,7 @@ pub fn blast_radius(index: &CodeIndex, file: &str, name: &str, limits: BlastLimi
 
     BlastRadius {
         found,
-        truncated: hit_node_cap || fanout_clipped || depth_clipped,
+        truncated: hit_node_cap || fanout_clipped || depth_clipped || rows_truncated,
         reached: reached.len(),
         chains,
     }
@@ -1041,6 +1085,58 @@ mod tests {
         ]);
         let idx = CodeIndex::build(&rooted);
         assert!(idx.callers_of("requests.py", "get").is_some());
+    }
+
+    /// The candidate the prefix-drop loop PRODUCES is root-anchored by
+    /// construction, so suffix-matching it puts the library case straight back:
+    /// indexing a checkout named `redis`, `from redis.client import Redis` drops
+    /// the root segment and then binds `client` to any `client.py` in the tree.
+    #[test]
+    fn a_dropped_root_segment_does_not_reopen_the_suffix_match() {
+        let files = corpus(&[
+            ("app/client.py", "class Redis:\n    pass\n"),
+            (
+                "app/main.py",
+                "from redis.client import Redis\n\ndef run():\n    return Redis()\n",
+            ),
+        ]);
+        let idx = CodeIndex::build_with_package(&files, "redis");
+        assert!(
+            idx.importers.is_empty(),
+            "the installed package is not this repo file: {:?}",
+            idx.importers
+        );
+
+        // The case the drop loop exists for still works: a corpus root INSIDE
+        // the package, where the remainder really is the anchored path.
+        let inside = corpus(&[
+            ("util.py", "def helper():\n    return 1\n"),
+            (
+                "main.py",
+                "from myapp.util import helper\n\ndef run():\n    return helper()\n",
+            ),
+        ]);
+        let idx = CodeIndex::build_with_package(&inside, "myapp");
+        assert!(idx.callers_of("util.py", "helper").is_some());
+    }
+
+    /// The walk's own caps are not the only way a radius comes back short. A
+    /// symbol past the per-callee cap, or a file past the per-file call-site
+    /// cap, loses rows before the walk ever runs -- and a walk that finishes
+    /// every chain it can see then reported the result as complete.
+    #[test]
+    fn a_radius_built_on_capped_rows_is_not_reported_complete() {
+        let mut files = corpus(&[("a.py", "def leaf():\n    return 1\n")]);
+        // Mark the corpus as having lost call sites to the per-file cap, the
+        // way a generated megafile does.
+        let mut idx = CodeIndex::build(&files);
+        assert!(!blast_radius(&idx, "a.py", "leaf", BlastLimits::default()).truncated);
+        idx.capped_files.insert("app/generated.py".to_string());
+        assert!(
+            blast_radius(&idx, "a.py", "leaf", BlastLimits::default()).truncated,
+            "a file that lost call sites can hold callers this radius cannot see"
+        );
+        files.clear();
     }
 
     /// Node ESM and TS NodeNext require the extension on a relative specifier,

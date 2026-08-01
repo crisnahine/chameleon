@@ -187,6 +187,10 @@ pub struct ImportSpec {
     pub default_binding_nodes: Vec<String>,
     /// Node kinds wrapping an `as` alias.
     pub alias_nodes: Vec<String>,
+    /// Field holding the local name an import binds, where the grammar puts it
+    /// on the spec node instead of wrapping it. Go's `import_spec` carries the
+    /// alias on `name`, so `import f "strings"` binds `f`, not `strings`.
+    pub alias_field: Option<String>,
     /// Node kinds that open the export set (`export * from`, `from x import *`).
     pub wildcard_nodes: Vec<String>,
     /// Node kinds where a bare `*` CHILD means the export set is open. Plain
@@ -319,7 +323,9 @@ pub struct Flags {
     pub sole_definition_default_export: bool,
     /// Language can contain JSX.
     pub supports_jsx: bool,
-    /// Node kinds that mark a callable `async`.
+    /// Marker keyword TEXT that makes a callable `async` -- matched against the
+    /// child's source text, not its node kind, because most grammars spell it
+    /// as an anonymous token.
     pub async_markers: Vec<String>,
     /// Take an unnamed function's name from the variable it is assigned to.
     /// `export const getUsers = () => {}` is `getUsers`, not `<anonymous>`, and
@@ -335,6 +341,10 @@ pub struct Flags {
     pub receiver_from_method: bool,
     /// Node kinds carrying a decorator/annotation.
     pub decorator_nodes: Vec<String>,
+    /// Node kinds that HOLD the decorators rather than being one. Java files
+    /// its annotations inside a `modifiers` child, so they are a grandchild of
+    /// the declaration and a direct-children scan finds none.
+    pub decorator_container_nodes: Vec<String>,
     /// Statement wrappers to unwrap when reading top-level kinds. Python's
     /// grammar nests small statements one level deeper than the meaningful node.
     pub unwrap_nodes: Vec<String>,
@@ -578,13 +588,25 @@ impl BoundLanguage {
         let s = &self.spec;
         let mut out = Vec::new();
 
+        // A SUPERTYPE is in the symbol table but is never any node's `.kind()`,
+        // so a spec entry naming one is as dead as a misspelling while looking
+        // present. kotlin-ng's `expression` is one: two spec lines matched it and
+        // could never fire.
+        let supertypes: HashSet<&str> = self
+            .language
+            .supertypes()
+            .iter()
+            .filter_map(|s| self.language.node_kind_for_id(*s))
+            .collect();
         // Named OR anonymous: a spec legitimately names an anonymous token when
         // the slot it checks is reached by field rather than by the walk. C#
         // spells `base.g()`'s receiver as a bare `base` token, and matching it
         // is how that call is classified `super`.
         let mut kind = |label: &str, kinds: &mut dyn Iterator<Item = &str>| {
             for k in kinds {
-                if self.language.id_for_node_kind(k, true) == 0
+                if supertypes.contains(k) {
+                    out.push(format!("{label}: `{k}` is a supertype, never a node kind"));
+                } else if self.language.id_for_node_kind(k, true) == 0
                     && self.language.id_for_node_kind(k, false) == 0
                 {
                     out.push(format!("{label}: no node kind `{k}`"));
@@ -691,6 +713,7 @@ impl BoundLanguage {
                 .decorator_nodes
                 .iter()
                 .chain(&s.flags.unwrap_nodes)
+                .chain(&s.flags.decorator_container_nodes)
                 .chain(&s.flags.export_assignment_nodes)
                 .chain(&s.flags.export_descend_nodes)
                 .map(|k| &**k),
@@ -729,6 +752,7 @@ impl BoundLanguage {
             ("fields.param_type", &f.param_type),
             ("calls.name_field", &c.name_field),
             ("imports.module_field", &i.module_field),
+            ("imports.alias_field", &i.alias_field),
             ("params.optional_when_field", &p.optional_when_field),
         ] {
             field(label, &mut name.iter().map(|n| &**n));
