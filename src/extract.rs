@@ -1153,8 +1153,27 @@ mod tests {
         assert_eq!(pf.function_scopes[1].start_line, 1, "outer second");
     }
 
+    /// The parenthesized form is the one that actually breaks.
+    ///
+    /// On a single-line `from a import b  # noqa`, the comment is a sibling at
+    /// module level and never reaches the import node -- a test written that way
+    /// passes whether or not the filter exists, which is exactly how the first
+    /// version of this test slipped through as a vacuous guard. Inside the
+    /// parentheses the comment really is a named child of the import statement,
+    /// and unfiltered it is recorded as a symbol named `# noqa: F401`.
     #[test]
-    fn a_trailing_comment_is_not_an_imported_name() {
+    fn a_comment_inside_a_parenthesized_import_is_not_an_imported_name() {
+        let pf = parse(
+            "python",
+            "from a.b import (  # noqa: F401\n    thing,\n    other,\n)\n",
+        );
+        let names: Vec<&str> = pf.import_symbols.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["thing", "other"], "got {names:?}");
+        assert!(pf.import_symbols.iter().all(|s| s.module == "a.b"));
+    }
+
+    #[test]
+    fn a_trailing_comment_on_a_single_line_import_is_harmless() {
         let pf = parse("python", "from a.b import thing  # noqa: F401\n");
         assert_eq!(pf.import_symbols.len(), 1);
         assert_eq!(pf.import_symbols[0].name, "thing");
