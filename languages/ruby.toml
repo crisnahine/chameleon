@@ -53,4 +53,5 @@ carries_nesting = true
 module_nodes = ["call"]
 
 [flags]
+sole_definition_default_export = true
 decorator_nodes = []

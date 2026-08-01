@@ -114,6 +114,7 @@ wildcard_nodes = ["wildcard_import"]
 future_import_statement = "__future__"
 
 [flags]
+sole_definition_default_export = true
 has_default_export = false
 supports_jsx = false
 async_markers = ["async"]

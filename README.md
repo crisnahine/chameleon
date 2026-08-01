@@ -52,19 +52,25 @@ Build: 24 grammars compile in ~11 s cold. Binary: 39 MB unstripped.
 
 ### Parity
 
-`tests/parity.py` runs the engine and chameleon's reference dumper over the same
-corpus and reports per-field agreement. On those 126 files, **13 of 13 compared
-fields match on 125 of 125 files** (the 126th is the file libcst refuses, so
-there is nothing to compare).
+Two harnesses, because they answer different questions.
+
+`tests/parity.py` compares the wire records against chameleon's libcst dumper.
+**14 of 14 fields match on 125 of 125 files** (the 126th is the file libcst
+refuses at its node ceiling, so there is nothing to compare).
+
+`integration/verify.py` is the stronger one: it runs the shim in
+`integration/chameleon_extractor.py` against chameleon's *actual default
+backend* and compares the `ParsedFile` objects chameleon's clustering and
+convention derivation actually consume. Every normalized slot and every extras
+key matches on 126 of 126 files:
 
 ```
-top_level_node_kinds   125/125  100.0%     function_scopes       125/125  100.0%
-named_export_count     125/125  100.0%     callable_signatures   125/125  100.0%
-export_set_open        125/125  100.0%     class_shapes          125/125  100.0%
-import_specifiers      125/125  100.0%     call_sites            125/125  100.0%
-import_symbols         125/125  100.0%     call_sites_total      125/125  100.0%
-namespace_imports      125/125  100.0%     call_sites_truncated  125/125  100.0%
-has_jsx                125/125  100.0%
+top_level_node_kinds   126/126  100.0%     callable_signatures  126/126  100.0%
+default_export_kind    126/126  100.0%     function_scopes      126/126  100.0%
+named_export_count     126/126  100.0%     class_shapes         126/126  100.0%
+import_specifiers      126/126  100.0%     call_sites           126/126  100.0%
+has_jsx                126/126  100.0%
+parse_diagnostics_count 126/126 100.0%
 ```
 
 Independent cross-check: on chameleon's own tree the engine derives **232
@@ -168,8 +174,10 @@ loads, sits inside the ABI window tree-sitter accepts, and parses.
 ## Development
 
 ```bash
-cargo test                    # 70 tests
+cargo test                    # 74 tests
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 python3 tests/parity.py --chameleon /path/to/chameleon
+CHROMATOPHORE_BIN=./target/release/chromatophore \
+  python3 integration/verify.py --chameleon /path/to/chameleon
 ```

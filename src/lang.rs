@@ -131,6 +131,11 @@ pub struct ParamSpec {
 pub struct Flags {
     /// Language has a syntactic default export (only TypeScript/JS do).
     pub has_default_export: bool,
+    /// Language has no export statement, so `default_export_kind` is repurposed
+    /// as "the sole top-level definition, when unopposed": one class and no
+    /// functions, or one function and no classes. A module with both reports
+    /// nothing, because neither is the thing the file is *for*.
+    pub sole_definition_default_export: bool,
     /// Language can contain JSX.
     pub supports_jsx: bool,
     /// Node kinds that mark a callable `async`.

@@ -27,8 +27,14 @@ from pathlib import Path
 # Fields both sides are expected to agree on exactly. `path` and
 # `content_first_200_bytes` are echoes of the input, so comparing them measures
 # nothing; `sha_hint` is host-computed on chameleon's side.
+#
+# Keep this list exhaustive over the record. An earlier version omitted
+# `default_export_kind`, which reported a clean 13/13 while that field was
+# wrong on five files -- a harness that silently skips a field is worse than no
+# harness, because it manufactures confidence.
 COMPARED = [
     "top_level_node_kinds",
+    "default_export_kind",
     "named_export_count",
     "export_set_open",
     "import_specifiers",

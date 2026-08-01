@@ -367,6 +367,10 @@ fn walk(
     let mut has_jsx = false;
     let mut named_export_count = 0usize;
     let mut call_sites_total = 0usize;
+    let mut top_level_funcs = 0usize;
+    let mut top_level_classes = 0usize;
+    let mut top_level_func_kind: Option<String> = None;
+    let mut top_level_class_kind: Option<String> = None;
 
     let mut func_stack: Vec<FuncFrame> = Vec::new();
     let mut class_stack: Vec<ClassFrame> = Vec::new();
@@ -410,11 +414,18 @@ fn walk(
                         .map(|(_, emitted)| emitted.clone())
                 })
             });
-            let refined = by_field.or(by_kind).unwrap_or_else(|| mapped.to_string());
-            top_level_node_kinds.push(refined);
+            let refined_kind = by_field.or(by_kind).unwrap_or_else(|| mapped.to_string());
+            top_level_node_kinds.push(refined_kind.clone());
 
             if spec.is_function(node.kind()) || spec.is_class(node.kind()) {
                 named_export_count += 1;
+                if spec.is_class(node.kind()) {
+                    top_level_classes += 1;
+                    top_level_class_kind = Some(refined_kind.clone());
+                } else {
+                    top_level_funcs += 1;
+                    top_level_func_kind = Some(refined_kind.clone());
+                }
                 if let Some(name) = field_text(node, &spec.fields.name, source) {
                     export_names.insert(name);
                 }
@@ -630,11 +641,23 @@ fn walk(
     let content_first_200_bytes =
         String::from_utf8_lossy(&source[..source.len().min(200)]).to_string();
 
+    // Unopposed sole definition; a module holding both a class and a function
+    // reports nothing, since neither is what the file is for.
+    let default_export_kind = if spec.flags.sole_definition_default_export {
+        match (top_level_classes, top_level_funcs) {
+            (1, 0) => top_level_class_kind,
+            (0, 1) => top_level_func_kind,
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     ParsedFile {
         path: path.to_string(),
         content_first_200_bytes,
         top_level_node_kinds,
-        default_export_kind: None,
+        default_export_kind,
         named_export_count,
         named_export_names: export_names.into_iter().collect(),
         export_set_open,
@@ -1240,6 +1263,28 @@ mod tests {
             vec![("__future__".to_string(), "named".to_string())]
         );
         assert_eq!(pf.import_symbols[0].module, "__future__");
+    }
+
+    /// Python has no export statement, so the field is repurposed as "the sole
+    /// top-level definition, when unopposed". A module holding both a class and
+    /// a function reports nothing, because neither is what the file is for.
+    #[test]
+    fn a_sole_top_level_definition_becomes_the_default_export_kind() {
+        let one_fn = parse("python", "import os\n\ndef only():\n    pass\n");
+        assert_eq!(one_fn.default_export_kind.as_deref(), Some("FunctionDef"));
+
+        let one_cls = parse("python", "class Only:\n    pass\n");
+        assert_eq!(one_cls.default_export_kind.as_deref(), Some("ClassDef"));
+
+        let both = parse("python", "class K:\n    pass\n\ndef f():\n    pass\n");
+        assert_eq!(both.default_export_kind, None, "opposed -> nothing");
+
+        let two_fns = parse("python", "def a():\n    pass\n\ndef b():\n    pass\n");
+        assert_eq!(two_fns.default_export_kind, None, "not sole -> nothing");
+
+        // A language with a real default export must not get the heuristic.
+        let go = parse("go", "package m\nfunc F() {}\n");
+        assert_eq!(go.default_export_kind, None);
     }
 
     #[test]
