@@ -1440,6 +1440,35 @@ mod tests {
         assert_eq!(got, vec![("helper", None), ("method", Some("$obj"))]);
     }
 
+    /// Ruby spells imports as ordinary method calls, so only the require family
+    /// counts. Without the gate every call is an import: `puts "x"` records
+    /// namespace imports of `puts` AND of `"x"`, and both land in the file's
+    /// export set, which then lets unrelated calls earn cross-file edges.
+    #[test]
+    fn only_require_family_calls_count_as_ruby_imports() {
+        let pf = parse(
+            "ruby",
+            "require \"app/models/user\"\nrequire_relative \"helper\"\n\nclass Foo\n  def bar(a)\n    baz(a)\n    puts \"x\"\n  end\nend\n",
+        );
+        let modules: Vec<&str> = pf
+            .import_specifiers
+            .iter()
+            .map(|(m, _)| m.as_str())
+            .collect();
+        assert_eq!(
+            modules,
+            vec!["app/models/user", "helper"],
+            "baz and puts are calls, not imports; got {modules:?}"
+        );
+        for noise in ["baz", "puts", "\"x\"", "(a)"] {
+            assert!(
+                !pf.named_export_names.iter().any(|n| n == noise),
+                "{noise} must not reach the export set: {:?}",
+                pf.named_export_names
+            );
+        }
+    }
+
     #[test]
     fn other_languages_extract_structurally() {
         let go = parse("go", "package m\nfunc Add(a int, b int) int {\n\tif a > b {\n\t\treturn a\n\t}\n\treturn b\n}\n");
