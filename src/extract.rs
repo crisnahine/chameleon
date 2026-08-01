@@ -2152,12 +2152,14 @@ fn collect_imports(
                 (m, a)
             };
             // A wildcard token (`import java.util.*`) and a bracketed import
-            // list are children of the statement but are not module paths.
+            // list are children of the statement but are not module paths. A
+            // RELATIVE one is: `require_relative "../lib/x"` and `#include
+            // "../x.h"` both start with a dot, and dropping them cost every
+            // relative-include edge in a Ruby or C repo.
             if module.is_empty()
-                || !module
-                    .chars()
-                    .next()
-                    .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '@')
+                || !module.chars().next().is_some_and(|c| {
+                    c.is_alphanumeric() || c == '_' || c == '@' || c == '.' || c == '/'
+                })
             {
                 continue;
             }
@@ -2166,7 +2168,9 @@ fn collect_imports(
             }
             namespaces.push(NamespaceImport {
                 alias,
-                module: if anchored {
+                // Already relative: `require_relative "../lib/x"` must not
+                // become `./../lib/x`.
+                module: if anchored && !module.starts_with('.') {
                     format!("./{module}")
                 } else {
                     module.clone()
@@ -3037,6 +3041,35 @@ mod tests {
                 "{lang} lost its base"
             );
         }
+    }
+
+    /// The wildcard guard must not eat a RELATIVE module path: both
+    /// `require_relative "../lib/x"` and `#include "../x.h"` start with a dot,
+    /// and dropping them cost every relative-include edge in a Ruby or C repo.
+    #[test]
+    fn a_relative_module_path_is_still_an_import() {
+        let rb = parse(
+            "ruby",
+            "require_relative \"../lib/x\"\nrequire \"./config\"\n",
+        );
+        assert_eq!(
+            rb.import_specifiers,
+            vec![
+                ("../lib/x".to_string(), "namespace".to_string()),
+                ("./config".to_string(), "default".to_string()),
+            ]
+        );
+        assert_eq!(rb.namespace_imports[0].module, "../lib/x", "not ./../lib/x");
+
+        let c = parse("c", "#include \"../x.h\"\nint f(void){return 0;}\n");
+        assert_eq!(
+            c.import_specifiers,
+            vec![("../x.h".to_string(), "namespace".to_string())]
+        );
+
+        // The wildcard the guard exists for is still dropped.
+        let java = parse("java", "import java.util.*;\nclass A {}\n");
+        assert_eq!(java.namespace_imports.len(), 1);
     }
 
     /// Every one of these reported a wrong VALUE, not a gap: a constructor call

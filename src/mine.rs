@@ -403,9 +403,19 @@ fn derive_conventions(members: &[&ParsedFile]) -> Vec<Convention> {
             *cases.entry(c).or_insert(0) += 1;
         }
     }
-    if contributing >= MIN_SAMPLE_SIZE {
-        if let Some((case, count)) = cases.iter().max_by_key(|(_, c)| **c) {
-            let confidence = *count as f64 / contributing as f64;
+    // Divided by the TOTAL votes, not the file count: a file that mixes cases
+    // votes for each, so the numerators sum past `contributing` and two cases
+    // could each score 1.0 -- a cohort where every file uses both PascalCase and
+    // camelCase would then mine one of them as an enforced convention, picked by
+    // HashMap iteration order.
+    let total_votes: usize = cases.values().sum();
+    if contributing >= MIN_SAMPLE_SIZE && total_votes > 0 {
+        // Deterministic on a tie: byte-identical input must mine the same
+        // convention on every run.
+        let mut ranked: Vec<(&&str, &usize)> = cases.iter().collect();
+        ranked.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        if let Some((case, count)) = ranked.first().copied() {
+            let confidence = *count as f64 / total_votes as f64;
             if confidence >= DOMINANCE {
                 out.push(Convention {
                     dimension: "naming.functions".into(),
@@ -737,6 +747,40 @@ mod tests {
     /// camelCase, so it is evidence for NEITHER. Counting it as snake_case made
     /// a TypeScript cohort of `parse, format, merge` mine `naming.functions =
     /// snake_case` at confidence 1.0 -- enforced, on names that say nothing.
+    /// A file that mixes cases votes for each, so the numerators sum past the
+    /// file count: dividing by it let two cases each score 1.0, and the winner
+    /// was then HashMap iteration order.
+    #[test]
+    fn a_cohort_where_every_file_mixes_cases_mines_nothing() {
+        let files: Vec<(String, String)> = (0..5)
+            .map(|i| {
+                (
+                    format!("app/ui/c{i}.ts"),
+                    format!(
+                        "export function Widget{i}() {{ return 1; }}\nexport function helperFn{i}() {{ return 2; }}\n"
+                    ),
+                )
+            })
+            .collect();
+        let refs: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(p, s)| (p.as_str(), s.as_str()))
+            .collect();
+        let corpus = corpus_of(&refs);
+        for _ in 0..3 {
+            let naming: Vec<String> = cluster(&corpus)
+                .iter()
+                .flat_map(|a| &a.conventions)
+                .filter(|c| c.dimension == "naming.functions")
+                .map(|c| format!("{}@{}", c.value, c.confidence))
+                .collect();
+            assert!(
+                naming.is_empty(),
+                "every file uses both cases; neither dominates: {naming:?}"
+            );
+        }
+    }
+
     /// The vote is per FILE. Weighting it per name while reporting support per
     /// file let one file with 100 snake_case defs outvote five files that are
     /// all camelCase -- and still clear `is_enforced`.
