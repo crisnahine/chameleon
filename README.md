@@ -48,6 +48,17 @@ That is 8.4x chameleon's current extractor and 104x its libcst fallback. The
 gap is native traversal plus all cores; the engine is also the only one of the
 three that parses `tools.py`, which libcst refuses at its node ceiling.
 
+At scale, on mastodon (4,008 Ruby/TS/JS files, one symlink refused):
+
+| | Wall clock |
+|---|---|
+| `dump` | 0.36 s (0.09 ms/file) |
+| `index` (parse + symbols + imports + call graph) | 7.0 s |
+
+Indexing is mildly super-linear: 37x the files costs 54x the time, because
+`resolve_module` scans corpus paths per specifier with no memo. That is fine at
+5k files and would want a suffix index past ~50k.
+
 Build: 24 grammars compile in ~11 s cold. Binary: 39 MB unstripped.
 
 ### Parity
