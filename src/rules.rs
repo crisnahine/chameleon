@@ -315,6 +315,27 @@ pub fn evaluate(
 /// a dependency this layer does not need, and a half-correct one that silently
 /// mismatches paths would be worse than an obvious limitation.
 fn glob_match(pattern: &str, path: &str) -> bool {
+    // Normalize the three spellings an author reaches for that would otherwise
+    // match NOTHING and report clean forever: a leading `/` or `./` (the first
+    // segment becomes empty and never equals a real one), and a trailing `/`
+    // meaning "this directory" (which, having a `/` and no `*`, fell through to
+    // an exact compare against the full path -- so an `exclude` of
+    // `node_modules/` excluded nothing and the rule then evaluated, and blocked
+    // in, every vendored file).
+    let pattern = pattern
+        .strip_prefix("./")
+        .unwrap_or(pattern)
+        .trim_start_matches('/');
+    let owned;
+    let pattern = if let Some(dir) = pattern.strip_suffix('/') {
+        owned = format!("{dir}/**");
+        owned.as_str()
+    } else {
+        pattern
+    };
+    if pattern.is_empty() {
+        return false;
+    }
     // A bare name with no separator matches the BASENAME at any depth, which is
     // what `*.spec.ts` is always meant to say.
     if !pattern.contains('/') {
@@ -893,6 +914,34 @@ exclude = ["**/tests/**", "scripts/*"]
         assert!(evaluate(&r, "main.go", "package m\n", go, &no_cohorts())
             .unwrap()
             .is_empty());
+    }
+
+    /// Three spellings an author reaches for that matched NOTHING and reported
+    /// clean forever. The trailing-slash one is the dangerous direction: an
+    /// `exclude` that excludes nothing leaves the rule evaluating -- and, at
+    /// enforce confidence, blocking in -- every vendored file.
+    #[test]
+    fn the_path_spellings_an_author_actually_writes_all_match() {
+        for (pattern, path) in [
+            ("node_modules/", "node_modules/pkg/index.js"),
+            ("vendor/", "vendor/a/b/c.py"),
+            ("/src/**", "src/api/handlers.py"),
+            ("./src/*.py", "src/handlers.py"),
+            ("src/**", "src/api/handlers.py"),
+        ] {
+            assert!(glob_match(pattern, path), "{pattern} should match {path}");
+        }
+        for (pattern, path) in [
+            ("node_modules/", "app/main.py"),
+            ("/src/**", "tests/api/handlers.py"),
+        ] {
+            assert!(
+                !glob_match(pattern, path),
+                "{pattern} must not match {path}"
+            );
+        }
+        // An empty pattern is not a match-everything.
+        assert!(!glob_match("/", "a.py"));
     }
 
     #[test]

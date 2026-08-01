@@ -160,7 +160,11 @@ impl CodeIndex {
         // A repo imports the same specifier from many files; the answer depends
         // only on the specifier, the importer's DIRECTORY, and the submodule
         // hint, so it is cached on exactly those.
-        let mut memo: HashMap<(String, String, String), Option<String>> = HashMap::new();
+        // The importer's EXTENSION is part of the key, not decoration:
+        // resolve_module branches on ModuleConventions::for_path, so `src/app.py`
+        // and `src/app.ts` importing `.` want different answers and would
+        // otherwise share a slot -- the TS file getting the Python module.
+        let mut memo: HashMap<(String, String, String, String), Option<String>> = HashMap::new();
         let mut import_targets: HashMap<&str, HashMap<String, (String, String)>> = HashMap::new();
         for pf in files {
             // The value carries the EXPORTED name, not just the target. Keying
@@ -174,8 +178,18 @@ impl CodeIndex {
                     .map(|(d, _)| d.to_string())
                     .unwrap_or_default()
             };
+            let ext_of = |p: &str| {
+                p.rsplit_once('.')
+                    .map(|(_, e)| e.to_string())
+                    .unwrap_or_default()
+            };
             for sym in &pf.import_symbols {
-                let key = (sym.module.clone(), dir_of(&pf.path), sym.name.clone());
+                let key = (
+                    sym.module.clone(),
+                    dir_of(&pf.path),
+                    ext_of(&pf.path),
+                    sym.name.clone(),
+                );
                 let resolved = memo
                     .entry(key)
                     .or_insert_with(|| {
@@ -197,7 +211,12 @@ impl CodeIndex {
                 }
             }
             for ns in &pf.namespace_imports {
-                let key = (ns.module.clone(), dir_of(&pf.path), String::new());
+                let key = (
+                    ns.module.clone(),
+                    dir_of(&pf.path),
+                    ext_of(&pf.path),
+                    String::new(),
+                );
                 let resolved = memo
                     .entry(key)
                     .or_insert_with(|| {
@@ -309,6 +328,17 @@ impl CodeIndex {
         self.callees.get(file)?.get(name)
     }
 
+    /// Whether this file declares this symbol.
+    ///
+    /// Distinct from having callers: `callees[file][name]` only exists once a
+    /// caller row was pushed, so an exported-but-uncalled function is invisible
+    /// there and reads identically to a symbol that does not exist.
+    pub fn defines(&self, file: &str, name: &str) -> bool {
+        self.symbols
+            .get(name)
+            .is_some_and(|defs| defs.iter().any(|d| d.file == file))
+    }
+
     /// Outgoing calls from one symbol.
     ///
     /// Built by inverting the caller map. Chameleon rebuilds this by scanning
@@ -393,7 +423,25 @@ fn resolve_module(
                     break;
                 }
             }
-            (ups, rest.trim_start_matches('/').to_string())
+            let mut tail = rest.trim_start_matches('/').to_string();
+            // `..` with no trailing slash ends the strip loop with a literal
+            // `..` in the tail, which matches no stem.
+            if tail == ".." {
+                ups += 1;
+                tail.clear();
+            } else if tail == "." {
+                tail.clear();
+            }
+            // Node ESM and TS NodeNext REQUIRE the extension on a relative
+            // specifier (`./util.js`), while every stem in the index has it
+            // stripped -- so a whole repo's relative imports resolved to
+            // nothing.
+            if let Some((stem, ext)) = tail.rsplit_once('.') {
+                if !stem.is_empty() && SOURCE_EXTENSIONS.contains(&ext) {
+                    tail = stem.to_string();
+                }
+            }
+            (ups, tail)
         } else {
             let dots = spec.chars().take_while(|c| *c == '.').count();
             (dots, spec[dots..].replace('.', "/"))
@@ -445,6 +493,17 @@ fn resolve_module(
     // that file as plain `thresholds.py`. Without the walk the whole import
     // graph silently comes back empty, which reads as "this repo has no
     // cross-file edges" rather than "you pointed me one directory too deep".
+    // A ONE-segment specifier is the library case: `import requests`,
+    // `require "json"`, `from "date-fns"`. Suffix-matching it binds any repo
+    // file with that basename anywhere in the tree, and a local wrapper named
+    // after the library it wraps is the common shape -- so `app/clients/
+    // requests.py` became the target of `from requests import get`. The
+    // language would resolve that to the installed package, which is not in the
+    // corpus at all. Only a corpus-root-anchored file can satisfy it.
+    if !cleaned.contains('/') {
+        return exact_module_match(&cleaned, index, conv.package_index);
+    }
+
     let mut candidate = cleaned.as_str();
     loop {
         if let Some(hit) = unique_suffix_match(candidate, index, conv.package_index) {
@@ -461,6 +520,11 @@ fn resolve_module(
         }
     }
 }
+
+/// Extensions a relative specifier may spell out and the index still stems away.
+const SOURCE_EXTENSIONS: &[&str] = &[
+    "js", "mjs", "cjs", "jsx", "ts", "mts", "cts", "tsx", "py", "pyi", "rb",
+];
 
 /// Corpus paths bucketed by their final segment, so a specifier is checked
 /// against a handful of candidates instead of every file.
@@ -671,7 +735,11 @@ const UNINFORMATIVE: &[&str] = &["<module>", "<anonymous>"];
 /// and understate the impact -- which is the one direction a blast radius must
 /// never err in.
 pub fn blast_radius(index: &CodeIndex, file: &str, name: &str, limits: BlastLimits) -> BlastRadius {
-    let found = index.callers_of(file, name).is_some();
+    // A real, exported, never-called function must not answer `found: false` --
+    // that is the "symbol does not exist" answer, and the module's own header
+    // says an empty caller set is not evidence of dead code. Existence comes
+    // from the symbol table; emptiness is carried by `reached` and `chains`.
+    let found = index.defines(file, name) || index.callers_of(file, name).is_some();
     let mut chains: Vec<Chain> = Vec::new();
     let mut nodes = 0usize;
     let mut fanout_clipped = false;
@@ -680,6 +748,10 @@ pub fn blast_radius(index: &CodeIndex, file: &str, name: &str, limits: BlastLimi
     // reached-vs-cap comparison reports a truncated walk as complete -- the one
     // direction a blast radius must never err in.
     let mut hit_node_cap = false;
+    // Same reasoning for the DEPTH clip: a chain cut at the limit whose tip
+    // still has unvisited callers is an understated radius, and understating is
+    // the one direction this must never err in.
+    let mut depth_clipped = false;
 
     let root = ChainHop {
         path: file.to_string(),
@@ -693,6 +765,13 @@ pub fn blast_radius(index: &CodeIndex, file: &str, name: &str, limits: BlastLimi
 
     while let Some((chain, seen)) = stack.pop() {
         let cur = chain.last().expect("a chain is never empty");
+        if chain.len() > limits.depth {
+            depth_clipped |= index.callers_of(&cur.path, &cur.name).is_some_and(|e| {
+                e.callers
+                    .iter()
+                    .any(|r| !seen.contains(&(r.path.clone(), r.caller.clone())))
+            });
+        }
         if chain.len() > limits.depth
             || {
                 if nodes >= limits.total_nodes {
@@ -760,7 +839,7 @@ pub fn blast_radius(index: &CodeIndex, file: &str, name: &str, limits: BlastLimi
 
     BlastRadius {
         found,
-        truncated: hit_node_cap || fanout_clipped,
+        truncated: hit_node_cap || fanout_clipped || depth_clipped,
         reached: reached.len(),
         chains,
     }
@@ -915,6 +994,170 @@ mod tests {
             "got {routes:?}"
         );
         assert_eq!(br.reached, 3, "left, right, top");
+        // The discriminating assertion. Under a GLOBAL visited set the second
+        // route stops at `right` because `top` is already marked, and every
+        // check above still passes: both names appear, and `reached` is deduped
+        // so it is still 3. Only the chain SHAPE separates the two.
+        assert_eq!(
+            routes.iter().filter(|r| r.len() == 3).count(),
+            2,
+            "both routes must reach top: {routes:?}"
+        );
+        assert!(
+            routes.iter().all(|r| r.last() == Some(&"top")),
+            "got {routes:?}"
+        );
+    }
+
+    /// The library case. Suffix-matching a one-segment specifier binds any repo
+    /// file with that basename anywhere in the tree, and a local wrapper named
+    /// after the library it wraps is the common shape -- so the language
+    /// resolves to an installed package that is not in the corpus at all, while
+    /// the index resolves to a repo file and records an edge to it.
+    #[test]
+    fn a_library_import_never_binds_a_same_named_repo_file() {
+        let files = corpus(&[
+            ("app/clients/requests.py", "def get():\n    return 1\n"),
+            (
+                "app/main.py",
+                "from requests import get\n\ndef run():\n    return get()\n",
+            ),
+        ]);
+        let idx = CodeIndex::build(&files);
+        assert!(
+            idx.callers_of("app/clients/requests.py", "get").is_none(),
+            "the installed package is not this file"
+        );
+        assert!(!idx.importers.contains_key("app/clients/requests.py"));
+
+        // A root-anchored module of the same name IS resolvable: the anchor is
+        // what makes the answer decidable.
+        let rooted = corpus(&[
+            ("requests.py", "def get():\n    return 1\n"),
+            (
+                "main.py",
+                "from requests import get\n\ndef run():\n    return get()\n",
+            ),
+        ]);
+        let idx = CodeIndex::build(&rooted);
+        assert!(idx.callers_of("requests.py", "get").is_some());
+    }
+
+    /// Node ESM and TS NodeNext require the extension on a relative specifier,
+    /// while every stem in the index has it stripped -- so a whole repo's
+    /// relative imports contributed no edges at all.
+    #[test]
+    fn a_relative_specifier_may_carry_its_extension() {
+        let files = corpus(&[
+            ("src/util.ts", "export function help() { return 1; }\n"),
+            (
+                "src/app.ts",
+                "import { help } from \"./util.js\";\nexport function run() { return help(); }\n",
+            ),
+        ]);
+        let idx = CodeIndex::build(&files);
+        assert!(
+            idx.callers_of("src/util.ts", "help").is_some(),
+            "./util.js is src/util.ts"
+        );
+    }
+
+    /// `require_relative` is anchored at the importing file's directory, but it
+    /// carries no leading dot. Falling through to the repo-wide suffix matcher
+    /// is ambiguous where the language is exact, and binds the wrong file when
+    /// the real sibling is outside the corpus.
+    #[test]
+    fn require_relative_resolves_against_its_own_directory() {
+        let files = corpus(&[
+            ("lib/tasks/helper.rb", "def build_it\n  1\nend\n"),
+            ("spec/helper.rb", "def build_it\n  2\nend\n"),
+            (
+                "lib/tasks/build.rb",
+                "require_relative 'helper'\n\ndef run\n  build_it\nend\n",
+            ),
+        ]);
+        let idx = CodeIndex::build(&files);
+        assert!(
+            idx.importers
+                .get("lib/tasks/helper.rb")
+                .is_some_and(|s| s.contains("lib/tasks/build.rb")),
+            "the sibling, not the same-named file in spec/"
+        );
+        assert!(!idx.importers.contains_key("spec/helper.rb"));
+    }
+
+    /// Two importers in one directory with different extensions want different
+    /// answers for the same specifier, because resolution branches on the
+    /// language. Keying the memo on the directory alone gave one the other's.
+    #[test]
+    fn the_resolution_memo_does_not_cross_languages() {
+        let files = corpus(&[
+            ("src/helper.py", "def go():\n    return 1\n"),
+            ("src/index.ts", "export function helper() { return 1; }\n"),
+            (
+                "src/app.py",
+                "from . import helper\n\ndef run():\n    return helper.go()\n",
+            ),
+            (
+                "src/app.ts",
+                "import { helper } from \".\";\nexport function run() { return helper(); }\n",
+            ),
+        ]);
+        let idx = CodeIndex::build(&files);
+        assert!(
+            idx.importers
+                .get("src/index.ts")
+                .is_some_and(|s| s.contains("src/app.ts")),
+            "the TS file resolves `.` to the barrel"
+        );
+        assert!(
+            !idx.importers
+                .get("src/helper.py")
+                .is_some_and(|s| s.contains("src/app.ts")),
+            "and never to the same-named Python module next to it"
+        );
+    }
+
+    /// A depth-clipped walk reported `truncated: false`, so a consumer read the
+    /// caller list as exhaustive -- understating the radius, which is the one
+    /// direction this must never err in.
+    #[test]
+    fn a_depth_clipped_walk_says_so() {
+        let files = corpus(&[(
+            "a.py",
+            "def leaf():\n    return 1\n\ndef mid():\n    return leaf()\n\ndef top():\n    return mid()\n\ndef apex():\n    return top()\n",
+        )]);
+        let idx = CodeIndex::build(&files);
+        let br = blast_radius(&idx, "a.py", "leaf", BlastLimits::default());
+        assert!(
+            br.truncated,
+            "apex is a real caller and was never enumerated"
+        );
+
+        let deep = blast_radius(
+            &idx,
+            "a.py",
+            "leaf",
+            BlastLimits {
+                depth: 8,
+                ..BlastLimits::default()
+            },
+        );
+        assert!(!deep.truncated, "a complete walk is not truncated");
+    }
+
+    /// An exported, never-called function exists. Answering `found: false` is
+    /// the "no such symbol" answer, and the module's own header says an empty
+    /// caller set is not evidence of dead code.
+    #[test]
+    fn an_uncalled_symbol_is_still_found() {
+        let files = corpus(&[("a.py", "def never_called():\n    return 1\n")]);
+        let idx = CodeIndex::build(&files);
+        let br = blast_radius(&idx, "a.py", "never_called", BlastLimits::default());
+        assert!(br.found, "it exists; it just has no callers");
+        assert_eq!(br.reached, 0);
+        let missing = blast_radius(&idx, "a.py", "no_such_thing", BlastLimits::default());
+        assert!(!missing.found);
     }
 
     #[test]

@@ -385,16 +385,21 @@ fn derive_conventions(members: &[&ParsedFile]) -> Vec<Convention> {
         .collect();
     if spans.len() >= MIN_SAMPLE_SIZE {
         spans.sort_unstable();
+        // Confidence is contractually "the conforming share", and a
+        // percentile's is fixed by construction at the percentile itself.
+        // Reporting 1.0 made both dimensions clear `is_enforced` and carry the
+        // same certainty marker as a 100%-conforming naming rule -- and at
+        // >= 0.95 a Convention-kind rule clears the block bar.
         out.push(Convention {
             dimension: "shape.line_span.p50".into(),
             value: percentile(&spans, 0.5).to_string(),
-            confidence: 1.0,
+            confidence: 0.5,
             support: spans.len(),
         });
         out.push(Convention {
             dimension: "shape.line_span.p90".into(),
             value: percentile(&spans, 0.9).to_string(),
-            confidence: 1.0,
+            confidence: 0.9,
             support: spans.len(),
         });
     }
@@ -607,6 +612,32 @@ mod tests {
         assert_eq!(singularize("batches"), "batch");
         assert_eq!(singularize("class"), "class");
         assert_eq!(singularize("api"), "api");
+    }
+
+    /// A percentile's conforming share is fixed by construction, so reporting
+    /// confidence 1.0 made both shape dimensions clear `is_enforced` and carry
+    /// the same certainty marker as a 100%-conforming naming rule.
+    #[test]
+    fn a_percentile_does_not_report_itself_as_enforced() {
+        let spans = [1usize, 3, 40, 200, 800];
+        let p50 = Convention {
+            dimension: "shape.line_span.p50".into(),
+            value: percentile(&spans, 0.5).to_string(),
+            confidence: 0.5,
+            support: spans.len(),
+        };
+        assert!(
+            !p50.is_enforced(),
+            "half the cohort conforms, not all of it"
+        );
+        assert!(
+            Convention {
+                confidence: 1.0,
+                ..p50
+            }
+            .is_enforced(),
+            "the bar itself still works"
+        );
     }
 
     #[test]

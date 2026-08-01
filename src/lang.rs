@@ -201,6 +201,18 @@ pub struct ImportSpec {
     /// field. `from __future__ import annotations` parses as its own node kind
     /// with no module path to read, but the module is still `__future__`.
     pub implicit_module: BTreeMap<String, String>,
+    /// Specifier kind per module-call name. The reference gives `require`,
+    /// `require_relative` and `autoload` three different kinds, and a consumer
+    /// reads that kind to tell a library dependency from a sibling file.
+    pub module_call_kinds: BTreeMap<String, String>,
+    /// Which ARGUMENT holds the module path, per call name. `autoload :Foo,
+    /// "foo/bar"` names it second, and reading the whole argument list yields
+    /// the literal text `:Foo, 'foo/bar'` as a module.
+    pub module_call_arg: BTreeMap<String, usize>,
+    /// Module-call names anchored at the importing FILE's directory rather than
+    /// resolved by search path. `require_relative` carries no leading dot, so
+    /// nothing else distinguishes it.
+    pub relative_call_names: Vec<String>,
     /// When a language expresses imports as ordinary calls (Ruby's `require`),
     /// only these method names count. Without it every call in the file reads
     /// as an import -- `puts "x"` becomes a namespace import of `puts` and of

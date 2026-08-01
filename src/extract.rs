@@ -1665,6 +1665,7 @@ fn collect_imports(
         // count. Without this gate every call is an import: `puts "x"` records
         // namespace imports of `puts` AND of `"x"`, and both poison the file's
         // export set.
+        let mut called = String::new();
         if !spec.imports.module_call_names.is_empty() {
             let callee = slot(
                 node,
@@ -1672,17 +1673,52 @@ fn collect_imports(
                 &spec.child_kinds.call_function,
             )
             .or_else(|| node.named_child(0));
-            let called = callee
+            called = callee
                 .map(|c| text(c, source).to_string())
                 .unwrap_or_default();
             if !spec.imports.module_call_names.iter().any(|n| n == &called) {
                 return;
             }
         }
+        // Each form carries its own specifier kind: a consumer reads that kind
+        // to tell a library dependency from a sibling file.
+        let specifier_kind = spec
+            .imports
+            .module_call_kinds
+            .get(&called)
+            .cloned()
+            .unwrap_or_else(|| "namespace".to_string());
+        // `require_relative "helper"` is anchored at the importing FILE's
+        // directory but carries no leading dot, so the resolver would fall
+        // through to a repo-wide suffix match: ambiguous where the language is
+        // exact, and a fabricated edge where the real sibling is outside the
+        // corpus. The specifier keeps the reference's raw text; the resolvable
+        // module carries the anchor.
+        let anchored = spec
+            .imports
+            .relative_call_names
+            .iter()
+            .any(|n| n == &called);
+        // Descend the argument-list wrapper a call grammar puts between the
+        // statement and its arguments, so an argument INDEX means the argument
+        // and not the list.
         let children: Vec<Node> = {
             let mut c = node.walk();
-            node.named_children(&mut c).collect()
+            let mut out = Vec::new();
+            for ch in node.named_children(&mut c) {
+                if spec.imports.descend_nodes.iter().any(|k| k == ch.kind()) {
+                    let mut ic = ch.walk();
+                    out.extend(ch.named_children(&mut ic));
+                } else {
+                    out.push(ch);
+                }
+            }
+            out
         };
+        // `autoload :Foo, "foo/bar"` names its target SECOND; reading every
+        // argument yields the literal text `:Foo, 'foo/bar'` as a module path.
+        let arg_index = spec.imports.module_call_arg.get(&called).copied();
+        let mut arg_seen = 0usize;
         for child in children {
             if spec.skip_subtree_nodes.contains(child.kind()) {
                 continue;
@@ -1697,6 +1733,13 @@ fn collect_imports(
                     )
             {
                 continue;
+            }
+            if let Some(want) = arg_index {
+                let this_arg = arg_seen;
+                arg_seen += 1;
+                if this_arg != want {
+                    continue;
+                }
             }
             let (module, alias) = if spec.imports.alias_nodes.iter().any(|k| k == child.kind()) {
                 let m = child
@@ -1723,10 +1766,14 @@ fn collect_imports(
             }
             namespaces.push(NamespaceImport {
                 alias,
-                module: module.clone(),
+                module: if anchored {
+                    format!("./{module}")
+                } else {
+                    module.clone()
+                },
                 line,
             });
-            specifiers.push((module, "namespace".into()));
+            specifiers.push((module, specifier_kind.clone()));
         }
     }
 }
