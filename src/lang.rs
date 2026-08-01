@@ -27,6 +27,10 @@ use tree_sitter::Language;
 pub struct Fields {
     /// Field holding a declaration's identifier.
     pub name: Option<String>,
+    /// Field holding a CLASS/type's identifier, when it differs from the
+    /// function one. C reads a function's name off `declarator` but a struct's
+    /// off `name`; sharing one field made every C and C++ type shape vanish.
+    pub class_name: Option<String>,
     /// Field holding a callable's parameter list.
     pub parameters: Option<String>,
     /// Field holding a declaration's body.
@@ -42,6 +46,10 @@ pub struct Fields {
     pub member_property: Option<String>,
     /// Field holding a parameter's type annotation.
     pub param_type: Option<String>,
+    /// Node kinds to descend through when reading a declaration's name or
+    /// parameter list. C nests both under a `function_declarator`, so reading
+    /// the field once yields `f(int a)` as the name and no parameters at all.
+    pub declarator_unwrap: Vec<String>,
 }
 
 /// How calls are recognized and classified.

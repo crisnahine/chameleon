@@ -103,6 +103,26 @@ fn field_node<'t>(node: Node<'t>, field: &Option<String>) -> Option<Node<'t>> {
     node.child_by_field_name(field.as_deref()?)
 }
 
+/// The node a declaration's name or parameter list really lives on.
+///
+/// C wraps both in a `function_declarator`, so reading the field once gives
+/// `f(int a)` for the name and nothing for the parameters. The loop is bounded
+/// because a declarator chain (pointer-to-function-returning-pointer) is finite
+/// but a malformed tree need not be.
+fn declarator_node<'t>(node: Node<'t>, spec: &LanguageSpec) -> Node<'t> {
+    let mut n = node;
+    for _ in 0..8 {
+        if !spec.fields.declarator_unwrap.iter().any(|k| k == n.kind()) {
+            break;
+        }
+        match field_node(n, &spec.fields.name).or_else(|| n.named_child(0)) {
+            Some(inner) if inner.id() != n.id() => n = inner,
+            _ => break,
+        }
+    }
+    n
+}
+
 fn field_text(node: Node, field: &Option<String>, source: &[u8]) -> Option<String> {
     field_node(node, field).map(|n| text(n, source).to_string())
 }
@@ -223,7 +243,12 @@ fn param_of(node: Node, spec: &LanguageSpec, source: &[u8], keyword_only: bool) 
 
 /// Every parameter of a callable, in source order.
 fn params_of(node: Node, spec: &LanguageSpec, source: &[u8]) -> Vec<Param> {
-    let Some(list) = field_node(node, &spec.fields.parameters) else {
+    // The parameter list may sit on a nested declarator rather than the
+    // declaration itself.
+    let holder = field_node(node, &spec.fields.name).unwrap_or(node);
+    let Some(list) = field_node(node, &spec.fields.parameters)
+        .or_else(|| field_node(holder, &spec.fields.parameters))
+    else {
         return Vec::new();
     };
     let mut out = Vec::new();
@@ -537,7 +562,9 @@ fn walk(
             }
 
             if spec.is_class(decl.kind()) && !opened_by_wrapper {
-                let name = field_text(decl, &spec.fields.name, source).unwrap_or_default();
+                let name = field_text(decl, &spec.fields.class_name, source)
+                    .or_else(|| field_text(decl, &spec.fields.name, source))
+                    .unwrap_or_default();
                 let bases = base_list(decl, spec, source);
                 if !name.is_empty() {
                     class_shapes.push(ClassShape {
@@ -557,7 +584,9 @@ fn walk(
             }
 
             if spec.is_function(decl.kind()) && !opened_by_wrapper {
-                let name = field_text(decl, &spec.fields.name, source)
+                let name = field_node(decl, &spec.fields.name)
+                    .map(|n| text(declarator_node(n, spec), source).to_string())
+                    .filter(|n| !n.is_empty())
                     .unwrap_or_else(|| "<anonymous>".to_string());
                 let params = params_of(decl, spec, source);
                 let decorators = decorators_of(decl, spec, source);
@@ -1616,6 +1645,53 @@ mod tests {
         assert_eq!(pf.import_symbols.len(), 1);
         assert_eq!(pf.import_symbols[0].name, "a", "the exported name");
         assert_eq!(pf.import_symbols[0].local, "b", "the local binding");
+    }
+
+    /// C and C++ read a function's name off `declarator` but a struct's off
+    /// `name`; sharing one field made every C/C++ type shape vanish, and Go's
+    /// type name sits on the inner `type_spec` rather than the declaration.
+    /// Measured on 20k real files, all three reported zero classes.
+    #[test]
+    fn c_family_and_go_extract_type_shapes() {
+        let c = parse(
+            "c",
+            "struct Point { int x; };\nenum Color { RED };\nint f(int a, char *b) { return a; }\n",
+        );
+        assert_eq!(
+            c.class_shapes
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Point", "Color"]
+        );
+        // The name must not carry the parameter list, or no call site can ever
+        // match the definition.
+        assert_eq!(c.callable_signatures[0].name, "f");
+        assert_eq!(c.callable_signatures[0].params.len(), 2);
+
+        let go = parse(
+            "go",
+            "package m\ntype User struct { Name string }\ntype Repo interface { Get() error }\n",
+        );
+        assert_eq!(
+            go.class_shapes
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["User", "Repo"]
+        );
+
+        let cpp = parse(
+            "cpp",
+            "class Widget { public: int draw(); };\nstruct Box { int w; };\n",
+        );
+        assert_eq!(
+            cpp.class_shapes
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Widget", "Box"]
+        );
     }
 
     #[test]

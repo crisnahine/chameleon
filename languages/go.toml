@@ -4,7 +4,7 @@ name = "go"
 extensions = [".go"]
 
 function_nodes = ["function_declaration", "method_declaration", "func_literal"]
-class_nodes = ["type_declaration"]
+class_nodes = ["type_spec"]
 branch_nodes = ["if_statement", "for_statement", "expression_case", "type_case", "communication_case"]
 nesting_nodes = ["if_statement", "for_statement", "expression_switch_statement", "type_switch_statement", "select_statement"]
 skip_subtree_nodes = ["comment", "raw_string_literal"]

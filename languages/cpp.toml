@@ -28,6 +28,8 @@ optional = ["optional_parameter_declaration"]
 
 [fields]
 name = "declarator"
+class_name = "name"
+declarator_unwrap = ["function_declarator", "pointer_declarator", "reference_declarator"]
 parameters = "parameters"
 body = "body"
 call_function = "function"
