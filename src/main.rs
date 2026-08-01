@@ -187,9 +187,15 @@ fn cmd_dump(args: &Args) -> Result<()> {
         Ok(())
     };
 
-    for line in stdin.lock().lines() {
-        let line = line.context("reading stdin")?;
-        let path = line.trim();
+    // Split on bytes and decode lossily rather than requiring valid UTF-8 per
+    // line. A single undecodable byte anywhere in the path list used to abort
+    // the whole run, which for a long-lived extractor means one malformed path
+    // costs the entire corpus. A lossy path simply fails to open and comes back
+    // as a `read_error` record for that one file.
+    for chunk in stdin.lock().split(b'\n') {
+        let raw = chunk.context("reading stdin")?;
+        let decoded = String::from_utf8_lossy(&raw);
+        let path = decoded.trim();
         if path.is_empty() {
             continue;
         }
@@ -241,6 +247,17 @@ fn collect_sources(root: &Path, registry: &Registry) -> Result<Vec<PathBuf>> {
         "dist",
         "build",
     ];
+    // A tree this large is a mistake, not a repo. Pointing the CLI at `/tmp` or
+    // `/` should say so in a second rather than walking for ten minutes with no
+    // output -- which is exactly what it did before this guard. The `dump`
+    // protocol is unaffected: there the host supplies the file list, and
+    // choosing it is the host's job.
+    const MAX_SOURCE_FILES: usize = 200_000;
+
+    if !root.is_dir() {
+        bail!("{} is not a directory", root.display());
+    }
+
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -261,6 +278,13 @@ fn collect_sources(root: &Path, registry: &Registry) -> Result<Vec<PathBuf>> {
                 }
             } else if registry.for_path(&path.to_string_lossy()).is_some() {
                 out.push(path);
+                if out.len() > MAX_SOURCE_FILES {
+                    bail!(
+                        "{} holds more than {MAX_SOURCE_FILES} source files; \
+                         point this at a repository, or use `dump` with an explicit file list",
+                        root.display()
+                    );
+                }
             }
         }
     }

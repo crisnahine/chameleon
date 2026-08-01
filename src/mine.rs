@@ -236,6 +236,14 @@ fn looks_like_test(path: &str) -> bool {
 fn singularize(word: &str) -> String {
     if let Some(stem) = word.strip_suffix("ies") {
         format!("{stem}y")
+    } else if let Some(stem) = word.strip_suffix("es") {
+        // `-es` after a sibilant is the plural marker itself: lenses -> lens,
+        // boxes -> box. Dropping only the trailing `s` leaves "lense".
+        if stem.ends_with(['s', 'x', 'z']) || stem.ends_with("ch") || stem.ends_with("sh") {
+            stem.to_string()
+        } else {
+            format!("{stem}e")
+        }
     } else if word.len() > 3 && word.ends_with('s') && !word.ends_with("ss") {
         word[..word.len() - 1].to_string()
     } else {
@@ -537,6 +545,9 @@ mod tests {
     fn singularization_handles_the_common_shapes() {
         assert_eq!(singularize("services"), "service");
         assert_eq!(singularize("policies"), "policy");
+        assert_eq!(singularize("lenses"), "lens");
+        assert_eq!(singularize("boxes"), "box");
+        assert_eq!(singularize("batches"), "batch");
         assert_eq!(singularize("class"), "class");
         assert_eq!(singularize("api"), "api");
     }

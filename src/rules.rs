@@ -408,6 +408,40 @@ exclude = ["**/tests/**", "scripts/*"]
         assert_eq!(r.drift, Drift::Stable, "drift defaults to stable");
     }
 
+    /// Text predicates have to actually be applied.
+    ///
+    /// This is not a formality: if `#eq?` were ignored, `no-print` would match
+    /// every bare call in the repo and the rule would read as catastrophically
+    /// broken rather than subtly wrong. The earlier docstring test does NOT
+    /// cover it -- a docstring is not a call, so it passes either way.
+    #[test]
+    fn text_predicates_are_honored_not_ignored() {
+        let reg = Registry::load().unwrap();
+        let bound = reg.by_name("python").unwrap();
+        let r = load_one();
+        let src = "def f():\n    print('a')\n    logger('b')\n    other('c')\n";
+        let found = evaluate(&r, "app/lib.py", src, bound).unwrap();
+        assert_eq!(
+            found.len(),
+            1,
+            "#eq? must exclude logger() and other(); got {found:?}"
+        );
+        assert_eq!(found[0].line, 2);
+    }
+
+    /// `#match?` is the other predicate the shipped example rules rely on.
+    #[test]
+    fn regex_predicates_are_honored() {
+        let reg = Registry::load().unwrap();
+        let bound = reg.by_name("python").unwrap();
+        let mut r = load_one();
+        r.matcher.rule =
+            r#"((call function: (identifier) @violation) (#match? @violation "^log_"))"#.into();
+        let src = "def f():\n    log_start()\n    print('x')\n    log_end()\n";
+        let found = evaluate(&r, "app/lib.py", src, bound).unwrap();
+        assert_eq!(found.len(), 2, "only the log_* calls; got {found:?}");
+    }
+
     #[test]
     fn a_structural_query_finds_the_call_and_not_the_docstring() {
         let reg = Registry::load().unwrap();

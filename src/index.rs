@@ -287,12 +287,41 @@ fn resolve_module(spec: &str, paths: &[&str]) -> Option<String> {
     if cleaned.is_empty() {
         return None;
     }
+
+    // Try the full specifier, then progressively drop leading package segments.
+    //
+    // The corpus root is chosen by the caller and is often *inside* the package,
+    // so `chameleon_mcp.thresholds` has to be able to match a corpus that stores
+    // that file as plain `thresholds.py`. Without the walk the whole import
+    // graph silently comes back empty, which reads as "this repo has no
+    // cross-file edges" rather than "you pointed me one directory too deep".
+    let mut candidate = cleaned.as_str();
+    loop {
+        if let Some(hit) = unique_suffix_match(candidate, paths) {
+            return Some(hit);
+        }
+        match candidate.split_once('/') {
+            Some((_, rest)) if !rest.is_empty() => candidate = rest,
+            _ => return None,
+        }
+    }
+}
+
+/// A specifier resolves only when exactly one corpus file matches it.
+///
+/// Zero matches and many matches are both `None`: an ambiguous resolution is
+/// not a resolution, and picking one would fabricate an edge.
+fn unique_suffix_match(candidate: &str, paths: &[&str]) -> Option<String> {
+    let package_form = format!("{candidate}/__init__");
     let mut hits: Vec<&str> = paths
         .iter()
         .copied()
         .filter(|p| {
             let stem = p.rsplit_once('.').map(|(s, _)| s).unwrap_or(p);
-            stem.ends_with(&cleaned) || stem.ends_with(&format!("{cleaned}/__init__"))
+            stem == candidate
+                || stem.ends_with(&format!("/{candidate}"))
+                || stem == package_form
+                || stem.ends_with(&format!("/{package_form}"))
         })
         .collect();
     hits.sort_unstable();
@@ -611,6 +640,42 @@ mod tests {
         let br = blast_radius(&idx, "a.py", "nope", BlastLimits::default());
         assert!(!br.found);
         assert_eq!(br.reached, 0);
+    }
+
+    /// The corpus root is often chosen one directory inside the package, so a
+    /// fully-qualified specifier has to still find its file. Getting this wrong
+    /// produces an empty import graph, which reads as "no cross-file edges"
+    /// rather than "wrong root".
+    #[test]
+    fn a_package_qualified_specifier_resolves_inside_the_package() {
+        let files = corpus(&[
+            ("util.py", "def helper():\n    return 1\n"),
+            (
+                "app.py",
+                "from mypkg.util import helper\n\ndef run():\n    return helper()\n",
+            ),
+        ]);
+        let idx = CodeIndex::build(&files);
+        let entry = idx
+            .callers_of("util.py", "helper")
+            .expect("mypkg.util must still resolve to util.py");
+        assert_eq!(entry.callers[0].path, "app.py");
+    }
+
+    /// The segment walk must not buy resolution at the cost of inventing edges.
+    #[test]
+    fn the_segment_walk_still_refuses_an_ambiguous_match() {
+        let files = corpus(&[
+            ("one/util.py", "def helper():\n    return 1\n"),
+            ("two/util.py", "def helper():\n    return 2\n"),
+            (
+                "app.py",
+                "from pkg.util import helper\n\ndef run():\n    return helper()\n",
+            ),
+        ]);
+        let idx = CodeIndex::build(&files);
+        assert!(idx.callers_of("one/util.py", "helper").is_none());
+        assert!(idx.callers_of("two/util.py", "helper").is_none());
     }
 
     #[test]
