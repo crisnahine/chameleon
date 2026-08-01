@@ -44,6 +44,10 @@ self_names = ["self"]
 
 [imports]
 module_nodes = ["use_declaration"]
+# `use a::b::{C, D}` nests its list; the local name is the LAST segment.
+descend_nodes = ["scoped_use_list", "use_list"]
+alias_nodes = ["use_as_clause"]
+alias_segment = "last"
 
 [flags]
 async_markers = ["async"]

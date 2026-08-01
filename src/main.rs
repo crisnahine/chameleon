@@ -148,11 +148,14 @@ fn run() -> Result<()> {
 
 /// The extractor protocol.
 ///
-/// Paths are read in chunks and parsed in parallel, then written in the order
-/// they arrived. Chunking rather than draining stdin whole keeps this usable as
-/// a genuinely long-lived streaming subprocess -- a caller that writes a batch,
-/// reads it back, then writes more never deadlocks -- while still getting
-/// parallelism across cores within each batch.
+/// Paths are read in CHUNK-sized batches and parsed in parallel, then written in
+/// the order they arrived, so a large corpus is not drained into memory whole and
+/// each batch gets parallelism across cores.
+///
+/// The honest boundary: a batch is flushed at CHUNK paths or at EOF, so a caller
+/// that writes fewer than CHUNK paths and then blocks reading records without
+/// closing stdin will wait. Close stdin (or write a full batch); the shipped
+/// integration shim uses `communicate()`, which does.
 fn cmd_dump(args: &Args) -> Result<()> {
     const CHUNK: usize = 256;
 
@@ -324,6 +327,12 @@ fn parse_corpus(root: &Path, limits: &Limits) -> Result<(Vec<chromatophore::Pars
 /// When a caller points at the inside of a package, this is the prefix that
 /// fully-qualified specifiers carry and the corpus paths do not.
 fn package_hint(root: &Path) -> String {
+    // `.` and `..` are CurDir/ParentDir components, never Normal, so file_name()
+    // is None for them -- and the hint decides whether a package-qualified
+    // specifier can drop its root segment. Without this, `index .` and
+    // `index $PWD` built two different call graphs for one directory.
+    let canonical = root.canonicalize();
+    let root: &Path = canonical.as_deref().unwrap_or(root);
     root.file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default()
@@ -343,8 +352,14 @@ fn cmd_blast(args: &Args) -> Result<()> {
     let file = args.positional.get(1).context("blast needs a file")?;
     let symbol = args.positional.get(2).context("blast needs a symbol")?;
 
-    let (files, _) = parse_corpus(&root, &args.limits)?;
-    let index = CodeIndex::build_with_package(&files, &package_hint(&root));
+    let (files, skipped) = parse_corpus(&root, &args.limits)?;
+    let mut index = CodeIndex::build_with_package(&files, &package_hint(&root));
+    if skipped > 0 {
+        // A file that never parsed can hold callers this walk cannot see, so the
+        // radius is incomplete for the same reason a per-file cap makes it
+        // incomplete. `capped_files` is what `truncated` already reads.
+        index.capped_files.insert(format!("<{skipped} unparsed>"));
+    }
     let limits = BlastLimits {
         depth: args.depth.clamp(1, 4),
         ..Default::default()
@@ -436,6 +451,15 @@ fn cmd_check(args: &Args) -> Result<()> {
         // Decode lossily rather than skipping. A latin-1 source file used to
         // vanish silently while still counting toward the "N findings over M
         // files" denominator, so a secret in it read as checked and clean.
+        match std::fs::metadata(path) {
+            Ok(meta) if meta.len() > args.limits.max_file_bytes => {
+                // Every other subcommand honors this through parse_path, and
+                // USAGE advertises it without qualification.
+                unreadable.push(format!("{}: file_too_large", path.display()));
+                continue;
+            }
+            _ => {}
+        }
         let source = match std::fs::read(path) {
             Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
             Err(e) => {

@@ -46,6 +46,8 @@ constructor_nodes = ["object_creation_expression"]
 self_names = ["$this", "self", "static"]
 
 [imports]
+# These bind the LAST path segment, not the first.
+alias_segment = "last"
 module_nodes = ["namespace_use_declaration"]
 
 [flags]

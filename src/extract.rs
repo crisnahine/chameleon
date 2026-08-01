@@ -578,6 +578,9 @@ fn call_of(
             if name.is_empty() {
                 return None;
             }
+            if spec.calls.exclude_names.iter().any(|n| n == &name) {
+                return None;
+            }
             // Operator sends can never be index-resolved, and would crowd real
             // calls out of the per-file cap.
             if spec.calls.identifier_names_only
@@ -664,6 +667,17 @@ fn call_of(
     )
     .or_else(|| node.named_child(0))?;
     callee = unwrap_kinds(callee, &spec.calls.callee_unwrap);
+    // A language whose definition macros are spelled as calls (Elixir's `def`,
+    // `defmodule`, `use`) would otherwise emit a row per definition, and any
+    // repo symbol named `test` or `use` would pick up a repo-wide blast radius.
+    if spec
+        .calls
+        .exclude_names
+        .iter()
+        .any(|n| n == text(callee, source).trim())
+    {
+        return None;
+    }
 
     if spec.calls.member_nodes.iter().any(|k| k == callee.kind()) {
         // Fields first; a grammar that names neither (kotlin-ng) puts the
@@ -1408,9 +1422,40 @@ fn implements_list(node: Node, spec: &LanguageSpec, source: &[u8]) -> Vec<String
 }
 
 fn heritage(node: Node, spec: &LanguageSpec, source: &[u8], item: &Option<String>) -> Vec<String> {
-    let Some(sup) = slot(node, &spec.fields.superclass, &spec.child_kinds.superclass) else {
+    // Some grammars carry the bases in ONE clause; Swift repeats
+    // `inheritance_specifier` as siblings, so taking the first silently reported
+    // a three-conformance class as having one parent.
+    let clauses: Vec<Node> = match any_field(node, &spec.fields.superclass) {
+        Some(n) => vec![n],
+        None => match spec.child_kinds.superclass.as_deref() {
+            Some(want) => {
+                let mut c = node.walk();
+                node.named_children(&mut c)
+                    .filter(|n| n.kind() == want)
+                    .collect()
+            }
+            None => Vec::new(),
+        },
+    };
+    if clauses.len() > 1 {
+        return clauses
+            .into_iter()
+            .flat_map(|c| heritage_clause(c, spec, source, item))
+            .collect();
+    }
+    let Some(sup) = clauses.into_iter().next() else {
         return Vec::new();
     };
+    heritage_clause(sup, spec, source, item)
+}
+
+/// The bases named by ONE heritage clause.
+fn heritage_clause(
+    sup: Node,
+    spec: &LanguageSpec,
+    source: &[u8],
+    item: &Option<String>,
+) -> Vec<String> {
     let mut out = Vec::new();
     let mut c = sup.walk();
     let mut named: Vec<Node> = sup.named_children(&mut c).collect();
@@ -1749,6 +1794,16 @@ fn class_attrs_of(node: Node, spec: &LanguageSpec, source: &[u8]) -> Vec<String>
             // reported `class_attrs: ["int"]` -- and Java's first named child is
             // its `modifiers` node, reporting `["private"]`. class_attrs is
             // documented as a role signal, so that is fabricated evidence.
+            // A declared-but-undefined member function is a `field_declaration`
+            // whose declarator is a `function_declarator`, and that kind is in
+            // `declarator_unwrap` -- so the descent walked straight through it to
+            // the function's own name and recorded `area` as an attribute.
+            let is_member_fn = inner
+                .child_by_field_name("declarator")
+                .is_some_and(|d| d.kind().contains("function_declarator"));
+            if is_member_fn {
+                continue;
+            }
             let named = inner
                 .child_by_field_name("left")
                 .or_else(|| inner.child_by_field_name("declarator"))
@@ -2078,10 +2133,32 @@ fn collect_imports(
                 // the last one silently rebinds every dotted import.
                 let a = field_text(child, &spec.imports.alias_field, source)
                     .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| m.split('.').next().unwrap_or(&m).to_string());
+                    .unwrap_or_else(|| {
+                        let segs: Vec<&str> = m
+                            .split("::")
+                            .flat_map(|s| s.split(['.', '/']))
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                        // Python's `import a.b.c` binds `a`; Go, Java and Kotlin
+                        // bind the last segment. One rule for all of them bound
+                        // `github` for `import "github.com/gin-gonic/gin"`.
+                        let seg = if spec.imports.alias_segment.as_deref() == Some("last") {
+                            segs.last().copied()
+                        } else {
+                            segs.first().copied()
+                        };
+                        seg.unwrap_or(&m).to_string()
+                    });
                 (m, a)
             };
-            if module.is_empty() {
+            // A wildcard token (`import java.util.*`) and a bracketed import
+            // list are children of the statement but are not module paths.
+            if module.is_empty()
+                || !module
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '@')
+            {
                 continue;
             }
             if spec.flags.imports_are_exports && module_level {
@@ -2960,6 +3037,80 @@ mod tests {
                 "{lang} lost its base"
             );
         }
+    }
+
+    /// Every one of these reported a wrong VALUE, not a gap: a constructor call
+    /// counted as a second parent, three conformances reported as one, a
+    /// declared member function recorded as a class attribute, a wildcard import
+    /// recorded as a module, and a dotted path bound under the wrong segment.
+    #[test]
+    fn the_language_specific_shapes_round_eleven_found() {
+        // Scala carries the constructor arguments alongside the type.
+        let scala = parse(
+            "scala",
+            "class UserService(r: Repo) extends BaseService(r) {}",
+        );
+        assert_eq!(
+            scala.class_shapes[0].extends.as_deref(),
+            Some("BaseService")
+        );
+
+        // Swift repeats `inheritance_specifier` as siblings rather than
+        // wrapping them, so the first one is not the whole list.
+        let swift = parse(
+            "swift",
+            "class VC: UIViewController, UITableViewDelegate {}",
+        );
+        assert_eq!(
+            swift.class_shapes[0].extends.as_deref(),
+            Some("UIViewController (+1 more)"),
+            "two conformances must not read as one parent"
+        );
+
+        // A declared-but-undefined member function is a `field_declaration`
+        // whose declarator is a `function_declarator`.
+        let cpp = parse(
+            "cpp",
+            "class Shape { public: virtual double area() const; int w; };",
+        );
+        assert_eq!(
+            cpp.class_shapes[0].class_attrs.as_deref(),
+            Some(&["w".to_string()][..])
+        );
+
+        // A wildcard token is not a module, and Java binds the LAST segment.
+        let java = parse(
+            "java",
+            "import java.util.*;\nimport java.util.List;\nclass A {}\n",
+        );
+        assert_eq!(
+            java.namespace_imports
+                .iter()
+                .map(|n| (n.alias.as_str(), n.module.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("util", "java.util"), ("List", "java.util.List")]
+        );
+
+        // Go binds the last path segment; Python still binds the first.
+        let go = parse("go", "package m\nimport \"github.com/gin-gonic/gin\"\n");
+        assert_eq!(go.namespace_imports[0].alias, "gin");
+        let py = parse("python", "import a.b.c\n");
+        assert_eq!(py.namespace_imports[0].alias, "a");
+
+        // Rust splits on `::` and nests its use lists.
+        let rs = parse("rust", "use std::collections::HashMap;\npub fn f() {}\n");
+        assert_eq!(rs.namespace_imports[0].alias, "HashMap");
+
+        // Elixir spells its definition macros as calls.
+        let ex = parse("elixir", "defmodule M do\n  def f(x), do: g(x)\nend\n");
+        assert_eq!(
+            ex.call_sites
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["f", "g"],
+            "def and defmodule are not calls"
+        );
     }
 
     /// `class_attrs` is documented as a role signal, so reading the member's

@@ -160,9 +160,10 @@ One shape encodes every kind of knowledge the taxonomy names — conventions,
 idioms, anti-patterns, smells, contracts, secrets, dependency policy. See
 `examples/rules.toml` for four worked rules.
 
-Blocking is **earned, not declared**. A rule carries the confidence measured
-against code the team already accepted, plus its drift direction, and
-`may_block()` refuses below the bar however the mode is set:
+Blocking is **bounded, not per-rule**. A rule carries a confidence the host
+measured against code the team already accepted, plus its drift direction, and
+`may_block()` refuses below a bar the rule cannot lower -- and refuses outright
+for the judgment-call kinds, at any confidence:
 
 ```rust
 mode == Enforce && drift != Weakening && calibrated_confidence >= threshold(kind)
@@ -249,7 +250,7 @@ loads, sits inside the ABI window tree-sitter accepts, and parses.
 ## Development
 
 ```bash
-cargo test                    # 152 tests
+cargo test                    # 155 tests
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 python3 tests/parity.py --chameleon /path/to/chameleon

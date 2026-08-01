@@ -864,7 +864,14 @@ pub fn blast_radius(index: &CodeIndex, file: &str, name: &str, limits: BlastLimi
     // that is the "symbol does not exist" answer, and the module's own header
     // says an empty caller set is not evidence of dead code. Existence comes
     // from the symbol table; emptiness is carried by `reached` and `chains`.
-    let found = index.defines(file, name) || index.callers_of(file, name).is_some();
+    // A module-level binding (`TIMEOUT = 30`) is in the export set but is
+    // neither a callable nor a class, so the symbol table alone reported it
+    // absent -- the "no such symbol" answer for a name the same index lists.
+    let exported = index
+        .exports
+        .get(file)
+        .is_some_and(|e| e.names.contains(name));
+    let found = exported || index.defines(file, name) || index.callers_of(file, name).is_some();
     let mut chains: Vec<Chain> = Vec::new();
     let mut nodes = 0usize;
     let mut fanout_clipped = false;
@@ -1174,6 +1181,18 @@ mod tests {
         ]);
         let idx = CodeIndex::build(&rooted);
         assert!(idx.callers_of("requests.py", "get").is_some());
+    }
+
+    /// A module-level binding is in the export set but is neither a callable nor
+    /// a class, so the symbol table alone reported it absent -- the "no such
+    /// symbol" answer for a name the same index positively lists.
+    #[test]
+    fn an_exported_constant_is_found() {
+        let files = corpus(&[("config.py", "TIMEOUT = 30\n")]);
+        let idx = CodeIndex::build(&files);
+        let br = blast_radius(&idx, "config.py", "TIMEOUT", BlastLimits::default());
+        assert!(br.found, "it is in this file's own export set");
+        assert!(!blast_radius(&idx, "config.py", "NOPE", BlastLimits::default()).found);
     }
 
     /// `import a.b` binds the TOP package `a`, while the specifier resolves to

@@ -22,5 +22,13 @@ member_property = "right"
 [calls]
 nodes = ["call"]
 member_nodes = ["dot"]
+# Elixir spells its definition macros as ordinary calls, so without this every
+# module emits a row per `def` and any repo symbol named `test` or `use` picks up
+# a repo-wide blast radius.
+exclude_names = [
+  "def", "defp", "defmodule", "defstruct", "defprotocol", "defimpl",
+  "defmacro", "defmacrop", "defdelegate", "defexception", "defguard",
+  "use", "alias", "require", "import", "test", "describe", "setup",
+]
 
 [flags]

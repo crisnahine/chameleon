@@ -94,7 +94,10 @@ kind = "dependency-policy"
 languages = ["typescript", "tsx", "javascript"]
 archetypes = ["*"]
 severity = "error"
-mode = "enforce"
+# Shadow, not enforce: `literal` is a bare substring, so this fires on a comment
+# that merely names the package and cannot tell `'axios'` from `"axios"`. A
+# dependency policy wants a real matcher; this one logs what it WOULD block.
+mode = "shadow"
 message = "import the http client from '@/lib/http' -- never axios directly"
 rationale = """
 The wrapper adds auth refresh, retry, tracing, and error normalization. Direct

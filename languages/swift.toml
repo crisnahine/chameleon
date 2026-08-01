@@ -41,6 +41,8 @@ self_names = ["self"]
 super_nodes = ["super_expression"]
 
 [imports]
+# These bind the LAST path segment, not the first.
+alias_segment = "last"
 module_nodes = ["import_declaration"]
 
 [flags]

@@ -75,6 +75,8 @@ fn cluster_key(pf: &ParsedFile) -> ClusterKey {
 pub struct Archetype {
     /// Disambiguated, unique: `controller`, `controller-2`, ...
     pub name: String,
+    /// The directory the label came from, before singularization.
+    pub raw_label: String,
     /// The role before disambiguation. This is the name a rule author writes,
     /// and it has to reach every cohort that plays the role -- otherwise a rule
     /// scoped to `controller` silently misses `controller-2`.
@@ -170,11 +172,12 @@ pub fn cluster(files: &[ParsedFile]) -> Vec<Archetype> {
     let mut out: Vec<Archetype> = merged
         .into_values()
         .map(|members| {
-            let name = name_for(&members);
+            let (name, raw_label) = name_for(&members);
             let witness = select_witness(&members);
             let conventions = derive_conventions(&members);
             Archetype {
                 label: name.clone(),
+                raw_label,
                 name,
                 witness,
                 conventions,
@@ -206,7 +209,7 @@ pub fn cluster(files: &[ParsedFile]) -> Vec<Archetype> {
 /// Structure names the cluster; the name is a label applied afterwards. That
 /// ordering is the whole point -- framework knowledge must never be what
 /// *creates* a cohort, only what describes one.
-fn name_for(members: &[&ParsedFile]) -> String {
+fn name_for(members: &[&ParsedFile]) -> (String, String) {
     let mut dirs: HashMap<&str, usize> = HashMap::new();
     for pf in members {
         let parts: Vec<&str> = pf.path.split('/').collect();
@@ -220,12 +223,14 @@ fn name_for(members: &[&ParsedFile]) -> String {
         .max_by_key(|(_, c)| **c);
 
     match dominant {
-        Some((dir, count)) if *count * 5 >= members.len() * 4 => singularize(dir),
+        Some((dir, count)) if *count * 5 >= members.len() * 4 => {
+            (singularize(dir), (*dir).to_string())
+        }
         _ => {
             if members.iter().all(|f| looks_like_test(&f.path)) {
-                "test".to_string()
+                ("test".to_string(), "test".to_string())
             } else {
-                "module".to_string()
+                ("module".to_string(), "module".to_string())
             }
         }
     }
@@ -362,37 +367,45 @@ fn derive_conventions(members: &[&ParsedFile]) -> Vec<Convention> {
         }
     }
 
-    // Function naming case.
-    let names: Vec<&str> = members
-        .iter()
-        .flat_map(|pf| pf.callable_signatures.iter().map(|s| s.name.as_str()))
-        .filter(|n| !n.starts_with('<'))
-        .collect();
-    // A name that discriminates. `parse` is spelled the same in snake_case and
-    // camelCase, so it belongs in neither the numerator nor the denominator.
-    let deciding: Vec<&str> = names
-        .iter()
-        .copied()
-        .filter(|n| !matches!(case_of(n), "ambiguous" | "other"))
-        .collect();
+    // Function naming case. A name that discriminates: `parse` is spelled the
+    // same in snake_case and camelCase, so it belongs in neither the numerator
+    // nor the denominator.
+
     // Support is the number of FILES the evidence came from, not the number of
     // names: `is_enforced` reads it as a cohort size, and five functions in one
     // file have not earned a rule the way five files have.
-    let contributing = members
-        .iter()
-        .filter(|pf| {
-            pf.callable_signatures
-                .iter()
-                .any(|s| deciding.contains(&s.name.as_str()))
-        })
-        .count();
-    if deciding.len() >= MIN_SAMPLE_SIZE && contributing >= MIN_SAMPLE_SIZE {
-        let mut cases: HashMap<&str, usize> = HashMap::new();
-        for n in &deciding {
-            *cases.entry(case_of(n)).or_insert(0) += 1;
+    // Counted once per FILE, the way imports.preferred already is. Weighting the
+    // vote per name while reporting support per file let one file with 100
+    // snake_case defs outvote five files that are all camelCase -- and still
+    // clear `is_enforced`, on a cohort where five of six files disagree.
+    let mut cases: HashMap<&str, usize> = HashMap::new();
+    let mut contributing = 0usize;
+    for pf in members {
+        let mut here: BTreeSet<&str> = BTreeSet::new();
+        for sig in &pf.callable_signatures {
+            if sig.name.starts_with('<') {
+                continue;
+            }
+            match case_of(&sig.name) {
+                "ambiguous" | "other" => {}
+                c => {
+                    here.insert(c);
+                }
+            }
         }
+        if here.is_empty() {
+            continue;
+        }
+        contributing += 1;
+        // A file that mixes cases votes for each it uses, so it cannot carry a
+        // cohort on its own and cannot be silently discarded either.
+        for c in here {
+            *cases.entry(c).or_insert(0) += 1;
+        }
+    }
+    if contributing >= MIN_SAMPLE_SIZE {
         if let Some((case, count)) = cases.iter().max_by_key(|(_, c)| **c) {
-            let confidence = *count as f64 / deciding.len() as f64;
+            let confidence = *count as f64 / contributing as f64;
             if confidence >= DOMINANCE {
                 out.push(Convention {
                     dimension: "naming.functions".into(),
@@ -447,6 +460,14 @@ pub struct ArchetypeTag {
     pub id: String,
     /// The role label (`controller`).
     pub label: String,
+    /// The directory the label was derived FROM, unsingularized (`use_cases`).
+    ///
+    /// Singularizing English from a directory name is guesswork -- `lenses` and
+    /// `use_cases` are the same shape with opposite answers -- and a rule scoped
+    /// to a label the guess got wrong reports CLEAN forever rather than saying
+    /// it could not run. Accepting the raw name too means the author can always
+    /// write something that matches.
+    pub raw: String,
 }
 
 /// Project mined cohorts into a path lookup.
@@ -459,6 +480,7 @@ pub fn archetype_index(cohorts: &[Archetype]) -> ArchetypeIndex {
                 ArchetypeTag {
                     id: a.name.clone(),
                     label: a.label.clone(),
+                    raw: a.raw_label.clone(),
                 },
             );
         }
@@ -526,6 +548,18 @@ mod tests {
     }
 
     /// Six same-shaped files in one directory, one odd file elsewhere.
+    fn corpus_of(files: &[(&str, &str)]) -> Vec<ParsedFile> {
+        let reg = crate::lang::Registry::load().unwrap();
+        files
+            .iter()
+            .map(|(p, src)| {
+                let bound = reg.for_path(p).unwrap();
+                crate::extract::extract(p, src.as_bytes(), bound, &crate::core::Limits::default())
+                    .unwrap()
+            })
+            .collect()
+    }
+
     fn two_cohorts() -> Vec<ParsedFile> {
         let mut files: Vec<(String, String)> = (0..6)
             .map(|i| {
@@ -703,6 +737,41 @@ mod tests {
     /// camelCase, so it is evidence for NEITHER. Counting it as snake_case made
     /// a TypeScript cohort of `parse, format, merge` mine `naming.functions =
     /// snake_case` at confidence 1.0 -- enforced, on names that say nothing.
+    /// The vote is per FILE. Weighting it per name while reporting support per
+    /// file let one file with 100 snake_case defs outvote five files that are
+    /// all camelCase -- and still clear `is_enforced`.
+    #[test]
+    fn one_file_cannot_outvote_a_cohort_on_naming() {
+        let mut files: Vec<(String, String)> = vec![(
+            "app/services/legacy.py".into(),
+            (0..40)
+                .map(|i| format!("def snake_name_{i}():\n    pass\n"))
+                .collect::<String>(),
+        )];
+        for i in 0..5 {
+            files.push((
+                format!("app/services/svc{i}.py"),
+                format!("def camelName{i}():\n    pass\n"),
+            ));
+        }
+        let refs: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(p, s)| (p.as_str(), s.as_str()))
+            .collect();
+        let arch = cluster(&corpus_of(&refs));
+        let naming: Vec<&Convention> = arch
+            .iter()
+            .flat_map(|a| &a.conventions)
+            .filter(|c| c.dimension == "naming.functions")
+            .collect();
+        for c in naming {
+            assert_ne!(
+                c.value, "snake_case",
+                "one file of 40 must not outvote five files: {c:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_case_neutral_name_votes_for_neither_case() {
         assert_eq!(case_of("parse"), "ambiguous");

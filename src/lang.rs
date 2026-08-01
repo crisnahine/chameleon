@@ -130,6 +130,11 @@ pub struct CallSpec {
     /// literal, a parenthesized expression -- yields no row at all rather than
     /// a receiver read off its source span.
     pub receiver_name_nodes: Vec<String>,
+    /// Callee NAMES that are the language's own definition macros rather than
+    /// calls. Elixir spells `def`, `defmodule` and `use` as ordinary calls, so
+    /// every module emitted dozens of rows named `def` and any repo symbol
+    /// called `test` picked up a repo-wide blast radius.
+    pub exclude_names: Vec<String>,
     /// Method node kinds the reference models as something other than a call
     /// (Ruby's `super` and `yield`), so no row exists for them.
     pub exclude_method_kinds: Vec<String>,
@@ -193,6 +198,12 @@ pub struct ImportSpec {
     /// not -- it loads a file, and the constants it defines have nothing to do
     /// with the path. Default true, because most languages bind.
     pub binds_local: Option<bool>,
+    /// Which segment of a dotted or slashed module path the local name is.
+    /// Python's `import a.b.c` binds `a`; Go, Java and Kotlin bind the LAST
+    /// segment. Applying Python's rule everywhere bound `github` for
+    /// `import "github.com/gin-gonic/gin"` -- a name no call site can match.
+    /// `first` (the default) or `last`.
+    pub alias_segment: Option<String>,
     /// Node kinds that bind the module under a single default name
     /// (`import Button from "./m"`). The reference records the specifier as
     /// `default` and collects NO named symbol for it, so treating the binding as

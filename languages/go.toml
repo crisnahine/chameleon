@@ -37,6 +37,8 @@ nodes = ["call_expression"]
 member_nodes = ["selector_expression"]
 
 [imports]
+# These bind the LAST path segment, not the first.
+alias_segment = "last"
 module_nodes = ["import_declaration"]
 # A grouped `import ( ... )` nests its specs; without the descent the whole
 # parenthesized block became one module path.

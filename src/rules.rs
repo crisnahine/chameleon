@@ -9,8 +9,9 @@
 //! Two things make a rule trustworthy enough to block on, and both are carried
 //! *in the rule*: `calibrated_confidence`, measured by running the rule against
 //! code the team already accepted, and `drift`, which demotes a rule whose
-//! confidence is falling. Blocking is therefore an earned state rather than a
-//! configuration flag -- a human cannot simply declare a rule blocking.
+//! confidence is falling. This layer takes both as given -- the host measures
+//! them -- and what a rule CANNOT do here is lower its own bar, or make a
+//! judgment-call kind (smell, idiom, pattern) block at any confidence at all.
 
 use std::collections::BTreeMap;
 
@@ -215,10 +216,13 @@ impl Rule {
         // Either the role label or the disambiguated id. `mine` splits one role
         // into controller, controller-2, ...; the label is what a rule author
         // writes and it has to reach all of them.
+        // The raw directory name counts too: singularizing English is guesswork,
+        // and a rule scoped to a label the guess got wrong would otherwise report
+        // CLEAN forever rather than saying it could not run.
         Ok(self
             .archetypes
             .iter()
-            .any(|a| a == &tag.label || a == &tag.id))
+            .any(|a| a == &tag.label || a == &tag.id || a == &tag.raw))
     }
 
     fn applies_to_path(&self, path: &str) -> bool {
@@ -811,6 +815,7 @@ exclude = ["**/tests/**", "scripts/*"]
                     ArchetypeTag {
                         id: id.to_string(),
                         label: label.to_string(),
+                        raw: format!("{label}s"),
                     },
                 )
             })

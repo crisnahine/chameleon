@@ -39,7 +39,11 @@ member_nodes = ["field_expression"]
 self_names = ["this"]
 
 [imports]
+# These bind the LAST path segment, not the first.
+alias_segment = "last"
 module_nodes = ["import_declaration"]
 
 [flags]
+# `extends Base(r)` carries the constructor arguments alongside the type.
+heritage_skip_nodes = ["arguments"]
 decorator_nodes = ["annotation"]
