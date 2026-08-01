@@ -221,9 +221,16 @@ impl CodeIndex {
                             }
                         }
                     }
-                    // `self.method()` binds inside this file only when exactly
-                    // one class defines that name -- two candidates is an
-                    // ambiguity, and an ambiguous edge is not an edge.
+                    // `self.method()` binds to a callable of that name defined
+                    // in this file.
+                    //
+                    // The honest limit, since the module header promises
+                    // precision: this is a NAME match within the file, not a
+                    // resolved one. Without type information there is no way to
+                    // tell which class a `self` refers to, so two classes in one
+                    // file that both define `save` share the edge. The edge is
+                    // still file-scoped -- it never reaches across files on a
+                    // name alone, which is where the false positives live.
                     "self" if own.is_some_and(|d| d.contains(site.name.as_str())) => {
                         push(&pf.path, &site.name, Grade::SameFile);
                     }
