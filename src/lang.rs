@@ -92,6 +92,14 @@ pub struct ImportSpec {
     pub alias_nodes: Vec<String>,
     /// Node kinds that open the export set (`export * from`, `from x import *`).
     pub wildcard_nodes: Vec<String>,
+    /// Node kinds where a bare `*` CHILD means the export set is open. Plain
+    /// `export * from "m"` produces no dedicated node -- just a `*` token on the
+    /// export statement -- so a node-kind list alone cannot see it, and the
+    /// index then positively asserts the barrel exports nothing.
+    pub star_export_nodes: Vec<String>,
+    /// Node kinds holding an explicit export list (`export { a, b }`). Their
+    /// identifiers are the module's exported names.
+    pub export_clause_nodes: Vec<String>,
     /// Node kinds whose module is implied by the syntax rather than written as a
     /// field. `from __future__ import annotations` parses as its own node kind
     /// with no module path to read, but the module is still `__future__`.

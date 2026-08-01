@@ -407,7 +407,14 @@ fn walk(
             if was_wrapped {
                 let last = (node.named_child_count() as u32).saturating_sub(1);
                 if let Some(inner) = node.named_child(last) {
-                    node = inner;
+                    // Unwrap only when the inner node is itself a meaningful
+                    // top-level kind. `export { x }`, `export * from` and
+                    // `export default x` wrap a clause or a bare identifier, and
+                    // unwrapping those dropped the statement from the record
+                    // entirely rather than recording it as an export.
+                    if spec.top_level_kind(inner.kind()).is_some() {
+                        node = inner;
+                    }
                 }
             }
             let is_exported = !spec.flags.explicit_exports || was_wrapped;
@@ -447,6 +454,24 @@ fn walk(
                     named_export_count += 1;
                     export_names.insert(name);
                 }
+            }
+
+            // `export * from "m"` -- a bare `*` token on the statement.
+            if spec
+                .imports
+                .star_export_nodes
+                .iter()
+                .any(|k| k == node.kind())
+            {
+                let mut c = node.walk();
+                if node.children(&mut c).any(|ch| ch.kind() == "*") {
+                    export_set_open = true;
+                }
+            }
+            // `export { a, b }` -- the clause names the exports.
+            for name in export_clause_names(node, spec, source) {
+                named_export_count += 1;
+                export_names.insert(name);
             }
 
             if (spec.is_function(node.kind()) || spec.is_class(node.kind())) && is_exported {
@@ -806,6 +831,15 @@ fn base_list(node: Node, spec: &LanguageSpec, source: &[u8]) -> Vec<String> {
 /// `export const A = 1, B = 2` exports two names, so the declarators are read
 /// individually rather than the statement being counted once.
 fn declarator_names(node: Node, spec: &LanguageSpec, source: &[u8]) -> Vec<String> {
+    // Only a variable declaration binds names this way. Without the gate this
+    // walks an enum body and reports its MEMBERS as the module's exports, so
+    // `export enum E { A }` exported `A` and not `E`.
+    if !matches!(
+        node.kind(),
+        "lexical_declaration" | "variable_declaration" | "variable_statement"
+    ) {
+        return Vec::new();
+    }
     let mut out = Vec::new();
     let mut c = node.walk();
     for child in node.named_children(&mut c) {
@@ -819,6 +853,44 @@ fn declarator_names(node: Node, spec: &LanguageSpec, source: &[u8]) -> Vec<Strin
             }
         }
     }
+    out
+}
+
+/// Names listed in an explicit export clause (`export { a, b as c }`).
+///
+/// The exported name is what the importer binds, so `b as c` exports `c`.
+fn export_clause_names(node: Node, spec: &LanguageSpec, source: &[u8]) -> Vec<String> {
+    if spec.imports.export_clause_nodes.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut queue = vec![node];
+    while let Some(n) = queue.pop() {
+        let mut c = n.walk();
+        for child in n.named_children(&mut c) {
+            if spec
+                .imports
+                .export_clause_nodes
+                .iter()
+                .any(|k| k == child.kind())
+            {
+                queue.push(child);
+            } else if child.kind() == "export_specifier" {
+                // `alias` field when present, else the name itself.
+                let exported = child
+                    .child_by_field_name("alias")
+                    .or_else(|| child.child_by_field_name("name"))
+                    .map(|x| text(x, source).to_string());
+                if let Some(name) = exported {
+                    if !name.is_empty() {
+                        out.push(name);
+                    }
+                }
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
     out
 }
 
@@ -1501,6 +1573,49 @@ mod tests {
                 pf.named_export_names
             );
         }
+    }
+
+    /// `export { x }`, `export * from` and `export default x` wrap a clause or
+    /// a bare identifier, not a declaration. Unwrapping them unconditionally
+    /// dropped the statement from the record entirely.
+    #[test]
+    fn every_export_form_is_recorded() {
+        let pf = parse(
+            "typescript",
+            "function helper() { return 1; }\nexport { helper };\nexport * from \"./other\";\nexport default helper;\n",
+        );
+        let kinds = &pf.top_level_node_kinds;
+        assert_eq!(
+            kinds.iter().filter(|k| *k == "ExportDeclaration").count(),
+            3,
+            "all three export forms must survive: {kinds:?}"
+        );
+        assert!(
+            pf.named_export_names.iter().any(|n| n == "helper"),
+            "`export {{ helper }}` exports helper: {:?}",
+            pf.named_export_names
+        );
+        assert!(pf.export_set_open, "`export * from` opens the set");
+    }
+
+    /// declarator_names walked an enum body and reported its MEMBERS as the
+    /// module's exports, so `export enum E {{ A }}` exported `A`, not `E`.
+    #[test]
+    fn an_enum_member_is_not_a_module_export() {
+        let pf = parse("typescript", "export enum E { A, B }\n");
+        assert!(
+            !pf.named_export_names.iter().any(|n| n == "A" || n == "B"),
+            "enum members must not be exports: {:?}",
+            pf.named_export_names
+        );
+    }
+
+    #[test]
+    fn javascript_import_aliases_are_split() {
+        let pf = parse("javascript", "import { a as b } from \"m\";\n");
+        assert_eq!(pf.import_symbols.len(), 1);
+        assert_eq!(pf.import_symbols[0].name, "a", "the exported name");
+        assert_eq!(pf.import_symbols[0].local, "b", "the local binding");
     }
 
     #[test]

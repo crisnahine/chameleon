@@ -69,6 +69,8 @@ alias_nodes = ["import_specifier"]
 # `export * from` is what does, and it is an export_statement.
 wildcard_nodes = ["namespace_export"]
 descend_nodes = ["import_clause", "named_imports"]
+star_export_nodes = ["export_statement"]
+export_clause_nodes = ["export_clause"]
 
 [flags]
 has_default_export = true

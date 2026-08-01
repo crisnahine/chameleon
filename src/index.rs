@@ -156,9 +156,14 @@ impl CodeIndex {
         } else {
             package.to_string()
         };
-        let mut import_targets: HashMap<&str, HashMap<String, String>> = HashMap::new();
+        let mut import_targets: HashMap<&str, HashMap<String, (String, String)>> = HashMap::new();
         for pf in files {
-            let mut local_to_target: HashMap<String, String> = HashMap::new();
+            // The value carries the EXPORTED name, not just the target. Keying
+            // on the local alone discards which symbol was imported, so
+            // `from lib import real as alias` graded `alias()` against
+            // `lib::alias` -- a different function that merely happens to exist.
+            // That is a wrong edge, not a missing one.
+            let mut local_to_target: HashMap<String, (String, String)> = HashMap::new();
             for sym in &pf.import_symbols {
                 if let Some(target) =
                     resolve_module(&sym.module, &paths, &pf.path, &root_name, Some(&sym.name))
@@ -167,7 +172,7 @@ impl CodeIndex {
                         .entry(target.clone())
                         .or_default()
                         .insert(pf.path.clone());
-                    local_to_target.insert(sym.local.clone(), target);
+                    local_to_target.insert(sym.local.clone(), (target, sym.name.clone()));
                 }
             }
             for ns in &pf.namespace_imports {
@@ -177,7 +182,9 @@ impl CodeIndex {
                         .entry(target.clone())
                         .or_default()
                         .insert(pf.path.clone());
-                    local_to_target.insert(ns.alias.clone(), target);
+                    // A namespace bind has no single exported name; the member
+                    // call supplies it.
+                    local_to_target.insert(ns.alias.clone(), (target, String::new()));
                 }
             }
             import_targets.insert(pf.path.as_str(), local_to_target);
@@ -207,9 +214,16 @@ impl CodeIndex {
                     "bare" => {
                         if own.is_some_and(|d| d.contains(site.name.as_str())) {
                             push(&pf.path, &site.name, Grade::SameFile);
-                        } else if let Some(target) = imports.and_then(|m| m.get(&site.name)) {
-                            if export_contains(&idx.exports, target, &site.name) {
-                                push(target, &site.name, Grade::Import);
+                        } else if let Some((target, exported)) =
+                            imports.and_then(|m| m.get(&site.name))
+                        {
+                            // The edge lands on the EXPORTED name, which is what
+                            // the target actually defines -- not on the local
+                            // alias the caller happens to use.
+                            if !exported.is_empty()
+                                && export_contains(&idx.exports, target, exported)
+                            {
+                                push(target, exported, Grade::Import);
                             }
                         }
                     }
@@ -218,7 +232,9 @@ impl CodeIndex {
                         let Some(recv) = site.receiver.as_deref() else {
                             continue;
                         };
-                        if let Some(target) = imports.and_then(|m| m.get(recv)) {
+                        if let Some((target, _)) = imports.and_then(|m| m.get(recv)) {
+                            // A module-attribute call names its own member, so
+                            // the call site's name is the right one here.
                             if export_contains(&idx.exports, target, &site.name) {
                                 push(target, &site.name, Grade::ModuleAttribute);
                             }
@@ -1083,6 +1099,33 @@ mod tests {
                 .get("pkg/util.py")
                 .is_some_and(|s| s.contains("pkg/app.py")),
             "Python `from . import util` still names the submodule"
+        );
+    }
+
+    /// Keying the import map on the LOCAL alias discards which symbol was
+    /// imported, so `from lib import real as alias` graded `alias()` against
+    /// `lib::alias` -- a different function that merely happens to exist. A
+    /// wrong edge, not a missing one.
+    #[test]
+    fn an_aliased_import_binds_the_exported_name() {
+        let files = corpus(&[
+            (
+                "lib.py",
+                "def real():\n    return 1\n\ndef alias():\n    return 2\n",
+            ),
+            (
+                "app.py",
+                "from lib import real as alias\n\ndef run():\n    return alias()\n",
+            ),
+        ]);
+        let idx = CodeIndex::build(&files);
+        assert!(
+            idx.callers_of("lib.py", "real").is_some(),
+            "the edge belongs on `real`"
+        );
+        assert!(
+            idx.callers_of("lib.py", "alias").is_none(),
+            "and must NOT land on the unrelated `alias`"
         );
     }
 
