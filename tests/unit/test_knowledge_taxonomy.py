@@ -469,6 +469,68 @@ def test_a_removed_or_excluded_dependency_is_not_a_declaration():
     assert detect._declared_deps("go.mod", gomod) == {"github.com/labstack/echo/v4"}
 
 
+def test_a_truncated_read_loses_names_but_never_invents_them():
+    """The read cap makes truncation a correctness question, not just a bound.
+
+    A cut between `<!--` and its `-->` leaves the comment body live, so a
+    coordinate the team REMOVED comes back as a declaration; a cut mid-token
+    leaves a partial requirement, and end-of-string is a legal name terminator,
+    so `django-environ` reads as `django`. Both fabricate a name the manifest
+    never declares -- the exact class the parsers exist to prevent.
+    """
+    cap = detect._MANIFEST_MAX_CHARS
+
+    head, pad = (
+        "<project><dependencies>",
+        "<dependency><artifactId>filler</artifactId></dependency>",
+    )
+    dropped = (
+        "<!-- dropped in v3: <groupId>org.springframework.boot</groupId>"
+        "<artifactId>spring-boot-starter-web</artifactId> -->"
+    )
+    pom = head + pad * ((cap - len(head) - 40) // len(pad)) + dropped
+    cut = pom[:cap]
+    assert cut.rfind("<!--") > cut.rfind("-->"), "fixture must cut inside the comment"
+    assert detect._declared_deps("pom.xml", detect._trim_truncated(cut)) == {"filler"}
+
+    req = "flask==3\n" + ("# pad\n" * 3000) + "django-environ==0.11\n"
+    mid_token = req[: req.index("django-environ") + 6]
+    assert detect._declared_deps("requirements.txt", detect._trim_truncated(mid_token)) == {"flask"}
+
+
+def test_go_block_directives_survive_a_trailing_comment():
+    """`exclude ( // dropped: CVE-...` is legal go.mod. Reading the raw line end
+    misses the paren, so the block never opens and the EXCLUDED module inside it
+    scores as a declared dependency."""
+    gomod = (
+        "require (\n\tgithub.com/labstack/echo/v4 v4.11.0\n)\n\n"
+        "exclude ( // dropped: CVE-2023-29401\n\tgithub.com/gin-gonic/gin v1.9.1\n)\n"
+    )
+    assert detect._declared_deps("go.mod", gomod) == {"github.com/labstack/echo/v4"}
+
+
+def test_a_self_closing_exclusions_tag_does_not_swallow_the_next_dependency():
+    """Left to the paired pattern, `<exclusions/>` opens a match that only ends
+    at the NEXT block's closing tag -- turning a strip-the-negation fix into a
+    drop-the-declaration bug."""
+    pom = (
+        "<dependencies>"
+        "<dependency><artifactId>guava</artifactId><exclusions/></dependency>"
+        "<dependency><artifactId>spring-boot-starter-web</artifactId>"
+        "<exclusions><exclusion><artifactId>logback</artifactId></exclusion></exclusions>"
+        "</dependency></dependencies>"
+    )
+    assert detect._declared_deps("pom.xml", pom) == {"guava", "spring-boot-starter-web"}
+
+
+def test_the_poetry_interpreter_constraint_is_not_a_package():
+    """`python` is poetry's interpreter pin. orchestrator._python_dep_names
+    excludes it, and these two readers answer the same question about the same
+    file."""
+    poetry = '[tool.poetry.dependencies]\npython = "^3.11"\nflask = "^3"\n'
+    assert detect._declared_deps("pyproject.toml", poetry) == {"flask"}
+
+
 def test_packages_means_dependencies_only_in_a_pipfile():
     """`packages` is the most overloaded key in pyproject.toml: under
     `[tool.setuptools]` and `[tool.mypy]` it names the project's OWN modules.

@@ -284,7 +284,11 @@ def _toml_dep_names(text: str) -> set[str]:
                     _absorb(group, depth + 1)
                 return
             for key in block:
-                if n := _dep_name(key):
+                # `python` is poetry's interpreter constraint, not a package.
+                # `orchestrator._python_dep_names` excludes it for the same
+                # reason, and these two readers must not disagree about the same
+                # file.
+                if (n := _dep_name(key)) and n != "python":
                     out.add(n)
 
     def _walk(node: object, depth: int) -> None:
@@ -311,9 +315,15 @@ _GRADLE_COORD_RE: Final[re.Pattern[str]] = re.compile(r"""['"]([a-zA-Z0-9._-]+:[
 
 _XML_COMMENT_RE: Final[re.Pattern[str]] = re.compile(r"<!--.*?-->", re.DOTALL)
 # An <exclusions> block names what the build must NOT pull in, so its
-# coordinates mean the opposite of a declaration.
+# coordinates mean the opposite of a declaration. The self-closing form is
+# removed FIRST: left to the paired pattern, `<exclusions/>` would open a match
+# that only ends at the NEXT block's closing tag, deleting every declaration in
+# between -- turning a strip-the-negation fix into a drop-the-declaration bug.
+_POM_EMPTY_EXCLUSIONS_RE: Final[re.Pattern[str]] = re.compile(
+    r"<exclusions\b[^>]*/>", re.IGNORECASE
+)
 _POM_EXCLUSIONS_RE: Final[re.Pattern[str]] = re.compile(
-    r"<exclusions\b.*?</exclusions>", re.DOTALL | re.IGNORECASE
+    r"<exclusions\b[^>]*>.*?</exclusions>", re.DOTALL | re.IGNORECASE
 )
 _GRADLE_BLOCK_COMMENT_RE: Final[re.Pattern[str]] = re.compile(r"/\*.*?\*/", re.DOTALL)
 # `(?<!:)` keeps a URL scheme's own `//` from reading as a comment: a
@@ -326,10 +336,38 @@ _GRADLE_LINE_COMMENT_RE: Final[re.Pattern[str]] = re.compile(r"(?<!:)//[^\n]*")
 # meaningful underscores, so normalizing everywhere would break those instead.
 _PY_MANIFESTS: Final[frozenset[str]] = frozenset({"requirements.txt", "pyproject.toml", "Pipfile"})
 
-# Matches `orchestrator._read_marker_text`'s cap. A manifest past this is not a
+# The same 50k figure `orchestrator._read_marker_text` uses, though counted in
+# CHARACTERS here (text mode, post-decode) where that one counts BYTES -- on
+# multibyte content the two cut at different points, which is harmless because
+# neither is a correctness boundary, only a bound. A manifest past this is not a
 # manifest, and reading it whole is how a hostile or generated file turns a
 # bounded scan into a MemoryError.
-_MANIFEST_MAX_BYTES: Final[int] = 50_000
+_MANIFEST_MAX_CHARS: Final[int] = 50_000
+
+
+def _trim_truncated(text: str) -> str:
+    """Drop the unreliable tail of a manifest the read cap cut short.
+
+    Truncation makes a read produce WRONG names rather than merely fewer, in two
+    ways, and both are the fabrication class the parsers exist to prevent:
+
+    - a cut landing between `<!--` and its `-->` leaves the comment body live,
+      so a coordinate the team REMOVED is resurrected as a declaration;
+    - a cut landing mid-token leaves a partial requirement, and end-of-string is
+      a legal name terminator, so `django-environ` cut short reads as `django`.
+
+    Dropping the last (partial) line and anything after an unterminated comment
+    opener puts truncation back on the safe side: fewer names, never invented
+    ones.
+    """
+    newline = text.rfind("\n")
+    if newline != -1:
+        text = text[: newline + 1]
+    for opener, closer in (("<!--", "-->"), ("/*", "*/")):
+        start = text.rfind(opener)
+        if start != -1 and text.find(closer, start) == -1:
+            text = text[:start]
+    return text
 
 
 def _with_pep503(names: set[str]) -> set[str]:
@@ -400,7 +438,10 @@ def _declared_deps(manifest: str, text: str) -> set[str]:
                 continue
             if stripped.startswith(("replace", "exclude", "retract")):
                 # `exclude (` opens a block; `exclude one/module v1` is one line.
-                skipping_block = stripped.endswith("(")
+                # The trailing comment is stripped first because `exclude ( //
+                # dropped: CVE-...` is legal and common -- reading the raw line
+                # end would miss the paren and let the excluded module through.
+                skipping_block = _GRADLE_LINE_COMMENT_RE.sub("", stripped).rstrip().endswith("(")
                 continue
             if stripped.startswith("//") or "// indirect" in line:
                 continue
@@ -413,7 +454,8 @@ def _declared_deps(manifest: str, text: str) -> set[str]:
         # A commented-out coordinate is the record of a dependency REMOVED, and
         # an <exclusions> block names what must not be pulled in; both read as
         # declarations to a bare element match.
-        body = _POM_EXCLUSIONS_RE.sub(" ", _XML_COMMENT_RE.sub(" ", text))
+        body = _XML_COMMENT_RE.sub(" ", text)
+        body = _POM_EXCLUSIONS_RE.sub(" ", _POM_EMPTY_EXCLUSIONS_RE.sub(" ", body))
         return {n for m in _POM_ARTIFACT_RE.finditer(body) if (n := m.group(1).casefold())}
 
     if manifest in ("build.gradle", "build.gradle.kts"):
@@ -463,7 +505,9 @@ def _manifest_dep_names(root: Path, max_dirs: int) -> frozenset[str]:
                 # MemoryError, which is not an OSError and escapes every guard
                 # between here and the caller.
                 with path.open("r", encoding="utf-8", errors="replace") as fh:
-                    text = fh.read(_MANIFEST_MAX_BYTES)
+                    text = fh.read(_MANIFEST_MAX_CHARS + 1)
+                if len(text) > _MANIFEST_MAX_CHARS:
+                    text = _trim_truncated(text[:_MANIFEST_MAX_CHARS])
             except OSError:
                 continue
             try:
