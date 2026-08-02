@@ -836,6 +836,26 @@ def doctor(repo: str | None = None) -> dict:
                 # A corrupt profile.json is itself a dead-install signal, not a
                 # reason to silently narrow the checked set to the base pair.
                 artifact_problems.append("profile.json corrupt")
+            # What this repo's language actually gets. An extraction-tier
+            # language derives archetypes and conventions perfectly well while
+            # every lint rule returns nothing, and that silence is
+            # indistinguishable from "your code is clean" -- so the tier is
+            # reported rather than left to be inferred from rules that never
+            # fire.
+            try:
+                from chameleon_mcp.language_support import EXTRACTION, describe, tier_for
+
+                _tier = tier_for(_lang)
+                checks.append(
+                    {
+                        "name": "language_support",
+                        "status": "warn" if _tier == EXTRACTION else "ok",
+                        "detail": describe(_lang),
+                    }
+                )
+            except Exception:
+                pass
+
             # The core generated artifacts every profile writes, for all three
             # languages: a corrupt or missing one silently degrades archetype
             # resolution, conventions, and enforcement while every plumbing check

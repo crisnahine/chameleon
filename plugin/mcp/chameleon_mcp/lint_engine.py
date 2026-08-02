@@ -159,11 +159,52 @@ def recalibrate_ast_query(witness_snapshot: DimensionSnapshot) -> dict:
     }
 
 
+def security_language(file_path: str | None) -> str | None:
+    """The language for the SECURITY checks, or None for a non-code file.
+
+    Wider than `detect_language` on purpose, and the split is the point. The
+    heuristic dimension extractors have an arm for three languages only, so
+    `detect_language` must stay narrow: handing it a fourth yields an EMPTY
+    snapshot, and an empty snapshot compared against a real archetype query
+    reports "file is missing top-level constructs" on every well-formed file.
+
+    The secret and eval-sink scans have no such dependency -- they read the
+    content, not a derived shape -- so gating them on the same narrow answer
+    silently exempted every extraction-tier language from the two checks that
+    are not style opinions. A hardcoded AWS key in a `.go` file was advisory
+    where the identical key in a `.rb` file was block-eligible, purely because
+    the block-eligibility call was handed `None`.
+
+    Still None for prose: a credential-shaped token in markdown or config text
+    has no inline `chameleon-ignore` escape and must stay advisory, which is
+    the distinction the narrow gate was really protecting.
+    """
+    narrow = detect_language(file_path)
+    if narrow is not None:
+        return narrow
+    if not file_path:
+        return None
+    try:
+        from chameleon_mcp.extractors.treesitter.lang.specs import EXTENSIONS_BY_LANGUAGE
+
+        lower = file_path.lower()
+        for language, extensions in EXTENSIONS_BY_LANGUAGE.items():
+            if any(lower.endswith(ext) for ext in extensions):
+                return language
+    except Exception:
+        # A broken spec costs the wider answer, never the narrow one.
+        return None
+    return None
+
+
 def detect_language(file_path: str | None) -> str | None:
     """Map a file extension to a supported lint language, or None.
 
     None means "do not run heuristics" — the engine returns no violations
     rather than guessing.
+
+    Narrow BY CONTRACT: only the three languages with dimension extractors.
+    For the security checks, which need no extractor, use `security_language`.
     """
     if not file_path:
         return None
@@ -194,15 +235,26 @@ _TS_STRING = re.compile(
 # literal) as a comment opener, which unbalanced the quote pairing across the
 # newline and blanked real code below — blinding the import rules.
 _TS_STRING_OR_COMMENT = re.compile(
-    r"""/\*.*?\*/
+    r"""/\*[^*]*\*+(?:[^/*][^*]*\*+)*/
         | //[^\n]*
         | (?<!\\)(?:
             "(?:\\.|[^"\\])*" |
             '(?:\\.|[^'\\])*' |
             `(?:\\.|[^`\\])*`
-          )""",
+          )
+        | /\*[\s\S]*$
+        | (?<!\\)`[\s\S]*$""",
     re.VERBOSE | re.DOTALL,
 )
+# Two fixes over the obvious form, both about content this scanner is actually
+# handed rather than about TS itself. The block-comment arm is the linear
+# `/*...*/` pattern, not the lazy `/\*.*?\*/`: the lazy one rescans to EOF for
+# every unclosed `/*`, which cost ~950ms on a 100KB file with a few thousand of
+# them -- on a hook budgeting tens of milliseconds. The two trailing arms blank
+# an UNTERMINATED block comment or template literal to EOF; the lint path scans
+# a ~100k-char clip of large files, and a clip landing inside either one leaves
+# its body unstripped, so an `eval(` written in a comment or a template string
+# fires as a real sink. eval-call is block-eligible, so that is a false BLOCK.
 
 
 def _blank_match_to_spaces(m: re.Match) -> str:
@@ -223,6 +275,160 @@ def _strip_ts_strings_and_comments(content: str) -> str:
     preserved so line numbers downstream stay truthful.
     """
     return _TS_STRING_OR_COMMENT.sub(_blank_match_to_spaces, content)
+
+
+# The C-family strippers, for the extraction-tier languages. Without one, an
+# eval-class scan falls through to raw content and flags the literal text
+# `eval(` inside a comment or a string -- a false positive at error severity on
+# well-formed code. Go/Rust/Java/C#/PHP share the C core below and differ only
+# in which extra literal forms they add.
+# The classic linear block-comment pattern, NOT `/\*.*?\*/`. The lazy form is
+# quadratic on unclosed comments: every unmatched `/*` rescans to EOF before
+# failing, so a 100KB file with a few thousand of them costs ~950ms on a hook
+# that budgets tens of milliseconds. This form cannot backtrack across the
+# comment body, so an unclosed `/*` fails at once. It matches exactly the same
+# strings (a complete `/* ... */`, including `/**/` and `/*** ... ***/`).
+_C_BLOCK_COMMENT = r"/\*[^*]*\*+(?:[^/*][^*]*\*+)*/"
+_C_LINE_COMMENT = r"//[^\n]*"
+# Line-bounded on purpose: a plain `"..."` cannot span lines in any of the five
+# (each has its own arm for the multi-line forms). With `[^"\\]` matching
+# newlines, one odd quote -- a half-typed literal, which PreToolUse lints as
+# proposed content -- blanked forward to the next quote anywhere in the file,
+# hiding any real `eval(` in between. A false negative in a security scan reads
+# as a clean file, so this direction matters more than the false-positive one.
+_C_DQ_STRING = r'"(?:\\.|[^"\\\n])*"'
+# A char/rune literal, deliberately NOT a general single-quoted string: the
+# closing quote must arrive after exactly one character or one escape sequence.
+# That is what keeps a Rust lifetime safe -- in `fn f<'a>(x: &'a str)` the `'a`
+# is followed by `>`, so it cannot open a literal that swallows the code (and
+# any real `eval(` in it) up to the next quote in the file.
+_C_CHAR_LITERAL = r"'(?:\\[^\n]*?|[^'\\\n])'"
+# Always LAST in an alternation: an opener with no closer, which only a clipped
+# file produces. See `_c_family_pattern`.
+_C_UNTERMINATED_BLOCK_COMMENT = r"/\*[\s\S]*$"
+
+
+def _c_family_pattern(*extra: str, block_comment: str | None = None) -> re.Pattern:
+    """Comments + string forms for one C-family language.
+
+    ``extra`` holds the language's own literal forms and is placed BEFORE the
+    plain double-quoted string, since every one of them starts with (or
+    contains) a `"` that the plain form would otherwise match first and cut
+    short -- a Java text block truncated at its third quote would leave the
+    body unblanked.
+
+    The trailing unterminated-block-comment arm is the C-family half of the
+    same clipped-content problem the Python stripper's unterminated arms solve:
+    the lint path scans a ~100k-char copy of a large file, and a clip landing
+    inside a `/* ... */` leaves the opener unpaired, so the comment body
+    survives stripping and any `eval(` written in prose fires as a real sink.
+    It is last so a closed comment always matches the closed arm first.
+    """
+    return re.compile(
+        "|".join(
+            (
+                block_comment or _C_BLOCK_COMMENT,
+                _C_LINE_COMMENT,
+                *extra,
+                _C_DQ_STRING,
+                _C_CHAR_LITERAL,
+                _C_UNTERMINATED_BLOCK_COMMENT,
+            )
+        ),
+        re.DOTALL,
+    )
+
+
+# Every multi-line body below uses `[\s\S]`, never `(?:.|\n)`. Under DOTALL the
+# latter is a two-arm branch whose arms BOTH match a newline; sre keeps the
+# branch (its collapse-to-charset optimization needs literal arms, and `.`
+# compiles to ANY) and has no memoization, so an UNTERMINATED opener makes the
+# lazy loop explore exponentially many paths -- and PreToolUse lints
+# half-typed proposed content, where `let s = r"` with no closer is ordinary.
+_STRING_OR_COMMENT_BY_LANGUAGE: dict[str, re.Pattern] = {
+    # Go: raw strings are backtick-delimited and honor no escapes.
+    "go": _c_family_pattern(r"`[^`]*`"),
+    # Rust: r"..." / r#"..."# with a matched hash count, so a `"` inside a raw
+    # string does not end it. The backreference is this pattern's only group.
+    # The nested-comment arm comes first because Rust block comments NEST, and
+    # the flat `/* ... */` stops at the FIRST `*/` -- so commenting out a block
+    # that already contains a comment left the tail (and any `eval(` in it)
+    # scanned as live code, which is a block-eligible finding on well-formed
+    # Rust. Commenting out code that has comments in it is the whole reason
+    # Rust nests them.
+    "rust": _c_family_pattern(
+        r'r(#*)"[\s\S]*?"\1',
+        block_comment=r"/\*(?:[^/*]|\*(?!/)|/(?!\*)|" + _C_BLOCK_COMMENT + r")*\*/",
+    ),
+    # Java: a text block is triple-quoted and spans lines.
+    "java": _c_family_pattern(r'"""[\s\S]*?"""'),
+    # C#: verbatim @"..." escapes an embedded quote by doubling it. Interpolated
+    # $"..." needs no arm -- the `$` sits outside the plain string form.
+    "csharp": _c_family_pattern(r'@"(?:[^"]|"")*"'),
+    # PHP: `#` line comments, heredoc/nowdoc terminated by the label it opened
+    # with, and the single-quoted string -- PHP's dominant literal form, which
+    # must come BEFORE the `#` comment arm. Without it `$tag = 'issue #42';`
+    # lets the `#` arm claim the rest of the line, blanking a real `eval(` that
+    # follows on it. `\r?` on the heredoc opener because a CRLF file would
+    # otherwise not match the arm at all and expose the whole body; the `(?!\w)`
+    # after the terminator stops a body line like `EOT_2` closing it early.
+    "php": _c_family_pattern(
+        r"<<<[ \t]*['\"]?(\w+)['\"]?\r?\n[\s\S]*?\r?\n[ \t]*\1(?!\w)",
+        r"'(?:\\.|[^'\\])*'",
+        r"#[^\n]*",
+    ),
+}
+
+
+def _c_family_string_only_pattern(*extra: str) -> re.Pattern:
+    """The string forms alone, with NO comment arms.
+
+    The ignore-index blanker needs this: it blanks string LITERALS so a
+    directive quoted inside one cannot switch off a rule, while leaving real
+    comments intact -- a directive in a comment is the whole escape hatch.
+    """
+    return re.compile("|".join((*extra, _C_DQ_STRING, _C_CHAR_LITERAL)), re.DOTALL)
+
+
+#: Strings only, per language, for `violation_class._blank_string_literals`.
+#: Without an arm here a C-family file fell back to the flat TS pattern, which
+#: pairs apostrophes across lines: in Rust a comment reading "Doesn't validate"
+#: pairs its apostrophe with the `'` of a `<'a>` lifetime, blanking whatever
+#: lies between -- including a `// chameleon-ignore eval-call` line. The
+#: directive then vanishes and the block has NO inline escape, which is the one
+#: outcome an escape hatch may never have. Odd apostrophe counts are routine in
+#: Rust (lifetimes) and in ordinary English comments everywhere else.
+_STRING_ONLY_BY_LANGUAGE: dict[str, re.Pattern] = {
+    "go": _c_family_string_only_pattern(r"`[^`]*`"),
+    "rust": _c_family_string_only_pattern(r'r(#*)"[\s\S]*?"\1'),
+    "java": _c_family_string_only_pattern(r'"""[\s\S]*?"""'),
+    "csharp": _c_family_string_only_pattern(r'@"(?:[^"]|"")*"'),
+    "php": _c_family_string_only_pattern(
+        r"<<<[ \t]*['\"]?(\w+)['\"]?\r?\n[\s\S]*?\r?\n[ \t]*\1(?!\w)",
+        r"'(?:\\.|[^'\\])*'",
+    ),
+}
+
+
+def blank_c_family_string_literals(content: str, language: str) -> str | None:
+    """Blank string bodies for one C-family language, or None if unsupported."""
+    pattern = _STRING_ONLY_BY_LANGUAGE.get(language)
+    if pattern is None:
+        return None
+    return pattern.sub(_blank_match_to_spaces, content)
+
+
+def _strip_c_family_strings_and_comments(content: str, language: str) -> str | None:
+    """Blank comments and string literals, or None when the language has no arm.
+
+    None is the honest answer rather than a fallback to raw content: a caller
+    that cannot strip should decide for itself whether an unstripped scan is
+    worth its false positives, not silently receive one.
+    """
+    pattern = _STRING_OR_COMMENT_BY_LANGUAGE.get(language)
+    if pattern is None:
+        return None
+    return pattern.sub(_blank_match_to_spaces, content)
 
 
 def extract_comment_spans(content: str, *, language: str) -> list[str]:
@@ -446,12 +652,28 @@ _PY_STRING_OR_COMMENT = re.compile(
     r"""
       [rRbBfFuU]{0,3}\"\"\"[\s\S]*?\"\"\"     # triple double-quoted
     | [rRbBfFuU]{0,3}'''[\s\S]*?'''           # triple single-quoted
+    | [rRbBfFuU]{0,3}\"\"\"[\s\S]*$           # UNTERMINATED triple double
+    | [rRbBfFuU]{0,3}'''[\s\S]*$              # UNTERMINATED triple single
     | \#[^\n]*                                  # line comment
     | [rRbBfFuU]{0,3}"(?:\\.|[^"\\\n])*"      # double-quoted
     | [rRbBfFuU]{0,3}'(?:\\.|[^'\\\n])*'      # single-quoted
     """,
     re.VERBOSE,
 )
+# The two UNTERMINATED arms sit directly after their closed counterparts, NOT
+# at the end. A closed docstring still wins (its arm is tried first), but the
+# single-quote arms must come after: on an unterminated `\"\"\"` the plain
+# `"..."` arm would otherwise match the first TWO quotes as an empty string,
+# consume them, and leave the docstring body exposed -- which is the exact bug
+# these arms exist to fix. They exist because the lint path scans a
+# CLIPPED copy of large files (~100k chars), and a clip landing inside a
+# docstring leaves its opening `\"\"\"` unpaired -- the body then survives
+# stripping and every `eval(` mentioned in prose fires as a real sink. That is
+# not cosmetic: eval-call is block-eligible, so a big file could be BLOCKED
+# over its own documentation, with the offending line sitting in a docstring
+# the author never wrote as code. Blanking an unterminated opener to EOF costs
+# nothing on real source (an unterminated docstring is a SyntaxError, so no
+# valid file reaches these arms) and is exactly right on a clipped one.
 # Known limitation: a PEP 701 (3.12+) f-string that reuses the outer quote inside
 # a replacement field -- f"{eval("x")}" -- is only partially matched here, so an
 # eval/exec sink in that field is under-detected. Detecting it correctly needs
@@ -2100,9 +2322,15 @@ def scan_dangerous_sinks(content: str, *, language: str | None) -> list[Violatio
     elif language == "python":
         scan = _strip_python_strings_and_comments(content)
     else:
-        # No language means no reliable string/comment stripping; only the
-        # language-agnostic `eval(` shape is safe to run, against raw content.
-        scan = content
+        # The five extraction-tier languages get the C-family stripper. Without
+        # it this scan would run on raw content and flag `// eval(x)` in a Go
+        # comment or `"eval("` in a Java string at error severity -- a false
+        # positive on well-formed code, which is how a security check loses the
+        # trust that makes its true positives worth acting on.
+        stripped = _strip_c_family_strings_and_comments(content, language or "")
+        # Still None for a language with no arm: only the language-agnostic
+        # `eval(` shape is safe to run there, against raw content.
+        scan = stripped if stripped is not None else content
 
     violations: list[Violation] = []
 

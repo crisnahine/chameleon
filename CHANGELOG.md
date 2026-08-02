@@ -4,6 +4,52 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.10.0] - 2026-08-02
+
+### Added
+
+- **Five more languages, as declarative specs rather than table modules.** Go, Rust,
+  Java, C# and PHP are parsed in-process by tree-sitter from
+  `extractors/treesitter/lang/specs.py`. The three first-class languages keep their
+  hand-written tables because each reproduces a bespoke dumper byte-for-byte and that
+  parity is its contract; a language chameleon has never parsed has no prior output to
+  match, so it is a spec. `test_spec_driven_lang.py` validates every spec against its
+  LOADED grammar — a node kind the grammar lacks is indistinguishable from a construct
+  the language does not have, since both match nothing and leave a profile that looks
+  fine.
+- **A declared support tier per language** (`language_support.py`), reported by
+  `/chameleon-doctor` and by `lint_file`. The new languages get derivation — archetypes,
+  canonical witness, conventions, signatures, imports — and NOT lint rules, secret
+  detection, the reverse index, or graded call edges. That absence is stated rather than
+  left to be inferred from rules that never fire, because an empty findings list and a
+  clean file are indistinguishable to a caller.
+- **Supply-chain review for the ecosystems that had none.** Seventeen manifests are read
+  where eight were: Python (requirements/pyproject/Pipfile/setup.cfg), Go, Rust, PHP and
+  Java/Gradle, each with the finding classes its ecosystem actually has. `setup.py` stays
+  excluded deliberately — it is arbitrary code.
+
+### Fixed
+
+- **Framework detection read prose as dependencies.** Non-JSON manifests were scraped for
+  package-shaped tokens, so any description or comment that spelled a framework became a
+  dependency claim: a `pyproject.toml` reading "a lightweight alternative to flask"
+  detected as Flask. Every manifest is now read through the surface that actually declares
+  dependencies, and a manifest's own negations — commented-out coordinates, `<exclusions>`,
+  go `// indirect` and `exclude`/`retract` blocks — no longer read as declarations.
+- **The Ruby and Python classifier arms dead-ended**, so nine framework profiles the
+  taxonomy describes (sinatra, rspec, drf, sqlalchemy, celery, pytest, pydantic, airflow,
+  notebooks) could never be returned for the language they belong to. Both now fall through
+  to the scored fallback, and an arm keeps authority over the names it adjudicates so the
+  fallback cannot overturn a refusal made on stronger evidence.
+- **No canonical witness for a language the lint engine cannot classify.** Witness
+  selection judged files "trivial" from a regex re-derivation that exists only for the
+  three first-class languages, so every file of any other language was structureless and
+  no cluster got a witness — archetypes resolved and the per-edit block had nothing to
+  show.
+- **The discovery glob fell back to TypeScript's extensions** for an unknown language,
+  which would have searched a Go repo for `.ts` files, found none, and written a
+  clean-looking profile over zero files. It now raises.
+
 ## [4.9.2] - 2026-07-31
 
 ### Fixed

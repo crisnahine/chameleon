@@ -369,6 +369,329 @@ def test_classifier_now_answers_for_a_language_it_never_covered(tmp_path):
     assert _classify_framework(tmp_path, "php") == "laravel"
 
 
+def test_prose_in_a_manifest_is_never_a_dependency():
+    """Framework names are ordinary words -- flask, express, next, solid, astro,
+    hono -- so a scrape of package-shaped tokens turns any description, comment,
+    or README excerpt that spells one into a dependency claim. Each manifest is
+    read through its own declaration surface instead; these are the exact traps
+    the scrape fell into, one per format.
+    """
+    traps = {
+        "pyproject.toml": (
+            '[project]\ndescription = "a lightweight alternative to flask"\n'
+            'dependencies = ["click>=8"]\n',
+            {"click"},
+        ),
+        "Cargo.toml": (
+            '[package]\ndescription = "a fast alternative to axum"\n\n'
+            '[dependencies]\nactix-web = "4"\n',
+            {"actix-web"},
+        ),
+        "composer.json": (
+            '{"description": "like laravel but small", "require": {"symfony/console": "^6"}}',
+            {"symfony/console"},
+        ),
+        "build.gradle": (
+            'dependencies {\n  implementation "org.springframework.boot:spring-boot-starter-web:3.2"\n}\n'
+            "// mentions ktor in a comment\n",
+            {"org.springframework.boot", "spring-boot-starter-web"},
+        ),
+        "requirements.txt": (
+            '# fastapi is not used here\nflask-login>=0.6 ; python_version < "3.12"\n-r base.txt\n',
+            {"flask-login"},
+        ),
+        "pom.xml": (
+            "<project><description>not spring</description><dependencies><dependency>"
+            "<groupId>org.example</groupId><artifactId>widget</artifactId>"
+            "</dependency></dependencies></project>",
+            {"org.example", "widget"},
+        ),
+        "go.mod": (
+            "module example.com/x\n\ngo 1.22\n\nrequire (\n\tgithub.com/gin-gonic/gin v1.9.1\n)\n",
+            {"github.com/gin-gonic/gin"},
+        ),
+    }
+    for manifest, (text, expected) in traps.items():
+        assert detect._declared_deps(manifest, text) == expected, manifest
+
+
+def test_a_removed_or_excluded_dependency_is_not_a_declaration():
+    """The build files carry their own negations, and each means the OPPOSITE of
+    a declaration: a commented-out coordinate records a dependency that was
+    dropped, `<exclusions>` names what must not be pulled in, go's `exclude` and
+    `retract` blocks the same, and `// indirect` marks a transitive. Reading any
+    of them as a dependency classifies a repo as a framework it removed.
+    """
+    # A pom that DROPPED Spring must not classify as Spring.
+    pom = (
+        "<project><dependencies>"
+        "<!-- dropped in v3: <groupId>org.springframework.boot</groupId>"
+        "<artifactId>spring-boot-starter-web</artifactId> -->"
+        "<dependency><groupId>junit</groupId><artifactId>junit</artifactId></dependency>"
+        "</dependencies></project>"
+    )
+    assert detect._declared_deps("pom.xml", pom) == {"junit"}
+
+    excluded = (
+        "<dependency><artifactId>real</artifactId><exclusions><exclusion>"
+        "<artifactId>spring-boot-starter-web</artifactId>"
+        "</exclusion></exclusions></dependency>"
+    )
+    assert detect._declared_deps("pom.xml", excluded) == {"real"}
+
+    # A commented-out Gradle coordinate is the commonest way a removed
+    # dependency lingers, in both comment forms.
+    gradle = (
+        "dependencies {\n"
+        "  // implementation 'org.springframework.boot:spring-boot-starter-web:3.2'\n"
+        "  /* implementation 'io.ktor:ktor-server-core:2.3' */\n"
+        "  implementation 'com.google.guava:guava:33.0-jre'\n"
+        "}\n"
+    )
+    assert detect._declared_deps("build.gradle", gradle) == {"com.google.guava", "guava"}
+
+    # But a URL scheme's own `//` is not a comment: stripping it would take any
+    # coordinate sharing the line with a `maven { url ... }` along with it.
+    same_line = 'maven { url "https://x.io/m2" }; implementation "io.ktor:ktor-core:2"\n'
+    assert detect._declared_deps("build.gradle", same_line) == {"io.ktor", "ktor-core"}
+
+
+def test_a_gradle_path_glob_is_not_a_block_comment():
+    """Gradle strings carry both halves of a block comment. An ordinary build
+    file with Ant patterns gives a regex an opener inside `**/*` and a closer
+    inside `**/`, so everything between them -- the whole dependencies block --
+    is swallowed and the repo detects as no framework at all. Only quote
+    tracking tells a comment from a path pattern."""
+    build = (
+        "jar { exclude '**/*.class' }\n"
+        "dependencies {\n"
+        "  implementation 'io.ktor:ktor-server-core:2.3'\n"
+        "}\n"
+        "test { exclude '**/build/**' }\n"
+    )
+    assert detect._declared_deps("build.gradle", build) == {"io.ktor", "ktor-server-core"}
+
+    # Real comments are still removed, in both forms.
+    commented = (
+        "// implementation 'org.springframework.boot:spring-boot-starter-web:3.2'\n"
+        "/* implementation 'io.ktor:ktor-server-core:2' */\n"
+        "implementation 'com.google.guava:guava:33'\n"
+    )
+    assert detect._declared_deps("build.gradle", commented) == {"com.google.guava", "guava"}
+
+    # go.mod: an excluded module, and a transitive one, are not dependencies.
+    # The block bodies are INDENTED, so the directive keyword never appears on
+    # the line carrying the module path -- a per-line prefix check misses it.
+    gomod = (
+        "module example.com/x\n\n"
+        "require (\n"
+        "\tgithub.com/labstack/echo/v4 v4.11.0\n"
+        "\tgithub.com/spf13/cobra v1.8.0 // indirect\n"
+        ")\n\n"
+        "exclude (\n\tgithub.com/gin-gonic/gin v1.9.1\n)\n"
+    )
+    assert detect._declared_deps("go.mod", gomod) == {"github.com/labstack/echo/v4"}
+
+
+def test_a_truncated_read_loses_names_but_never_invents_them():
+    """The read cap makes truncation a correctness question, not just a bound.
+
+    A cut between `<!--` and its `-->` leaves the comment body live, so a
+    coordinate the team REMOVED comes back as a declaration; a cut mid-token
+    leaves a partial requirement, and end-of-string is a legal name terminator,
+    so `django-environ` reads as `django`. Both fabricate a name the manifest
+    never declares -- the exact class the parsers exist to prevent.
+    """
+    cap = detect._MANIFEST_MAX_CHARS
+
+    head, pad = (
+        "<project><dependencies>",
+        "<dependency><artifactId>filler</artifactId></dependency>",
+    )
+    dropped = (
+        "<!-- dropped in v3: <groupId>org.springframework.boot</groupId>"
+        "<artifactId>spring-boot-starter-web</artifactId> -->"
+    )
+    pom = head + pad * ((cap - len(head) - 40) // len(pad)) + dropped
+    cut = pom[:cap]
+    assert cut.rfind("<!--") > cut.rfind("-->"), "fixture must cut inside the comment"
+    assert detect._declared_deps("pom.xml", detect._trim_truncated("pom.xml", cut)) == {"filler"}
+
+    req = "flask==3\n" + ("# pad\n" * 3000) + "django-environ==0.11\n"
+    mid_token = req[: req.index("django-environ") + 6]
+    trimmed = detect._trim_truncated("requirements.txt", mid_token)
+    assert detect._declared_deps("requirements.txt", trimmed) == {"flask"}
+
+    # And the repair must not become the opposite error. `<!--` inside a TOML
+    # string is not a comment opener, so trimming from it would drop every real
+    # dependency after it -- quieter than a false claim, and no less wrong.
+    toml_with_marker = 'name = "a <!-- b"\nflask==3\n'
+    assert detect._trim_truncated("pyproject.toml", toml_with_marker) == toml_with_marker
+
+
+def test_the_read_cap_and_its_repair_are_wired(tmp_path):
+    """Drives a real over-cap manifest from DISK through `_manifest_dep_names`.
+
+    The other truncation tests call `_trim_truncated` on hand-built strings, so
+    they would all still pass if the trim call were deleted or the cap
+    comparison flipped. This one fails if the wiring is wrong rather than the
+    function.
+    """
+    cap = detect._MANIFEST_MAX_CHARS
+    pad = "<dependency><artifactId>filler</artifactId></dependency>\n"
+    dropped = (
+        "<!-- dropped in v3: <groupId>org.springframework.boot</groupId>"
+        "<artifactId>spring-boot-starter-web</artifactId>\n"
+    )
+    head = "<project><dependencies>\n"
+    # The comment must sit ENTIRELY inside the cap while its `-->` falls beyond
+    # it: that is the only arrangement where the repair does any work. Padding
+    # the comment past the cut instead makes the assertion pass whether or not
+    # the trim runs, which pins nothing.
+    fill = (cap - len(head) - len(dropped)) // len(pad)
+    body = head + pad * fill + dropped + pad * 200 + "-->\n</dependencies></project>"
+    assert len(body) > cap, "fixture must exceed the cap for the repair to run"
+    assert len(head + pad * fill + dropped) <= cap, "the comment must survive the cut"
+    (tmp_path / "pom.xml").write_text(body, encoding="utf-8")
+
+    found = detect._manifest_dep_names(tmp_path, 40)
+    assert "filler" in found, "the readable head must still be mined"
+    assert "org.springframework.boot" not in found
+    assert "spring-boot-starter-web" not in found
+    # And prove the fixture is load-bearing: without the repair the same cut
+    # returns the commented-out coordinates.
+    untrimmed = detect._declared_deps("pom.xml", body[:cap])
+    assert "spring-boot-starter-web" in untrimmed, "fixture no longer exercises the repair"
+
+
+def test_an_earlier_unterminated_comment_is_also_trimmed():
+    """Cutting at the LAST unterminated opener can expose an EARLIER one that is
+    also unterminated; stopping there leaves its body live, which is the same
+    fabrication one nesting level up."""
+    nested = (
+        "<project><dependencies>\n<!-- disabled block:\n"
+        "<dependency><groupId>org.springframework.boot</groupId>"
+        "<artifactId>spring-boot-starter-web</artifactId></dependency>\n"
+        "<!-- TODO restore before v4\n"
+    )
+    trimmed = detect._trim_truncated("pom.xml", nested)
+    assert trimmed.count("<!--") <= trimmed.count("-->")
+    assert detect._declared_deps("pom.xml", trimmed) == set()
+    # A properly closed comment is still left alone.
+    ok = "<project>\n<!-- note -->\n<dependency><artifactId>guava</artifactId></dependency>\n"
+    assert detect._declared_deps("pom.xml", detect._trim_truncated("pom.xml", ok)) == {"guava"}
+
+
+def test_go_block_directives_survive_a_trailing_comment():
+    """`exclude ( // dropped: CVE-...` is legal go.mod. Reading the raw line end
+    misses the paren, so the block never opens and the EXCLUDED module inside it
+    scores as a declared dependency."""
+    gomod = (
+        "require (\n\tgithub.com/labstack/echo/v4 v4.11.0\n)\n\n"
+        "exclude ( // dropped: CVE-2023-29401\n\tgithub.com/gin-gonic/gin v1.9.1\n)\n"
+    )
+    assert detect._declared_deps("go.mod", gomod) == {"github.com/labstack/echo/v4"}
+
+
+def test_a_self_closing_exclusions_tag_does_not_swallow_the_next_dependency():
+    """Left to the paired pattern, `<exclusions/>` opens a match that only ends
+    at the NEXT block's closing tag -- turning a strip-the-negation fix into a
+    drop-the-declaration bug."""
+    pom = (
+        "<dependencies>"
+        "<dependency><artifactId>guava</artifactId><exclusions/></dependency>"
+        "<dependency><artifactId>spring-boot-starter-web</artifactId>"
+        "<exclusions><exclusion><artifactId>logback</artifactId></exclusion></exclusions>"
+        "</dependency></dependencies>"
+    )
+    assert detect._declared_deps("pom.xml", pom) == {"guava", "spring-boot-starter-web"}
+
+    # An <exclusions> left unclosed (malformed, or cut by the cap) must not spill
+    # its excluded coordinates into the result.
+    unclosed = (
+        "<dependency><artifactId>keep</artifactId>"
+        "<exclusions><exclusion><artifactId>drop</artifactId>"
+    )
+    assert detect._declared_deps("pom.xml", unclosed) == {"keep"}
+
+
+def test_the_poetry_interpreter_constraint_is_not_a_package():
+    """`python` is poetry's interpreter pin. orchestrator._python_dep_names
+    excludes it, and these two readers answer the same question about the same
+    file."""
+    poetry = '[tool.poetry.dependencies]\npython = "^3.11"\nflask = "^3"\n'
+    assert detect._declared_deps("pyproject.toml", poetry) == {"flask"}
+
+
+def test_packages_means_dependencies_only_in_a_pipfile():
+    """`packages` is the most overloaded key in pyproject.toml: under
+    `[tool.setuptools]` and `[tool.mypy]` it names the project's OWN modules.
+    Matching it at any depth reads a vendored `flask/` directory as a Flask
+    dependency -- a false claim arriving through a structural read rather than a
+    scrape, which is subtler but no less wrong."""
+    own_modules = (
+        '[project]\nname = "myapp"\ndependencies = ["click>=8"]\n\n'
+        '[tool.setuptools]\npackages = ["flask", "myapp"]\n'
+    )
+    assert detect._declared_deps("pyproject.toml", own_modules) == {"click"}
+    # But a Pipfile's own top-level table still means dependencies.
+    assert detect._declared_deps("Pipfile", '[packages]\ndjango = "*"\n') == {"django"}
+
+
+def test_every_conventional_dependency_table_is_read():
+    """Reading only the well-known PATHS misses the next tool. These are the
+    shapes a paths-based reader dropped -- PEP 735, pdm, hatch environments, and
+    Cargo's workspace and target-specific tables -- each of which can be the ONLY
+    place a framework is declared."""
+    shapes = {
+        '[dependency-groups]\ndev = ["pytest>=8"]\n': {"pytest"},
+        '[tool.pdm.dev-dependencies]\nlint = ["ruff"]\n': {"ruff"},
+        '[tool.hatch.envs.default]\ndependencies = ["pytest"]\n': {"pytest"},
+        '[tool.poetry.group.dev.dependencies]\npytest = "^8"\n': {"pytest"},
+        '[project]\ndependencies = ["flask>=3"]\n'
+        '[project.optional-dependencies]\ndev = ["pytest"]\n': {"flask", "pytest"},
+    }
+    for text, expected in shapes.items():
+        assert detect._declared_deps("pyproject.toml", text) == expected, text
+
+    cargo = {
+        "[target.'cfg(unix)'.dependencies]\nnix = '0.27'\n": {"nix"},
+        '[workspace.dependencies]\naxum = "0.7"\n': {"axum"},
+        # The detailed form's VALUES are constraints, never names.
+        '[dependencies]\nserde = { version = "1", features = ["derive"] }\n': {"serde"},
+    }
+    for text, expected in cargo.items():
+        assert detect._declared_deps("Cargo.toml", text) == expected, text
+
+
+def test_a_dependency_name_must_end_where_a_name_legally_can():
+    """A prefix match would read any token that merely STARTS with a framework's
+    name as that framework, which is the same false claim one layer down: a
+    package spelled `flaske-login` with a non-ASCII e truncates to `flask` at the
+    first character the pattern cannot consume."""
+    assert detect._dep_name("flask-login>=0.6") == "flask-login"
+    assert detect._dep_name("requests[socks]==2.0") == "requests"
+    assert detect._dep_name("django>=4.2,<5") == "django"
+    # Truncation at an illegal character yields nothing, not the prefix.
+    assert detect._dep_name("flaské-login") == ""
+    # And no single token may be unbounded.
+    assert detect._dep_name("x" * 300) == ""
+    assert detect._declared_deps("requirements.txt", "flaské-login\nflask-login>=1\n") == {
+        "flask-login"
+    }
+
+
+def test_a_gem_clause_is_a_dependency_signal(tmp_path):
+    """Ruby profiles spell the manifest word as a noun ("sinatra gem"), which the
+    marker table missed -- so both Ruby profiles beyond Rails contributed no
+    dependency signal at all and could never be detected."""
+    assert detect.parse_hint("sinatra gem; get/post blocks")["deps"] == ("sinatra",)
+    assert detect.parse_hint("rspec-rails gem; .rspec")["deps"] == ("rspec-rails",)
+    # "Gemfile with rails" is a FILE clause, not a dependency one; the marker
+    # needs a following space, so the word inside "Gemfile" cannot trigger it.
+    assert detect.parse_hint("Gemfile with rails; bin/rails")["deps"] == ()
+
+
 def test_every_framework_gets_an_anti_hallucination_line():
     """Six hand-written strings meant the other 58 got no line at all, which is
     the same silence as not detecting them."""

@@ -6,6 +6,8 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 `chameleon` — a Claude Code plugin that auto-derives codebase conventions and injects archetype-aware guidance per-edit (conformance), and answers codebase-comprehension queries like search_codebase, describe_codebase, get_callees, and get_blast_radius (comprehension). Supports TypeScript/JavaScript, Ruby, and Python as first-class languages — framework-agnostic by default (it learns each repo's own conventions, so any framework works), with deeper framework-aware guidance where conventions are strong: Rails for Ruby, Django, DRF, Flask, and FastAPI for Python, and Next.js and NestJS for TypeScript/JavaScript.
 
+Go, Rust, Java, C# and PHP are supported at the **extraction tier**: derivation (archetypes, canonical witness, conventions, signatures, imports) plus secret and eval-sink detection, but no lint rules, no reverse index, and same-file call edges only. A language there is a declarative spec in `plugin/mcp/chameleon_mcp/extractors/treesitter/lang/specs.py`, not a table module. The security checks reach every source language through `lint_engine.security_language`, which is deliberately wider than `detect_language` — they read content, not a derived shape, so they need no extractor. `plugin/mcp/chameleon_mcp/language_support.py` is the single source of truth for what each tier gets, and its tests hold that declaration to the real wiring — never widen a tier there without widening the wiring, since a rule that never fires reads as a clean codebase.
+
 See [docs/architecture.md](./docs/architecture.md) for the full design.
 
 ## Project structure

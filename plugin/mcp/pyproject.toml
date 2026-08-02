@@ -1,6 +1,6 @@
 [project]
 name = "chameleon-mcp"
-version = "4.9.2"
+version = "4.10.0"
 description = "MCP server for chameleon. Auto-derives codebase conventions and serves archetype-keyed guidance via stdio JSON-RPC."
 authors = [
     { name = "Cris Nahine", email = "crisjosephnahine@gmail.com" }
@@ -47,6 +47,18 @@ dependencies = [
     "tree-sitter-javascript==0.25.0",
     "tree-sitter-ruby==0.23.1",
     "tree-sitter-python==0.25.0",
+    # The spec-driven languages (chameleon_mcp/extractors/treesitter/lang/specs.py).
+    # Pinned exactly for the same reason as the four above: a grammar bump
+    # changes parse output, and `tests/unit/test_spec_driven_lang.py` validates
+    # every spec against the LOADED grammar, so the pin is what that test
+    # certifies. Each was verified to build a Language against the core pinned
+    # above; the extractor already degrades to the dump-script path when a
+    # grammar cannot load, so a missing one costs that language and nothing else.
+    "tree-sitter-go==0.25.0",
+    "tree-sitter-rust==0.24.2",
+    "tree-sitter-java==0.23.5",
+    "tree-sitter-c-sharp==0.23.5",
+    "tree-sitter-php==0.24.1",
 ]
 
 [project.optional-dependencies]

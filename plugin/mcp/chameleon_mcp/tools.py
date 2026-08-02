@@ -1482,7 +1482,18 @@ def _file_shape_snapshot(p: Path, loaded):
         content = p.read_bytes()[:100_000].decode("utf-8", errors="replace")
     except OSError:
         return None
-    language = detect_language(str(p)) or loaded.profile.get("language")
+    # The FILE's language, never the profile's. The old fallback to
+    # `loaded.profile["language"]` only fired when the file's own extension was
+    # unrecognized, and on a legacy extension-blind profile (a `paths_pattern`
+    # with no `:ext` tail, still a live compat path above) that is exactly a
+    # foreign file exact-matching a first-class archetype. It then got extracted
+    # under the WRONG language: PHP source read as TypeScript yields
+    # ['ClassDeclaration'] rather than [], and a non-empty snapshot can score a
+    # nonzero `canonical_confidence`, reaching the match_quality="ast" plus
+    # medium/high band that both deny gates require. A wrong-language file could
+    # arm a block. `None` is the honest answer and yields an empty snapshot,
+    # which scores nothing and blocks nothing.
+    language = detect_language(str(p))
     if language not in ("typescript", "ruby", "python"):
         language = None
     try:
@@ -1766,7 +1777,18 @@ def _get_archetype_with_loaded(
             }
         )
 
-    language = detect_language(str(p)) or loaded.profile.get("language")
+    # The FILE's language, never the profile's. The old fallback to
+    # `loaded.profile["language"]` only fired when the file's own extension was
+    # unrecognized, and on a legacy extension-blind profile (a `paths_pattern`
+    # with no `:ext` tail, still a live compat path above) that is exactly a
+    # foreign file exact-matching a first-class archetype. It then got extracted
+    # under the WRONG language: PHP source read as TypeScript yields
+    # ['ClassDeclaration'] rather than [], and a non-empty snapshot can score a
+    # nonzero `canonical_confidence`, reaching the match_quality="ast" plus
+    # medium/high band that both deny gates require. A wrong-language file could
+    # arm a block. `None` is the honest answer and yields an empty snapshot,
+    # which scores nothing and blocks nothing.
+    language = detect_language(str(p))
     if language not in ("typescript", "ruby", "python"):
         language = None
     snapshot = extract_dimensions(content, language=language, file_path=str(p))
@@ -3297,11 +3319,16 @@ def lint_file(
     # interpolation) are content facts about the caller's own submission, like the
     # secret scan above, so they run before the trust/canonical gates and ride the
     # early-return paths too. eval-call is block-eligible; the rest are advisory.
-    # Language is inferred from the path; with no recognizable extension only the
-    # language-agnostic eval( shape fires, which is the block-eligible one.
-    _sink_lang = _detect_language(file_path) if file_path else None
-    if _sink_lang not in ("typescript", "ruby", "python"):
-        _sink_lang = None
+    # The SECURITY language, not the extractor one: this scan reads content, not
+    # a derived shape. Narrowing it to the three extractor languages sent every
+    # other source file down `scan_dangerous_sinks`' raw-content branch, where
+    # `eval(` matches inside comments and strings -- and since the block
+    # partition now treats those languages as blockable, a Go file whose only
+    # `eval(` sits in a `// TODO` comment would BLOCK. Passing the real language
+    # is what reaches the per-language string/comment stripper.
+    from chameleon_mcp.lint_engine import security_language as _security_language
+
+    _sink_lang = _security_language(file_path) if file_path else None
     sink_violations: list[dict] = []
     try:
         from chameleon_mcp.lint_engine import scan_dangerous_sinks as _scan_dangerous_sinks
@@ -3490,6 +3517,11 @@ def lint_file(
         or _detect_language(witness_rel_path)
         or loaded.profile.get("language")
     )
+    # Kept before the narrowing below, which collapses every other language to
+    # None so the heuristic extractors are never handed one they cannot read.
+    # The response still has to be able to say WHICH language that was, or an
+    # empty violations list is indistinguishable from a clean file.
+    profile_language = language
     if language not in ("typescript", "ruby", "python"):
         language = None
 
@@ -3711,6 +3743,19 @@ def lint_file(
     }
     if ast_noop_reason is not None:
         out["noop_reason"] = ast_noop_reason
+    # An extraction-tier language has no lint rules at all, so an empty
+    # `violations` list means "nothing was checked", not "nothing is wrong". A
+    # caller cannot tell those apart from the payload alone, and the difference
+    # is the whole value of the answer -- so the tier is stated.
+    try:
+        from chameleon_mcp.language_support import EXTRACTION, describe, tier_for
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+        if tier_for(profile_language) == EXTRACTION:
+            out["lint_coverage"] = "extraction-tier"
+            out["lint_coverage_note"] = sanitize_for_chameleon_context(describe(profile_language))
+    except Exception:
+        pass
     return _envelope(out, truncated=truncated)
 
 
@@ -4210,6 +4255,171 @@ def _calls_index_unavailable_reason(repo_root: Path) -> str:
     except Exception:
         pass
     return "no-calls-index"
+
+
+def get_symbol_edit_plan(repo: str, file_path: str, symbol_name: str) -> dict:
+    """Everything an edit to one symbol has to touch: its exact line range plus
+    every recorded reference and importer.
+
+    The prerequisite primitive for a symbol-level edit. Renaming or replacing a
+    body is three questions -- where does it start and end, who calls it, who
+    imports it -- and answering them by re-reading files loses the graph the
+    profile already holds. This returns all three from the committed artifacts
+    in one call, with LINE RANGES rather than prose, so the caller can drive an
+    exact edit instead of a search-and-hope.
+
+    Deliberately READ-ONLY, and that is the design rather than a limitation.
+    Chameleon's contract is that its own conclusions never authorize a write
+    (see architecture.md); handing back a plan keeps the human or the agent as
+    the thing that decides, while removing the part they cannot derive
+    themselves. The caller applies the edit with its own tools.
+
+    Returns ``definition`` (path, start_line, end_line, kind), ``references``
+    (recorded call sites, each with its deterministic grade) and ``importers``
+    (cross-file import sites). ``complete`` is False whenever any leg was
+    unavailable, so a short list is never mistaken for a verified-small blast
+    radius -- dynamic dispatch and post-bootstrap callers are invisible to the
+    snapshot exactly as they are to ``get_callers``.
+
+    Fails open with ``found: False`` on any ambiguity (unresolvable or untrusted
+    repo, missing artifact, path outside the repo). Never fabricates a site.
+    """
+    from chameleon_mcp._thresholds import threshold_int
+    from chameleon_mcp.calls_index import load_calls_index
+    from chameleon_mcp.profile.loader import find_repo_root
+    from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _san
+    from chameleon_mcp.symbol_index import module_key_for_path
+    from chameleon_mcp.symbol_signatures import load_symbol_signatures
+
+    empty: dict = {
+        "found": False,
+        "definition": None,
+        "references": [],
+        "references_total": 0,
+        "importers": [],
+        "complete": False,
+    }
+    if not _validate_file_path_arg(file_path) or not isinstance(symbol_name, str):
+        return _envelope(dict(empty))
+    if not symbol_name.strip():
+        return _envelope(dict(empty))
+
+    p = Path(file_path).expanduser()
+    if not p.is_absolute():
+        _arg_root, _ = _resolve_repo_arg(repo)
+        if _arg_root is not None:
+            p = (_arg_root / p).resolve()
+    repo_root = find_repo_root(p)
+    if repo_root is None:
+        return _envelope({**empty, "reason": "path-unresolved"})
+
+    gate = _trust_state_for(_compute_repo_id(repo_root))
+    if gate is None or not gate.grants_root(repo_root):
+        return _envelope({**empty, "status": "untrusted"})
+
+    rel = module_key_for_path(p, repo_root)
+    if rel is None:
+        return _envelope({**empty, "reason": "file-outside-repo"})
+
+    complete = True
+    definition = None
+    try:
+        sigs = load_symbol_signatures(repo_root)
+        # `SymbolSignatures` is an object with `lookup`/`class_items`, not a raw
+        # dict: the callable surface is the contract, and reaching for a `.get`
+        # here silently found nothing while the broad except made it look like a
+        # symbol that simply is not indexed.
+        entry = sigs.lookup(rel, symbol_name) if sigs is not None else None
+        kind = "function"
+        if not isinstance(entry, dict) and sigs is not None:
+            for cls_rel, by_name in sigs.class_items():
+                if cls_rel == rel and symbol_name in by_name:
+                    entry, kind = by_name[symbol_name], "class"
+                    break
+        if isinstance(entry, dict) and isinstance(entry.get("start_line"), int):
+            definition = {
+                "path": _san(rel),
+                "start_line": entry["start_line"],
+                "end_line": entry.get("end_line"),
+                "kind": kind,
+            }
+        else:
+            complete = False
+    except Exception:
+        complete = False
+
+    references: list[dict] = []
+    references_total = 0
+    try:
+        index = load_calls_index(repo_root)
+        if index is None:
+            complete = False
+            entry = None
+        else:
+            entry = index.callers_of(rel, symbol_name)
+        rows = (entry or {}).get("callers") or []
+        # The index's OWN total, not len(rows): a hot symbol is capped at build
+        # time, so the rows are a sample. Reporting only the sample would let a
+        # caller read "3 references" off a symbol with 112 and conclude the edit
+        # is small.
+        references_total = (entry or {}).get("total") or len(rows)
+        if (entry or {}).get("truncated"):
+            complete = False
+        cap = threshold_int("EDIT_PLAN_MAX_SITES")
+        if len(rows) > cap:
+            complete = False
+        for row in rows[:cap]:
+            references.append(
+                {
+                    "path": _san(str(row.get("path", ""))),
+                    "caller": _san(str(row.get("caller", ""))),
+                    "line": row.get("line"),
+                    "grade": _san(str(row.get("grade", ""))),
+                }
+            )
+    except Exception:
+        complete = False
+
+    importers: list[dict] = []
+    try:
+        imp = query_symbol_importers(repo, str(p))
+        data = imp.get("data") if isinstance(imp, dict) else None
+        # `importers` is a LIST of {name, count, sites}, not a name-keyed dict:
+        # the row carries the exported name, so the filter belongs on the row.
+        rows_by_name = [
+            row
+            for row in ((data or {}).get("importers") or [])
+            if isinstance(row, dict) and row.get("name") == symbol_name
+        ]
+        cap = threshold_int("EDIT_PLAN_MAX_SITES")
+        for row in rows_by_name:
+            sites = row.get("sites") or []
+            if len(sites) > cap:
+                complete = False
+            for site in sites[:cap]:
+                if isinstance(site, dict):
+                    importers.append(
+                        {"path": _san(str(site.get("path", ""))), "line": site.get("line")}
+                    )
+    except Exception:
+        complete = False
+
+    return _envelope(
+        {
+            "found": definition is not None,
+            "definition": definition,
+            "references": references,
+            "references_total": references_total,
+            "importers": importers,
+            "complete": complete,
+            "note": (
+                "Absence of a reference is not proof of safety: dynamic dispatch, "
+                "unsupported call patterns and sites added since the last bootstrap "
+                "are invisible to the snapshot. Run /chameleon-refresh to update it."
+            ),
+        }
+    )
 
 
 def get_callers(repo: str, file_path: str, function_name: str) -> dict:
@@ -15174,18 +15384,27 @@ def scan_dependency_changes(repo: str, base_ref: str = "main") -> dict:
     data = {
         "status": "ok",
         "base_ref": base_ref,
+        # Membership OR the pattern arms: `requirements-dev.txt` and
+        # `requirements/base.txt` are matched by shape rather than by basename,
+        # so a plain set test left them in NEITHER this list nor
+        # `uncovered_manifests` -- the consumer saw no evidence a Python
+        # manifest had changed at all unless a finding happened to fire.
         "manifests_changed": [
-            p for p in changed if p.rsplit("/", 1)[-1] in dep_diff.MANIFEST_LOCKFILE_BASENAMES
+            p
+            for p in changed
+            if p.rsplit("/", 1)[-1] in dep_diff.MANIFEST_LOCKFILE_BASENAMES
+            or dep_diff.is_parsed_manifest(p)
         ],
         "findings": serialized,
         "summary": summary,
         "advisory": True,
     }
-    # A changed dependency manifest of an ecosystem this scanner does not parse
-    # (Python requirements/pyproject/Pipfile, go.mod, Cargo, composer) is NOT
-    # reviewed by the checks above. Surface it so the consumer reads "not
-    # covered, hand-review" instead of an empty findings list that looks clean --
-    # the honesty contract this scanner's own docstring promises.
+    # A changed dependency file this scanner does not parse -- `setup.py`
+    # (arbitrary code) and the foreign lockfiles, which carry no resolved-host
+    # keyword to key on -- is NOT reviewed by the checks above. Surface it so
+    # the consumer reads "not covered, hand-review" instead of an empty findings
+    # list that looks clean -- the honesty contract this scanner's own docstring
+    # promises.
     uncovered = [p for p in changed if dep_diff.is_uncovered_manifest(p)]
     if uncovered:
         data["uncovered_manifests"] = uncovered

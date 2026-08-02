@@ -37,6 +37,7 @@ from chameleon_mcp.bootstrap.canonical import (
 )
 from chameleon_mcp.bootstrap.clustering import (
     BIMODAL_DOMINANT_SHARE_THRESHOLD,
+    _adaptive_sparse_threshold,
     cluster_files,
 )
 from chameleon_mcp.bootstrap.comment_scan import detect_commented_out_code_by_group
@@ -45,6 +46,7 @@ from chameleon_mcp.bootstrap.discovery import (
     TooManyFilesError,
     discover_files,
     discovery_stats,
+    is_likely_generated,
 )
 from chameleon_mcp.bootstrap.naming import propose_archetype_name
 from chameleon_mcp.bootstrap.tool_config import read_tool_configs
@@ -575,6 +577,16 @@ def _inherited_signals_root(repo_root: Path) -> Path | None:
     return None
 
 
+# What each hardcoded arm below decides for itself. A name listed here is the
+# arm's to answer or refuse, and the taxonomy fallback never overrides its
+# refusal -- see `_taxonomy_framework`. Keep each set in step with its arm: a
+# name the arm starts returning but that is missing here would let the fallback
+# re-assert it on weaker, name-only evidence.
+_RUBY_ARM_FRAMEWORKS: frozenset[str] = frozenset({"rails"})
+_PYTHON_ARM_FRAMEWORKS: frozenset[str] = frozenset({"django", "flask", "fastapi"})
+_TS_ARM_FRAMEWORKS: frozenset[str] = frozenset({"nextjs", "nestjs"})
+
+
 def _classify_framework(repo_root: Path, language: str | None) -> str | None:
     """Best-effort discrete framework family for the repo, or None.
 
@@ -593,7 +605,7 @@ def _classify_framework(repo_root: Path, language: str | None) -> str | None:
                     r"^\s*gem\s+['\"]rails['\"]", _read_marker_text(gemfile), re.MULTILINE
                 ):
                     return "rails"
-            return None
+            return _taxonomy_framework(repo_root, language, adjudicated=_RUBY_ARM_FRAMEWORKS)
         if language == "python":
             # A manage.py whose CONTENT is a real Django entrypoint is the
             # strongest, corroborated Django signal (stronger than an incidental
@@ -628,7 +640,7 @@ def _classify_framework(repo_root: Path, language: str | None) -> str | None:
                 return "flask"
             if _has("django"):
                 return "django"
-            return None
+            return _taxonomy_framework(repo_root, language, adjudicated=_PYTHON_ARM_FRAMEWORKS)
         if language == "typescript":
             deps: set[str] = set()
             for d in dirs:
@@ -641,16 +653,21 @@ def _classify_framework(repo_root: Path, language: str | None) -> str | None:
                 for ext in (".js", ".mjs", ".ts", ".cjs")
             ):
                 return "nextjs"
-            return _taxonomy_framework(repo_root, language)
+            return _taxonomy_framework(repo_root, language, adjudicated=_TS_ARM_FRAMEWORKS)
         # A language the six hardcoded arms never covered -- Go, Rust, Java,
         # PHP, everything else. Before the taxonomy there was nothing to say
-        # here at all.
+        # here at all, and no arm has adjudicated anything, so nothing is skipped.
         return _taxonomy_framework(repo_root, language)
     except Exception:
         return None
 
 
-def _taxonomy_framework(repo_root: Path, language: str | None) -> str | None:
+def _taxonomy_framework(
+    repo_root: Path,
+    language: str | None,
+    *,
+    adjudicated: frozenset[str] = frozenset(),
+) -> str | None:
     """The scored fallback, for a framework no hardcoded arm names.
 
     Deliberately a FALLBACK rather than a replacement. The six arms above encode
@@ -660,12 +677,24 @@ def _taxonomy_framework(repo_root: Path, language: str | None) -> str | None:
     which is every framework outside the six and every language outside the
     three.
 
+    `adjudicated` names the frameworks the calling arm ALREADY decided about, and
+    they are skipped here even when they score. This is what keeps the fallback
+    from overturning a rejection the arm made on stronger evidence: the detector
+    reads file NAMES only, so a bare `manage.py` belonging to a click task-runner
+    scores django at the strong_config tier, which is exactly the misdetection
+    the arm's content check exists to prevent. Without the skip, adding the
+    fallback to a language silently re-opens it.
+
     Fails open to None like everything else in this classifier.
     """
     try:
-        from chameleon_mcp.knowledge.detect import primary_framework
+        from chameleon_mcp.knowledge.detect import score_frameworks
 
-        return primary_framework(repo_root, language)
+        for row in score_frameworks(repo_root, language):
+            name = row.get("framework")
+            if isinstance(name, str) and name not in adjudicated:
+                return name
+        return None
     except Exception:
         return None
 
@@ -873,8 +902,208 @@ _EXTENSIONS_BY_LANGUAGE: dict[str, tuple[str, ...]] = {
 }
 
 
+def _register_spec_language_extensions() -> None:
+    """Fold the spec-driven languages in, derived from the specs themselves.
+
+    Written once, in the spec: a second hand-maintained copy of "which files is
+    this language" is how the discovery glob and the parser drift apart.
+    """
+    try:
+        from chameleon_mcp.extractors.treesitter.lang.specs import EXTENSIONS_BY_LANGUAGE
+
+        for language, extensions in EXTENSIONS_BY_LANGUAGE.items():
+            _EXTENSIONS_BY_LANGUAGE.setdefault(language, extensions)
+    except Exception:
+        # A broken spec costs its own languages, never the original three.
+        pass
+
+
+_register_spec_language_extensions()
+
+
 def _extensions_for_extractor(extractor: Extractor) -> tuple[str, ...]:
-    return _EXTENSIONS_BY_LANGUAGE.get(extractor.language, _EXTENSIONS_BY_LANGUAGE["typescript"])
+    """The extensions this extractor's language claims.
+
+    Raises rather than guessing. This used to fall back to TypeScript's
+    extensions for an unknown language, which is the worst possible default: the
+    discovery glob would go looking for `.ts` files in, say, a Go repo, find
+    none, and write a clean-looking profile over zero files. A loud failure at
+    bootstrap is recoverable; a silently empty profile looks like success.
+    """
+    extensions = _EXTENSIONS_BY_LANGUAGE.get(extractor.language)
+    if extensions is None:
+        raise ValueError(
+            f"no discovery extensions registered for language {extractor.language!r}; "
+            "add it to _EXTENSIONS_BY_LANGUAGE (or to the language specs) before "
+            "registering an extractor for it"
+        )
+    return extensions
+
+
+def _sample_across_dirs(paths: list, cap: int) -> list:
+    """Take ``cap`` paths spread across directories, not the first ``cap`` sorted.
+
+    Truncating a sorted list starves whole areas of the tree: over four 10-file
+    directories with a cap of 12, `alpha` keeps all ten and `gamma`/`zeta` keep
+    none, so a developer working there gets no archetype at all and no way to
+    see why. Alphabetical coverage is worse than thinner uniform coverage,
+    because the gap is invisible and arbitrary.
+
+    Round-robins one file per directory per pass, directories and files both in
+    sorted order, so the result is deterministic: two runs over the same tree
+    agree, which the profile depends on.
+    """
+    by_dir: dict[str, list] = {}
+    for path in sorted(paths):
+        by_dir.setdefault(str(Path(path).parent), []).append(path)
+    out: list = []
+    rounds = 0
+    while len(out) < cap:
+        added = False
+        for key in sorted(by_dir):
+            bucket = by_dir[key]
+            if rounds < len(bucket):
+                out.append(bucket[rounds])
+                added = True
+                if len(out) >= cap:
+                    break
+        if not added:
+            break
+        rounds += 1
+    return out
+
+
+def _primary_sparse_threshold(primary_files) -> int:
+    """The sparse floor the PRIMARY corpus alone would have produced.
+
+    Two things have to line up or a repo silently loses archetypes. The count
+    must exclude the SECONDARY languages, because `cluster_files` otherwise
+    derives the floor from the combined total and the tiers are stepped
+    (<1000 -> 3, <5000 -> 4, else 5): 995 TypeScript files plus 10 Go files
+    crosses 1000, the floor moves 3 -> 4, and every 3-member TypeScript cluster
+    is dropped as sparse. And it must be taken AFTER the generated-file filter,
+    the way `cluster_files` counts, or the same boundary is crossed a second way
+    -- 990 real files plus 20 generated ones -- this time on a SINGLE-language
+    repo that gained nothing from cross-language coverage at all.
+
+    Neither shape shows up in a test suite: the archetypes just stop existing.
+    """
+    return _adaptive_sparse_threshold(
+        sum(1 for pf in primary_files if not is_likely_generated(pf.content_first_200_bytes))
+    )
+
+
+def _language_of_member(member) -> str | None:
+    """The language of one clustered file, by extension, or None when unknown.
+
+    Used to keep secondary-language members out of convention extraction. None
+    is treated as primary by the caller: an extension the grammar table does not
+    know cannot be a secondary-language file, since the secondary set is built
+    from that same table.
+    """
+    try:
+        from chameleon_mcp.extractors.treesitter.grammars import language_for_path
+
+        return language_for_path(getattr(member, "path", member))
+    except Exception:
+        return None
+
+
+def _secondary_language_files(
+    repo_root: Path,
+    primary_language: str,
+    *,
+    paths_glob: str | None = None,
+    workspace_roots: list[str] | None = None,
+) -> list:
+    """Parsed files for every OTHER language the repo genuinely contains.
+
+    Chameleon binds one extractor, and therefore one language, per profile:
+    `select_extractor` returns the first match and `parse_repo` filters to it,
+    so a real Go service living beside a TypeScript app is not merely ungraded,
+    it is never parsed. Its symbols are absent from `search_codebase`, and
+    `describe_codebase` reports a repo that does not exist.
+
+    These files feed the three index builders that carry NO language gate
+    (symbol signatures, the function catalog, the call index) and nothing else.
+    Clustering, conventions, canonicals and every framework-aware layer keep
+    reading the primary parse alone, so a second language enriches what the repo
+    can ANSWER without restyling what it enforces.
+
+    Each secondary language must clear the same bar the spec extractor applies
+    to a primary: a build manifest AND real source. Bounded, and fail-open to
+    `[]` -- a secondary language that will not parse costs its own rows, never
+    the profile.
+    """
+    if os.environ.get("CHAMELEON_CROSS_LANGUAGE_INDEX") == "0":
+        return []
+    try:
+        from chameleon_mcp.extractors.spec_driven import SpecDrivenExtractor
+        from chameleon_mcp.extractors.treesitter.extractor import TreeSitterExtractor
+
+        extras = SpecDrivenExtractor.languages_present(repo_root, exclude=primary_language)
+        if not extras:
+            return []
+        probe = TreeSitterExtractor(primary_language, extra_languages=extras)
+        secondary = [lang for lang in probe._languages if lang != primary_language]
+        if not secondary:
+            return []
+        # Discovery FIRST, then parse the discovered paths. Calling
+        # `parse_repo(repo_root)` with no `paths=` falls to a raw
+        # `repo_root.glob("**/*")`, which is exactly the case the extractor's own
+        # docstring warns about: it "would silently re-include everything
+        # discovery ruled out". That means `vendor/`, `node_modules/`, `dist/`,
+        # `.venv/`, the gitignore filter and the repo size guard -- all of which
+        # live in `discover_files`, not in the extractor. Harmless while these
+        # files only reached three index artifacts; not harmless now that they
+        # reach clustering and canonical-witness selection, where a vendored
+        # third-party file could become the witness injected per-edit as the
+        # shape to imitate (`EXCLUDE_FROM_CANONICAL_POOL_DIRS` covers test and
+        # legacy dirs, NOT vendor).
+        from chameleon_mcp._thresholds import threshold_int
+        from chameleon_mcp.bootstrap.discovery import discover_files
+        from chameleon_mcp.extractors.treesitter.grammars import _EXTENSION_GRAMMARS
+
+        # Same brace shape discover_files' own default uses: "**/*.{ts,tsx,...}".
+        stems = sorted(
+            {ext.lstrip(".") for ext, entry in _EXTENSION_GRAMMARS.items() if entry[2] in secondary}
+        )
+        if not stems:
+            return []
+        glob = f"**/*.{{{','.join(stems)}}}"
+        try:
+            discovered = discover_files(
+                repo_root, glob=glob, paths_glob=paths_glob, workspace_roots=workspace_roots
+            )
+        except TooManyFilesError:
+            # The size guard fires above REPO_SIZE_GUARD, and the blanket
+            # handler below would turn that into ZERO secondary coverage --
+            # on precisely the repo the cap exists for (the threshold's own
+            # comment names "a Go monorepo with a small TS tooling dir").
+            # A capped sample is the point; refusing the whole language is not.
+            discovered = sorted(repo_root.glob(glob))
+        if not discovered:
+            return []
+        # Bounded like every other derivation input. The primary corpus has
+        # REPO_SIZE_GUARD; a secondary language had nothing, so a small-primary /
+        # huge-secondary repo could mint unbounded archetypes into the
+        # trust-hashed profile. Deterministic truncation (discover_files returns
+        # sorted paths) so two runs of the same tree agree.
+        cap = threshold_int("CROSS_LANGUAGE_MAX_SECONDARY_FILES")
+        if len(discovered) > cap:
+            discovered = _sample_across_dirs(discovered, cap)
+        collected = []
+        for parsed in probe.parse_repo(repo_root, paths=discovered).files:
+            try:
+                from chameleon_mcp.extractors.treesitter.grammars import language_for_path
+
+                if language_for_path(parsed.path) in secondary:
+                    collected.append(parsed)
+            except Exception:
+                continue
+        return collected
+    except Exception:
+        return []
 
 
 def _glob_for_extractor(extractor: Extractor) -> str:
@@ -1094,6 +1323,9 @@ class BootstrapReport:
     cross-workspace JOIN in _amend_root_profile_with_workspaces. Never persisted
     per-workspace; each row is {importer(ws-rel), name, module, line}."""
     package_name: str | None = None
+    #: Python import-name -> workspace-relative package dir, the Python half of
+    #: the cross-workspace package map (see symbol_index.python_package_dirs).
+    python_packages: dict = field(default_factory=dict)
     """WP-C5: this workspace's package.json `name` (e.g. @scope/a) -- the link the
     coordinator JOIN uses to resolve a sibling's `@scope/a` import to this dir."""
 
@@ -1750,6 +1982,7 @@ def bootstrap_repo(
             # ws-relative candidate importer paths (and locates this package's dir).
             "cross_candidates": ws_report.cross_candidates,
             "package_name": ws_report.package_name,
+            "python_packages": ws_report.python_packages,
             "ws_mono_rel": parent_ws_path,
         }
         if ws_write_root is not None:
@@ -1823,7 +2056,11 @@ def bootstrap_repo(
         # pure-coordinator monorepo (which has no root profile). Off the
         # trust-hashed surface, kill-gated, fail-open.
         _persist_cross_index_to_plugin_data(
-            repo_root, workspace_reports, report.cross_candidates, report.package_name
+            repo_root,
+            workspace_reports,
+            report.cross_candidates,
+            report.package_name,
+            report.python_packages,
         )
 
     return report
@@ -1835,6 +2072,7 @@ def _build_cross_index_payload(
     root_cross_candidates: list[dict] | None,
     root_package_name: str | None,
     root_profile_dir: Path | None,
+    root_python_packages: dict | None = None,
 ) -> dict | None:
     """Assemble the cross_reverse_index.json payload (WP-C5) from the root's own
     plus every successful workspace's captured cross-package candidates.
@@ -1854,9 +2092,15 @@ def _build_cross_index_payload(
     try:
         from chameleon_mcp.symbol_index import build_cross_reverse_index
 
-        # (mono_rel_dir, candidates, package_name, ws_profile_dir)
-        participants: list[tuple[str, list, str | None, Path | None]] = [
-            ("", root_cross_candidates or [], root_package_name, root_profile_dir)
+        # (mono_rel_dir, candidates, package_name, ws_profile_dir, python_packages)
+        participants: list[tuple[str, list, str | None, Path | None, dict]] = [
+            (
+                "",
+                root_cross_candidates or [],
+                root_package_name,
+                root_profile_dir,
+                root_python_packages or {},
+            )
         ]
         for w in workspace_reports:
             if w.get("status") != "success":
@@ -1868,16 +2112,25 @@ def _build_cross_index_payload(
                     w.get("cross_candidates") or [],
                     w.get("package_name"),
                     Path(pdir) if pdir else None,
+                    w.get("python_packages") or {},
                 )
             )
 
+        python_packages: dict[str, str] = {}
         packages: dict[str, str] = {}
         all_candidates: list[dict] = []
         exports_by_key: dict[str, set] = {}
-        for mono_rel, cands, pkg_name, ws_pdir in participants:
+        for mono_rel, cands, pkg_name, ws_pdir, py_pkgs in participants:
             prefix = (mono_rel.rstrip("/") + "/") if mono_rel else ""
             if isinstance(pkg_name, str) and pkg_name.strip():
                 packages[pkg_name.strip()] = mono_rel or "."
+            # Python package dirs are workspace-relative; re-root them the same
+            # way importer paths are. First writer wins, so two workspaces
+            # shipping the same top-level import name resolve to one target
+            # rather than flip-flopping between builds.
+            for imp_name, ws_rel_dir in (py_pkgs or {}).items():
+                if isinstance(imp_name, str) and isinstance(ws_rel_dir, str):
+                    python_packages.setdefault(imp_name, prefix + ws_rel_dir)
             for c in cands:
                 if not isinstance(c, dict) or not isinstance(c.get("importer"), str):
                     continue
@@ -1906,7 +2159,9 @@ def _build_cross_index_payload(
 
         if not all_candidates:
             return None
-        payload = build_cross_reverse_index(all_candidates, packages, mono_root, exports_by_key)
+        payload = build_cross_reverse_index(
+            all_candidates, packages, mono_root, exports_by_key, python_packages
+        )
         return payload if payload.get("targets") else None
     except Exception:
         return None
@@ -1972,6 +2227,7 @@ def _persist_cross_index_to_plugin_data(
     workspace_reports: list[dict],
     root_cross_candidates: list[dict] | None,
     root_package_name: str | None,
+    root_python_packages: dict | None = None,
 ) -> None:
     """WP-C5: write the coordinator cross-workspace index to the PLUGIN DATA DIR
     (``~/.local/share/chameleon/<coordinator repo_id>/``), never a repo-resident
@@ -2001,6 +2257,7 @@ def _persist_cross_index_to_plugin_data(
             root_cross_candidates,
             root_package_name,
             root_profile_dir if root_profile_dir.is_dir() else None,
+            root_python_packages,
         )
         if payload is None:
             return
@@ -2730,9 +2987,67 @@ def _bootstrap_single(
             discovered_files_post_exclusion=post_exclusion_count,
         )
 
-    clustering = cluster_files(parse_result.files, repo_root=repo_root)
-    files_skipped_generated = len(clustering.skipped_generated)
-    sparse_dropped_files = sum(c.size for c in clustering.sparse_clusters)
+    # Cluster EVERY language the repo holds, not just the detection winner. A
+    # polyglot repo previously derived archetypes from its primary language
+    # alone, so a real Go service beside a TypeScript app resolved to no
+    # archetype at all and its files got no per-edit guidance.
+    #
+    # Safe because clustering already separates languages structurally: the
+    # bucket carries the extension (`include_extension_in_bucket=True` in
+    # cluster_files), so `web/src:tsx`, `api/app:py` and `svc/internal:go` are
+    # distinct keys and no merge pass can join them. Measured on a 3-language
+    # fixture: 18 files -> 3 clusters, one per language, and
+    # `propose_archetype_name` already disambiguates through its
+    # `existing_names` set.
+    #
+    # Conventions deliberately do NOT get these files (see `all_files=` below):
+    # `extract_all_conventions` takes ONE repo-wide language and gates most rules
+    # on it, so feeding it foreign files would measure Go with Python semantics.
+    # A secondary-language archetype therefore carries a canonical witness and a
+    # shape but no convention rules -- absent guidance rather than wrong
+    # guidance, which is the same trade the security gates make.
+    # The user's scope override applies to EVERY language, not just the primary:
+    # a `paths_glob="apps/web/**"` that still pulled Go files from the whole tree
+    # into clustering would contradict the scope the profile itself records.
+    _secondary_files = _secondary_language_files(
+        repo_root,
+        extractor.language,
+        paths_glob=paths_glob,
+        workspace_roots=list(workspace_roots) if workspace_roots else None,
+    )
+    # The sparse threshold stays pinned to the PRIMARY corpus size. Left to
+    # itself, `cluster_files` derives it from the total member count, and that
+    # count is tiered (<1000 -> 3, <5000 -> 4, else 5), so merely ADDING a
+    # secondary language could push a repo across a boundary and raise the bar
+    # for every cluster: 995 TypeScript files plus 10 Go files crosses 1000, the
+    # threshold moves 3 -> 4, and every 3-member TypeScript cluster the repo used
+    # to get is silently dropped as sparse. Covering a new language must never
+    # cost the primary language archetypes it already had.
+    clustering = cluster_files(
+        list(parse_result.files) + _secondary_files,
+        repo_root=repo_root,
+        min_cluster_size=_primary_sparse_threshold(parse_result.files),
+    )
+    # Primary members only, matching `files_processed`. Counting secondary
+    # members here is the same mismatch round 1 fixed for sparse_dropped_files
+    # and did not carry to this sibling: a 6-file TS app beside a 500-file
+    # generated Go module reported 'processed 6, skipped 500'.
+    files_skipped_generated = sum(
+        1
+        for pf in clustering.skipped_generated
+        if _language_of_member(pf) in (None, extractor.language)
+    )
+    # Primary members only, so this stays comparable with `files_processed`
+    # (also primary-only). Counting secondary members here let
+    # sparse_dropped_files exceed the clustered total the same report
+    # publishes -- 6 primary files in one dense cluster beside 20 sparse
+    # secondary ones read as 'dropped 20 of 6'.
+    sparse_dropped_files = sum(
+        1
+        for c in clustering.sparse_clusters
+        for m in c.members
+        if _language_of_member(m) in (None, extractor.language)
+    )
 
     sparse_warnings = _build_sparse_warnings(clustering.sparse_clusters, repo_root)
     bimodal_warnings = _build_bimodal_warnings(clustering.bimodal_clusters, repo_root)
@@ -2891,7 +3206,16 @@ def _bootstrap_single(
         cluster_id, _sel = _resolve_cluster_id(cluster, selection)
         arch_name = _cid_to_archname.get(cluster_id) if cluster_id else None
         if arch_name:
-            files_by_archetype.setdefault(arch_name, []).extend(cluster.members)
+            # PRIMARY-language members only. `extract_all_conventions` takes one
+            # repo-wide language and gates most of its passes on it, so a Go file
+            # arriving under an archetype key would be measured with the
+            # primary's semantics (key exports, error handling, class contract,
+            # test pairing, doc coverage). A secondary-language archetype
+            # therefore carries a shape and a witness but no convention rules:
+            # absent guidance rather than wrong guidance.
+            files_by_archetype.setdefault(arch_name, []).extend(
+                m for m in cluster.members if _language_of_member(m) in (None, extractor.language)
+            )
 
     # Re-check each archetype's witness for commented-out code: the strippers
     # blanked comments before every other scan, so this is the one place the
@@ -3061,8 +3385,11 @@ def _bootstrap_single(
     if language_hint is not None:
         profile_data["language_hint"] = language_hint
 
-    # Discrete framework family (rails / django / flask / fastapi / nextjs /
-    # nestjs), descriptive metadata only. Optional key, so no schema bump and old
+    # Discrete framework family, descriptive metadata only. Any of the six the
+    # hardcoded arms name (rails / django / flask / fastapi / nextjs / nestjs)
+    # OR any of the other 58 the taxonomy describes, since every arm now falls
+    # through to the scored fallback -- so a profile may legitimately read
+    # `sinatra`, `express`, or `laravel`. Optional key, so no schema bump and old
     # profiles load fine without it. Classified from cheap markers; fails open.
     framework = _classify_framework(repo_root, extractor.language)
     if framework is not None:
@@ -3330,12 +3657,14 @@ def _bootstrap_single(
         # builder reads, so the catalog is built for every supported language. It
         # is hashed into the trust SHA, so it is written inside this same atomic
         # transaction. Best-effort: a build failure must not abort the commit.
+        # The primary parse plus every secondary language the repo really has.
+        _index_files = list(parse_result.files) + _secondary_files
         try:
             from chameleon_mcp.function_catalog import build_function_catalog
 
             (txn_dir / "function_catalog.json").write_text(
                 json.dumps(
-                    build_function_catalog(parse_result.files, repo_root),
+                    build_function_catalog(_index_files, repo_root),
                     indent=2,
                     sort_keys=True,
                 ),
@@ -3352,7 +3681,7 @@ def _bootstrap_single(
 
             (txn_dir / "calls_index.json").write_text(
                 json.dumps(
-                    build_calls_index(parse_result.files, repo_root, language=extractor.language),
+                    build_calls_index(_index_files, repo_root, language=extractor.language),
                     indent=2,
                     sort_keys=True,
                 ),
@@ -3393,7 +3722,7 @@ def _bootstrap_single(
 
             (txn_dir / "symbol_signatures.json").write_text(
                 json.dumps(
-                    build_symbol_signatures(parse_result.files, repo_root),
+                    build_symbol_signatures(_index_files, repo_root),
                     indent=2,
                     sort_keys=True,
                 ),
@@ -3513,6 +3842,7 @@ def _bootstrap_single(
     # never persisted per-workspace; only reachable on this success path.
     wpc5_candidates: list[dict] = []
     wpc5_package_name: str | None = None
+    wpc5_python_packages: dict[str, str] = {}
     if os.environ.get("CHAMELEON_CROSSWS_INDEX") != "0":
         try:
             from chameleon_mcp.symbol_index import (
@@ -3535,6 +3865,17 @@ def _bootstrap_single(
                 wpc5_package_name = _nm.strip()
         except Exception:
             wpc5_package_name = None
+        # Python's half of the same map. Keyed on the IMPORT name (the directory a
+        # sibling actually writes in `from my_lib.core import x`), not the
+        # distribution name in pyproject, which is routinely spelled differently
+        # (`my-lib`) and would resolve nothing.
+        if extractor.language == "python":
+            try:
+                from chameleon_mcp.symbol_index import python_package_dirs
+
+                wpc5_python_packages = python_package_dirs(repo_root)
+            except Exception:
+                wpc5_python_packages = {}
 
     # Surface tool-config parse failures on the RESPONSE, not only in the
     # persisted rules.json: a caller that never re-reads the artifact (the
@@ -3574,6 +3915,7 @@ def _bootstrap_single(
         sparse_dropped_files=sparse_dropped_files,
         cross_candidates=wpc5_candidates,
         package_name=wpc5_package_name,
+        python_packages=wpc5_python_packages,
         tool_config_warnings=_tool_config_warnings,
     )
 

@@ -8,11 +8,13 @@ See docs/architecture.md sections:
 - "Performance characteristics" — daemon model
 - "Cluster signature function" — what tools rely on
 
-Tool surface (v3 split): the 16 high-frequency conformance/comprehension tools
+Tool surface (v3 split): the 17 high-frequency conformance/comprehension tools
 stay top-level; every lifecycle, review-engine, and telemetry operation routes
 through one of three dispatcher tools (chameleon_lifecycle, chameleon_review,
 chameleon_telemetry) whose `action` selects the underlying
-chameleon_mcp.tools function. 19 registered tools total. The in-process
+chameleon_mcp.tools function. 20 registered tools total (verified over the real
+stdio transport, not counted by hand -- the previous 16/19 predated
+explain_concept and had drifted). The in-process
 functions in tools.py are unchanged — hooks, the daemon socket protocol, and
 the QA batteries keep importing them directly.
 
@@ -278,6 +280,29 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
     instead of falling back to the witness extension.
     """
     return tools.lint_file(repo, archetype, content, file_path=file_path)
+
+
+@_wire_tool(annotations=_READ_ONLY)
+def get_symbol_edit_plan(repo: str, file_path: str, symbol_name: str) -> dict:
+    """Everything an edit to one symbol has to touch, in one call.
+
+    Renaming a symbol or replacing its body is three questions: where does it
+    start and end, who calls it, who imports it. This answers all three from the
+    committed artifacts, with LINE RANGES rather than prose, so the caller can
+    drive an exact edit instead of a search-and-hope.
+
+    Returns `definition` (path, start_line, end_line, kind), `references`
+    (recorded call sites with their deterministic grade) and `importers`
+    (cross-file import sites). `complete` is False whenever any leg was
+    unavailable or truncated, so a short list is never mistaken for a verified
+    blast radius.
+
+    Read-only by design: chameleon's own conclusions never authorize a write, so
+    this hands back the plan and leaves the edit to your tools. Absence of a
+    reference is not proof of safety -- dynamic dispatch and sites added since
+    the last bootstrap are invisible to the snapshot.
+    """
+    return tools.get_symbol_edit_plan(repo, file_path, symbol_name)
 
 
 @_wire_tool(annotations=_READ_ONLY)

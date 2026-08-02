@@ -633,8 +633,15 @@ coordinator profile to host it would create a new trust anchor and arm the
 security-deny floor on previously ungoverned root files. Its consumer is a
 Stop-time advisory (never a deny) that flags an export the turn removed which a
 sibling workspace still imports, confirmed by a live presence re-check on the
-importer. TypeScript/JS cross-package resolution only; Python is a documented
-gap.
+importer. TypeScript/JS and Python both resolve. Each candidate carries the
+language that captured it, so the coordinator pools every workspace's candidates
+into one list and resolves each by its own rules: JS extension probing plus
+`package.json` `main` for one, dotted module paths against an import-name map
+for the other. Python's map is keyed on the IMPORT name (the directory a sibling
+writes in `from my_lib.core import x`), not the distribution name in
+`pyproject.toml`, which is routinely spelled differently (`my-lib`) and would
+resolve almost nothing. Ruby has no static export surface and the
+extraction-tier languages have no reverse index, so neither contributes edges.
 
 ---
 
@@ -932,7 +939,12 @@ block, gated so a block fires only where it will not produce false positives.
 From `config.json` `enforcement.mode`, validated against `{off, shadow, enforce}`,
 **default `enforce`**:
 
-- **off** advisory only; no block point fires.
+- **off** no block point fires — and, despite how the name reads, the turn-end
+  advisories do not run either: all eight builders in `stop/advisories.py`
+  short-circuit on `cfg.mode == "off"` as their first statement. Per-edit
+  advisories are unaffected. If the goal is "keep every check, drop the
+  blocking", `shadow` is the mode you want, not `off`; see
+  [The deterministic tier](#the-deterministic-tier-zero-model-spawn).
 - **shadow** every gate computes its decision and logs a `would_block`
   metric, but the edit or turn proceeds. Use it to measure a repo's
   false-positive rate before turning on real blocks.
@@ -949,6 +961,100 @@ From `config.json` `enforcement.mode`, validated against `{off, shadow, enforce}
 `CHAMELEON_ENFORCE=0` forces advisory-only for the whole session regardless of
 mode. `/chameleon-disable` and `/chameleon-pause-15m` suppress all behavior for
 their window, including enforce-mode blocks.
+
+### The deterministic tier (zero model spawn)
+
+A first-class operating mode for a team that wants every check chameleon can
+compute from the repo itself and no `claude -p` spawn at all — an air-gapped
+host, a cost ceiling, a policy against model calls on a work machine, or a CI
+job that must be reproducible.
+
+Set the three lens flags false and pick the blocking posture you want:
+
+In `<repo>/.chameleon/config.json` — the loader is strict `json.loads`, so this
+block is copyable as-is. Use `"enforce"` instead of `"shadow"` to keep the
+calibrated blocks while still spawning nothing.
+
+```json
+{
+  "enforcement": {
+    "mode": "shadow",
+    "correctness_judge": false,
+    "duplication_review": false,
+    "idiom_review": false
+  }
+}
+```
+
+`stop/lenses/__init__.py`'s `LENSES` registry maps each lens to exactly one of
+those flags, so `active_lenses(cfg)` returns `[]` and `stop/scheduler.py`'s
+`route` returns `RouteDecision(spawn=False, reason="feature_disabled")` — before
+it reads the freshness digest, the per-session spawn cap, or any risk fact. The
+scheduler is "the only code allowed to spawn a model" (its own module
+docstring), so an empty lens set is a hard zero: no job is launched, and
+therefore no VERIFY stage either, since `stop/verify.py` runs *inside* the job.
+
+The blocking posture is orthogonal. `enforce` keeps every deny and the Stop
+backstop; `shadow` computes the same verdicts and logs `would_block` rows
+without stopping anything, which is the combination that actually means
+"tell me everything, block nothing, spawn nothing".
+
+**Stays alive** (none of these read the lens flags):
+
+- The per-edit PreToolUse advisory and the PostToolUse lint. Enforcement mode is
+  consulted only at the deny/block branches, never for the advisory.
+- All eight deterministic turn-end advisories: test-run reminder, stale-test,
+  change-set completeness, historical co-change, cross-file existence,
+  cross-workspace existence, test integrity, and intent scope drift.
+- The Stop candidate re-lint, the unresolved-violation block, and the opt-in
+  cross-file existence block (under `enforce`; `shadow` logs them).
+- SessionStart conventions/principles/idioms injection, the `.chameleon/conventions.md`
+  mirror, and its `.claude/rules` import — `session_start` never reads
+  enforcement config at all.
+- Every read-only comprehension MCP tool, the finding-ledger resurface, the
+  session attestation, and telemetry.
+
+**Goes dark**: the correctness, duplication, and idiom lenses; the VERIFY
+refuter that gates their findings; and — worth naming, because it is easy to
+miss — the **self-learning idiom miner**, which runs as the last stage of the
+same job (`stop/miner.py`). No job means no new `idiom-candidates/` proposals,
+so a repo on this tier grows its idiom set only through `/chameleon-teach`.
+
+Two model spawns live outside the hook path entirely and are not covered by the
+lens flags, because a user invokes each one deliberately rather than a hook
+firing it. Each carries its own switch:
+
+- `refute_finding`, the pr-review / receiving round-3 refuter — `CHAMELEON_REVIEW_REFUTER=0`.
+- `refuter_canary.run_refuter_canaries`, the offline refuter-integrity harness —
+  `CHAMELEON_REFUTER_CANARY=0`. Killed, it reports `unavailable` and `main`
+  exits 2, so a CI job that switched it off reads "did not run" rather than a
+  green scoreboard.
+
+With those two set as well, no code path in the plugin can spawn a model.
+
+#### `mode: "off"` and `CHAMELEON_ENFORCE=0` are different, blunter things
+
+Neither is this tier, and reaching for either by mistake is the main hazard
+here:
+
+- **`mode: "off"`** silences the deterministic pipeline along with the review
+  job. All eight advisory builders short-circuit on `cfg.mode == "off"`, so what
+  survives a Stop is the candidate re-lint (which only clears stale arm flags)
+  and a leftover finding-ledger resurface line — and not even that when the turn
+  left an unresolved hard violation, since `stop_gates` returns `{}` on that
+  branch instead of falling through to the advisories.
+- **`CHAMELEON_ENFORCE=0`** is wider still at turn end: `stop_gates` returns
+  `{}` at its first check, before it reads the config, so the entire Stop
+  pipeline is skipped — advisories, review job, and resurface alike. The
+  per-edit advisory keeps running, which is why it reads as "advisory-only
+  per-edit, fully silent at Stop".
+
+| | per-edit advisory | deny / block | deterministic turn-end advisories | model spawn |
+|---|---|---|---|---|
+| `mode: "enforce"` (default) | yes | yes | yes | yes |
+| deterministic tier (`shadow` + 3 lens flags off) | yes | logged as `would_block` | yes | no |
+| `mode: "off"` | yes | no | no | no |
+| `CHAMELEON_ENFORCE=0` | yes | no | no | no |
 
 ### Block points
 

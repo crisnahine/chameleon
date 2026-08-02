@@ -206,8 +206,13 @@ def cluster_files(
                    :func:`_adaptive_sparse_threshold` picks a value based
                    on the corpus size — 3 for repos < 1k files, 4 for
                    1k–5k, 5 for larger. Tests pass an explicit value for
-                   determinism; the orchestrator passes ``None`` so real
-                   repos get the adaptive behavior (Bug 4).
+                   determinism. The orchestrator also passes an explicit
+                   floor now, derived from the PRIMARY corpus via
+                   ``_primary_sparse_threshold``: it feeds this function
+                   secondary-language files too, and the tiers above are
+                   stepped on the TOTAL, so letting them resolve here would
+                   raise the bar for the primary and silently drop its
+                   3-member clusters.
 
     Returns:
         ClusteringResult with clusters sorted by size (largest first) for

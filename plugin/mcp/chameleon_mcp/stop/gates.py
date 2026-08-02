@@ -170,7 +170,7 @@ def _stop_file_still_blockable(
             confidence_band = data.get("confidence_band")
             match_quality = data.get("match_quality")
 
-        from chameleon_mcp.lint_engine import detect_language
+        from chameleon_mcp.lint_engine import security_language
         from chameleon_mcp.violation_class import (
             block_eligible_on_file,
             build_ignore_index,
@@ -195,12 +195,15 @@ def _stop_file_still_blockable(
                 from chameleon_mcp.enforcement_calibration import active_block_rules
 
                 active = active_block_rules(hh._enf_profile_dir(repo_root))
-            # A non-code file (detect_language None) cannot hard-block on an
+            # A non-code file (no language at all) cannot hard-block on an
             # archetype-independent rule: a credential-shaped token in doc/config
             # prose stays advisory but never turn-traps (it has no inline-ignore
-            # escape). Matches the posttool arming gate so the two paths agree.
+            # escape). The WIDE gate, matching the posttool arming sites -- this
+            # re-check runs at turn end and CLEARS blockable_unresolved when it
+            # returns False, so a narrower gate here silently disarms every
+            # extraction-tier file the per-edit hooks armed.
             hard = block_eligible_on_file(
-                hard_class_violations(indep, active), language=detect_language(file_path)
+                hard_class_violations(indep, active), language=security_language(file_path)
             )
             idx = build_ignore_index(content, file_path=file_path)
             if idx is not None:
@@ -225,12 +228,13 @@ def _stop_file_still_blockable(
             from chameleon_mcp.enforcement_calibration import active_block_rules
 
             active = active_block_rules(hh._enf_profile_dir(repo_root))
-        # A non-code file (detect_language None) can resolve to an archetype via a
+        # A non-code file (no language at all) can resolve to an archetype via a
         # legacy extension-blind paths_pattern; it still has no inline
         # chameleon-ignore escape, so archetype-independent rules (eval/secret)
-        # stay advisory and never turn-trap here. Mirrors the no-archetype branch.
+        # stay advisory and never turn-trap here. Mirrors the no-archetype branch,
+        # including its WIDE gate.
         hard = block_eligible_on_file(
-            hard_class_violations(violations, active), language=detect_language(file_path)
+            hard_class_violations(violations, active), language=security_language(file_path)
         )
         idx = build_ignore_index(content, file_path=file_path)
         if idx is not None:

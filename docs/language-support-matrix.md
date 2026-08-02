@@ -24,6 +24,23 @@ frameworks add a deeper, framework-aware layer on top):
 
 - **TypeScript / JavaScript** - `.ts .tsx .js .jsx .mjs .cjs`, parsed with the TypeScript Compiler API (`ts_dump.mjs`). Agnostic across any TS/JS repo, with a deeper framework-aware layer for Next.js and NestJS.
 - **Ruby** - `.rb`, parsed with Prism (`prism_dump.rb`). Agnostic across any Ruby repo, with a deeper framework-aware layer for Rails.
+- **Extraction tier** - Go (`.go`), Rust (`.rs`), Java (`.java`), C# (`.cs`), PHP (`.php`), parsed
+  in-process by tree-sitter from a declarative spec (`extractors/treesitter/lang/specs.py`) rather
+  than a hand-written table module. They get the DERIVATION half only: archetype clustering, a
+  canonical witness, conventions, callable signatures and imports. They do NOT get per-edit lint
+  rules, the reverse/exports index, or graded cross-file call edges (same-file edges only). They DO
+  get secret and eval-sink detection, block-eligible on the same terms as a first-class language:
+  those two checks read the content rather than a derived shape, so they need no extractor, and
+  gating them on the extractor question made a hardcoded AWS key advisory in a `.go` file while the
+  identical key in a `.rb` file blocked. The wider gate is `lint_engine.security_language`;
+  `detect_language` stays narrow because handing a heuristic extractor a language it has no arm for
+  yields an empty snapshot that mismatches every real archetype query. The split is declared in
+  `chameleon_mcp/language_support.py`, reported by
+  `/chameleon-doctor`, and pinned by tests that compare the declaration against the actual wiring --
+  a rule that never fires is indistinguishable from a clean codebase, so the absence is stated
+  rather than left to be inferred. Detection requires a build MANIFEST (`go.mod`, `Cargo.toml`,
+  `pom.xml`/`build.gradle`, `global.json`, `composer.json`), so a single vendored `.go` file inside a
+  Python repo does not make that repo Go.
 - **Python** - `.py`, parsed with libcst (`libcst_dump.py`), bundled with the plugin. Discovery globs `**/*.py` only (`_glob_for_extractor`); `.pyi` stubs are never discovered/clustered at bootstrap, but ARE honored downstream where a path is checked rather than discovered (signature contract-diff, phantom-import/-symbol probes, forward hydration, lint gates). Agnostic across any Python repo, with a deeper framework-aware layer for Django / DRF / Flask / FastAPI.
 
 Legend: ✅ full · ⚠️ partial · ❌ missing (parity gap) · - n/a (legitimate exclusive)

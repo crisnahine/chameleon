@@ -11,6 +11,15 @@ OFFLINE / periodic ONLY: it spawns the real refuter (claude -p), so it never run
 inline in a user turn or on any hook hot path. Worktree-free -- each canary is
 self-contained (excerpt + finding + expectation), so nothing touches the repo.
 
+``CHAMELEON_REFUTER_CANARY=0`` is the operator kill switch for that spawn. Every
+other model-spawning path already carries one -- ``CHAMELEON_STOP_VERIFY`` for the
+turn-end VERIFY stage, ``CHAMELEON_REVIEW_REFUTER`` for the pr-review round-3
+refuter, and the three ``enforcement`` lens flags for the review job's lenses (see
+``stop/lenses/__init__.py``'s ``active_lenses``) -- so without this one an operator
+could switch off every model spawn the plugin makes except this module's. Killed,
+it reports ``unavailable`` rather than a clean scoreboard, so a CI job that killed
+it reads exit 2 ("did not run") instead of a false green.
+
 A canary is REAL (the excerpt genuinely has the named bug -> the refuter must NOT
 refute; a refutation is a RECALL failure) or FALSE (the excerpt is correct and the
 finding is a plausible-but-wrong claim -> the refuter SHOULD refute; a
@@ -167,9 +176,15 @@ def run_refuter_canaries(
     """Spawn the real refuter over each canary and score it (``evaluate_canaries``).
 
     Returns ``{"status": "unavailable", "reason": ...}`` without spawning when the
-    refuter CLI is absent. OFFLINE ONLY -- caller must not invoke this on a hook
-    path. Each spawn is retry-free.
+    operator killed it (``CHAMELEON_REFUTER_CANARY=0``) or when the refuter CLI is
+    absent. The kill switch is read BEFORE the CLI probe, so a killed run costs no
+    subprocess at all -- not even the ``claude --help`` probe ``refuter_cli_absent``
+    shells out for. OFFLINE ONLY -- caller must not invoke this on a hook path. Each
+    spawn is retry-free.
     """
+    if os.environ.get("CHAMELEON_REFUTER_CANARY") == "0":
+        return {"status": "unavailable", "reason": "disabled by CHAMELEON_REFUTER_CANARY=0"}
+
     from chameleon_mcp import refuter
 
     canaries = canaries if canaries is not None else CANARIES
@@ -213,9 +228,10 @@ def main(argv: list[str] | None = None) -> int:
 
     Spawns the real refuter over the shipped canaries and prints the recall /
     precision scoreboard. Meant for periodic / on-refuter-prompt-change runs, never
-    a hook. Exit codes: 2 when the refuter is unavailable, 1 when RECALL fell below
-    the gate (a real-finding-kill regression), else 0. Precision is reported but
-    not gated -- it varies stochastically over a small canary set.
+    a hook. Exit codes: 2 when the canaries did not run at all (the refuter CLI is
+    absent, or ``CHAMELEON_REFUTER_CANARY=0`` killed the spawn), 1 when RECALL fell
+    below the gate (a real-finding-kill regression), else 0. Precision is reported
+    but not gated -- it varies stochastically over a small canary set.
     """
     import json
     import sys

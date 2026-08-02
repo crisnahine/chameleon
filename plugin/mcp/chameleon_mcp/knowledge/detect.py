@@ -59,6 +59,11 @@ _DEP_MARKERS: Final[tuple[str, ...]] = (
     "in build.gradle",
     "deps",
     "dep",
+    # Ruby profiles spell the manifest word as the noun: "sinatra gem",
+    # "rspec-rails gem". It must stay AFTER "in gemfile" so that marker keeps
+    # priority, and it needs a trailing space or clause end to match, so
+    # "Gemfile with rails" is not mistaken for a dependency clause.
+    "gem",
 )
 
 # Manifest files, and how to pull declared dependency names out of each.
@@ -166,6 +171,399 @@ def parse_hint(hint: str) -> dict[str, tuple[str, ...]]:
     return {"deps": tuple(dict.fromkeys(deps)), "files": tuple(dict.fromkeys(files))}
 
 
+# What may legally follow a dependency name: a version specifier, extras, an
+# environment marker, a URL, a comment, or end-of-string. Anything else means the
+# name did not actually end there.
+_DEP_NAME_RE: Final[re.Pattern[str]] = re.compile(
+    r"\s*@?([A-Za-z0-9][A-Za-z0-9._/-]*)\s*(?:[<>=!~;,\[(@#\"']|$)"
+)
+
+# No real package name approaches this; a longer token is malformed input rather
+# than a dependency, and keeping it would let one crafted line hold a megabyte.
+_DEP_NAME_MAX = 214
+
+
+def _dep_name(raw: object) -> str:
+    """The leading project name of a requirement string, casefolded.
+
+    Strips the version specifier, extras, environment marker, URL, and trailing
+    comment a manifest line may carry, so `flask-login>=0.6 ; python_version <
+    "3.12"` yields `flask-login`.
+
+    The name must END where a name legally can. A plain prefix match would let a
+    token that merely STARTS with a framework's name be read as that framework --
+    `flaské-login` truncating to `flask` at the first character it cannot
+    consume -- which is the same false dependency claim `_declared_deps` exists
+    to prevent, just arriving one layer down.
+    """
+    m = _DEP_NAME_RE.match(str(raw))
+    if not m:
+        return ""
+    name = m.group(1)
+    return name.casefold() if len(name) <= _DEP_NAME_MAX else ""
+
+
+def _json_dep_names(text: str, sections: tuple[str, ...]) -> set[str]:
+    """Dependency keys from the named object sections of a JSON manifest."""
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        return set()
+    if not isinstance(doc, dict):
+        return set()
+    out: set[str] = set()
+    for section in sections:
+        block = doc.get(section)
+        if isinstance(block, dict):
+            out.update(str(k).casefold() for k in block)
+    return out
+
+
+# Table names that hold dependencies, wherever they appear in the document. The
+# set is the contract rather than the paths: enumerating vendor paths misses the
+# next tool, and every one of these names means dependencies in every ecosystem
+# that uses it.
+_DEP_TABLE_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "dependencies",  # PEP 621, poetry, Cargo, [target.*.], [workspace.]
+        "dev-dependencies",  # poetry, Cargo, pdm
+        "build-dependencies",  # Cargo
+        "optional-dependencies",  # PEP 621
+        "dependency-groups",  # PEP 735
+    }
+)
+
+# `packages` means dependencies ONLY as a Pipfile's own top-level table. It is
+# the most overloaded key in pyproject.toml -- under `[tool.setuptools]` and
+# `[tool.mypy]` it names the project's OWN modules -- so matching it at any
+# depth would read a vendored `flask/` package directory as a Flask dependency,
+# which is the same false claim the per-manifest parsers exist to prevent.
+_ROOT_ONLY_DEP_TABLE_KEYS: Final[frozenset[str]] = frozenset({"packages", "dev-packages"})
+
+# Deep enough for `[tool.hatch.envs.default.dependencies]`, bounded so a
+# pathological document cannot drive unbounded recursion.
+_TOML_MAX_DEPTH: Final[int] = 8
+
+
+def _toml_dep_names(text: str) -> set[str]:
+    """Dependency names from the dependency TABLES of a TOML manifest.
+
+    Walks for the table NAMES rather than for known paths, so PEP 621, PEP 735,
+    poetry groups, pdm, hatch environments, Pipfile, and Cargo's plain,
+    `[workspace.]` and `[target.'cfg(...)'.]` tables are all covered by one
+    rule -- and a tool that adopts the same conventional names later is covered
+    without an edit.
+    """
+    import tomllib
+
+    try:
+        doc = tomllib.loads(text)
+    except (tomllib.TOMLDecodeError, ValueError):
+        return set()
+    if not isinstance(doc, dict):
+        return set()
+
+    out: set[str] = set()
+
+    def _absorb(block: object, depth: int) -> None:
+        # A dependency table is a sequence of requirement strings (PEP 621,
+        # Cargo's array form), a mapping of name -> constraint (poetry, Pipfile,
+        # Cargo's usual form), or a mapping of GROUP -> sequence (PEP 621
+        # optional-dependencies, PEP 735 dependency-groups). The three are told
+        # apart by shape: values that are all lists mean the keys are group
+        # labels, never package names.
+        if depth > _TOML_MAX_DEPTH:
+            return
+        if isinstance(block, list):
+            for item in block:
+                if isinstance(item, str) and (n := _dep_name(item)):
+                    out.add(n)
+        elif isinstance(block, dict):
+            if block and all(isinstance(v, list) for v in block.values()):
+                for group in block.values():
+                    _absorb(group, depth + 1)
+                return
+            for key in block:
+                # `python` is poetry's interpreter constraint, not a package.
+                # `orchestrator._python_dep_names` excludes it for the same
+                # reason, and these two readers must not disagree about the same
+                # file.
+                if (n := _dep_name(key)) and n != "python":
+                    out.add(n)
+
+    def _walk(node: object, depth: int) -> None:
+        if depth > _TOML_MAX_DEPTH or not isinstance(node, dict):
+            return
+        for key, value in node.items():
+            if key in _DEP_TABLE_KEYS or (depth == 0 and key in _ROOT_ONLY_DEP_TABLE_KEYS):
+                _absorb(value, depth)
+            elif isinstance(value, dict):
+                _walk(value, depth + 1)
+
+    _walk(doc, 0)
+    return out
+
+
+_GEMFILE_RE: Final[re.Pattern[str]] = re.compile(r"""^\s*gem\s+['"]([^'"]+)['"]""", re.MULTILINE)
+_GO_REQUIRE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:require\s+)?([a-z0-9][a-z0-9._/-]*\.[a-z]{2,}/[^\s]+)\s+v"
+)
+_POM_ARTIFACT_RE: Final[re.Pattern[str]] = re.compile(
+    r"<(?:artifactId|groupId)>\s*([^<\s]+)\s*</(?:artifactId|groupId)>"
+)
+_GRADLE_COORD_RE: Final[re.Pattern[str]] = re.compile(r"""['"]([a-zA-Z0-9._-]+:[a-zA-Z0-9._-]+)""")
+
+_XML_COMMENT_RE: Final[re.Pattern[str]] = re.compile(r"<!--.*?-->", re.DOTALL)
+# An <exclusions> block names what the build must NOT pull in, so its
+# coordinates mean the opposite of a declaration. The self-closing form is
+# removed FIRST: left to the paired pattern, `<exclusions/>` would open a match
+# that only ends at the NEXT block's closing tag, deleting every declaration in
+# between -- turning a strip-the-negation fix into a drop-the-declaration bug.
+_POM_EMPTY_EXCLUSIONS_RE: Final[re.Pattern[str]] = re.compile(
+    r"<exclusions\b[^>]*/>", re.IGNORECASE
+)
+_POM_EXCLUSIONS_RE: Final[re.Pattern[str]] = re.compile(
+    r"<exclusions\b[^>]*>.*?</exclusions>", re.DOTALL | re.IGNORECASE
+)
+# Whatever the two patterns above left behind is an opener with no close.
+_POM_EXCLUSIONS_OPEN_RE: Final[re.Pattern[str]] = re.compile(r"<exclusions\b", re.IGNORECASE)
+
+
+def _strip_gradle_comments(text: str) -> tuple[str, int | None]:
+    """Gradle source with comments removed, plus any unterminated block's start.
+
+    A regex cannot do this, because Gradle strings carry both halves of a block
+    comment: an ordinary build file with `exclude '**/*.class'` on one line and
+    `exclude '**/build/**'` on another gives `/\\*.*?\\*/` an opener inside the
+    first glob and a closer inside the second, and everything between them --
+    the whole `dependencies` block -- disappears. Tracking quotes is what tells
+    a comment from a path pattern.
+
+    Quote tracking also subsumes the URL case: a `//` inside `"https://..."` is
+    string content here, so no lookbehind is needed to protect it.
+
+    Returns the stripped text and, when the input ends inside an unterminated
+    block comment, that comment's start index -- which is what truncation repair
+    needs to know.
+    """
+    out: list[str] = []
+    unterminated: int | None = None
+    quote: str | None = None
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if quote is not None:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n:
+            following = text[i + 1]
+            if following == "/":
+                end = text.find("\n", i)
+                i = n if end == -1 else end
+                continue
+            if following == "*":
+                end = text.find("*/", i + 2)
+                if end == -1:
+                    unterminated = i
+                    break
+                out.append(" ")
+                i = end + 2
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out), unterminated
+
+
+# PEP 503 treats `_`, `-` and `.` runs as equivalent. Applied to Python
+# manifests only: a Ruby gem (`activerecord_import`) and a Go module path carry
+# meaningful underscores, so normalizing everywhere would break those instead.
+_PY_MANIFESTS: Final[frozenset[str]] = frozenset({"requirements.txt", "pyproject.toml", "Pipfile"})
+
+# The same 50k figure `orchestrator._read_marker_text` uses, though counted in
+# CHARACTERS here (text mode, post-decode) where that one counts BYTES -- on
+# multibyte content the two cut at different points, which is harmless because
+# neither is a correctness boundary, only a bound. A manifest past this is not a
+# manifest, and reading it whole is how a hostile or generated file turns a
+# bounded scan into a MemoryError.
+_MANIFEST_MAX_CHARS: Final[int] = 50_000
+
+
+# Comment delimiters per manifest, for truncation repair only. Keyed by format
+# because the trim must not fire on one that has no such comment syntax: a
+# `<!--` inside a TOML description is a string, not an opener, and cutting from
+# it would drop every real dependency after it.
+#
+# Only XML is listed. A literal `<` cannot appear in XML text or an attribute
+# value, so `<!--` in a pom is always a real opener and a plain search is exact.
+# Gradle is NOT here: `/*` is legal string content there, so finding its
+# unterminated comment needs the quote-aware scanner instead.
+_TRUNCATION_COMMENTS: Final[dict[str, tuple[tuple[str, str], ...]]] = {
+    "pom.xml": (("<!--", "-->"),),
+}
+
+_GRADLE_MANIFESTS: Final[frozenset[str]] = frozenset({"build.gradle", "build.gradle.kts"})
+
+
+def _trim_truncated(manifest: str, text: str) -> str:
+    """Drop the unreliable tail of a manifest the read cap cut short.
+
+    Truncation makes a read produce WRONG names rather than merely fewer, in two
+    ways, and both are the fabrication class the parsers exist to prevent:
+
+    - a cut landing between `<!--` and its `-->` leaves the comment body live,
+      so a coordinate the team REMOVED is resurrected as a declaration;
+    - a cut landing mid-token leaves a partial requirement, and end-of-string is
+      a legal name terminator, so `django-environ` cut short reads as `django`.
+
+    Dropping the last (partial) line and anything after an unterminated comment
+    opener puts truncation back on the safe side: fewer names, never invented
+    ones. The comment half is scoped by format, because over-trimming loses real
+    declarations -- the opposite error, and no less wrong for being quieter.
+    """
+    newline = text.rfind("\n")
+    if newline != -1:
+        text = text[: newline + 1]
+    if manifest in _GRADLE_MANIFESTS:
+        _, unterminated = _strip_gradle_comments(text)
+        if unterminated is not None:
+            text = text[:unterminated]
+    for opener, closer in _TRUNCATION_COMMENTS.get(manifest, ()):
+        # To a fixpoint, not once: cutting at the LAST unterminated opener can
+        # expose an EARLIER one that is also unterminated, and stopping there
+        # leaves its body live -- which is the fabrication this exists to
+        # prevent, just one nesting level up.
+        while True:
+            start = text.rfind(opener)
+            if start == -1 or text.find(closer, start) != -1:
+                break
+            text = text[:start]
+    return text
+
+
+def _with_pep503(names: set[str]) -> set[str]:
+    """Both the written and the PEP 503-normalized spelling of each name.
+
+    Kept as BOTH rather than replaced, so a taxonomy hint spelling a package
+    either way still matches. `orchestrator._python_dep_names` normalizes for the
+    same reason; the two answer the same question about the same file and must
+    not disagree.
+    """
+    return names | {re.sub(r"[-_.]+", "-", n) for n in names}
+
+
+def _declared_deps(manifest: str, text: str) -> set[str]:
+    """Dependency names a manifest DECLARES, never words it merely contains.
+
+    Each format is read through its own declaration surface rather than scraped
+    for package-shaped tokens. The scrape this replaced turned any prose that
+    happened to spell a framework into a dependency claim -- a `pyproject.toml`
+    whose description read "a lightweight alternative to flask" detected as
+    Flask -- and framework names are ordinary words (flask, express, next,
+    solid, astro, hono), so the collision is the common case rather than the
+    rare one. Fails open to an empty set per manifest.
+    """
+    if manifest in ("package.json", "composer.json"):
+        sections = (
+            ("dependencies", "devDependencies", "peerDependencies")
+            if manifest == "package.json"
+            else ("require", "require-dev")
+        )
+        return _json_dep_names(text, sections)
+
+    if manifest in ("pyproject.toml", "Pipfile", "Cargo.toml"):
+        found = _toml_dep_names(text)
+        return _with_pep503(found) if manifest in _PY_MANIFESTS else found
+
+    if manifest == "requirements.txt":
+        out: set[str] = set()
+        for line in text.splitlines():
+            line = line.strip()
+            # `-r base.txt` / `-e .` are directives, not requirements.
+            if not line or line.startswith(("#", "-")):
+                continue
+            if n := _dep_name(line):
+                out.add(n)
+        return _with_pep503(out)
+
+    if manifest == "Gemfile":
+        return {n for m in _GEMFILE_RE.finditer(text) if (n := m.group(1).casefold())}
+
+    if manifest == "go.mod":
+        # Per line, because `// indirect` marks a TRANSITIVE dependency: a CLI
+        # that merely pulls a web framework in through something else must not
+        # be classified as using it, and real go.mod files are mostly such
+        # lines.
+        #
+        # `exclude`/`retract`/`replace` must be tracked as BLOCKS, not matched
+        # per line: their parenthesized bodies are indented, so the directive
+        # keyword never appears on the line carrying the module path, and an
+        # explicitly EXCLUDED module would otherwise score as a dependency.
+        out = set()
+        skipping_block = False
+        for line in text.splitlines():
+            stripped = line.strip()
+            if skipping_block:
+                if stripped.startswith(")"):
+                    skipping_block = False
+                continue
+            if stripped.startswith(("replace", "exclude", "retract")):
+                # `exclude (` opens a block; `exclude one/module v1` is one line.
+                # The trailing comment is stripped first because `exclude ( //
+                # dropped: CVE-...` is legal and common -- reading the raw line
+                # end would miss the paren and let the excluded module through.
+                skipping_block = stripped.split("//", 1)[0].rstrip().endswith("(")
+                continue
+            if stripped.startswith("//") or "// indirect" in line:
+                continue
+            m = _GO_REQUIRE_RE.match(line)
+            if m:
+                out.add(m.group(1).casefold())
+        return out
+
+    if manifest == "pom.xml":
+        # A commented-out coordinate is the record of a dependency REMOVED, and
+        # an <exclusions> block names what must not be pulled in; both read as
+        # declarations to a bare element match.
+        body = _XML_COMMENT_RE.sub(" ", text)
+        body = _POM_EXCLUSIONS_RE.sub(" ", _POM_EMPTY_EXCLUSIONS_RE.sub(" ", body))
+        # An <exclusions> left unclosed (malformed, or cut by the read cap) would
+        # otherwise spill its excluded coordinates into the result, so everything
+        # from the opener on is dropped -- losing declarations rather than
+        # claiming ones the file negates.
+        unclosed = _POM_EXCLUSIONS_OPEN_RE.search(body)
+        if unclosed is not None:
+            body = body[: unclosed.start()]
+        return {n for m in _POM_ARTIFACT_RE.finditer(body) if (n := m.group(1).casefold())}
+
+    if manifest in ("build.gradle", "build.gradle.kts"):
+        # Gradle coordinates are `group:artifact:version`; both halves of the
+        # leading pair are worth recording, since profiles name either. Comments
+        # go first: a commented-out `implementation "g:a:v"` is the commonest way
+        # a removed dependency lingers in a build file.
+        body, _ = _strip_gradle_comments(text)
+        out = set()
+        for m in _GRADLE_COORD_RE.finditer(body):
+            group, _, artifact = m.group(1).partition(":")
+            out.add(group.casefold())
+            if artifact:
+                out.add(artifact.casefold())
+        return out
+
+    return set()
+
+
 def _manifest_dep_names(root: Path, max_dirs: int) -> frozenset[str]:
     """Every dependency name declared anywhere in the repo's manifests.
 
@@ -190,29 +588,26 @@ def _manifest_dep_names(root: Path, max_dirs: int) -> frozenset[str]:
             try:
                 if not path.is_file():
                     continue
-                text = path.read_text(encoding="utf-8", errors="replace")
+                # Capped like `orchestrator._read_marker_text`, its sibling for
+                # exactly this job: a manifest is a small declarative file, and
+                # an unbounded read of a multi-gigabyte or device file raises
+                # MemoryError, which is not an OSError and escapes every guard
+                # between here and the caller.
+                with path.open("r", encoding="utf-8", errors="replace") as fh:
+                    text = fh.read(_MANIFEST_MAX_CHARS + 1)
+                if len(text) > _MANIFEST_MAX_CHARS:
+                    text = _trim_truncated(manifest, text[:_MANIFEST_MAX_CHARS])
             except OSError:
                 continue
-            if manifest == "package.json":
-                try:
-                    doc = json.loads(text)
-                except ValueError:
-                    continue
-                if isinstance(doc, dict):
-                    for section in ("dependencies", "devDependencies", "peerDependencies"):
-                        block = doc.get(section)
-                        if isinstance(block, dict):
-                            names.update(str(k).casefold() for k in block)
+            try:
+                names |= _declared_deps(manifest, text)
+            except Exception:
+                # Parsing is best-effort per manifest. A deeply nested document
+                # raises RecursionError from json/tomllib, which is neither the
+                # ValueError the parsers catch nor an OSError, and this module's
+                # documented contract is that any failure yields no signal
+                # rather than propagating.
                 continue
-            # Everything else: every package-shaped token on a non-comment line.
-            # Coarse on purpose -- a false dependency name only matters if it
-            # happens to equal a framework's own package name.
-            for line in text.splitlines():
-                stripped = line.strip()
-                if not stripped or stripped.startswith("#"):
-                    continue
-                for m in _PKG_RE.finditer(stripped.casefold()):
-                    names.add(m.group(0))
     return frozenset(names)
 
 
