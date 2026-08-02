@@ -1155,6 +1155,9 @@ class BootstrapReport:
     cross-workspace JOIN in _amend_root_profile_with_workspaces. Never persisted
     per-workspace; each row is {importer(ws-rel), name, module, line}."""
     package_name: str | None = None
+    #: Python import-name -> workspace-relative package dir, the Python half of
+    #: the cross-workspace package map (see symbol_index.python_package_dirs).
+    python_packages: dict = field(default_factory=dict)
     """WP-C5: this workspace's package.json `name` (e.g. @scope/a) -- the link the
     coordinator JOIN uses to resolve a sibling's `@scope/a` import to this dir."""
 
@@ -1811,6 +1814,7 @@ def bootstrap_repo(
             # ws-relative candidate importer paths (and locates this package's dir).
             "cross_candidates": ws_report.cross_candidates,
             "package_name": ws_report.package_name,
+            "python_packages": ws_report.python_packages,
             "ws_mono_rel": parent_ws_path,
         }
         if ws_write_root is not None:
@@ -1884,7 +1888,11 @@ def bootstrap_repo(
         # pure-coordinator monorepo (which has no root profile). Off the
         # trust-hashed surface, kill-gated, fail-open.
         _persist_cross_index_to_plugin_data(
-            repo_root, workspace_reports, report.cross_candidates, report.package_name
+            repo_root,
+            workspace_reports,
+            report.cross_candidates,
+            report.package_name,
+            report.python_packages,
         )
 
     return report
@@ -1896,6 +1904,7 @@ def _build_cross_index_payload(
     root_cross_candidates: list[dict] | None,
     root_package_name: str | None,
     root_profile_dir: Path | None,
+    root_python_packages: dict | None = None,
 ) -> dict | None:
     """Assemble the cross_reverse_index.json payload (WP-C5) from the root's own
     plus every successful workspace's captured cross-package candidates.
@@ -1915,9 +1924,15 @@ def _build_cross_index_payload(
     try:
         from chameleon_mcp.symbol_index import build_cross_reverse_index
 
-        # (mono_rel_dir, candidates, package_name, ws_profile_dir)
-        participants: list[tuple[str, list, str | None, Path | None]] = [
-            ("", root_cross_candidates or [], root_package_name, root_profile_dir)
+        # (mono_rel_dir, candidates, package_name, ws_profile_dir, python_packages)
+        participants: list[tuple[str, list, str | None, Path | None, dict]] = [
+            (
+                "",
+                root_cross_candidates or [],
+                root_package_name,
+                root_profile_dir,
+                root_python_packages or {},
+            )
         ]
         for w in workspace_reports:
             if w.get("status") != "success":
@@ -1929,16 +1944,25 @@ def _build_cross_index_payload(
                     w.get("cross_candidates") or [],
                     w.get("package_name"),
                     Path(pdir) if pdir else None,
+                    w.get("python_packages") or {},
                 )
             )
 
+        python_packages: dict[str, str] = {}
         packages: dict[str, str] = {}
         all_candidates: list[dict] = []
         exports_by_key: dict[str, set] = {}
-        for mono_rel, cands, pkg_name, ws_pdir in participants:
+        for mono_rel, cands, pkg_name, ws_pdir, py_pkgs in participants:
             prefix = (mono_rel.rstrip("/") + "/") if mono_rel else ""
             if isinstance(pkg_name, str) and pkg_name.strip():
                 packages[pkg_name.strip()] = mono_rel or "."
+            # Python package dirs are workspace-relative; re-root them the same
+            # way importer paths are. First writer wins, so two workspaces
+            # shipping the same top-level import name resolve to one target
+            # rather than flip-flopping between builds.
+            for imp_name, ws_rel_dir in (py_pkgs or {}).items():
+                if isinstance(imp_name, str) and isinstance(ws_rel_dir, str):
+                    python_packages.setdefault(imp_name, prefix + ws_rel_dir)
             for c in cands:
                 if not isinstance(c, dict) or not isinstance(c.get("importer"), str):
                     continue
@@ -1967,7 +1991,9 @@ def _build_cross_index_payload(
 
         if not all_candidates:
             return None
-        payload = build_cross_reverse_index(all_candidates, packages, mono_root, exports_by_key)
+        payload = build_cross_reverse_index(
+            all_candidates, packages, mono_root, exports_by_key, python_packages
+        )
         return payload if payload.get("targets") else None
     except Exception:
         return None
@@ -2033,6 +2059,7 @@ def _persist_cross_index_to_plugin_data(
     workspace_reports: list[dict],
     root_cross_candidates: list[dict] | None,
     root_package_name: str | None,
+    root_python_packages: dict | None = None,
 ) -> None:
     """WP-C5: write the coordinator cross-workspace index to the PLUGIN DATA DIR
     (``~/.local/share/chameleon/<coordinator repo_id>/``), never a repo-resident
@@ -2062,6 +2089,7 @@ def _persist_cross_index_to_plugin_data(
             root_cross_candidates,
             root_package_name,
             root_profile_dir if root_profile_dir.is_dir() else None,
+            root_python_packages,
         )
         if payload is None:
             return
@@ -3577,6 +3605,7 @@ def _bootstrap_single(
     # never persisted per-workspace; only reachable on this success path.
     wpc5_candidates: list[dict] = []
     wpc5_package_name: str | None = None
+    wpc5_python_packages: dict[str, str] = {}
     if os.environ.get("CHAMELEON_CROSSWS_INDEX") != "0":
         try:
             from chameleon_mcp.symbol_index import (
@@ -3599,6 +3628,17 @@ def _bootstrap_single(
                 wpc5_package_name = _nm.strip()
         except Exception:
             wpc5_package_name = None
+        # Python's half of the same map. Keyed on the IMPORT name (the directory a
+        # sibling actually writes in `from my_lib.core import x`), not the
+        # distribution name in pyproject, which is routinely spelled differently
+        # (`my-lib`) and would resolve nothing.
+        if extractor.language == "python":
+            try:
+                from chameleon_mcp.symbol_index import python_package_dirs
+
+                wpc5_python_packages = python_package_dirs(repo_root)
+            except Exception:
+                wpc5_python_packages = {}
 
     # Surface tool-config parse failures on the RESPONSE, not only in the
     # persisted rules.json: a caller that never re-reads the artifact (the
@@ -3638,6 +3678,7 @@ def _bootstrap_single(
         sparse_dropped_files=sparse_dropped_files,
         cross_candidates=wpc5_candidates,
         package_name=wpc5_package_name,
+        python_packages=wpc5_python_packages,
         tool_config_warnings=_tool_config_warnings,
     )
 

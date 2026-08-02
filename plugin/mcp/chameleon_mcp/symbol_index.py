@@ -710,6 +710,11 @@ def collect_cross_package_candidates(files, ws_root: Path | str, language: str =
                         "name": name,
                         "module": module,
                         "line": int(line) if isinstance(line, int) else None,
+                        # Carried so the coordinator JOIN, which pools candidates
+                        # from every workspace, can resolve each one by its own
+                        # language's rules -- a monorepo mixing a TS app and a
+                        # Python service pools both into one list.
+                        "language": language,
                     }
                 )
     except Exception:
@@ -789,7 +794,75 @@ def _split_scoped_package(module: str) -> tuple[str, str]:
     return pkg, sub
 
 
-def build_cross_reverse_index(candidates, packages: dict, mono_root: Path | str, exports_by_key):
+def python_package_dirs(ws_root: Path | str) -> dict[str, str]:
+    """Importable top-level package names this workspace provides.
+
+    Maps the IMPORT name to the package directory, workspace-relative. The import
+    name is what a sibling actually writes (`from my_lib.core import x`), and it
+    routinely differs from the distribution name in pyproject (`my-lib`), so
+    keying the cross-workspace map on the distribution name would resolve almost
+    nothing. Probes the flat layout and the PyPA `src/` layout, which is where
+    essentially every package lives.
+
+    Returns `{}` on any error -- a workspace that contributes no package names
+    simply produces no cross-package edges, exactly as before.
+    """
+    out: dict[str, str] = {}
+    try:
+        root = Path(ws_root).resolve()
+        for parent, prefix in ((root, ""), (root / "src", "src/")):
+            if not parent.is_dir():
+                continue
+            for child in sorted(parent.iterdir()):
+                try:
+                    if not child.is_dir() or child.name in _PY_NON_SOURCE_DIRS:
+                        continue
+                    if not child.name.isidentifier():
+                        continue
+                    if not any((child / f"__init__{s}").is_file() for s in _PY_INDEX_SUFFIXES):
+                        continue
+                    out.setdefault(child.name, f"{prefix}{child.name}")
+                except OSError:
+                    continue
+    except OSError:
+        return {}
+    return out
+
+
+def _python_cross_target(
+    root: Path, importer: str, module: str, python_packages: dict
+) -> str | None:
+    """Mono-key the Python cross-package specifier `module` points at, or None.
+
+    Two shapes, mirroring the TS arm: a relative import that escaped its own
+    workspace (`from ..other_pkg.mod import x`), resolved against the importer's
+    directory; and an absolute `pkg.sub.mod`, whose first dotted segment is
+    looked up in the coordinator's import-name map. A head that names no sibling
+    package is an external dependency and yields no edge.
+    """
+    try:
+        if module.startswith("."):
+            base = _python_module_base(module, (root / importer).resolve().parent, root)
+            return resolve_python_index_key(base, root) if _under(root, base) else None
+        head, _, rest = module.partition(".")
+        pkg_dir = python_packages.get(head)
+        if not pkg_dir:
+            return None
+        base = root / pkg_dir
+        if rest:
+            base = base / Path(rest.replace(".", "/"))
+        return resolve_python_index_key(base, root)
+    except (OSError, ValueError):
+        return None
+
+
+def build_cross_reverse_index(
+    candidates,
+    packages: dict,
+    mono_root: Path | str,
+    exports_by_key,
+    python_packages: dict | None = None,
+):
     """Resolve every workspace's captured cross-package candidate to the sibling
     workspace file it targets and emit the cross_reverse_index.json payload.
 
@@ -821,7 +894,12 @@ def build_cross_reverse_index(candidates, packages: dict, mono_root: Path | str,
             ):
                 continue
             target_key = None
-            if module.startswith("."):
+            if (c.get("language") or "typescript") == "python":
+                # Python resolves by dotted module path against the import-name
+                # map, not by file extension against a package.json -- a separate
+                # arm rather than a special case inside the JS probing.
+                target_key = _python_cross_target(root, importer, module, python_packages or {})
+            elif module.startswith("."):
                 # Relative specifier that escaped its workspace: resolve against the
                 # importer's mono-relative directory to a mono-key.
                 resolved = ((root / importer).resolve().parent / module).resolve()

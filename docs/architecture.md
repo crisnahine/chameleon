@@ -633,8 +633,15 @@ coordinator profile to host it would create a new trust anchor and arm the
 security-deny floor on previously ungoverned root files. Its consumer is a
 Stop-time advisory (never a deny) that flags an export the turn removed which a
 sibling workspace still imports, confirmed by a live presence re-check on the
-importer. TypeScript/JS cross-package resolution only; Python is a documented
-gap.
+importer. TypeScript/JS and Python both resolve. Each candidate carries the
+language that captured it, so the coordinator pools every workspace's candidates
+into one list and resolves each by its own rules: JS extension probing plus
+`package.json` `main` for one, dotted module paths against an import-name map
+for the other. Python's map is keyed on the IMPORT name (the directory a sibling
+writes in `from my_lib.core import x`), not the distribution name in
+`pyproject.toml`, which is routinely spelled differently (`my-lib`) and would
+resolve almost nothing. Ruby has no static export surface and the
+extraction-tier languages have no reverse index, so neither contributes edges.
 
 ---
 

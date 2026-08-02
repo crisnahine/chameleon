@@ -1459,12 +1459,13 @@ def _crossworkspace_existence_advisory_lines(*, repo_root: Path, state, cfg) -> 
             if not p.is_file():
                 continue
             lang = detect_language(str(p))
-            # v1 resolves cross-package specifiers for TypeScript/JS only (the
-            # coordinator JOIN probes JS extensions + package.json main); Python
-            # cross-package resolution is a documented follow-up, so no Python
-            # cross-workspace edge is ever produced and checking a .py edit here
-            # would only ever no-op. Scope to TS so the code matches the pipeline.
-            if lang != "typescript":
+            # TypeScript AND Python: the coordinator JOIN resolves both (JS
+            # extensions + package.json main for one, dotted module paths against
+            # the import-name map for the other), so both can carry a real
+            # cross-workspace edge. Ruby has no static export surface and the
+            # extraction-tier languages have no reverse index, so neither can
+            # produce an edge and checking them here would only ever no-op.
+            if lang not in ("typescript", "python"):
                 continue
             ws_root = find_repo_root(p)
             if ws_root is None:

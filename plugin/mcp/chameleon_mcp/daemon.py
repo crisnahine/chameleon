@@ -376,14 +376,29 @@ def _plugin_data_fstype() -> str | None:
 
 
 def _pid_alive(pid: int) -> bool:
-    """POSIX liveness check. Permission errors count as 'alive' (conservative)."""
+    """Liveness check, delegated to the cross-platform probe in ``locks``.
+
+    This module is POSIX-only in practice (no AF_UNIX, no daemon), so the local
+    ``os.kill(pid, 0)`` this used to run was correct on every path that can
+    actually reach it. It was still the wrong call to have here: on Windows
+    ``os.kill`` with a non-CTRL signal calls ``TerminateProcess``, so a liveness
+    probe would KILL the process it asked about, and the only thing standing
+    between that and a real pid was the fact that no pidfile can exist on
+    Windows -- a consequence of unrelated code, not a guard. ``locks.pid_alive``
+    queries via ``OpenProcess`` there, so the hazard cannot come back if a
+    pidfile ever appears by another route. Permission errors still count as
+    alive (conservative) on both platforms.
+    """
     if pid <= 0:
         return False
     try:
-        os.kill(pid, 0)
+        from chameleon_mcp.locks import pid_alive
+
+        return pid_alive(pid)
+    except Exception:
+        # Never let a liveness probe fail the caller: an unknown state reads as
+        # alive, so a running daemon is never reaped out from under a session.
         return True
-    except OSError as e:
-        return e.errno != errno.ESRCH
 
 
 def _read_pidfile() -> tuple[int | None, str | None]:
