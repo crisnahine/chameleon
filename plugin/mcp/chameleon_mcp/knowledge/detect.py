@@ -316,7 +316,10 @@ _POM_EXCLUSIONS_RE: Final[re.Pattern[str]] = re.compile(
     r"<exclusions\b.*?</exclusions>", re.DOTALL | re.IGNORECASE
 )
 _GRADLE_BLOCK_COMMENT_RE: Final[re.Pattern[str]] = re.compile(r"/\*.*?\*/", re.DOTALL)
-_GRADLE_LINE_COMMENT_RE: Final[re.Pattern[str]] = re.compile(r"//[^\n]*")
+# `(?<!:)` keeps a URL scheme's own `//` from reading as a comment: a
+# `maven { url "https://..." }` sharing a line with a coordinate would otherwise
+# take the coordinate with it when the rest of the line is stripped.
+_GRADLE_LINE_COMMENT_RE: Final[re.Pattern[str]] = re.compile(r"(?<!:)//[^\n]*")
 
 # PEP 503 treats `_`, `-` and `.` runs as equivalent. Applied to Python
 # manifests only: a Ruby gem (`activerecord_import`) and a Go module path carry

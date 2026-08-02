@@ -450,6 +450,11 @@ def test_a_removed_or_excluded_dependency_is_not_a_declaration():
     )
     assert detect._declared_deps("build.gradle", gradle) == {"com.google.guava", "guava"}
 
+    # But a URL scheme's own `//` is not a comment: stripping it would take any
+    # coordinate sharing the line with a `maven { url ... }` along with it.
+    same_line = 'maven { url "https://x.io/m2" }; implementation "io.ktor:ktor-core:2"\n'
+    assert detect._declared_deps("build.gradle", same_line) == {"io.ktor", "ktor-core"}
+
     # go.mod: an excluded module, and a transitive one, are not dependencies.
     # The block bodies are INDENTED, so the directive keyword never appears on
     # the line carrying the module path -- a per-line prefix check misses it.
