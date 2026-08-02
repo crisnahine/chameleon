@@ -415,6 +415,23 @@ def test_prose_in_a_manifest_is_never_a_dependency():
         assert detect._declared_deps(manifest, text) == expected, manifest
 
 
+def test_a_dependency_name_must_end_where_a_name_legally_can():
+    """A prefix match would read any token that merely STARTS with a framework's
+    name as that framework, which is the same false claim one layer down: a
+    package spelled `flaske-login` with a non-ASCII e truncates to `flask` at the
+    first character the pattern cannot consume."""
+    assert detect._dep_name("flask-login>=0.6") == "flask-login"
+    assert detect._dep_name("requests[socks]==2.0") == "requests"
+    assert detect._dep_name("django>=4.2,<5") == "django"
+    # Truncation at an illegal character yields nothing, not the prefix.
+    assert detect._dep_name("flaské-login") == ""
+    # And no single token may be unbounded.
+    assert detect._dep_name("x" * 300) == ""
+    assert detect._declared_deps("requirements.txt", "flaské-login\nflask-login>=1\n") == {
+        "flask-login"
+    }
+
+
 def test_a_gem_clause_is_a_dependency_signal(tmp_path):
     """Ruby profiles spell the manifest word as a noun ("sinatra gem"), which the
     marker table missed -- so both Ruby profiles beyond Rails contributed no

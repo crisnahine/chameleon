@@ -171,15 +171,36 @@ def parse_hint(hint: str) -> dict[str, tuple[str, ...]]:
     return {"deps": tuple(dict.fromkeys(deps)), "files": tuple(dict.fromkeys(files))}
 
 
+# What may legally follow a dependency name: a version specifier, extras, an
+# environment marker, a URL, a comment, or end-of-string. Anything else means the
+# name did not actually end there.
+_DEP_NAME_RE: Final[re.Pattern[str]] = re.compile(
+    r"\s*@?([A-Za-z0-9][A-Za-z0-9._/-]*)\s*(?:[<>=!~;,\[(@#\"']|$)"
+)
+
+# No real package name approaches this; a longer token is malformed input rather
+# than a dependency, and keeping it would let one crafted line hold a megabyte.
+_DEP_NAME_MAX = 214
+
+
 def _dep_name(raw: object) -> str:
     """The leading project name of a requirement string, casefolded.
 
     Strips the version specifier, extras, environment marker, URL, and trailing
     comment a manifest line may carry, so `flask-login>=0.6 ; python_version <
     "3.12"` yields `flask-login`.
+
+    The name must END where a name legally can. A plain prefix match would let a
+    token that merely STARTS with a framework's name be read as that framework --
+    `flaské-login` truncating to `flask` at the first character it cannot
+    consume -- which is the same false dependency claim `_declared_deps` exists
+    to prevent, just arriving one layer down.
     """
-    m = re.match(r"\s*@?([A-Za-z0-9][A-Za-z0-9._/-]*)", str(raw))
-    return m.group(1).casefold() if m else ""
+    m = _DEP_NAME_RE.match(str(raw))
+    if not m:
+        return ""
+    name = m.group(1)
+    return name.casefold() if len(name) <= _DEP_NAME_MAX else ""
 
 
 def _json_dep_names(text: str, sections: tuple[str, ...]) -> set[str]:
