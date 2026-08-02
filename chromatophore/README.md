@@ -1,7 +1,13 @@
 # chromatophore
 
 A universal code-convention engine: one tree-sitter parse layer over 24
-languages, built for [chameleon](../chameleon) to use.
+languages, built for the [chameleon](..) plugin it lives in.
+
+It sits outside `plugin/` on purpose. A marketplace install copies `plugin/`
+verbatim, and 9,500 lines of Rust plus a 39 MB binary do not belong in a plugin
+payload — chameleon reaches this engine through `CHROMATOPHORE_BIN`, or does
+without it. It is also outside chameleon's CI paths, so it carries its own gates;
+run them from this directory.
 
 The organ that actually changes a chameleon's colour is the chromatophore. This
 is the equivalent layer for the plugin: it does the compute-heavy,
@@ -119,6 +125,9 @@ Wiring it in is a `parse_repo` that spawns this binary instead, inserted ahead o
 `PythonExtractor`:
 
 ```python
+import sys
+sys.path.insert(0, "chromatophore/integration")  # relative to the repo root
+
 from chameleon_mcp.extractors.registry import EXTRACTORS, PythonExtractor
 from chameleon_extractor import ChromatophoreExtractor
 
@@ -250,10 +259,16 @@ loads, sits inside the ABI window tree-sitter accepts, and parses.
 ## Development
 
 ```bash
+cargo build --release         # 24 grammars, ~32 s cold
 cargo test                    # 157 tests
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
-python3 tests/parity.py --chameleon /path/to/chameleon
-CHROMATOPHORE_BIN=./target/release/chromatophore \
-  python3 integration/verify.py --chameleon /path/to/chameleon
+
+# The host is the parent directory.
+CHROMATOPHORE_BIN=$(pwd)/target/release/chromatophore python3 tests/parity.py --chameleon ..
+CHROMATOPHORE_BIN=$(pwd)/target/release/chromatophore \
+  ../plugin/mcp/.venv/bin/python integration/verify.py --chameleon ..
 ```
+
+`verify.py` needs chameleon's own venv, because it imports chameleon's
+`TreeSitterExtractor` and compares against it directly.
