@@ -22,6 +22,26 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # How many workspaces a monorepo bootstrap analyzes. A sampling cap, not a
     # safety guard -- REPO_SIZE_GUARD is the post-exclusion DoS backstop.
     "WORKSPACE_FANOUT_CAP": 500,
+    # Taxonomy-scored framework detection. The four tier weights and the report
+    # floor are the codex's own numbers (architecture spec 5.2); they are here
+    # rather than inline so an operator can retune a noisy detection without a
+    # fork. A signal tier is how much a match PROVES: a manifest dependency is
+    # definitive, the framework's own config file is nearly so, its conventional
+    # directories are suggestive.
+    "TAXONOMY_TIER_DEFINITIVE": 1.0,
+    "TAXONOMY_TIER_STRONG_CONFIG": 0.8,
+    "TAXONOMY_TIER_STRONG_CONVENTION": 0.6,
+    "TAXONOMY_REPORT_FLOOR": 0.6,
+    # Directories whose manifests are read: the root and its direct children,
+    # matching bootstrap's own _candidate_manifest_dirs.
+    "TAXONOMY_MANIFEST_DIRS": 40,
+    # Convention globs tried per framework. 64 profiles x this many globs is the
+    # detection sweep's real cost, so it is the knob that bounds it.
+    "TAXONOMY_GLOBS_PER_FRAMEWORK": 6,
+    # Per-glob walk budget. A MISS is the common case when scoring 64 profiles,
+    # and an unbounded miss walks the whole repo.
+    "TAXONOMY_SCAN_DIRS": 400,
+    "TAXONOMY_SCAN_DEPTH": 6,
     "WARNING_SAMPLE_PATHS": 3,
     "SPARSE_WARNING_LIMIT": 50,
     "MAX_EXTENDS_HOPS": 8,
