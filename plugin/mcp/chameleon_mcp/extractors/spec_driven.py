@@ -38,6 +38,12 @@ _MARKERS: dict[str, tuple[str, ...]] = {
     # `languages_present`, so its files were never parsed and never indexed.
     "python": ("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile"),
     "ruby": ("Gemfile", "Rakefile", ".ruby-version"),
+    # TypeScript/JS belongs here for the SAME reason python and ruby do, and
+    # its absence was the sharper gap: it is the usual PRIMARY, so forgetting
+    # it costs nothing on a TS repo and everything on the most common polyglot
+    # shape there is -- a Rails app with `app/javascript/`, a Django app with a
+    # `frontend/` React tree. Those derived zero TypeScript archetypes.
+    "typescript": ("package.json", "tsconfig.json", "jsconfig.json"),
 }
 
 # Extensions whose presence, alongside a marker, confirms the repo actually

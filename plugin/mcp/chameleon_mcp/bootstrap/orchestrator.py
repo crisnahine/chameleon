@@ -1009,7 +1009,13 @@ def _language_of_member(member) -> str | None:
         return None
 
 
-def _secondary_language_files(repo_root: Path, primary_language: str) -> list:
+def _secondary_language_files(
+    repo_root: Path,
+    primary_language: str,
+    *,
+    paths_glob: str | None = None,
+    workspace_roots: list[str] | None = None,
+) -> list:
     """Parsed files for every OTHER language the repo genuinely contains.
 
     Chameleon binds one extractor, and therefore one language, per profile:
@@ -1064,7 +1070,18 @@ def _secondary_language_files(repo_root: Path, primary_language: str) -> list:
         )
         if not stems:
             return []
-        discovered = discover_files(repo_root, glob=f"**/*.{{{','.join(stems)}}}")
+        glob = f"**/*.{{{','.join(stems)}}}"
+        try:
+            discovered = discover_files(
+                repo_root, glob=glob, paths_glob=paths_glob, workspace_roots=workspace_roots
+            )
+        except TooManyFilesError:
+            # The size guard fires above REPO_SIZE_GUARD, and the blanket
+            # handler below would turn that into ZERO secondary coverage --
+            # on precisely the repo the cap exists for (the threshold's own
+            # comment names "a Go monorepo with a small TS tooling dir").
+            # A capped sample is the point; refusing the whole language is not.
+            discovered = sorted(repo_root.glob(glob))
         if not discovered:
             return []
         # Bounded like every other derivation input. The primary corpus has
@@ -2989,7 +3006,15 @@ def _bootstrap_single(
     # A secondary-language archetype therefore carries a canonical witness and a
     # shape but no convention rules -- absent guidance rather than wrong
     # guidance, which is the same trade the security gates make.
-    _secondary_files = _secondary_language_files(repo_root, extractor.language)
+    # The user's scope override applies to EVERY language, not just the primary:
+    # a `paths_glob="apps/web/**"` that still pulled Go files from the whole tree
+    # into clustering would contradict the scope the profile itself records.
+    _secondary_files = _secondary_language_files(
+        repo_root,
+        extractor.language,
+        paths_glob=paths_glob,
+        workspace_roots=list(workspace_roots) if workspace_roots else None,
+    )
     # The sparse threshold stays pinned to the PRIMARY corpus size. Left to
     # itself, `cluster_files` derives it from the total member count, and that
     # count is tiered (<1000 -> 3, <5000 -> 4, else 5), so merely ADDING a
@@ -3003,7 +3028,15 @@ def _bootstrap_single(
         repo_root=repo_root,
         min_cluster_size=_primary_sparse_threshold(parse_result.files),
     )
-    files_skipped_generated = len(clustering.skipped_generated)
+    # Primary members only, matching `files_processed`. Counting secondary
+    # members here is the same mismatch round 1 fixed for sparse_dropped_files
+    # and did not carry to this sibling: a 6-file TS app beside a 500-file
+    # generated Go module reported 'processed 6, skipped 500'.
+    files_skipped_generated = sum(
+        1
+        for pf in clustering.skipped_generated
+        if _language_of_member(pf) in (None, extractor.language)
+    )
     # Primary members only, so this stays comparable with `files_processed`
     # (also primary-only). Counting secondary members here let
     # sparse_dropped_files exceed the clustered total the same report
