@@ -641,10 +641,33 @@ def _classify_framework(repo_root: Path, language: str | None) -> str | None:
                 for ext in (".js", ".mjs", ".ts", ".cjs")
             ):
                 return "nextjs"
-            return None
+            return _taxonomy_framework(repo_root, language)
+        # A language the six hardcoded arms never covered -- Go, Rust, Java,
+        # PHP, everything else. Before the taxonomy there was nothing to say
+        # here at all.
+        return _taxonomy_framework(repo_root, language)
     except Exception:
         return None
-    return None
+
+
+def _taxonomy_framework(repo_root: Path, language: str | None) -> str | None:
+    """The scored fallback, for a framework no hardcoded arm names.
+
+    Deliberately a FALLBACK rather than a replacement. The six arms above encode
+    corroboration the profiles do not -- a `manage.py` whose CONTENT is a real
+    Django entrypoint outranks an incidental fastapi dep, and that ordering was
+    chosen against real repos. The taxonomy answers only where they return None,
+    which is every framework outside the six and every language outside the
+    three.
+
+    Fails open to None like everything else in this classifier.
+    """
+    try:
+        from chameleon_mcp.knowledge.detect import primary_framework
+
+        return primary_framework(repo_root, language)
+    except Exception:
+        return None
 
 
 def _select_extractor(repo_root: Path) -> Extractor | None:

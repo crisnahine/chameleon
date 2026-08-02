@@ -254,6 +254,23 @@ def get_rules(repo: str, source: str | None = None) -> dict:
 
 
 @_wire_tool(annotations=_READ_ONLY)
+def explain_concept(term: str | None = None, kind: str | None = None, limit: int = 8) -> dict:
+    """Define a software-engineering concept from the compiled-in taxonomy.
+
+    541 named concepts: design patterns, architecture styles, principles, code
+    smells, refactorings, language constructs, 25 language profiles and 64
+    framework profiles. Repo-INDEPENDENT -- this is the definition, never a
+    claim about your repo, so it takes no `repo`.
+
+    `term` accepts a name or an alias ("Repository", "kiss", "coding
+    convention") and falls back to a search. `kind` alone lists a category
+    (`"code-smell"`, `"design-pattern"`, `"framework-profile"`, ...). Neither
+    returns the catalogue of kinds.
+    """
+    return tools.explain_concept(term, kind, limit)
+
+
+@_wire_tool(annotations=_READ_ONLY)
 def lint_file(repo: str, archetype: str, content: str, file_path: str | None = None) -> dict:
     """Validate file content against archetype's rules. Returns violations + canonical confidence.
 
