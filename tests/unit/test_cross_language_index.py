@@ -45,6 +45,30 @@ def mixed_repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
+@pytest.fixture
+def dense_mixed_repo(tmp_path: Path) -> Path:
+    """A polyglot repo with enough files per language to clear the sparse floor.
+
+    `mixed_repo` is deliberately minimal and other tests assert its exact
+    contents, but clustering drops clusters below an adaptive minimum, so one
+    file per language yields no archetypes at all. Six each is what the
+    derivation actually needs.
+    """
+    (tmp_path / "web" / "src").mkdir(parents=True)
+    (tmp_path / "svc" / "handler").mkdir(parents=True)
+    (tmp_path / "package.json").write_text('{"name":"mixed"}', encoding="utf-8")
+    (tmp_path / "tsconfig.json").write_text('{"compilerOptions":{}}', encoding="utf-8")
+    (tmp_path / "go.mod").write_text("module example.com/svc\n\ngo 1.22\n", encoding="utf-8")
+    for i in range(6):
+        (tmp_path / "web" / "src" / f"m{i}.ts").write_text(
+            f"export function boot{i}(): void {{}}\n", encoding="utf-8"
+        )
+        (tmp_path / "svc" / "handler" / f"h{i}.go").write_text(
+            f'package handler\n\nfunc Serve{i}() string {{ return "ok" }}\n', encoding="utf-8"
+        )
+    return tmp_path
+
+
 def test_a_secondary_language_is_detected_only_with_its_build_manifest(tmp_path: Path):
     """The manifest is what makes the claim about the REPO, not about one file."""
     (tmp_path / "vendor").mkdir()
@@ -151,3 +175,103 @@ def test_every_marked_language_has_a_grammar(tmp_path: Path):
     from chameleon_mcp.extractors.treesitter.extractor import _TABLES
 
     assert set(_MARKERS) <= set(_TABLES), sorted(set(_MARKERS) - set(_TABLES))
+
+
+def test_every_language_gets_its_own_archetype(dense_mixed_repo: Path, monkeypatch, tmp_path: Path):
+    """The headline: a polyglot repo derives archetypes per language.
+
+    Before, clustering saw the primary parse alone, so a TS+Go repo produced one
+    TypeScript archetype and the Go service resolved to `archetype: None` with
+    `match_quality: "none"` -- indexed, but no per-edit guidance at all.
+
+    Safe to feed clustering every language because it already separates them
+    structurally: `cluster_files` buckets with the extension attached, so
+    `src:ts` and `svc/handler:go` are distinct keys no merge pass can join.
+    """
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_HMAC_KEY_PATH", str(tmp_path / "hmac"))
+    for argv in (["git", "init", "-q"], ["git", "add", "-A"], ["git", "commit", "-qm", "init"]):
+        subprocess.run(argv, cwd=dense_mixed_repo, check=True, capture_output=True)
+
+    from chameleon_mcp.bootstrap.orchestrator import bootstrap_repo
+
+    assert bootstrap_repo(dense_mixed_repo).status == "success"
+    archetypes = json.loads((dense_mixed_repo / ".chameleon" / "archetypes.json").read_text())[
+        "archetypes"
+    ]
+
+    patterns = {a.get("paths_pattern", "") for a in archetypes.values()}
+    assert any(p.endswith(":go") for p in patterns), (
+        f"the Go service produced no archetype of its own: {sorted(patterns)}"
+    )
+    assert any(p.endswith(":ts") or p.endswith(":tsx") for p in patterns), sorted(patterns)
+    # Distinct keys per language: a merge would show as one archetype spanning both.
+    assert len(archetypes) >= 2, sorted(archetypes)
+
+
+def test_clustering_never_merges_two_languages(dense_mixed_repo: Path):
+    """The property the change rests on, asserted directly rather than assumed."""
+    from chameleon_mcp.bootstrap.clustering import cluster_files
+    from chameleon_mcp.extractors.registry import select_extractor
+
+    extractor = select_extractor(dense_mixed_repo)
+    files = list(extractor.parse_repo(dense_mixed_repo).files) + _secondary_language_files(
+        dense_mixed_repo, extractor.language
+    )
+    clusters = getattr(cluster_files(files, repo_root=dense_mixed_repo), "clusters", [])
+
+    buckets = [c.key.path_pattern_bucket for c in clusters]
+    assert len(buckets) == len(set(buckets)), buckets
+    for cluster in clusters:
+        exts = {Path(getattr(m, "path", m)).suffix for m in cluster.members}
+        assert len(exts) == 1, f"cluster {cluster.key.path_pattern_bucket} mixes {exts}"
+
+
+def test_adding_a_language_never_raises_the_sparse_bar_for_the_primary():
+    """Covering a new language must not cost the primary its archetypes.
+
+    `cluster_files` derives the sparse threshold from the TOTAL member count and
+    the tiers are stepped (<1000 -> 3, <5000 -> 4, else 5). Feeding it secondary
+    files therefore moves the bar for everyone: 995 TypeScript files plus 10 Go
+    files crosses 1000, the threshold goes 3 -> 4, and every 3-member TypeScript
+    cluster the repo used to get is dropped as sparse. Nothing in the suite would
+    show it -- the archetypes simply stop existing on large repos.
+
+    The orchestrator pins the threshold to the PRIMARY corpus, so this asserts
+    the arithmetic that made the pin necessary.
+    """
+    from chameleon_mcp.bootstrap.clustering import _adaptive_sparse_threshold
+
+    primary_only = _adaptive_sparse_threshold(995)
+    with_secondaries = _adaptive_sparse_threshold(995 + 10)
+    assert primary_only == 3 and with_secondaries == 4, (primary_only, with_secondaries)
+
+
+def test_the_orchestrator_pins_the_threshold_to_the_primary_corpus(monkeypatch, tmp_path: Path):
+    """The pin itself: `cluster_files` receives the primary-derived threshold."""
+    from chameleon_mcp.bootstrap import orchestrator
+
+    seen: dict = {}
+    real = orchestrator.cluster_files
+
+    def spy(files, *args, **kwargs):
+        seen["min_cluster_size"] = kwargs.get("min_cluster_size")
+        seen["n_files"] = len(list(files))
+        return real(files, *args, **kwargs)
+
+    monkeypatch.setattr(orchestrator, "cluster_files", spy)
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_HMAC_KEY_PATH", str(tmp_path / "hmac"))
+
+    repo = tmp_path / "r"
+    (repo / "src").mkdir(parents=True)
+    (repo / "package.json").write_text('{"name":"r"}', encoding="utf-8")
+    for i in range(4):
+        (repo / "src" / f"m{i}.ts").write_text(f"export const v{i} = {i};\n", encoding="utf-8")
+    for argv in (["git", "init", "-q"], ["git", "add", "-A"], ["git", "commit", "-qm", "i"]):
+        subprocess.run(argv, cwd=repo, check=True, capture_output=True)
+
+    orchestrator.bootstrap_repo(repo)
+    assert seen.get("min_cluster_size") is not None, "threshold was left to the total count"

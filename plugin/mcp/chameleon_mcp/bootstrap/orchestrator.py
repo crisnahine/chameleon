@@ -37,6 +37,7 @@ from chameleon_mcp.bootstrap.canonical import (
 )
 from chameleon_mcp.bootstrap.clustering import (
     BIMODAL_DOMINANT_SHARE_THRESHOLD,
+    _adaptive_sparse_threshold,
     cluster_files,
 )
 from chameleon_mcp.bootstrap.comment_scan import detect_commented_out_code_by_group
@@ -2868,7 +2869,39 @@ def _bootstrap_single(
             discovered_files_post_exclusion=post_exclusion_count,
         )
 
-    clustering = cluster_files(parse_result.files, repo_root=repo_root)
+    # Cluster EVERY language the repo holds, not just the detection winner. A
+    # polyglot repo previously derived archetypes from its primary language
+    # alone, so a real Go service beside a TypeScript app resolved to no
+    # archetype at all and its files got no per-edit guidance.
+    #
+    # Safe because clustering already separates languages structurally: the
+    # bucket carries the extension (`include_extension_in_bucket=True` in
+    # cluster_files), so `web/src:tsx`, `api/app:py` and `svc/internal:go` are
+    # distinct keys and no merge pass can join them. Measured on a 3-language
+    # fixture: 18 files -> 3 clusters, one per language, and
+    # `propose_archetype_name` already disambiguates through its
+    # `existing_names` set.
+    #
+    # Conventions deliberately do NOT get these files (see `all_files=` below):
+    # `extract_all_conventions` takes ONE repo-wide language and gates most rules
+    # on it, so feeding it foreign files would measure Go with Python semantics.
+    # A secondary-language archetype therefore carries a canonical witness and a
+    # shape but no convention rules -- absent guidance rather than wrong
+    # guidance, which is the same trade the security gates make.
+    _secondary_files = _secondary_language_files(repo_root, extractor.language)
+    # The sparse threshold stays pinned to the PRIMARY corpus size. Left to
+    # itself, `cluster_files` derives it from the total member count, and that
+    # count is tiered (<1000 -> 3, <5000 -> 4, else 5), so merely ADDING a
+    # secondary language could push a repo across a boundary and raise the bar
+    # for every cluster: 995 TypeScript files plus 10 Go files crosses 1000, the
+    # threshold moves 3 -> 4, and every 3-member TypeScript cluster the repo used
+    # to get is silently dropped as sparse. Covering a new language must never
+    # cost the primary language archetypes it already had.
+    clustering = cluster_files(
+        list(parse_result.files) + _secondary_files,
+        repo_root=repo_root,
+        min_cluster_size=_adaptive_sparse_threshold(len(parse_result.files)),
+    )
     files_skipped_generated = len(clustering.skipped_generated)
     sparse_dropped_files = sum(c.size for c in clustering.sparse_clusters)
 
@@ -3472,7 +3505,7 @@ def _bootstrap_single(
         # is hashed into the trust SHA, so it is written inside this same atomic
         # transaction. Best-effort: a build failure must not abort the commit.
         # The primary parse plus every secondary language the repo really has.
-        _index_files = parse_result.files + _secondary_language_files(repo_root, extractor.language)
+        _index_files = list(parse_result.files) + _secondary_files
         try:
             from chameleon_mcp.function_catalog import build_function_catalog
 
