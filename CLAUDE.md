@@ -25,10 +25,23 @@ chameleon/
 │   ├── mcp/             chameleon-mcp Python server (FastMCP, stdio transport)
 │   ├── scripts/         ts_dump.mjs, prism_dump.rb, libcst_dump.py, merge driver, setup.sh
 │   └── bin/             chameleon-statusline.sh (status line, <100ms budget)
+├── chromatophore/     the Rust extraction engine (NOT shipped in the plugin; built
+│   │                  separately and pointed at with CHROMATOPHORE_BIN)
+│   ├── src/             core (wire contract), lang (specs), extract (the walk),
+│   │                    index (call graph), mine (archetypes), rules (schema)
+│   ├── languages/       23 declarative TOML specs; 24 bound grammars (tsx clones ts)
+│   ├── integration/     a chameleon Extractor shim + the drop-in verifier
+│   └── tests/           parity.py, the differential harness against libcst_dump.py
 ├── scripts/           dev-only tooling: bump-version.sh, prune-plugin-cache.sh, ...
 ├── tests/             unit/ + journey/ + effectiveness/ harnesses + qa_*.py real-repo batteries
 └── docs/              architecture.md (design) + install.md + language-support-matrix.md + parity-progress.md + qa-team.md
 ```
+
+`chromatophore/` is deliberately outside `plugin/`: a marketplace install copies
+`plugin/` verbatim, and 9,500 lines of Rust plus a 39 MB binary do not belong in
+a plugin payload. It is also outside chameleon's CI paths (every lint and test
+target names explicit directories), so it carries its own gates -- run them from
+`chromatophore/`, not from the repo root.
 
 The user-invocable commands: `init`, `refresh`, `status`, `teach`, `auto-idiom`, `trust`, `disable`, `pause-15m`, `doctor`, `journey`, `pr-review`, `receiving-code-review`, `explain`, `deep-work` (all invoked as `/chameleon-*`).
 
@@ -69,6 +82,28 @@ with `--acts`. Ceilings are upper bounds re-derived from recorded per-act cost (
 the comment above `_ACTS`), so the default has to clear their sum, not the typical
 spend. Worker model defaults to the floating `sonnet` alias; pin an exact id when
 the results will be compared across runs.
+
+### Build and test the Rust engine
+
+```bash
+cd chromatophore
+cargo build --release                 # 24 grammars, ~32s cold
+cargo test --release                  # 157 tests
+cargo clippy --release --all-targets  # must be clean
+cargo fmt --check
+
+# Differential parity against chameleon's own libcst dumper (16 fields x 125 files)
+CHROMATOPHORE_BIN=$(pwd)/target/release/chromatophore python3 tests/parity.py --chameleon ..
+
+# The stronger one: the shim's records vs chameleon's ACTUAL default backend
+CHROMATOPHORE_BIN=$(pwd)/target/release/chromatophore \
+  ../plugin/mcp/.venv/bin/python integration/verify.py --chameleon ..
+```
+
+Both harnesses compare exhaustively over the record on purpose. A field left out
+of their lists is a field nothing measures -- an earlier `parity.py` omitted
+`named_export_names`, reported a clean 14 of 14, and hid a value that was wrong
+on 119 of 125 files.
 
 ### Run unit tests for chameleon
 

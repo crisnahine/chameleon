@@ -1,0 +1,16 @@
+# CSS.
+
+name = "css"
+extensions = [".css", ".scss"]
+
+skip_subtree_nodes = ["comment"]
+
+[top_level_kinds]
+rule_set = "RuleSet"
+media_statement = "MediaStatement"
+import_statement = "ImportStatement"
+keyframes_statement = "KeyframesStatement"
+comment = ""
+
+
+[flags]

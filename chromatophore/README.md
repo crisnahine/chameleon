@@ -1,0 +1,274 @@
+# chromatophore
+
+A universal code-convention engine: one tree-sitter parse layer over 24
+languages, built for the [chameleon](..) plugin it lives in.
+
+It sits outside `plugin/` on purpose. A marketplace install copies `plugin/`
+verbatim, and 9,500 lines of Rust plus a 39 MB binary do not belong in a plugin
+payload — chameleon reaches this engine through `CHROMATOPHORE_BIN`, or does
+without it. It is also outside chameleon's CI paths, so it carries its own gates;
+run them from this directory.
+
+The organ that actually changes a chameleon's colour is the chromatophore. This
+is the equivalent layer for the plugin: it does the compute-heavy,
+language-bound work — parse, extract, index, mine, match — and leaves policy,
+trust, hooks, and artifact lifecycle to the host.
+
+## Why
+
+Chameleon derives a repo's own conventions and enforces them per edit. It
+already parses with tree-sitter in-process, and it supports three languages:
+TypeScript/JavaScript, Ruby, Python. The ceiling is not the parser, it is the
+**per-language code** above it — roughly 2,500 lines of hand-written Python
+tables and callables for those three, plus a core edit for a fourth. Chameleon's
+own `docs/parity-progress.md` records what adding Python cost: 12 work packages,
+about 90 tracked items.
+
+This engine moves that boundary. A language here is a TOML file — node-kind
+sets, a kind-translation table, field names, a few flags — and the walker never
+learns a language's name.
+
+## What it does
+
+| Layer | Module | What it gives you |
+|---|---|---|
+| Wire contract | `core` | The `ParsedFile` record chameleon's consumers already read |
+| Languages | `lang` | 23 declarative specs, 24 bound grammars (tsx clones the TS spec) |
+| Extraction | `extract` | One iterative walk producing a record per file |
+| Intelligence | `index` | Symbols, imports, call graph, blast radius |
+| Mining | `mine` | Archetype clustering, convention voting, witness selection |
+| Rules | `rules` | The universal rule schema and its evaluator |
+
+## Measured
+
+All figures from this machine (M-series, 11 cores), on chameleon's own
+`plugin/mcp/chameleon_mcp` tree — 126 Python files.
+
+| | Wall clock | Per file |
+|---|---|---|
+| `libcst_dump.py` (chameleon's fallback) | 10.08 s | ~80 ms |
+| chameleon's in-process tree-sitter path | 0.81 s | 6.5 ms |
+| `chromatophore dump` | **0.097 s** | **0.77 ms** |
+
+That is 8.4x chameleon's current extractor and 104x its libcst fallback. The
+gap is native traversal plus all cores; the engine also parses `tools.py`, which
+libcst refuses at its node ceiling. (Chameleon's own tree-sitter backend parses
+it too -- the differential harness compares against the libcst dumper, not
+against chameleon as a whole.)
+
+At scale, on mastodon (4,008 Ruby/TS/JS files, one symlink refused):
+
+| | Wall clock |
+|---|---|
+| `dump` | 0.36 s (0.09 ms/file) |
+| `index` (parse + symbols + imports + call graph) | 0.57 s (0.14 ms/file) |
+
+Indexing was 5.8 s until module resolution stopped scanning every corpus path
+per specifier. Both match rules end at `stem == candidate` or
+`stem.ends_with("/candidate")`, so every path that can satisfy a candidate
+shares the candidate's last segment — bucketing on that segment is exact, not a
+prefilter. With a per-specifier memo on top, the same corpus indexes in 0.57 s
+and the output is byte-identical.
+
+Build: 24 grammars compile in ~11 s cold. Binary: 39 MB unstripped.
+
+### Parity
+
+Two harnesses, because they answer different questions.
+
+`tests/parity.py` compares the wire records against chameleon's libcst dumper.
+**16 of 16 fields match on 125 of 125 files** (the 126th is the file libcst
+refuses at its node ceiling, so there is nothing to compare).
+
+`integration/verify.py` is the stronger one: it runs the shim in
+`integration/chameleon_extractor.py` against chameleon's *actual default
+backend* and compares the `ParsedFile` objects chameleon's clustering and
+convention derivation actually consume. Every normalized slot and every extras
+key matches on 126 of 126 files:
+
+```
+content_first_200_bytes 126/126 100.0%     callable_signatures   126/126 100.0%
+sha_hint               126/126  100.0%     function_scopes       126/126 100.0%
+top_level_node_kinds   126/126  100.0%     class_shapes          126/126 100.0%
+default_export_kind    126/126  100.0%     call_sites            126/126 100.0%
+named_export_count     126/126  100.0%     call_sites_total      126/126 100.0%
+import_specifiers      126/126  100.0%     call_sites_truncated  126/126 100.0%
+has_jsx                126/126  100.0%     import_symbols        126/126 100.0%
+parse_diagnostics_count 126/126 100.0%     namespace_imports     126/126 100.0%
+                                           named_export_names    126/126 100.0%
+                                           export_set_open       126/126 100.0%
+```
+
+Both lists are exhaustive over the record on purpose. An earlier `parity.py`
+omitted `named_export_names`, reported a clean 14 of 14, and hid a field that
+was wrong on 119 of 125 files.
+
+Independent cross-check: on chameleon's own tree the engine derives **267
+callers** for `threshold_int`. Chameleon's own committed index says 233, and
+`grep -c 'threshold_int('` over the same tree finds 277 textual occurrences, a
+handful of which sit in comments and string literals. Both indexes undercount;
+the engine undercounts less.
+
+## Using it from chameleon
+
+`dump` speaks the protocol chameleon's extractors already use — absolute paths
+on stdin, one NDJSON record per file on stdout. For Python it is a drop-in
+replacement for `libcst_dump.py`; for Ruby and TypeScript it speaks the same
+protocol but does not match those references field for field (see *Honest
+boundaries*), so swapping them in is a trade rather than a free upgrade:
+
+```bash
+find . -name '*.py' | chromatophore dump
+```
+
+Wiring it in is a `parse_repo` that spawns this binary instead, inserted ahead of
+`PythonExtractor`:
+
+```python
+import sys
+sys.path.insert(0, "chromatophore/integration")  # relative to the repo root
+
+from chameleon_mcp.extractors.registry import EXTRACTORS, PythonExtractor
+from chameleon_extractor import ChromatophoreExtractor
+
+EXTRACTORS.insert(EXTRACTORS.index(PythonExtractor), ChromatophoreExtractor)
+```
+
+Three details the seam does not make obvious, all verified against
+`extractors/registry.py`. `register()` APPENDS, and the shipped `PythonExtractor`
+already claims any repo holding one `.py` file, so an appended entry is never
+reached. The position is ahead of `PythonExtractor` and *behind* the TypeScript
+and Ruby detectors, because `select_extractor` instantiates with no arguments —
+so this class always builds with `language="python"`, and at index 0 it would
+claim a TS monorepo that happens to hold one `scripts/gen.py`. It is anchored to
+`PythonExtractor` rather than to a length, because `register()` appends: any
+other extractor registered first would move a `len - 1` insert behind Python. And
+`select_extractor` swaps in chameleon's in-process `TreeSitterExtractor` for
+python, ruby and typescript whatever the registry says — so the engine runs only
+with `CHAMELEON_TREE_SITTER=0` set. Without all three, a user sees chameleon
+behave identically and concludes it worked, while the engine parsed nothing.
+
+Adding a language chameleon does not yet support needs one edit in its core —
+`_EXTENSIONS_BY_LANGUAGE` in `bootstrap/orchestrator.py`, which is the single
+source of truth for which extensions an extractor owns.
+
+## Other commands
+
+```bash
+chromatophore languages                      # what it can parse, and at which ABI
+chromatophore parse FILE                     # one record, pretty-printed
+chromatophore index DIR                      # symbols, imports, call graph
+chromatophore blast DIR FILE SYMBOL          # who breaks if this changes
+chromatophore mine DIR                       # archetypes and derived conventions
+chromatophore check DIR RULES.toml           # evaluate a rule document
+```
+
+## The rule schema
+
+One shape encodes every kind of knowledge the taxonomy names — conventions,
+idioms, anti-patterns, smells, contracts, secrets, dependency policy. See
+`examples/rules.toml` for four worked rules.
+
+Blocking is **bounded, not per-rule**. A rule carries a confidence the host
+measured against code the team already accepted, plus its drift direction, and
+`may_block()` refuses below a bar the rule cannot lower -- and refuses outright
+for the judgment-call kinds, at any confidence:
+
+```rust
+mode == Enforce && drift != Weakening && calibrated_confidence >= threshold(kind)
+```
+
+Thresholds: secrets, coupling, and contracts need 0.99; conventions,
+dependency policy, and anti-patterns need 0.90; smells, idioms, and patterns
+are judgment calls and can never hard-block at any confidence.
+
+## Honest boundaries
+
+- **An empty caller set is not evidence of dead code.** Dynamic dispatch,
+  reflection, and calls through an instance are invisible to a static
+  snapshot. Grep before you delete.
+- **Precision over recall in the call graph.** A call site that cannot be
+  resolved deterministically records no edge rather than a name-matched guess.
+  Recall is deliberately sacrificed: a wrong edge makes a blast radius lie.
+- **A spec expresses what node kinds and field names can say.** That covers
+  the bulk of the contract. Where a language needs real per-node logic, the
+  spec degrades to reporting less rather than reporting wrong.
+- **Parity is measured on Python.** The other 23 languages are verified to
+  parse and extract structurally (`cargo test`), not compared against a
+  reference implementation, because for most of them none exists.
+- **Ruby and TypeScript are NOT drop-in.** Measured against chameleon's own
+  backend, both match every *normalized* slot but diverge on the extras:
+
+  | | TypeScript (49 files) | Ruby (150 files) |
+  |---|---|---|
+  | normalized slots | 100% | 100% |
+  | `class_shapes` | 100% | 100% |
+  | `function_scopes` | 92% | 87% |
+  | `callable_signatures` | 31% | 85% |
+  | `call_sites` | 86% | 22% |
+
+  Ruby's remaining `call_sites` gap is a long tail of Prism emulation — literal
+  receivers, class-body promotion, and row ordering. The mechanics are right
+  (a minimal file matches the reference exactly, including setter naming,
+  chained-call receivers, and locals suppression); what is left is the detail.
+  TypeScript's `callable_signatures` gap is over-emission: it records function
+  expressions its reference does not.
+- **Spec depth varies by language, and the difference is measurable.** Every
+  shipped language parses, and extracts functions, classes, and body shape.
+  Call-site classification — separating `obj.method()` from a bare `method()`
+  and keeping the receiver — is verified for C, C++, C#, Go, Java, Lua, PHP,
+  Python, Rust, Scala, Swift, TypeScript, Kotlin, and Bash. Elixir reports its
+  own `def`/`defmodule` macros as calls because in that grammar they are, and
+  Haskell records application without a receiver notion. Those are spec gaps,
+  not engine gaps: closing one is editing a TOML file, which is exactly the
+  property this design is for — Swift, Kotlin, Bash, PHP and Lua were each
+  closed that way, and `cargo test` now checks every spec name against its own
+  grammar's symbol table so a misspelled kind fails instead of silently doing
+  nothing.
+- **Convention mining does not span directories.** A cohort's key includes its
+  literal parent directory, so nine identical `apps/*/services/*.py` files form
+  three cohorts of three rather than one of nine, and none clears the
+  five-file floor. Rule scoping is unaffected (all three carry the same label);
+  what is lost is the conventions those nine files would have voted on.
+- **`Regex`, `AstGrep`, `Semgrep`, and `Coupling` are declared but not
+  implemented.** Evaluating one returns an explicit `Unsupported` rather than
+  silently matching nothing — a rule that quietly never fires is worse than one
+  that says it cannot run. The implemented substring matcher is named
+  `literal`, for the same reason.
+- **Call-graph resolution is path matching, not real name resolution.** It has
+  no type information: a `self.method()` binds by name within its file, so two
+  classes in one file defining the same method name share an edge.
+- **A bare one-segment specifier resolves only against a corpus-root file, and
+  that costs real recall.** `import requests` cannot be told apart from a repo
+  module named `requests`, and binding it to `app/clients/requests.py` — a local
+  wrapper named after the library it wraps is the common shape — is a fabricated
+  edge, which criterion 1 says is the worst defect this layer can have. The cost
+  is named: a Python `src/`-flat layout doing `from models import db`, a TS
+  `baseUrl` import of `"utils"`, and a Ruby `$LOAD_PATH` `require 'helper'` all
+  resolve to nothing rather than to a guess.
+
+## Adding a language
+
+1. Add the grammar to `Cargo.toml`.
+2. Write `languages/<name>.toml`.
+3. Add one line to `EMBEDDED_SPECS` and one arm to `grammar_for` in `src/lang.rs`.
+
+No walker change, no extraction logic. `cargo test` then asserts the grammar
+loads, sits inside the ABI window tree-sitter accepts, and parses.
+
+## Development
+
+```bash
+cargo build --release         # 24 grammars, ~32 s cold
+cargo test                    # 157 tests
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
+
+# The host is the parent directory.
+CHROMATOPHORE_BIN=$(pwd)/target/release/chromatophore python3 tests/parity.py --chameleon ..
+CHROMATOPHORE_BIN=$(pwd)/target/release/chromatophore \
+  ../plugin/mcp/.venv/bin/python integration/verify.py --chameleon ..
+```
+
+`verify.py` needs chameleon's own venv, because it imports chameleon's
+`TreeSitterExtractor` and compares against it directly.

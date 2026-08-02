@@ -1,0 +1,14 @@
+# TOML. Manifest evidence (Cargo.toml, pyproject.toml).
+
+name = "toml"
+extensions = [".toml"]
+
+skip_subtree_nodes = ["comment"]
+
+[top_level_kinds]
+table = "Table"
+table_array_element = "TableArrayElement"
+pair = "Pair"
+comment = ""
+
+[flags]

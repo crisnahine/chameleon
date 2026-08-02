@@ -1,0 +1,55 @@
+# C#.
+
+name = "csharp"
+extensions = [".cs"]
+
+function_nodes = ["method_declaration", "constructor_declaration", "local_function_statement", "lambda_expression"]
+class_nodes = ["class_declaration", "interface_declaration", "struct_declaration", "record_declaration"]
+branch_nodes = ["if_statement", "for_statement", "foreach_statement", "while_statement", "do_statement", "switch_section", "catch_clause", "conditional_expression"]
+nesting_nodes = ["if_statement", "for_statement", "foreach_statement", "while_statement", "do_statement", "switch_statement", "try_statement"]
+skip_subtree_nodes = ["comment"]
+
+[top_level_kinds]
+class_declaration = "ClassDeclaration"
+interface_declaration = "InterfaceDeclaration"
+struct_declaration = "StructDeclaration"
+enum_declaration = "EnumDeclaration"
+record_declaration = "RecordDeclaration"
+namespace_declaration = "NamespaceDeclaration"
+using_directive = "UsingDirective"
+method_declaration = "MethodDeclaration"
+comment = ""
+
+[params]
+positional = ["parameter"]
+
+[fields]
+name = "name"
+parameters = "parameters"
+body = "body"
+return_type = "type"
+call_function = "function"
+member_object = "expression"
+member_property = "name"
+param_type = "type"
+
+[child_kinds]
+superclass = "base_list"
+
+[calls]
+nodes = ["invocation_expression"]
+member_nodes = ["member_access_expression"]
+constructor_nodes = ["object_creation_expression"]
+self_names = ["this"]
+super_nodes = ["base"]
+
+[imports]
+# These bind the LAST path segment, not the first.
+alias_segment = "last"
+module_nodes = ["using_directive"]
+
+[flags]
+# An access specifier is not a base class.
+heritage_skip_nodes = ["argument_list"]
+async_markers = ["async"]
+decorator_nodes = ["attribute_list"]
