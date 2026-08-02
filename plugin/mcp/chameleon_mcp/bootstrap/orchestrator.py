@@ -3088,8 +3088,11 @@ def _bootstrap_single(
     if language_hint is not None:
         profile_data["language_hint"] = language_hint
 
-    # Discrete framework family (rails / django / flask / fastapi / nextjs /
-    # nestjs), descriptive metadata only. Optional key, so no schema bump and old
+    # Discrete framework family, descriptive metadata only. Any of the six the
+    # hardcoded arms name (rails / django / flask / fastapi / nextjs / nestjs)
+    # OR any of the other 58 the taxonomy describes, since every arm now falls
+    # through to the scored fallback -- so a profile may legitimately read
+    # `sinatra`, `express`, or `laravel`. Optional key, so no schema bump and old
     # profiles load fine without it. Classified from cheap markers; fails open.
     framework = _classify_framework(repo_root, extractor.language)
     if framework is not None:
