@@ -36,21 +36,19 @@ def _findings_by_check(findings, check):
 @pytest.mark.parametrize(
     "path",
     [
-        "requirements.txt",
-        "requirements-dev.txt",
-        "requirements/base.txt",
-        "pyproject.toml",
-        "Pipfile",
         "setup.py",
-        "setup.cfg",
-        "go.mod",
+        "poetry.lock",
+        "Pipfile.lock",
         "go.sum",
-        "Cargo.toml",
-        "composer.json",
-        "backend/requirements.txt",
+        "Cargo.lock",
+        "composer.lock",
+        "backend/setup.py",
     ],
 )
-def test_python_and_other_ecosystem_manifests_are_uncovered(path):
+def test_unparsed_dependency_files_are_uncovered(path):
+    # setup.py is arbitrary Python and these lockfiles carry no resolved-host
+    # keyword, so both stay an explicit "not covered". The MANIFESTS of those
+    # same ecosystems ARE parsed -- see test_dep_diff_ecosystems.py.
     assert is_uncovered_manifest(path) is True
 
 
@@ -372,7 +370,9 @@ def test_collect_fetcher_returning_none_or_raising_fails_open():
     assert findings == []
 
 
-def test_manifest_basenames_cover_the_documented_set():
+def test_manifest_basenames_cover_the_documented_npm_and_bundler_set():
+    # The npm/Bundler half this file covers. The other ecosystems' basenames are
+    # asserted in test_dep_diff_ecosystems.py, next to the arms that parse them.
     assert {
         "package.json",
         "package-lock.json",
@@ -381,7 +381,7 @@ def test_manifest_basenames_cover_the_documented_set():
         "pnpm-lock.yaml",
         "Gemfile",
         "Gemfile.lock",
-    } == set(MANIFEST_LOCKFILE_BASENAMES)
+    } <= set(MANIFEST_LOCKFILE_BASENAMES)
 
 
 # ---------------------------------------------------------------------------

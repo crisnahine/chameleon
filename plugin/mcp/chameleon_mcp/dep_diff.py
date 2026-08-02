@@ -14,8 +14,11 @@ audit lives in :mod:`chameleon_mcp.dep_audit`, gated and opt-in.
 The four checks (severity in parentheses):
   2.5a new direct dependency (NIT listing) -- a dependency name absent before
   2.5b lockfile resolved host is not the registry (FIX)
-  2.5c new install lifecycle script: preinstall/install/postinstall (FIX)
-  2.5d non-registry dependency source: git:/file:/http:/github:/path: (FIX)
+  2.5c new install/build hook the manifest names: an npm or composer lifecycle
+       script, a Cargo build script, a PEP 517 build backend, a remote Gradle
+       script (FIX)
+  2.5d non-registry dependency source: a VCS or direct URL, a local path, an
+       alternate index or repository, a go replace, a Cargo patch (FIX)
 
 Fails open by construction: an unparseable or empty diff yields no findings,
 never a crash and never a fabricated finding.
@@ -44,6 +47,19 @@ side of the diff (context + one marker) and the new dependencies are the
 difference between the two name sets -- with the extra requirement that the name
 appear on an ADDED line, so a side that fails to parse can never turn every
 context-line dependency into a "new dependency" claim.
+
+Two blind spots follow from reading a fragment, both silent by design (fewer
+findings, never invented ones): a poetry-style ``[tool.poetry.dependencies]``
+hunk whose table header sits above the diff's context lines, and a
+``composer.json`` hunk whose ``"require": {`` opener is likewise out of context.
+Both are the SAME cause -- three lines of context is not always enough to reach
+the construct that gives the changed lines their meaning -- and neither is
+fixable here: naming the enclosing table would mean guessing it, which is how a
+`conflict` entry becomes a "new dependency". The fix, if these ever matter
+enough, belongs at the FETCH site (a wider ``git diff -U``), not in the parser.
+Python's ``dependencies = [`` case needs no widening because git's own ``@@``
+trailer already names it; JSON has no such trailer, since composer.json has no
+line starting in column 1 for git's funcname pattern to latch onto.
 
 Still NOT parsed, and surfaced as ``uncovered_manifests`` instead:
 ``setup.py`` (arbitrary Python -- its dependency list is only knowable by
@@ -863,13 +879,19 @@ def _setupcfg_dep_names(text: str) -> set[str]:
     return out
 
 
-# A composer.json section opened on its own line, and composer's mandated
-# `vendor/package` key shape. `conflict`, `replace`, `provide` and `suggest` use
-# the SAME key shape without being dependencies, which is why the section a key
-# sits under decides, never the key alone.
+# A composer.json section opened on its own line. `conflict`, `replace`,
+# `provide` and `suggest` hold the same `vendor/package` keys without being
+# dependencies, which is why the section a key sits under decides, never the key.
 _JSON_SECTION_OPEN_RE = re.compile(r'^\s*"([^"]+)"\s*:\s*[\[{]\s*$')
 _COMPOSER_DEP_SECTIONS = frozenset({"require", "require-dev"})
-_COMPOSER_PACKAGE_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+# A composer `require` entry that constrains the RUNTIME rather than naming a
+# package: the interpreter, an extension, a bundled library, composer itself. No
+# such entry is ever installed from a registry, so calling one a new dependency
+# is the same false claim `_toml_dep_names` excludes poetry's `python` to avoid.
+# Applied to the whole composer name set, so the whole-document reader and the
+# section reader cannot disagree about the same file.
+_COMPOSER_PLATFORM_RE = re.compile(r"^(?:php(?:-64bit)?|hhvm|composer(?:-\w+-api)?|(?:ext|lib)-)")
 
 
 def _composer_side_names(diff_text: str, marker: str) -> set[str]:
@@ -897,8 +919,7 @@ def _composer_side_names(diff_text: str, marker: str) -> set[str]:
         if section not in _COMPOSER_DEP_SECTIONS:
             continue
         for key, value in _INLINE_JSON_PAIR_RE.findall(line):
-            if _COMPOSER_PACKAGE_KEY_RE.match(key):
-                doc[section][key] = value
+            doc[section][key] = value
     return _json_dep_names(json.dumps(doc), ("require", "require-dev"))
 
 
@@ -944,6 +965,7 @@ def _declared_side_names(manifest: str, diff_text: str, marker: str) -> set[str]
             names |= _composer_side_names(diff_text, marker)
         except Exception:
             pass
+        names = {n for n in names if not _COMPOSER_PLATFORM_RE.match(n)}
     return names
 
 
@@ -1012,10 +1034,12 @@ _TOML_GIT_SOURCE_RE = re.compile(r"""\bgit\s*=\s*["']([^"']+)["']""")
 _TOML_PATH_SOURCE_RE = re.compile(r"""\bpath\s*=\s*["'](?![^"']*\.rs["'])([^"']+)["']""")
 _CARGO_REGISTRY_RE = re.compile(r"""\bregistry\s*=\s*["']([^"']+)["']""")
 _CARGO_PATCH_RE = re.compile(r"^\s*(\[patch[.\]][^\n]*)")
-# A go.mod `replace` swaps a module for a fork or a working tree; the arrow is
-# what marks it, and inside a `replace (` block the keyword is not on the line.
-_GO_REPLACE_KEYWORD_RE = re.compile(r"^\s*replace\s+(\S+)")
+# A go.mod `replace` swaps a module for a fork or a working tree. The arrow is
+# checked first because what it points AT is the source the build actually uses;
+# the keyword form catches a one-line replace whose target sits on a later line,
+# and it excludes a bare `replace (` block opener, which names no module.
 _GO_REPLACE_ARROW_RE = re.compile(r"=>\s*(\S+)")
+_GO_REPLACE_KEYWORD_RE = re.compile(r"^\s*replace\s+([^\s(]\S*)")
 _COMPOSER_VCS_REPO_RE = re.compile(
     r'"type"\s*:\s*"(vcs|git|svn|hg|fossil|gitlab|github|bitbucket|composer)"'
 )
@@ -1069,6 +1093,10 @@ _SOURCE_KIND_MESSAGE: dict[str, str] = {
     "local-file-dependency": (
         "Dependency {source!r} is a local file or directory, not a registry artifact."
     ),
+    "declared-repository": (
+        "A {source!r} element declares a package repository other than the build's default; "
+        "dependencies can resolve from a host outside the public registry."
+    ),
 }
 
 # 2.5c hooks: manifest entries naming code that runs on install or build.
@@ -1118,12 +1146,19 @@ class _Arm:
     2.5c line patterns. An empty rule tuple is a deliberate statement that the
     ecosystem has no such concept (Go and Maven declare no install hook), not an
     omission.
+
+    ``coordinate_line`` marks a format that writes a whole dependency as ONE
+    ``group:artifact:version`` token. detect's reader records both halves (a
+    profile may name either), so without this a single added Gradle line would
+    report two "new dependency" findings citing the same evidence; with it the
+    halves are rejoined into the coordinate they came from.
     """
 
     manifest: str
     noun: str
     source_rules: tuple[tuple[re.Pattern[str], str], ...] = ()
     hook_rules: tuple[tuple[re.Pattern[str], str], ...] = ()
+    coordinate_line: bool = False
 
 
 _PY_COMMON_SOURCE_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -1174,8 +1209,8 @@ _ARMS: dict[str, _Arm] = {
         manifest="go.mod",
         noun="Go module dependency",
         source_rules=(
-            (_GO_REPLACE_KEYWORD_RE, "module-replacement"),
             (_GO_REPLACE_ARROW_RE, "module-replacement"),
+            (_GO_REPLACE_KEYWORD_RE, "module-replacement"),
         ),
     ),
     "Cargo.toml": _Arm(
@@ -1202,7 +1237,7 @@ _ARMS: dict[str, _Arm] = {
         manifest="pom.xml",
         noun="Maven coordinate",
         source_rules=(
-            (_POM_REPOSITORY_RE, "alternate-repository"),
+            (_POM_REPOSITORY_RE, "declared-repository"),
             (_POM_SYSTEM_PATH_RE, "local-path"),
         ),
     ),
@@ -1215,6 +1250,7 @@ _ARMS: dict[str, _Arm] = {
             (_GRADLE_REPO_URL_RE, "alternate-repository"),
         ),
         hook_rules=((_GRADLE_APPLY_FROM_RE, "remote-build-script"),),
+        coordinate_line=True,
     ),
 }
 _ARMS["build.gradle.kts"] = _Arm(
@@ -1222,6 +1258,7 @@ _ARMS["build.gradle.kts"] = _Arm(
     noun="Gradle coordinate",
     source_rules=_ARMS["build.gradle"].source_rules,
     hook_rules=_ARMS["build.gradle"].hook_rules,
+    coordinate_line=True,
 )
 
 
@@ -1261,10 +1298,15 @@ def _scan_new_dependencies_generic(path: str, arm: _Arm, diff_text: str) -> list
         if not raw.startswith("+") or raw.startswith("+++"):
             continue
         line = raw[1:]
-        for name in sorted(_evidence_names(line) & new):
-            if name in seen:
-                continue
-            seen.add(name)
+        # Line order, not sorted order: a coordinate reads `group:artifact`, and
+        # alphabetical would rejoin those two halves backwards.
+        matched = [n for n in _evidence_names(line) & new if n not in seen]
+        matched.sort(key=lambda n: (line.find(n) if n in line else len(line), n))
+        if not matched:
+            continue
+        groups = [":".join(matched)] if arm.coordinate_line and len(matched) > 1 else matched
+        seen.update(matched)
+        for name in groups:
             out.append(
                 DepFinding(
                     check="new-dependency",
