@@ -2926,6 +2926,124 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
     )
 
 
+def explain_concept(term: str | None = None, kind: str | None = None, limit: int = 8) -> dict:
+    """Look a software-engineering concept up in the compiled-in taxonomy.
+
+    The PULL half of the taxonomy. The per-edit block and `principles.md` are
+    token-budgeted -- `principles.py` commits to ~450 tokens for any repo -- so a
+    541-entry vocabulary cannot ride the push channel; it is asked for.
+
+    Answers three shapes:
+      - a term or alias, exactly ("Repository", "kiss", "coding convention")
+      - a search, when the term is not an exact hit
+      - a whole kind, when `term` is omitted (`kind="code-smell"`)
+
+    Repo-independent by construction: the taxonomy never asserts anything about a
+    particular repo, so this takes no `repo` and reads no profile. It is the
+    definition, not the measurement.
+    """
+    from chameleon_mcp.knowledge import loader
+
+    def _failed(message: str) -> dict:
+        return _envelope({"status": "failed", "error": message, "concept": None})
+
+    try:
+        cap = max(1, min(int(limit), 50))
+    except (TypeError, ValueError):
+        cap = 8
+
+    if kind is not None and not isinstance(kind, str):
+        return _failed("kind must be a string")
+    if kind is not None and kind not in loader.KINDS:
+        return _failed(
+            f"unknown kind {kind!r}; valid kinds: {', '.join(loader.KINDS)}",
+        )
+
+    if not term:
+        if kind is None:
+            # Neither a term nor a kind: describe what is available rather than
+            # dumping 541 entries into the context.
+            counts = {k: len(loader.concepts(k)) for k in loader.KINDS}
+            return _envelope(
+                {
+                    "kinds": {k: v for k, v in counts.items() if v},
+                    "total": sum(counts.values()),
+                    "usage": "pass term= for one concept, or kind= to list a category",
+                }
+            )
+        rows = loader.concepts(kind)
+        return _envelope(
+            {
+                "kind": kind,
+                "total": len(rows),
+                "concepts": [_concept_summary(c) for c in rows[:cap]],
+            },
+            truncated=len(rows) > cap,
+        )
+
+    if not isinstance(term, str):
+        return _failed("term must be a string")
+
+    exact = loader.concept(term)
+    if exact is not None and (kind is None or exact.get("kind") == kind):
+        return _envelope({"concept": _concept_detail(exact)})
+
+    hits = [c for c in loader.search(term, limit=cap) if kind is None or c.get("kind") == kind]
+    if not hits:
+        return _failed(f"no concept matches {term!r}")
+    return _envelope(
+        {
+            "query": term,
+            "matches": [_concept_summary(c) for c in hits],
+        }
+    )
+
+
+def _concept_summary(concept: dict) -> dict:
+    """The short form: enough to choose between matches, not the whole entry."""
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+    return _strip_empty(
+        {
+            "term": sanitize_for_chameleon_context(str(concept.get("term") or "")),
+            "kind": concept.get("kind"),
+            "definition": sanitize_for_chameleon_context(str(concept.get("definition") or "")),
+        }
+    )
+
+
+def _concept_detail(concept: dict) -> dict:
+    """The full entry, sanitized.
+
+    Every value is repo-INDEPENDENT plugin data, so it cannot carry repo-derived
+    injection -- but it still goes through the same sanitizer as every other
+    model-surface string, because a taxonomy shipped in a future version is one
+    more thing that could carry a surprise, and the cost is nothing.
+    """
+    out: dict = {}
+    for key, value in concept.items():
+        if key == "section":
+            continue
+        out[key] = _sanitize_concept_value(value)
+    return _strip_empty(out)
+
+
+def _sanitize_concept_value(value: object) -> object:
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+    if isinstance(value, str):
+        return sanitize_for_chameleon_context(value)
+    if isinstance(value, list):
+        return [_sanitize_concept_value(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _sanitize_concept_value(v) for k, v in value.items()}
+    return value
+
+
+def _strip_empty(data: dict) -> dict:
+    return {k: v for k, v in data.items() if v not in (None, "", [], {})}
+
+
 def get_rules(repo: str, source: str | None = None) -> dict:
     """Return repo-global rules (eslint, prettier, rubocop, tsconfig) keyed
     by source/tool.

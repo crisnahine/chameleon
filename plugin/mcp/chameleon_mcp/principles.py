@@ -90,6 +90,65 @@ _FRAMEWORK_PROTOCOL: dict[str, str] = {
 }
 
 
+def _framework_protocol_line(framework: str | None) -> str | None:
+    """The anti-hallucination line for a framework, hand-written or derived.
+
+    The six entries in `_FRAMEWORK_PROTOCOL` stay verbatim: each names the exact
+    places that framework's fabrications hide, chosen against real repos, and a
+    generated sentence would be strictly worse. But six hand-written strings
+    meant the other 58 frameworks the taxonomy describes -- and every framework
+    in a language chameleon does not hardcode -- got no line at all, which is
+    the same silence as not detecting them.
+
+    The derived line is deliberately plainer than the curated ones: it names the
+    roles that framework's own profile declares and where its layout puts them.
+    Only ONE framework ever applies to a repo, so this adds one bullet.
+    """
+    if not framework:
+        return None
+    curated = _FRAMEWORK_PROTOCOL.get(framework)
+    if curated:
+        return curated
+    try:
+        from chameleon_mcp.knowledge.loader import framework_profile
+
+        profile = framework_profile(framework)
+    except Exception:
+        return None
+    if not profile:
+        return None
+
+    roles = [
+        str(a.get("name")).strip()
+        for a in profile.get("file_archetypes") or ()
+        if isinstance(a, dict) and str(a.get("name") or "").strip()
+    ][:4]
+    places = [
+        str(entry).strip()
+        for entry in profile.get("layout") or ()
+        if isinstance(entry, str) and str(entry).strip()
+    ][:3]
+    if not roles:
+        return None
+
+    def _article(word: str) -> str:
+        return "an" if word[:1].lower() in "aeiou" else "a"
+
+    head = ", ".join(f"{_article(r)} {r}" for r in roles[:-1])
+    last = f"{_article(roles[-1])} {roles[-1]}"
+    role_text = f"{head}, or {last}" if head else last
+    if places:
+        where = ", ".join(f"`{p}`" for p in places)
+        return (
+            f"Don't invent {role_text} that this {framework} repo does not "
+            f"already define; check {where} before referencing one."
+        )
+    return (
+        f"Don't invent {role_text} that this {framework} repo does not already "
+        "define; check the existing files of that kind before referencing one."
+    )
+
+
 def generate_principles(
     *,
     language: str | None = "",
@@ -207,7 +266,7 @@ def generate_principles(
     lang_protocol = _LANGUAGE_PROTOCOL.get(lang)
     if lang_protocol:
         protocol.append(lang_protocol)
-    framework_protocol = _FRAMEWORK_PROTOCOL.get(fw)
+    framework_protocol = _framework_protocol_line(fw)
     if framework_protocol:
         protocol.append(framework_protocol)
     if conv.get("key_exports"):

@@ -279,3 +279,107 @@ def test_detection_fails_open(tmp_path, monkeypatch):
         assert detect.score_frameworks(tmp_path) == ()
     finally:
         loader.load_taxonomy.cache_clear()
+
+
+# --- the pull tool ---------------------------------------------------------- #
+
+
+def test_explain_concept_returns_one_entry_for_an_exact_term():
+    from chameleon_mcp import tools
+
+    got = tools.explain_concept("Repository")["data"]["concept"]
+    assert got["term"] == "Repository"
+    assert got["kind"] == "design-pattern"
+    assert got["detection_hint"]
+    # `section` is bookkeeping about which codex chapter an entry came from;
+    # it means nothing to a caller.
+    assert "section" not in got
+
+
+def test_explain_concept_resolves_an_alias():
+    from chameleon_mcp import tools
+
+    assert tools.explain_concept("coding convention")["data"]["concept"]["term"] == "convention"
+
+
+def test_explain_concept_falls_back_to_search():
+    from chameleon_mcp import tools
+
+    matches = tools.explain_concept("hexagonal")["data"]["matches"]
+    assert any("Hexagonal" in m["term"] for m in matches)
+
+
+def test_explain_concept_lists_a_kind_and_reports_truncation():
+    from chameleon_mcp import tools
+
+    out = tools.explain_concept(kind="code-smell", limit=3)
+    assert out["data"]["kind"] == "code-smell"
+    assert out["data"]["total"] == 23
+    assert len(out["data"]["concepts"]) == 3
+    assert out["truncated"] is True
+
+
+def test_explain_concept_with_no_arguments_describes_the_catalogue():
+    from chameleon_mcp import tools
+
+    data = tools.explain_concept()["data"]
+    assert data["total"] == 541
+    assert data["kinds"]["framework-profile"] == 64
+
+
+def test_explain_concept_rejects_junk_with_a_failed_envelope():
+    from chameleon_mcp import tools
+
+    for bad in (tools.explain_concept("zzzz-nope"), tools.explain_concept(kind="not-a-kind")):
+        assert bad["data"]["status"] == "failed"
+        assert bad["data"]["error"]
+    assert tools.explain_concept(term=123)["data"]["status"] == "failed"  # type: ignore[arg-type]
+
+
+def test_explain_concept_returns_the_standard_envelope():
+    from chameleon_mcp import tools
+
+    out = tools.explain_concept("KISS")
+    assert out["api_version"] == "1"
+    assert set(out) <= {"api_version", "data", "truncated", "next_cursor"}
+
+
+# --- the classifier fallback ------------------------------------------------ #
+
+
+def test_classifier_still_prefers_its_hardcoded_arms(tmp_path):
+    """The six arms encode corroboration the profiles do not -- a `manage.py`
+    whose CONTENT is a real Django entrypoint outranks an incidental dep. The
+    taxonomy answers only where they return None."""
+    from chameleon_mcp.bootstrap.orchestrator import _classify_framework
+
+    (tmp_path / "manage.py").write_text("import django\n")
+    (tmp_path / "requirements.txt").write_text("django\nfastapi\n")
+    assert _classify_framework(tmp_path, "python") == "django"
+
+
+def test_classifier_now_answers_for_a_language_it_never_covered(tmp_path):
+    from chameleon_mcp.bootstrap.orchestrator import _classify_framework
+
+    (tmp_path / "composer.json").write_text(json.dumps({"require": {"laravel/framework": "^11"}}))
+    (tmp_path / "routes").mkdir()
+    (tmp_path / "routes" / "web.php").write_text("<?php\n")
+    (tmp_path / "app" / "Http" / "Controllers").mkdir(parents=True)
+    (tmp_path / "app" / "Http" / "Controllers" / "A.php").write_text("<?php\n")
+    assert _classify_framework(tmp_path, "php") == "laravel"
+
+
+def test_every_framework_gets_an_anti_hallucination_line():
+    """Six hand-written strings meant the other 58 got no line at all, which is
+    the same silence as not detecting them."""
+    from chameleon_mcp.principles import _FRAMEWORK_PROTOCOL, _framework_protocol_line
+
+    for profile in loader.concepts("framework-profile"):
+        line = _framework_protocol_line(profile["term"])
+        assert line, f"{profile['term']} has no protocol line"
+        assert line.startswith("Don't invent ")
+    # The curated six are used verbatim, never regenerated.
+    for fw, curated in _FRAMEWORK_PROTOCOL.items():
+        assert _framework_protocol_line(fw) == curated
+    assert _framework_protocol_line(None) is None
+    assert _framework_protocol_line("not-a-framework") is None

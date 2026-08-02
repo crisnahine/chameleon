@@ -134,8 +134,18 @@ def test_nextjs_in_frontend_workspace_member(tmp_path):
     assert _classify_framework(tmp_path, "typescript") == "nextjs"
 
 
-def test_ts_no_framework_none(tmp_path):
+def test_ts_framework_beyond_the_hardcoded_arms(tmp_path):
+    """Express is a framework. This asserted ``None`` when the classifier knew
+    only six names and every other framework was invisible; the taxonomy
+    fallback answers for the other 58, so the honest expectation is its name."""
     (tmp_path / "package.json").write_text(json.dumps({"dependencies": {"express": "^4"}}))
+    assert _classify_framework(tmp_path, "typescript") == "express"
+
+
+def test_ts_no_framework_none(tmp_path):
+    """A dependency that is a LIBRARY, not a framework, still yields None --
+    the taxonomy describes no profile for it, so nothing clears the bar."""
+    (tmp_path / "package.json").write_text(json.dumps({"dependencies": {"lodash": "^4"}}))
     assert _classify_framework(tmp_path, "typescript") is None
 
 
