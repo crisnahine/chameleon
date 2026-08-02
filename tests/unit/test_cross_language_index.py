@@ -113,3 +113,41 @@ def test_the_index_covers_both_languages_end_to_end(mixed_repo: Path, monkeypatc
         f"the Go service was never indexed; the repo answers as if it did not exist: {sorted(indexed)}"
     )
     assert "ServeOrders" in indexed["svc/handler/orders.go"]
+
+
+def test_python_and_ruby_are_visible_as_secondary_languages(tmp_path: Path):
+    """The detector is driven by the GRAMMAR table, not the spec table.
+
+    Keying it on `EXTENSIONS_BY_LANGUAGE` covered only the five extraction-tier
+    languages, so a polyglot repo's Python service was invisible AS A SECONDARY:
+    never parsed, never indexed, absent from `search_codebase`. Python and Ruby
+    are first-class as primaries and so never consult this path, which is
+    exactly why the gap survived -- it only shows when they are not the winner.
+    """
+    (tmp_path / "package.json").write_text('{"name":"x"}', encoding="utf-8")
+    (tmp_path / "app.ts").write_text("export const x = 1;\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text('[project]\nname="svc"\n', encoding="utf-8")
+    (tmp_path / "svc").mkdir()
+    (tmp_path / "svc" / "main.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+
+    found = SpecDrivenExtractor.languages_present(tmp_path, exclude="typescript")
+    assert "python" in found, f"python invisible as a secondary language: {found}"
+
+
+def test_a_secondary_language_still_needs_its_manifest(tmp_path: Path):
+    """The manifest bar applies to the first-class languages too: loose `.py`
+    scripts in a TS repo are not a Python service."""
+    (tmp_path / "package.json").write_text('{"name":"x"}', encoding="utf-8")
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "oneoff.py").write_text("print(1)\n", encoding="utf-8")
+
+    assert SpecDrivenExtractor.languages_present(tmp_path, exclude="typescript") == ()
+
+
+def test_every_marked_language_has_a_grammar(tmp_path: Path):
+    """A marker for a language tree-sitter cannot parse would detect a secondary
+    the parser then silently drops."""
+    from chameleon_mcp.extractors.spec_driven import _MARKERS
+    from chameleon_mcp.extractors.treesitter.extractor import _TABLES
+
+    assert set(_MARKERS) <= set(_TABLES), sorted(set(_MARKERS) - set(_TABLES))

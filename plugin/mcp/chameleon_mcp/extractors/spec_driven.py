@@ -30,6 +30,14 @@ _MARKERS: dict[str, tuple[str, ...]] = {
     "java": ("pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle"),
     "csharp": ("global.json", "Directory.Build.props"),
     "php": ("composer.json",),
+    # The two FIRST-CLASS languages carry markers here as well, and the reason is
+    # asymmetric: as a PRIMARY they are selected by their own extractors and
+    # never consult this table, but as a SECONDARY in someone else's repo they
+    # need the same manifest-plus-source bar every other language clears. Without
+    # an entry a polyglot repo's Python service was invisible to
+    # `languages_present`, so its files were never parsed and never indexed.
+    "python": ("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile"),
+    "ruby": ("Gemfile", "Rakefile", ".ruby-version"),
 }
 
 # Extensions whose presence, alongside a marker, confirms the repo actually
@@ -63,13 +71,24 @@ class SpecDrivenExtractor:
         derivation stays on the primary. The manifest requirement is what keeps
         a single vendored `.go` file from making that claim.
         """
-        from chameleon_mcp.extractors.treesitter.lang.specs import EXTENSIONS_BY_LANGUAGE
+        # Driven by the grammar table, NOT by the spec table. The spec table
+        # holds only the five extraction-tier languages, so keying on it made
+        # Python and Ruby invisible as SECONDARY languages: a polyglot repo's
+        # Python service was never parsed and never indexed, even though
+        # tree-sitter has a Python grammar and the repo carried a pyproject.
+        # `_EXTENSION_GRAMMARS` is the one place that knows which extensions map
+        # to which language, spec-driven and first-class alike.
+        from chameleon_mcp.extractors.treesitter.grammars import _EXTENSION_GRAMMARS
+
+        by_language: dict[str, list[str]] = {}
+        for ext, entry in _EXTENSION_GRAMMARS.items():
+            by_language.setdefault(entry[2], []).append(ext)
 
         found: list[str] = []
-        for language, extensions in sorted(EXTENSIONS_BY_LANGUAGE.items()):
-            if language == exclude:
+        for language, extensions in sorted(by_language.items()):
+            if language == exclude or language not in _MARKERS:
                 continue
-            probe = SpecDrivenExtractor(language, tuple(extensions))
+            probe = SpecDrivenExtractor(language, tuple(sorted(extensions)))
             try:
                 if probe.can_handle(repo_root):
                     found.append(language)

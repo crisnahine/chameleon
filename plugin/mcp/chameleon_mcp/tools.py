@@ -1482,7 +1482,18 @@ def _file_shape_snapshot(p: Path, loaded):
         content = p.read_bytes()[:100_000].decode("utf-8", errors="replace")
     except OSError:
         return None
-    language = detect_language(str(p)) or loaded.profile.get("language")
+    # The FILE's language, never the profile's. The old fallback to
+    # `loaded.profile["language"]` only fired when the file's own extension was
+    # unrecognized, and on a legacy extension-blind profile (a `paths_pattern`
+    # with no `:ext` tail, still a live compat path above) that is exactly a
+    # foreign file exact-matching a first-class archetype. It then got extracted
+    # under the WRONG language: PHP source read as TypeScript yields
+    # ['ClassDeclaration'] rather than [], and a non-empty snapshot can score a
+    # nonzero `canonical_confidence`, reaching the match_quality="ast" plus
+    # medium/high band that both deny gates require. A wrong-language file could
+    # arm a block. `None` is the honest answer and yields an empty snapshot,
+    # which scores nothing and blocks nothing.
+    language = detect_language(str(p))
     if language not in ("typescript", "ruby", "python"):
         language = None
     try:
@@ -1766,7 +1777,18 @@ def _get_archetype_with_loaded(
             }
         )
 
-    language = detect_language(str(p)) or loaded.profile.get("language")
+    # The FILE's language, never the profile's. The old fallback to
+    # `loaded.profile["language"]` only fired when the file's own extension was
+    # unrecognized, and on a legacy extension-blind profile (a `paths_pattern`
+    # with no `:ext` tail, still a live compat path above) that is exactly a
+    # foreign file exact-matching a first-class archetype. It then got extracted
+    # under the WRONG language: PHP source read as TypeScript yields
+    # ['ClassDeclaration'] rather than [], and a non-empty snapshot can score a
+    # nonzero `canonical_confidence`, reaching the match_quality="ast" plus
+    # medium/high band that both deny gates require. A wrong-language file could
+    # arm a block. `None` is the honest answer and yields an empty snapshot,
+    # which scores nothing and blocks nothing.
+    language = detect_language(str(p))
     if language not in ("typescript", "ruby", "python"):
         language = None
     snapshot = extract_dimensions(content, language=language, file_path=str(p))
