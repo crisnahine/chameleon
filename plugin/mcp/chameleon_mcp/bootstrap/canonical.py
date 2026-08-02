@@ -450,14 +450,34 @@ def select_canonicals(
                 trivial[i] = not content.strip()
                 lang = detect_language(str(pf.path))
                 snap = extract_dimensions(content, language=lang, file_path=str(pf.path))
+                # `extract_dimensions` re-derives the shape from CONTENT with
+                # per-language REGEX heuristics, and it has an arm only for the
+                # three first-class languages -- every other language gets an
+                # empty snapshot. The parse already knows the real kinds, so
+                # falling back to them is what keeps an extraction-tier language
+                # from having every one of its files judged structureless and
+                # therefore trivial, which left the cluster with no witness at
+                # all: archetypes resolved, and the per-edit block had nothing
+                # to show. Only ever a fallback, so the three languages with a
+                # real arm are unaffected.
+                # Only when the lint engine could not classify the file at all
+                # (`lang is None`). Where it HAS an arm, an empty snapshot is a
+                # real verdict -- a comment-only Ruby file genuinely has no
+                # top-level structure and must stay trivial -- and overriding it
+                # with the parse would hand the witness slot to exactly the
+                # files this guard exists to demote.
+                parsed_kinds = tuple(getattr(pf, "top_level_node_kinds", ()) or ())
+                effective_kinds = snap.top_level_node_kinds or (
+                    parsed_kinds if lang is None else ()
+                )
                 # A file with non-whitespace content but NO top-level code/export
                 # nodes (a comment-only header, a license block) teaches nothing as
                 # a canonical exemplar, like a blank file. Rank it trivial so a
                 # structured sibling wins. Barrels / imports-only files keep a
                 # non-empty signature (export/import nodes) and stay eligible.
-                if not snap.top_level_node_kinds:
+                if not effective_kinds:
                     trivial[i] = True
-                elif set(snap.top_level_node_kinds) == {"Expr"}:
+                elif set(effective_kinds) == {"Expr"}:
                     # A docstring-only Python module (an __init__.py carrying
                     # just a """...""" header) re-extracts to ["Expr"] -- a
                     # module docstring is an ast.Expr -- so the guard above
@@ -471,10 +491,7 @@ def select_canonicals(
                     # more structure to imitate than a docstring does.)
                     trivial[i] = True
                 jsx_tag = ("jsx",) if snap.jsx_present else ()
-                sig = (
-                    tuple(sorted(set(_normalize_kind(k) for k in snap.top_level_node_kinds)))
-                    + jsx_tag
-                )
+                sig = tuple(sorted({_normalize_kind(k) for k in effective_kinds})) + jsx_tag
             except Exception:
                 sig = ()
                 trivial[i] = True
