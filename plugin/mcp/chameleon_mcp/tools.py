@@ -3490,6 +3490,11 @@ def lint_file(
         or _detect_language(witness_rel_path)
         or loaded.profile.get("language")
     )
+    # Kept before the narrowing below, which collapses every other language to
+    # None so the heuristic extractors are never handed one they cannot read.
+    # The response still has to be able to say WHICH language that was, or an
+    # empty violations list is indistinguishable from a clean file.
+    profile_language = language
     if language not in ("typescript", "ruby", "python"):
         language = None
 
@@ -3711,6 +3716,19 @@ def lint_file(
     }
     if ast_noop_reason is not None:
         out["noop_reason"] = ast_noop_reason
+    # An extraction-tier language has no lint rules at all, so an empty
+    # `violations` list means "nothing was checked", not "nothing is wrong". A
+    # caller cannot tell those apart from the payload alone, and the difference
+    # is the whole value of the answer -- so the tier is stated.
+    try:
+        from chameleon_mcp.language_support import EXTRACTION, describe, tier_for
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+        if tier_for(profile_language) == EXTRACTION:
+            out["lint_coverage"] = "extraction-tier"
+            out["lint_coverage_note"] = sanitize_for_chameleon_context(describe(profile_language))
+    except Exception:
+        pass
     return _envelope(out, truncated=truncated)
 
 

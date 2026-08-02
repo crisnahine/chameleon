@@ -77,6 +77,67 @@ def test_the_declaration_matches_the_cross_file_index_wiring():
             )
 
 
+def test_lint_file_states_when_nothing_was_checked(tmp_path, monkeypatch):
+    """An empty `violations` list means two opposite things depending on the
+    language, and the payload has to say which.
+
+    For a first-class language it means the file was checked and is clean. For
+    an extraction-tier one it means no rule exists to run -- and a caller
+    reading `violations: []` as "clean" is exactly the vacuous silence the tier
+    registry exists to prevent, now at the tool surface.
+    """
+    from chameleon_mcp import tools
+
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_HMAC_KEY_PATH", str(tmp_path / "hmac.key"))
+
+    repo = tmp_path / "svc"
+    (repo / "internal" / "service").mkdir(parents=True)
+    (repo / "go.mod").write_text("module example.com/x\n\ngo 1.22\n", encoding="utf-8")
+    for name in ("alpha", "beta", "gamma", "delta"):
+        (repo / "internal" / "service" / f"{name}.go").write_text(
+            f"package service\n\ntype {name}Service struct {{}}\n\n"
+            f"func (s *{name}Service) Find(id string) string {{\n\treturn id\n}}\n",
+            encoding="utf-8",
+        )
+    import subprocess
+
+    for args in (["init", "-q"], ["add", "-A"]):
+        subprocess.run(["git", *args], cwd=repo, check=False, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@e", "-c", "user.name=T", "commit", "-qm", "i"],
+        cwd=repo,
+        check=False,
+        capture_output=True,
+    )
+
+    report = tools.bootstrap_repo(str(repo)).get("data", {})
+    if report.get("status") != "success":
+        import pytest as _pytest
+
+        _pytest.skip(f"bootstrap unavailable here: {report.get('error')}")
+
+    detected = tools.detect_repo(str(repo / "go.mod")).get("data", {})
+    tools.trust_profile(detected["repo_id"], repo.name)
+    archetypes = list(
+        tools.describe_codebase(detected["repo_id"]).get("data", {}).get("archetypes") or []
+    )
+    if not archetypes:
+        import pytest as _pytest
+
+        _pytest.skip("no archetype clustered at this fixture size")
+
+    result = tools.lint_file(
+        detected["repo_id"],
+        archetypes[0]["name"],
+        "package service\n\nfunc X() {}\n",
+        str(repo / "internal" / "service" / "x.go"),
+    ).get("data", {})
+    assert result.get("lint_coverage") == "extraction-tier"
+    assert "no per-edit lint rules" in (result.get("lint_coverage_note") or "")
+
+
 def test_an_unsupported_language_says_so_rather_than_guessing():
     assert ls.tier_for("zig") == ls.UNSUPPORTED
     assert ls.tier_for(None) == ls.UNSUPPORTED
