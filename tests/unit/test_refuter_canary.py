@@ -7,6 +7,8 @@ the run path's fail-open + cli-absent handling with a mocked refuter.
 
 from __future__ import annotations
 
+import pytest
+
 from chameleon_mcp.refuter_canary import CANARIES, evaluate_canaries, run_refuter_canaries
 
 # A tiny deterministic canary set: 2 real bugs, 1 false alarm.
@@ -112,6 +114,59 @@ def test_run_fails_open_when_refuter_raises(monkeypatch):
     # the harness never crashes and never fabricates a recall failure.
     assert out["status"] == "ran"
     assert out["overall"]["recall"] == 1.0
+
+
+def test_kill_switch_reports_unavailable_without_probing_the_cli(monkeypatch):
+    # The switch is read BEFORE refuter_cli_absent, so a killed run costs no
+    # subprocess -- not even the `claude --help` probe.
+    import chameleon_mcp.refuter as refuter
+
+    probed = []
+
+    def _probe():
+        probed.append(True)
+        return None
+
+    monkeypatch.setattr(refuter, "refuter_cli_absent", _probe)
+    monkeypatch.setattr(refuter, "run_one", lambda *a, **k: pytest.fail("spawned while killed"))
+    monkeypatch.setenv("CHAMELEON_REFUTER_CANARY", "0")
+
+    out = run_refuter_canaries("/tmp", canaries=_CANARIES)
+    assert out["status"] == "unavailable"
+    assert "CHAMELEON_REFUTER_CANARY" in out["reason"]
+    assert probed == []
+    # Killed means "did not run", never a clean scoreboard a CI job could read as
+    # a pass: no recall/precision keys are fabricated.
+    assert "overall" not in out
+
+
+def test_kill_switch_is_default_on(monkeypatch):
+    # Only the literal "0" kills it -- unset, "1" and "false" all leave it running,
+    # per the repo's default-on-with-kill-switch contract.
+    import chameleon_mcp.refuter as refuter
+
+    monkeypatch.setattr(refuter, "refuter_cli_absent", lambda: None)
+    monkeypatch.setattr(
+        refuter, "run_one", lambda repo_root, finding, excerpt, **k: {"verdict": "confirmed"}
+    )
+
+    monkeypatch.delenv("CHAMELEON_REFUTER_CANARY", raising=False)
+    assert run_refuter_canaries("/tmp", canaries=_CANARIES)["status"] == "ran"
+    for value in ("1", "false", ""):
+        monkeypatch.setenv("CHAMELEON_REFUTER_CANARY", value)
+        assert run_refuter_canaries("/tmp", canaries=_CANARIES)["status"] == "ran"
+
+
+def test_main_exits_2_when_killed(monkeypatch):
+    # An operator who killed the canaries must see exit 2 ("did not run"), never
+    # the 0 a clean scoreboard would produce.
+    from chameleon_mcp import refuter
+    from chameleon_mcp import refuter_canary as rc
+
+    monkeypatch.setattr(refuter, "refuter_cli_absent", lambda: None)
+    monkeypatch.setattr(refuter, "run_one", lambda *a, **k: pytest.fail("spawned while killed"))
+    monkeypatch.setenv("CHAMELEON_REFUTER_CANARY", "0")
+    assert rc.main(["/tmp"]) == 2
 
 
 def test_main_gates_on_recall_not_precision(monkeypatch):

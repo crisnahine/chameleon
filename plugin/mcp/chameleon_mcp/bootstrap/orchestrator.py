@@ -900,8 +900,42 @@ _EXTENSIONS_BY_LANGUAGE: dict[str, tuple[str, ...]] = {
 }
 
 
+def _register_spec_language_extensions() -> None:
+    """Fold the spec-driven languages in, derived from the specs themselves.
+
+    Written once, in the spec: a second hand-maintained copy of "which files is
+    this language" is how the discovery glob and the parser drift apart.
+    """
+    try:
+        from chameleon_mcp.extractors.treesitter.lang.specs import EXTENSIONS_BY_LANGUAGE
+
+        for language, extensions in EXTENSIONS_BY_LANGUAGE.items():
+            _EXTENSIONS_BY_LANGUAGE.setdefault(language, extensions)
+    except Exception:
+        # A broken spec costs its own languages, never the original three.
+        pass
+
+
+_register_spec_language_extensions()
+
+
 def _extensions_for_extractor(extractor: Extractor) -> tuple[str, ...]:
-    return _EXTENSIONS_BY_LANGUAGE.get(extractor.language, _EXTENSIONS_BY_LANGUAGE["typescript"])
+    """The extensions this extractor's language claims.
+
+    Raises rather than guessing. This used to fall back to TypeScript's
+    extensions for an unknown language, which is the worst possible default: the
+    discovery glob would go looking for `.ts` files in, say, a Go repo, find
+    none, and write a clean-looking profile over zero files. A loud failure at
+    bootstrap is recoverable; a silently empty profile looks like success.
+    """
+    extensions = _EXTENSIONS_BY_LANGUAGE.get(extractor.language)
+    if extensions is None:
+        raise ValueError(
+            f"no discovery extensions registered for language {extractor.language!r}; "
+            "add it to _EXTENSIONS_BY_LANGUAGE (or to the language specs) before "
+            "registering an extractor for it"
+        )
+    return extensions
 
 
 def _glob_for_extractor(extractor: Extractor) -> str:

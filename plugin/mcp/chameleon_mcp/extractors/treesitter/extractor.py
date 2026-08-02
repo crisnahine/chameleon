@@ -25,6 +25,8 @@ from chameleon_mcp.extractors.treesitter.grammars import (
 )
 from chameleon_mcp.extractors.treesitter.lang import python as python_tables
 from chameleon_mcp.extractors.treesitter.lang import ruby as ruby_tables
+from chameleon_mcp.extractors.treesitter.lang import spec_driven
+from chameleon_mcp.extractors.treesitter.lang import specs as lang_specs
 from chameleon_mcp.extractors.treesitter.lang import typescript as typescript_tables
 from chameleon_mcp.extractors.treesitter.walker import NodeBudgetExceeded, walk
 from chameleon_mcp.extractors.treesitter.walker import error_nodes as walker_error_nodes
@@ -37,6 +39,12 @@ _TABLES: dict[str, Any] = {
     "python": python_tables,
     "typescript": typescript_tables,
 }
+
+# The spec-driven languages. Their tables are BUILT from a declarative spec
+# rather than hand-written, so a language is data here; the three above stay
+# hand-written because each reproduces a bespoke dumper byte-for-byte and that
+# parity is their contract.
+_TABLES.update(spec_driven.build_all(lang_specs.ALL))
 
 
 class TreeSitterExtractor:

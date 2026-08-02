@@ -25,10 +25,38 @@ from chameleon_mcp.extractors.python import PythonExtractor
 from chameleon_mcp.extractors.ruby import RubyExtractor
 from chameleon_mcp.extractors.typescript import TypeScriptExtractor
 
+
+def _spec_driven_extractor_classes() -> list[type[Extractor]]:
+    """The spec-driven detectors, or none if their module cannot load.
+
+    Fails open to the historical three-extractor registry: a broken spec must
+    cost the languages it describes, never the three that have always worked.
+    """
+    try:
+        from chameleon_mcp.extractors.spec_driven import extractor_classes
+
+        return extractor_classes()
+    except Exception:
+        return []
+
+
 # Order is precedence: the first extractor whose can_handle() matches wins.
 # TypeScript before Ruby preserves the historical bootstrap order; Python is last
 # so its liberal "any .py file" detection only claims repos TS/Ruby did not.
-EXTRACTORS: list[type[Extractor]] = [TypeScriptExtractor, RubyExtractor, PythonExtractor]
+#
+# The spec-driven languages sit BETWEEN Ruby and Python, and the position is
+# load-bearing in both directions. After TS/Ruby, because those two carry
+# equally strong markers and moving them would re-cluster existing profiles.
+# Before Python, because `PythonExtractor.can_handle` claims any repo holding a
+# single `.py` file -- a Go or Rust repo that ships one helper script would
+# otherwise be profiled as Python, which is the silent-wrong-answer case rather
+# than a missing one.
+EXTRACTORS: list[type[Extractor]] = [
+    TypeScriptExtractor,
+    RubyExtractor,
+    *_spec_driven_extractor_classes(),
+    PythonExtractor,
+]
 
 
 def register(extractor_cls: type[Extractor]) -> None:

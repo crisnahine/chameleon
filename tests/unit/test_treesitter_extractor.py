@@ -57,7 +57,15 @@ def test_every_grammar_loads_under_the_pinned_abi():
         ("a.rb", "ruby"),
         ("a.py", "python"),
         ("a.pyi", "python"),
-        ("a.go", None),
+        # The spec-driven languages. `.go` asserted None while Go was
+        # unsupported; it now has a spec, a grammar and an extractor.
+        ("a.go", "go"),
+        ("a.rs", "rust"),
+        ("a.java", "java"),
+        ("a.cs", "csharp"),
+        ("a.php", "php"),
+        # Still genuinely unsupported: no spec ships for it.
+        ("a.zig", None),
     ],
 )
 def test_language_for_path_maps_extensions(name: str, expected: str | None):
@@ -71,7 +79,7 @@ def test_unsupported_extension_raises_unavailable_not_keyerror():
     of degrading into a clean failed report.
     """
     with pytest.raises(TreeSitterUnavailableError):
-        grammar_for_path("nope.go")
+        grammar_for_path("nope.zig")
 
 
 # --- selection ------------------------------------------------------------
@@ -107,8 +115,13 @@ def test_kill_switch_falls_back_to_the_dump_script(tmp_path: Path, monkeypatch):
 
 
 def test_extractor_refuses_a_language_it_has_no_tables_for():
+    """Go used to be the example here. It now has a spec, so the assertion needs
+    a language that genuinely ships no tables, or it proves nothing."""
     with pytest.raises(ValueError):
-        TreeSitterExtractor("go")
+        TreeSitterExtractor("zig")
+    # And a spec-driven language IS accepted, so the refusal above is about
+    # missing tables rather than about anything outside the original three.
+    assert TreeSitterExtractor("go").language == "go"
 
 
 def test_parse_repo_honors_the_paths_argument(tmp_path: Path):

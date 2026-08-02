@@ -61,6 +61,40 @@ _EXTENSION_GRAMMARS: dict[str, tuple[str, str, str]] = {
     ".pyi": ("tree_sitter_python", "language", "python"),
 }
 
+# The wheel each spec-driven language loads from. Kept beside the table above
+# rather than inside the spec, because a spec describes a GRAMMAR's shape while
+# this names the Python package that happens to ship it -- two things that
+# change for different reasons. PHP's factory is `language_php`; the wheel also
+# exposes a separate one for its template dialect.
+_SPEC_GRAMMAR_MODULES: dict[str, tuple[str, str]] = {
+    "go": ("tree_sitter_go", "language"),
+    "rust": ("tree_sitter_rust", "language"),
+    "java": ("tree_sitter_java", "language"),
+    "csharp": ("tree_sitter_c_sharp", "language"),
+    "php": ("tree_sitter_php", "language_php"),
+}
+
+
+def _register_spec_extensions() -> None:
+    """Fold every spec's extensions into the extension table.
+
+    Derived rather than written twice: the spec already declares what a language
+    is called and which files it claims, and a second hand-maintained copy is
+    exactly how a discovery glob and a grammar lookup drift apart.
+    """
+    from chameleon_mcp.extractors.treesitter.lang.specs import ALL
+
+    for spec in ALL:
+        entry = _SPEC_GRAMMAR_MODULES.get(spec.name)
+        if entry is None:
+            continue
+        module_name, factory_attr = entry
+        for ext in spec.extensions:
+            _EXTENSION_GRAMMARS.setdefault(ext, (module_name, factory_attr, spec.name))
+
+
+_register_spec_extensions()
+
 _cache: dict[str, Any] = {}
 _cache_lock = threading.Lock()
 
