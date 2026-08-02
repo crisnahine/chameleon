@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-7C3AED.svg)](https://docs.claude.com/claude-code)
-[![Languages](https://img.shields.io/badge/languages-TS%20%7C%20Ruby%20%7C%20Python-2ea44f.svg)](#languages-and-frameworks)
+[![Languages](https://img.shields.io/badge/languages-TS%20%7C%20Ruby%20%7C%20Python%20%2B5-2ea44f.svg)](#languages-and-frameworks)
 [![Tests](https://img.shields.io/badge/unit%20tests-6%2C934-blue.svg)](#proof-not-promises)
 [![Listed on ClaudePluginHub](https://www.claudepluginhub.com/badge/crisnahine-chameleon)](https://www.claudepluginhub.com/plugins/crisnahine-chameleon?ref=badge)
 
@@ -156,7 +156,16 @@ Seven hooks across six lifecycle events, 19 MCP tools (16 comprehension/conforma
 | Ruby | Prism | Rails |
 | Python | libcst (bundled, nothing to install) | Django, DRF, Flask, FastAPI |
 
-Framework-agnostic by default: chameleon learns your repo's own conventions, so any framework works. The named ones get extra structural understanding where their conventions are strong. Nothing else is supported today. No Go, Rust, or Java.
+Framework-agnostic by default: chameleon learns your repo's own conventions, so any framework works. The named ones get extra structural understanding where their conventions are strong.
+
+**Extraction tier** — Go, Rust, Java, C# and PHP. These are parsed in-process by tree-sitter from a declarative language spec, and they get the derivation half of the product: archetype clustering, a canonical witness, conventions, callable signatures and imports, so the per-edit block shows the model a real file from your repo to imitate.
+
+They do **not** get the enforcement half: no per-edit lint rules, no secret or eval detection, no reverse/exports index, and only same-file call edges. That split is deliberate and reported rather than implied — `/chameleon-doctor` prints the tier and names exactly what is absent, because a rule that never fires looks identical to a codebase with nothing wrong. `plugin/mcp/chameleon_mcp/language_support.py` is the single source of that claim, and its tests hold it to the actual wiring.
+
+| Tier | Languages | Derivation | Lint + enforcement |
+|---|---|---|---|
+| First-class | TypeScript/JavaScript, Ruby, Python | yes | yes |
+| Extraction | Go, Rust, Java, C#, PHP | yes | no |
 
 ---
 
