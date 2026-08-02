@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from chameleon_mcp._thresholds import DEFAULTS, threshold_float, threshold_int
+from chameleon_mcp._thresholds import threshold_float, threshold_int
 from chameleon_mcp.production_ref import git_toplevel
 from chameleon_mcp.safe_open import UnsafeFileError, safe_read_text
 from chameleon_mcp.sanitization import sanitize_for_chameleon_context
@@ -65,39 +65,6 @@ _COMMIT_FORMAT = "%x1f%aN%x1e%aE"
 _COMMIT_MARK = "\x1f"
 _FIELD_MARK = "\x1e"
 
-# Tuning numbers, registered into the central threshold table so each one reads
-# through threshold_int()/threshold_float() and is operator-overridable as
-# CHAMELEON_<NAME> like every other threshold. setdefault, not assignment: a name
-# the table declares in its own literal keeps that declared value.
-_TUNING_DEFAULTS: Final[dict[str, int | float]] = {
-    # Bounds the one git-log walk. Ownership skews recent, so a deeper walk buys
-    # little beyond diluting a file's current owner with its original author.
-    "OWNERSHIP_MAX_COMMITS": 2_000,
-    # A commit touching more than this is a sweep (mass reformat, license header,
-    # dependency bump); whoever ran it did not thereby become the owner of every
-    # file it touched, so it is skipped rather than counted.
-    "OWNERSHIP_MAX_FILES_PER_COMMIT": 30,
-    # Artifact bounds: files kept (most-committed first) and authors per file.
-    "OWNERSHIP_MAX_FILES": 5_000,
-    "OWNERSHIP_MAX_AUTHORS_PER_FILE": 5,
-    # A mined author is only offered as an owner when they wrote at least this
-    # share of the file's commits. Below it there is no dominant author, and
-    # naming the top of a flat distribution would be a guess dressed as a fact.
-    "OWNERSHIP_MIN_DOMINANT_SHARE": 0.5,
-    "OWNERSHIP_GIT_TIMEOUT_SECONDS": 25,
-    # Read cap on the CODEOWNERS file itself. Real ones are kilobytes; anything
-    # past this is not a rules file.
-    "OWNERSHIP_MAX_CODEOWNERS_BYTES": 200_000,
-    "OWNERSHIP_MAX_RULES": 2_000,
-    # Per-pattern length bound. The compiled form of a pattern nests `.*` groups
-    # once per `**`, so an absurdly long pattern is refused rather than handed to
-    # the regex engine.
-    "OWNERSHIP_MAX_PATTERN_CHARS": 512,
-    "OWNERSHIP_MAX_OWNER_CHARS": 120,
-}
-for _name, _default in _TUNING_DEFAULTS.items():
-    DEFAULTS.setdefault(_name, _default)
-
 # An address embedded in an owner token or a git display name. The local part
 # must be non-empty, so a `@user` handle and an `@org/team` slug -- which begin
 # with the `@` -- are left alone.
@@ -119,9 +86,17 @@ def _safe_identity(value: str) -> str:
 
     The single boundary every owner string crosses, whether it came from a
     CODEOWNERS line or from a git author field.
+
+    The cap bounds the INPUT, not just the result. ``_EMAIL_RE`` splits on an
+    ambiguous ``[^\\s@]+`` either side of the ``@``, so scanning a whitespace-free
+    ``<local>@<tail carrying no dot>`` token costs time quadratic in its length,
+    and a CODEOWNERS line may carry one as long as the file's whole read cap.
+    Masking a bounded window still fires on every real address: a local part runs
+    to 64 characters at most, so the domain is always inside the window.
     """
-    masked = _mask_email(str(value or "").strip())
-    return sanitize_for_chameleon_context(masked)[: threshold_int("OWNERSHIP_MAX_OWNER_CHARS")]
+    cap = threshold_int("OWNERSHIP_MAX_OWNER_CHARS")
+    masked = _mask_email(str(value or "").strip()[:cap])
+    return sanitize_for_chameleon_context(masked)[:cap]
 
 
 def _normalize_rel(rel_path) -> str:
@@ -391,6 +366,10 @@ def mine_commit_ownership(
 
     The rows carry a masked, sanitized display name and never an address -- see
     the module docstring on why the email is the grouping key and nothing else.
+    The file KEYS and ``root`` are raw repo text, like ``CodeownersRule.pattern``
+    and for the same reason: they are matched against a caller's own paths, so
+    sanitizing them here would break the lookup. A caller that RENDERS one must
+    sanitize it first.
     """
     if not _enabled():
         return None

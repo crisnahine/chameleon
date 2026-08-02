@@ -596,12 +596,12 @@ def block_eligible_on_file(hard: list[dict], *, language: str | None) -> list[di
 
     ``eval-call`` and ``secret-detected-in-content`` run on raw content, so the
     literal text ``eval(`` or a credential-shaped token in markdown / plain-text /
-    config PROSE (an unrecognized extension, ``detect_language`` is None) would
-    otherwise hard-block under enforce -- and such a file cannot carry an inline
-    ``chameleon-ignore`` directive, so the block has no escape. They stay in the
-    advisory violation list; only the BLOCK set drops them here. On a recognized
-    code language the set is returned unchanged. Pass the file's
-    ``security_language()`` result -- NOT ``detect_language()``, which answers a
+    config PROSE (an extension no source language claims, so ``security_language``
+    is None) would otherwise hard-block under enforce -- and such a file cannot
+    carry an inline ``chameleon-ignore`` directive, so the block has no escape.
+    They stay in the advisory violation list; only the BLOCK set drops them
+    here. On a recognized code language the set is returned unchanged. Pass the
+    file's ``security_language()`` result -- NOT ``detect_language()``, which answers a
     narrower question (does this language have a dimension extractor) and would
     hand None for every extraction-tier source file, silently exempting it from
     the credential and eval blocks. A code string keeps the rules, None drops the

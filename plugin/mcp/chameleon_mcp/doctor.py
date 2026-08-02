@@ -68,6 +68,42 @@ def _conflict_marked_artifacts(profile_dir: Path) -> list[str]:
     return found
 
 
+def _profile_languages(profile_dir: Path, primary: object) -> list[str]:
+    """Every language this profile holds archetypes for, primary first.
+
+    Cross-language indexing clusters a repo's secondary corpora into archetypes
+    of their own, so the profile's ``language`` field names the primary and
+    nothing else. Each archetype records its own extension in the ``:ext`` tail
+    of its ``paths_pattern`` (``svc/internal:go``), which is the only place a
+    secondary language is written down -- and a secondary corpus is precisely
+    where a lint rule never fires, so reporting the primary alone answers the
+    wrong question. Legacy extension-blind patterns contribute nothing and leave
+    the primary standing alone. Fails open to the primary.
+    """
+    import json as _json
+
+    from chameleon_mcp.lint_engine import security_language
+
+    ordered: list[str] = []
+    if isinstance(primary, str) and primary:
+        ordered.append(primary)
+    try:
+        archetypes = _json.loads((profile_dir / "archetypes.json").read_text(encoding="utf-8"))
+        entries = (archetypes or {}).get("archetypes") or {}
+        if not isinstance(entries, dict):
+            return ordered
+        for meta in entries.values():
+            pattern = (meta or {}).get("paths_pattern")
+            if not isinstance(pattern, str) or ":" not in pattern:
+                continue
+            language = security_language(f"a.{pattern.rsplit(':', 1)[-1]}")
+            if language and language not in ordered:
+                ordered.append(language)
+    except (OSError, ValueError, AttributeError):
+        return ordered
+    return ordered
+
+
 def _recent_preflight_rows(repo_id: str | None, *, keep=None) -> list[dict]:
     """The tail of this repo's PreToolUse metric rows, newest last.
 
@@ -836,21 +872,31 @@ def doctor(repo: str | None = None) -> dict:
                 # A corrupt profile.json is itself a dead-install signal, not a
                 # reason to silently narrow the checked set to the base pair.
                 artifact_problems.append("profile.json corrupt")
-            # What this repo's language actually gets. An extraction-tier
+            # What this repo's languages actually get. An extraction-tier
             # language derives archetypes and conventions perfectly well while
             # every lint rule returns nothing, and that silence is
             # indistinguishable from "your code is clean" -- so the tier is
             # reported rather than left to be inferred from rules that never
-            # fire.
+            # fire. EVERY language the profile clustered archetypes for, not the
+            # primary alone: a polyglot profile's secondary corpora are exactly
+            # where a rule never fires, and this is the surface someone consults
+            # to find out why.
             try:
                 from chameleon_mcp.language_support import EXTRACTION, describe, tier_for
+                from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
-                _tier = tier_for(_lang)
+                _langs = _profile_languages(cwd_profile_dir, _lang) or [_lang]
+                _details = [describe(one) for one in _langs]
                 checks.append(
                     {
                         "name": "language_support",
-                        "status": "warn" if _tier == EXTRACTION else "ok",
-                        "detail": describe(_lang),
+                        "status": (
+                            "warn" if any(tier_for(one) == EXTRACTION for one in _langs) else "ok"
+                        ),
+                        # profile.json and archetypes.json are committed,
+                        # attacker-controllable artifacts, and `describe`
+                        # interpolates an unrecognized language verbatim.
+                        "detail": sanitize_for_chameleon_context("; ".join(_details)),
                     }
                 )
             except Exception:

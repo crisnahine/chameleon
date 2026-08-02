@@ -58,6 +58,10 @@ except ImportError:  # pragma: no cover - chameleon pins it; a host may not
 
 BINARY_ENV = "CHROMATOPHORE_BIN"
 BATCH_TIMEOUT_SECONDS = 600
+# The engine's own per-file ceiling (`Limits::max_file_bytes`), which is also
+# where chameleon's tree-sitter backend stops. Neither side emits a record for a
+# file past it, so a digest computed past it would describe bytes nothing parsed.
+MAX_SHA_BYTES = 1_000_000
 
 # What each chameleon language identifier means on disk. Deriving the glob and
 # the detection scan from the language is what stops a `ruby` instance from
@@ -171,6 +175,11 @@ class ChromatophoreExtractor:
         if not inside:
             return ParseResult(files=[], skipped=escaped)
         candidates = [p for p, _ in inside]
+        # The set the symlink and containment checks above actually cleared.
+        # Anything the engine echoes back is matched against it before this
+        # process opens a file, so the echoed string can never widen the input
+        # side's decision about what is readable.
+        validated = {absolute for _, absolute in inside}
 
         stdin_data = "".join(f"{absolute}\n" for _, absolute in inside)
         proc = subprocess.Popen(
@@ -217,44 +226,60 @@ class ChromatophoreExtractor:
                 skipped.append((path, record["error"]))
                 continue
             try:
-                files.append(_parsed_file_from_record(path, record))
+                files.append(_parsed_file_from_record(path, record, validated))
             except (ValueError, TypeError):
                 skipped.append((path, "malformed_record"))
 
-        # A dead child means every file that never reached stdout is unknown,
-        # not clean. Marking them keeps a truncated sample visible instead of
-        # letting it read as the whole corpus.
+        # Every file that never reached stdout is unknown, not clean, whatever
+        # the exit status. A record line that failed to parse was dropped above
+        # with no path to file it under, so on a CLEAN exit its file would
+        # appear in neither list and read as one that was never in the corpus.
         rc = proc.returncode
         if timed_out or rc not in (0, None):
-            seen = {str(f.path) for f in files} | {str(p) for p, _ in skipped}
             reason = "extractor_timeout" if timed_out else f"extractor_exit_{rc}"
+            # Only a dead child's stderr explains the gap. On a clean exit it
+            # carries the engine's own progress lines, which would read as a
+            # cause when the cause was one unusable record.
             detail = (stderr_data or "").strip()[:160]
             if detail:
                 reason = f"{reason}: {detail}"
-            for p in candidates:
-                if os.path.abspath(p) not in seen:
-                    skipped.append((p, reason))
+        else:
+            reason = "extractor_no_record"
+        seen = {str(f.path) for f in files} | {str(p) for p, _ in skipped}
+        for p in candidates:
+            if os.path.abspath(p) not in seen:
+                skipped.append((p, reason))
 
         return ParseResult(files=files, skipped=skipped)
 
 
-def _sha_hint(path: Path) -> str | None:
+def _sha_hint(path: str) -> str | None:
     """The host-side digest chameleon's own extractors carry.
 
     Not a wire field: `sha_hint` feeds drift-cache invalidation and every shipped
     extractor computes it from the file's bytes on the host. Leaving it None made
     the shim diverge from the backend on every single file, in a slot the
     normalized contract declares.
+
+    Takes a path this run already validated, never one read off the wire, and
+    reads no further than the engine itself would.
     """
     if xxhash is None:
         return None
     try:
-        return xxhash.xxh64(path.read_bytes()).hexdigest()
+        with open(path, "rb") as handle:
+            data = handle.read(MAX_SHA_BYTES + 1)
     except OSError:
         return None
+    if len(data) > MAX_SHA_BYTES:
+        # Past the ceiling both parsers stop at, so there is no record this
+        # digest could belong to. None is the honest answer; a digest over a
+        # truncated read would be a wrong one.
+        return None
+    return xxhash.xxh64(data).hexdigest()
 
 
-def _parsed_file_from_record(path: Path, record: dict) -> ParsedFile:
+def _parsed_file_from_record(path: Path, record: dict, validated: set[str]) -> ParsedFile:
     """Map one wire record onto chameleon's normalized dataclass.
 
     The normalized slots are the stability contract; everything else rides in
@@ -281,6 +306,13 @@ def _parsed_file_from_record(path: Path, record: dict) -> ParsedFile:
     extras = {key: record.get(key) for key in always}
     extras.update({key: record.get(key) for key in when_present})
 
+    # The digest is taken from the path this run cleared, not from the one the
+    # record echoes: the symlink and containment checks ran on the input side,
+    # and opening an echoed string would skip both. A path outside that set gets
+    # no digest rather than an unchecked read.
+    absolute = os.path.abspath(path)
+    sha_hint = _sha_hint(absolute) if absolute in validated else None
+
     return ParsedFile(
         path=path,
         content_first_200_bytes=record.get("content_first_200_bytes", ""),
@@ -290,6 +322,6 @@ def _parsed_file_from_record(path: Path, record: dict) -> ParsedFile:
         import_specifiers=tuple(tuple(pair) for pair in record.get("import_specifiers") or ()),
         has_jsx=bool(record.get("has_jsx")),
         parse_diagnostics_count=int(record.get("parse_diagnostics_count") or 0),
-        sha_hint=_sha_hint(path),
+        sha_hint=sha_hint,
         extras=extras,
     )

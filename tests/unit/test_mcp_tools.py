@@ -25,7 +25,7 @@ ARCH = "service"
 WITNESS = "service.ts"
 
 # Every tool name registered in server.py, asserted present so a dropped/renamed
-# registration is caught. The v3 surface split keeps exactly 16 top-level
+# registration is caught. The v3 surface split keeps exactly 18 top-level
 # conformance/comprehension tools plus the three dispatchers that route every
 # lifecycle / review / telemetry action to the (unchanged) tools.py functions.
 REGISTERED_TOOLS = [

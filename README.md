@@ -160,12 +160,12 @@ Framework-agnostic by default: chameleon learns your repo's own conventions, so 
 
 **Extraction tier** — Go, Rust, Java, C# and PHP. These are parsed in-process by tree-sitter from a declarative language spec, and they get the derivation half of the product: archetype clustering, a canonical witness, conventions, callable signatures and imports, so the per-edit block shows the model a real file from your repo to imitate.
 
-They do **not** get the enforcement half: no per-edit lint rules, no secret or eval detection, no reverse/exports index, and only same-file call edges. That split is deliberate and reported rather than implied — `/chameleon-doctor` prints the tier and names exactly what is absent, because a rule that never fires looks identical to a codebase with nothing wrong. `plugin/mcp/chameleon_mcp/language_support.py` is the single source of that claim, and its tests hold it to the actual wiring.
+They do **not** get per-edit convention lint rules, the reverse/exports index, or graded cross-file call edges (same-file edges only). They **do** get secret and eval-sink detection, block-eligible on the same terms as a first-class language: those two read the file's content rather than a derived shape, so they need no extractor, and a hardcoded key in a `.go` file blocks at write time exactly as the same key in a `.rb` file does. That split is deliberate and reported rather than implied — `/chameleon-doctor` prints the tier and names exactly what is absent, because a rule that never fires looks identical to a codebase with nothing wrong. `plugin/mcp/chameleon_mcp/language_support.py` is the single source of that claim, and its tests hold it to the actual wiring.
 
-| Tier | Languages | Derivation | Lint + enforcement |
-|---|---|---|---|
-| First-class | TypeScript/JavaScript, Ruby, Python | yes | yes |
-| Extraction | Go, Rust, Java, C#, PHP | yes | no |
+| Tier | Languages | Derivation | Convention lint | Secret + eval detection |
+|---|---|---|---|---|
+| First-class | TypeScript/JavaScript, Ruby, Python | yes | yes | yes |
+| Extraction | Go, Rust, Java, C#, PHP | yes | no | yes |
 
 ---
 

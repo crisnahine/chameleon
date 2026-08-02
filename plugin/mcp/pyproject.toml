@@ -58,6 +58,11 @@ dependencies = [
     "tree-sitter-rust==0.24.2",
     "tree-sitter-java==0.23.5",
     "tree-sitter-c-sharp==0.23.5",
+    # The one grammar whose pin cannot equal the Rust engine's (chromatophore
+    # pins 0.24.2): the crate and the wheel are separate release streams, and
+    # PyPI publishes no 0.24.2 -- 0.24.1 is its newest. Raise this only when a
+    # matching wheel exists; a version that is not on PyPI fails the install
+    # rather than the parity test.
     "tree-sitter-php==0.24.1",
 ]
 

@@ -8,15 +8,14 @@ See docs/architecture.md sections:
 - "Performance characteristics" — daemon model
 - "Cluster signature function" — what tools rely on
 
-Tool surface (v3 split): the 17 high-frequency conformance/comprehension tools
+Tool surface (v3 split): the 18 high-frequency conformance/comprehension tools
 stay top-level; every lifecycle, review-engine, and telemetry operation routes
 through one of three dispatcher tools (chameleon_lifecycle, chameleon_review,
 chameleon_telemetry) whose `action` selects the underlying
-chameleon_mcp.tools function. 20 registered tools total (verified over the real
-stdio transport, not counted by hand -- the previous 16/19 predated
-explain_concept and had drifted). The in-process
-functions in tools.py are unchanged — hooks, the daemon socket protocol, and
-the QA batteries keep importing them directly.
+chameleon_mcp.tools function. 21 registered tools total, 18 + 3 (verified over
+the real stdio transport, not counted by hand). The in-process functions in
+tools.py are unchanged — hooks, the daemon socket protocol, and the QA
+batteries keep importing them directly.
 
 Wire contract (v4.3): every registered tool sends its result as ONE compact
 JSON text block — `structured_output=False`, no outputSchema, no

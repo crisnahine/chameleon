@@ -170,11 +170,19 @@ def is_parsed_manifest(path: str) -> bool:
 
     The complement of `is_uncovered_manifest` for the files this module knows
     about, and the reason it exists separately: some manifests are matched by
-    SHAPE rather than by basename (`requirements-dev.txt`), so a caller testing
-    `MANIFEST_LOCKFILE_BASENAMES` membership alone would report them as neither
-    parsed nor uncovered -- an invisible third state.
+    SHAPE rather than by basename (`requirements-dev.txt`, `*.gemspec`), so a
+    caller testing `MANIFEST_LOCKFILE_BASENAMES` membership alone would report
+    them as neither parsed nor uncovered -- an invisible third state.
+
+    Every arm `scan_dependency_diff` routes to must be named here, which is why
+    the two shape-matched families sit beside the basename set.
     """
-    return path.rsplit("/", 1)[-1] in MANIFEST_LOCKFILE_BASENAMES or _is_requirements_manifest(path)
+    base = path.rsplit("/", 1)[-1]
+    return (
+        base in MANIFEST_LOCKFILE_BASENAMES
+        or base.endswith(".gemspec")
+        or _is_requirements_manifest(path)
+    )
 
 
 def is_uncovered_manifest(path: str) -> bool:
@@ -182,12 +190,12 @@ def is_uncovered_manifest(path: str) -> bool:
 
     That is ``setup.py`` and the non-npm/Bundler lockfiles. A manifest this
     module DOES parse is never uncovered, so a caller checking both sets sees no
-    overlap.
+    overlap -- the parsed test is deferred to `is_parsed_manifest` so the two can
+    never disagree about a file.
     """
-    base = path.rsplit("/", 1)[-1]
-    if base in MANIFEST_LOCKFILE_BASENAMES or _is_requirements_manifest(path):
+    if is_parsed_manifest(path):
         return False
-    return base in UNCOVERED_MANIFEST_BASENAMES
+    return path.rsplit("/", 1)[-1] in UNCOVERED_MANIFEST_BASENAMES
 
 
 # Lifecycle scripts that run automatically on `npm install` with no further
@@ -778,6 +786,48 @@ def _side_text(diff_text: str, marker: str) -> str:
     return "\n".join(out)
 
 
+# A go.mod directive opening a parenthesized block whose entries are NOT
+# dependencies: `exclude`/`retract` name modules the file explicitly refuses, and
+# a `replace` target is read by the source rules instead. A trailing comment is
+# tolerated because `exclude ( // dropped: CVE-...` is legal and common.
+_GO_NON_DEP_BLOCK_RE = re.compile(r"^(?:exclude|retract|replace)\s*\(\s*(?://.*)?$")
+
+
+def _gomod_side_text(diff_text: str, marker: str) -> str:
+    """One side of a ``go.mod`` diff, with each hunk's enclosing block restored.
+
+    A hunk inside `exclude (` or `retract (` carries neither the opener nor the
+    closer in its context lines, so the plain reconstruction reads its module
+    lines as ordinary `require` entries and a module the file explicitly REFUSES
+    surfaces as a new dependency -- an inverted finding, worse than a missed one.
+    git's `@@` trailer names the opener (go.mod writes every directive in column
+    1, which is what git's default funcname pattern latches onto), so it is
+    re-attached and then closed at the hunk boundary, since the closer may be out
+    of context too. A hunk whose trailer names no such block is rebuilt verbatim.
+    """
+    out: list[str] = []
+    open_block = False
+    for raw in diff_text.splitlines():
+        m = _HUNK_HEADER_RE.match(raw)
+        if m is not None:
+            if open_block:
+                out.append(")")
+            trailer = m.group(1).strip()
+            open_block = _GO_NON_DEP_BLOCK_RE.match(trailer) is not None
+            if open_block:
+                out.append(trailer)
+            continue
+        if not raw:
+            out.append("")
+        elif raw[0] == " ":
+            out.append(raw[1:])
+        elif raw[0] == marker and not raw.startswith(marker * 3):
+            out.append(raw[1:])
+    if open_block:
+        out.append(")")
+    return "\n".join(out)
+
+
 def _balance_brackets(text: str, comment: str | None = None) -> str:
     """``text`` with closers appended for every bracket a fragment left open.
 
@@ -974,11 +1024,16 @@ def _declared_side_names(manifest: str, diff_text: str, marker: str) -> set[str]
     a name is a name whichever reconstruction exposed it, and both sides are
     read the same way, so a repair that recovers a context-line dependency
     recovers it on both sides and cancels out of the difference.
+
+    go.mod is rebuilt rather than repaired: its blind spot is a hunk landing
+    inside a directive that NEGATES its entries, so the fix has to replace the
+    reconstruction, not union another candidate onto it.
     """
     from chameleon_mcp._thresholds import threshold_int
 
     cap = threshold_int("DEP_DIFF_MAX_BYTES")
-    candidates = [_side_text(diff_text, marker)]
+    rebuild = _gomod_side_text if manifest == "go.mod" else _side_text
+    candidates = [rebuild(diff_text, marker)]
     if manifest in _TOML_ARM_MANIFESTS:
         candidates.extend(_toml_hunk_candidates(diff_text, marker))
     names: set[str] = set()
@@ -1097,14 +1152,33 @@ _GRADLE_METADATA_BLOCK_RE = re.compile(
 def _gradle_metadata_lines(diff_text: str) -> set[int]:
     """Line indices sitting inside a publishing/pom metadata block.
 
-    Brace-depth tracked from the opener. When the opener is outside the diff's
-    context window the block is invisible and the line is NOT excluded -- the
-    check stays as loud as it was rather than guessing a suppression.
+    Brace-depth is tracked per HUNK and over the post-change side only (context
+    plus additions), because that is the side the source check reads and because
+    a hunk boundary is a gap in the file: an opener whose closer falls outside
+    its own hunk would otherwise leave the depth positive for the whole rest of
+    the diff and silently suppress every later repository declaration. A ``-``
+    line's braces belong to content the change removes, so they are not counted
+    either.
+
+    The ``@@`` header itself is not content. git ships no gradle diff driver, so
+    its funcname trailer is whatever column-1 line came last -- exactly the shape
+    ``publishing {`` and ``pom {`` have -- and reading it would file an unrelated
+    hunk inside a metadata block.
+
+    When the opener is outside the hunk the block is invisible and the line is
+    NOT excluded -- the check stays as loud as it was rather than guessing a
+    suppression.
     """
     inside: set[int] = set()
     depth = 0
     for index, raw in enumerate(diff_text.splitlines()):
-        body = raw[1:] if raw[:1] in "+- " else raw
+        if _HUNK_HEADER_RE.match(raw):
+            depth = 0
+            continue
+        marker = raw[:1]
+        if marker == "-":
+            continue
+        body = raw[1:] if marker in "+ " else raw
         if depth > 0:
             inside.add(index)
             depth += body.count("{") - body.count("}")
@@ -1368,9 +1442,16 @@ def _scan_new_dependencies_generic(path: str, arm: _Arm, diff_text: str) -> list
             continue
         line = raw[1:]
         # Line order, not sorted order: a coordinate reads `group:artifact`, and
-        # alphabetical would rejoin those two halves backwards.
+        # alphabetical would rejoin those two halves backwards. Positions are
+        # taken against a CASEFOLDED copy of the line because every name comes
+        # back casefolded from the reader: a coordinate carrying an uppercase
+        # letter (`com.github.AAChartModel:AAChartCore-Kotlin`) locates neither
+        # half in the raw line, so both fall to the length fallback, tie, and hit
+        # exactly the alphabetical tiebreak that emits a reversed coordinate no
+        # manifest ever declared.
+        lowered = line.casefold()
         matched = [n for n in _evidence_names(line) & new if n not in seen]
-        matched.sort(key=lambda n: (line.find(n) if n in line else len(line), n))
+        matched.sort(key=lambda n: (lowered.find(n) if n in lowered else len(lowered), n))
         if not matched:
             continue
         # Pair the halves, never join the whole list: one Gradle line can carry

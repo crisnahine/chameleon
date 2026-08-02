@@ -476,8 +476,17 @@ def test_resolver_fails_open_on_missing_and_malformed_inputs():
     assert resolve_owners("app/a.py", rules=[], mined={"files": {"app/a.py": "nope"}}) == {}
     assert resolve_owners("app/a.py", rules=[], mined=_mined("app/a.py", [{"author": "A"}])) == {}
     assert resolve_owners("app/a.py", rules=[], mined=_mined("app/a.py", ["junk"])) == {}
-    # A boolean is an int in Python; it must not read as a share of 1.
-    assert resolve_owners("app/a.py", rules=[], mined=_mined("a.py", [{"a": True}])) == {}
+    # A boolean is an int in Python; it must not read as a share of 1. The row
+    # has to carry an author and be keyed on the looked-up path, or the resolver
+    # returns before the share is ever inspected and the guard goes untested.
+    assert (
+        resolve_owners(
+            "app/a.py",
+            rules=[],
+            mined=_mined("app/a.py", [{"author": "Alice Smith", "share": True}]),
+        )
+        == {}
+    )
 
 
 # --- kill switch ------------------------------------------------------------

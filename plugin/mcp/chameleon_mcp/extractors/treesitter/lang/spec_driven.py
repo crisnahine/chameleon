@@ -25,13 +25,7 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 
-# A parameter list longer than this is a generated or pathological declaration;
-# the signature is not useful and the memory is not free.
-_MAX_PARAMS = 64
-
-# Deepest class nesting the enclosing-class walk will report. Beyond this the
-# path string stops being readable and stops being useful.
-_MAX_CLASS_DEPTH = 8
+from chameleon_mcp._thresholds import threshold_int
 
 
 @dataclass(frozen=True)
@@ -70,9 +64,19 @@ class LanguageSpec:
     # `member_call_expression`), and PHP uses two different field names for the
     # instance and static forms -- hence a tuple, tried in order.
     call_receiver_fields: tuple[str, ...] = ()
-    # Kotlin's grammar names neither side of a navigation, so the receiver and
-    # the method are simply its first two named children.
-    member_positional: bool = False
+    # A receiverless call whose grammar names the callee under a DIFFERENT field
+    # from the receiver-bearing forms (PHP's `function_call_expression` uses
+    # `function` where its member and scoped forms use `name`). Tried only when
+    # `call_function_field` is absent on the node.
+    bare_call_function_field: str | None = None
+    # Node kinds that name a callee, and node kinds that name a receiver. Each
+    # grammar spells them its own way -- PHP's identifier is `name`, and the
+    # self-receiver has a kind of its own in every language that has one (Rust
+    # `self`, Java and C# `this`, PHP `variable_name` holding `$this`) -- so a
+    # reader hardcoding "identifier" silently drops the most common intra-class
+    # edge there is.
+    callee_nodes: tuple[str, ...] = ("identifier",)
+    receiver_nodes: tuple[str, ...] = ("identifier",)
 
     # Import shapes.
     import_nodes: tuple[str, ...] = ()
@@ -120,6 +124,23 @@ def _named_children(node: Any) -> list[Any]:
         return list(node.named_children)
     except Exception:
         return []
+
+
+def _module_child(node: Any, alias_field: str | None) -> Any:
+    """The first named child of an import statement that holds a module path.
+
+    A grammar that lets an import bind a local alias names that alias itself
+    (C#'s `using A = B.C;` puts `A` on the name field), so the alias is skipped
+    and the module wins -- otherwise the recorded import is a name that exists
+    nowhere outside this one file. Byte spans identify the alias because a
+    field lookup and a child walk return separate node objects for it.
+    """
+    alias = _field(node, alias_field)
+    span = (alias.start_byte, alias.end_byte) if alias is not None else None
+    for child in _named_children(node):
+        if span is None or (child.start_byte, child.end_byte) != span:
+            return child
+    return None
 
 
 def _declared_name(node: Any, text: Callable[[Any], str], spec: LanguageSpec) -> str | None:
@@ -179,9 +200,10 @@ def build(spec: LanguageSpec) -> SimpleNamespace:
         holder = _field(node, spec.parameters_field)
         if holder is None:
             return []
+        max_params = threshold_int("SPEC_MAX_PARAMS")
         out: list[dict[str, Any]] = []
         for param in _named_children(holder):
-            if len(out) >= _MAX_PARAMS:
+            if len(out) >= max_params:
                 break
             kind = "positional"
             if param.type in spec.param_rest_nodes:
@@ -226,10 +248,10 @@ def build(spec: LanguageSpec) -> SimpleNamespace:
     def call_site(node: Any, text: Callable[[Any], str]) -> dict[str, Any] | None:
         """One call row, or None when the callee cannot be named.
 
-        Only a bare identifier callee and a single-identifier receiver are
-        recorded. A chained call, a call on a subscript, or a call through an
-        expression yields NO row, because the index could not resolve it and a
-        half-resolved edge is worse than an absent one.
+        Only a callee and a receiver whose node kinds the spec declares are
+        recorded. A chained call, a call on a subscript, a dynamic callee, or a
+        call through an expression yields NO row, because the index could not
+        resolve it and a half-resolved edge is worse than an absent one.
         """
         if node.type not in spec.call_nodes:
             return None
@@ -249,7 +271,9 @@ def build(spec: LanguageSpec) -> SimpleNamespace:
         # Shape 1: the receiver hangs off the call node itself.
         if spec.call_receiver_fields:
             func = _field(node, spec.call_function_field)
-            if func is None or func.type != "identifier":
+            if func is None:
+                func = _field(node, spec.bare_call_function_field)
+            if func is None or func.type not in spec.callee_nodes:
                 return None
             recv = next(
                 (r for f in spec.call_receiver_fields if (r := _field(node, f)) is not None),
@@ -257,7 +281,7 @@ def build(spec: LanguageSpec) -> SimpleNamespace:
             )
             if recv is None:
                 return _row(_text_of(func, text).strip(), None)
-            if recv.type != "identifier":
+            if recv.type not in spec.receiver_nodes:
                 # A chained or computed receiver cannot be index-resolved, so no
                 # row at all rather than one naming a receiver that is an
                 # expression.
@@ -268,20 +292,14 @@ def build(spec: LanguageSpec) -> SimpleNamespace:
         if func is None:
             return None
 
-        if func.type == "identifier":
+        if func.type in spec.callee_nodes:
             return _row(_text_of(func, text).strip(), None)
 
         if func.type in spec.member_nodes:
-            if spec.member_positional:
-                parts = _named_children(func)
-                if len(parts) < 2 or parts[0].type != "simple_identifier":
-                    return None
-                recv, prop = parts[0], parts[-1]
-            else:
-                prop = _field(func, spec.member_property_field)
-                recv = _field(func, spec.member_object_field)
-                if prop is None or recv is None or recv.type != "identifier":
-                    return None
+            prop = _field(func, spec.member_property_field)
+            recv = _field(func, spec.member_object_field)
+            if prop is None or recv is None or recv.type not in spec.receiver_nodes:
+                return None
             return _row(_text_of(prop, text).strip(), _text_of(recv, text).strip())
         return None
 
@@ -308,11 +326,10 @@ def build(spec: LanguageSpec) -> SimpleNamespace:
             if module is None:
                 # Most grammars leave the path unnamed as the statement's first
                 # named child (Java's scoped_identifier, C#'s qualified_name,
-                # PHP's namespace_use_clause). Taking the STATEMENT's text here
+                # PHP's qualified_name). Taking the STATEMENT's text here
                 # instead would record "import java.util.List;" as the module,
                 # and every downstream consumer keys on the import ROOT.
-                children = _named_children(target)
-                module = children[0] if children else None
+                module = _module_child(target, spec.name_field)
             value = _text_of(module if module is not None else target, text).strip()
             value = value.strip('"').strip("'").rstrip(";").strip()
             if value:

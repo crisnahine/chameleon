@@ -12,6 +12,10 @@ knowing (libcst counts a decorated function's span from the decorator; the
 tree-sitter grammar starts at `def`), and the difference between those two cases
 is the whole engineering question.
 
+The one thing it does exit non-zero on is having compared nothing at all. A
+report over an empty set is not a lenient report, it is a fabricated one: every
+rate reads `0/0 0.0%` and a dead engine looks like a quiet one.
+
 Usage:
     python3 tests/parity.py --chameleon /path/to/chameleon --limit 200
 """
@@ -67,13 +71,19 @@ def run_reference(chameleon: Path, paths: list[str]) -> dict[str, dict]:
     script = chameleon / "plugin/scripts/libcst_dump.py"
     if not venv.exists() or not script.exists():
         sys.exit(f"chameleon reference dumper not found under {chameleon}")
-    proc = subprocess.run(
-        [str(venv), str(script)],
-        input="\n".join(paths) + "\n",
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
+    try:
+        proc = subprocess.run(
+            [str(venv), str(script)],
+            input="\n".join(paths) + "\n",
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+    except subprocess.TimeoutExpired:
+        # Every other failure here leaves through a formatted message. A hung
+        # dumper is a corpus problem the reader can act on, not a bug in this
+        # harness, and a raw traceback says the opposite.
+        sys.exit(f"reference dumper timed out after 600s over {len(paths)} file(s)")
     # A reference that died (libcst not importable in that venv, say) writes
     # nothing to stdout, and an empty ground truth makes every rate below read
     # `0/0 0.0%` rather than failing.
@@ -86,13 +96,16 @@ def run_reference(chameleon: Path, paths: list[str]) -> dict[str, dict]:
 
 
 def run_engine(binary: Path, paths: list[str]) -> dict[str, dict]:
-    proc = subprocess.run(
-        [str(binary), "dump"],
-        input="\n".join(paths) + "\n",
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
+    try:
+        proc = subprocess.run(
+            [str(binary), "dump"],
+            input="\n".join(paths) + "\n",
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+    except subprocess.TimeoutExpired:
+        sys.exit(f"engine timed out after 600s over {len(paths)} file(s)")
     if proc.returncode != 0:
         sys.exit(f"engine failed: {proc.stderr[:400]}")
     return {
@@ -144,6 +157,14 @@ def main() -> int:
         print(f"  reference refused {len(ref_only)}: " + ", ".join(Path(p).name for p in ref_only[:5]))
     if eng_only:
         print(f"  engine refused {len(eng_only)}: " + ", ".join(Path(p).name for p in eng_only[:5]))
+    if not shared:
+        # The table below divides by len(shared), so an empty set prints a full
+        # page of `0/0 0.0%` and reads as a clean run. A missing binary, a
+        # malformed spec, a corpus neither side could parse -- each looks
+        # identical to perfect agreement, which is the manufactured confidence
+        # the COMPARED list exists to prevent.
+        print("\nNOTHING COMPARED: no file was parsed by both sides")
+        return 1
     print()
     print(f"{'field':<28} {'match':>12}   rate")
     print("-" * 56)
@@ -157,7 +178,7 @@ def main() -> int:
                 hits += 1
             elif field not in worst:
                 worst[field] = (p, a, b)
-        rate = hits / len(shared) * 100 if shared else 0.0
+        rate = hits / len(shared) * 100
         print(f"{field:<28} {hits:>5}/{len(shared):<6} {rate:6.1f}%")
 
     print()

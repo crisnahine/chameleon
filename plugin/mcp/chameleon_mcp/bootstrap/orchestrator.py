@@ -943,36 +943,68 @@ def _extensions_for_extractor(extractor: Extractor) -> tuple[str, ...]:
 
 
 def _sample_across_dirs(paths: list[Path], cap: int) -> list[Path]:
-    """Take ``cap`` paths spread across directories, not the first ``cap`` sorted.
+    """Take ``cap`` paths spread across languages and directories.
 
-    Truncating a sorted list starves whole areas of the tree: over four 10-file
-    directories with a cap of 12, `alpha` keeps all ten and `gamma`/`zeta` keep
-    none, so a developer working there gets no archetype at all and no way to
-    see why. Alphabetical coverage is worse than thinner uniform coverage,
-    because the gap is invisible and arbitrary.
+    Two starvation shapes, and both are invisible once they happen. Truncating a
+    sorted list starves whole areas of the tree: over four 10-file directories
+    with a cap of 12, `alpha` keeps all ten and `gamma`/`zeta` keep none, so a
+    developer working there gets no archetype at all and no way to see why. A
+    per-directory round-robin alone then starves whole LANGUAGES as soon as the
+    cap is smaller than the directory count: the first pass spends the entire cap
+    in sorted directory order, so on a package-per-directory Go monorepo beside
+    one Ruby service, Ruby ends with zero files and the repo answers as if the
+    language were not in it.
 
-    Round-robins one file per directory per pass, directories and files both in
-    sorted order, so the result is deterministic: two runs over the same tree
-    agree, which the profile depends on.
+    So the cap is split evenly across the languages present FIRST -- one at a
+    time, skipping a language that has no files left, so every language gets a
+    share whenever the cap can cover one each and no share is wasted on a
+    language that cannot fill it -- and each share is then round-robined one file
+    per directory per pass. Languages, directories and files are all walked in
+    sorted order and the result is sorted, so two runs over the same tree agree,
+    which the profile depends on.
     """
-    by_dir: dict[str, list] = {}
+    by_language: dict[str, dict[str, list]] = {}
     for path in sorted(paths):
-        by_dir.setdefault(str(Path(path).parent), []).append(path)
-    out: list = []
-    rounds = 0
-    while len(out) < cap:
-        added = False
-        for key in sorted(by_dir):
-            bucket = by_dir[key]
-            if rounds < len(bucket):
-                out.append(bucket[rounds])
-                added = True
-                if len(out) >= cap:
-                    break
-        if not added:
+        language = _language_of_member(path) or ""
+        by_language.setdefault(language, {}).setdefault(str(Path(path).parent), []).append(path)
+
+    languages = sorted(by_language)
+    available = {lang: sum(len(b) for b in by_language[lang].values()) for lang in languages}
+    share = dict.fromkeys(languages, 0)
+    remaining = cap
+    while remaining > 0:
+        progressed = False
+        for language in languages:
+            if share[language] >= available[language]:
+                continue
+            share[language] += 1
+            remaining -= 1
+            progressed = True
+            if remaining == 0:
+                break
+        if not progressed:
             break
-        rounds += 1
-    return out
+
+    out: list = []
+    for language in languages:
+        by_dir = by_language[language]
+        quota = share[language]
+        taken = 0
+        rounds = 0
+        while taken < quota:
+            added = False
+            for key in sorted(by_dir):
+                bucket = by_dir[key]
+                if rounds < len(bucket):
+                    out.append(bucket[rounds])
+                    taken += 1
+                    added = True
+                    if taken >= quota:
+                        break
+            if not added:
+                break
+            rounds += 1
+    return sorted(out)
 
 
 def _primary_sparse_threshold(primary_files: Iterable[Any]) -> int:
@@ -1011,6 +1043,109 @@ def _language_of_member(member: Any) -> str | None:
         return None
 
 
+def _calls_index_per_language(files: list, repo_root: Path, primary_language: str) -> dict:
+    """The calls index, built with each file graded under its OWN language.
+
+    `build_calls_index` binds ONE module resolver for the whole index and gates
+    every cross-file grade on the language it is handed, so a mixed file list
+    resolved every secondary file's import specifiers under the primary's rules:
+    a Python service beside a TypeScript app kept its same-file edges and lost
+    every import-grade one, silently -- and `language_support` goes on reporting
+    graded_call_edges for python and typescript, so doctor and lint_coverage
+    claimed a capability that corpus did not have. Building per language gives
+    each corpus its real resolver and its real grades.
+
+    The merge is a plain union. Partitions are disjoint (a file has one
+    extension, and `_EXTENSION_GRAMMARS` maps every extension of a language to
+    that one name), and an edge is recorded only when caller and callee are both
+    in the same build, so no callee key can appear in two payloads. The primary
+    is built first and owns the top-level keys, so a payload field added later
+    travels unchanged instead of being reconstructed here.
+    """
+    from chameleon_mcp.calls_index import build_calls_index
+
+    by_language: dict[str, list] = {primary_language: []}
+    for pf in files or ():
+        by_language.setdefault(_language_of_member(pf) or primary_language, []).append(pf)
+
+    out: dict = {}
+    for language in sorted(by_language, key=lambda name: (name != primary_language, name)):
+        payload = build_calls_index(by_language[language], repo_root, language=language)
+        if not out:
+            out = payload
+            continue
+        out.setdefault("callees", {}).update(payload.get("callees") or {})
+        capped = set(out.get("capped_files") or ()) | set(payload.get("capped_files") or ())
+        if capped:
+            out["capped_files"] = sorted(capped)
+    return out
+
+
+def _discover_past_the_size_guard(
+    repo_root: Path,
+    glob: str,
+    *,
+    paths_glob: str | None = None,
+    workspace_roots: list[str] | None = None,
+) -> list[Path]:
+    """``discover_files``' walk and filters, without the ceiling that just fired.
+
+    Above `REPO_SIZE_GUARD` the secondary corpus still has to be sampled -- that
+    is precisely the repo the cap exists for -- but every guard the normal path
+    applies has to come with it, because these files reach clustering and
+    canonical-witness selection. Hand-rolling the walk here dropped the scope
+    override, the gitignore filter, the symlink drop and the resolve-containment
+    check (the one that stops external bytes reaching the canonical pool), and it
+    matched the repo-relative exclusion sets against the ABSOLUTE path, so a repo
+    living under any directory named `build`, `tmp` or `vendor` lost every
+    candidate and the branch yielded the zero coverage it exists to prevent.
+
+    Sorted, like `discover_files`, so the sampling downstream is deterministic.
+    """
+    from chameleon_mcp.bootstrap.discovery import (
+        EXCLUDE_FROM_CLUSTERING_DIRS,
+        EXCLUDE_FROM_CLUSTERING_EXACT_RELPATHS,
+        EXCLUDE_FROM_CLUSTERING_FILE_GLOBS,
+        _git_ignored_paths,
+        _glob_candidates,
+        _has_excluded_component,
+        _matches_filename_glob,
+    )
+
+    candidates = _glob_candidates(
+        repo_root, paths_glob if paths_glob else glob, workspace_roots=workspace_roots
+    )
+    resolved_root = repo_root.resolve()
+    git_ignored = _git_ignored_paths(repo_root, candidates)
+
+    kept: list[Path] = []
+    for path in candidates:
+        if os.path.islink(path) or not path.is_file() or path in git_ignored:
+            continue
+        try:
+            rel = path.relative_to(repo_root)
+        except ValueError:
+            continue
+        # A glob that escapes the repo yields a ../-prefixed lexical rel; a
+        # symlinked DIRECTORY inside it escapes with neither a ".." nor a
+        # symlinked leaf, so containment is confirmed on the resolved path too.
+        if ".." in rel.parts:
+            continue
+        try:
+            path.resolve().relative_to(resolved_root)
+        except (ValueError, OSError):
+            continue
+        if _has_excluded_component(rel, EXCLUDE_FROM_CLUSTERING_DIRS):
+            continue
+        if _matches_filename_glob(path.name, EXCLUDE_FROM_CLUSTERING_FILE_GLOBS):
+            continue
+        if rel.as_posix() in EXCLUDE_FROM_CLUSTERING_EXACT_RELPATHS:
+            continue
+        kept.append(path)
+    kept.sort()
+    return kept
+
+
 def _secondary_language_files(
     repo_root: Path,
     primary_language: str,
@@ -1026,11 +1161,16 @@ def _secondary_language_files(
     it is never parsed. Its symbols are absent from `search_codebase`, and
     `describe_codebase` reports a repo that does not exist.
 
-    These files feed the three index builders that carry NO language gate
-    (symbol signatures, the function catalog, the call index) and nothing else.
-    Clustering, conventions, canonicals and every framework-aware layer keep
-    reading the primary parse alone, so a second language enriches what the repo
-    can ANSWER without restyling what it enforces.
+    These files feed the index builders (symbol signatures, the call index) AND
+    clustering, so a second language derives archetypes and a canonical witness
+    of its own. What they never reach is CONVENTIONS: `extract_all_conventions`
+    takes one repo-wide language and gates a dozen passes on it, so a
+    secondary-language archetype carries a shape and a witness but no convention
+    rules -- absent guidance rather than wrong guidance. A second language
+    therefore enriches what the repo can ANSWER without restyling what it
+    enforces. The duplication catalog is primary-only for a different reason (see
+    its call site): a cataloged function carries no language, so a cross-language
+    pair is a reuse lead no reuse can ever join.
 
     Each secondary language must clear the same bar the spec extractor applies
     to a primary: a build manifest AND real source. Bounded, and fail-open to
@@ -1063,11 +1203,7 @@ def _secondary_language_files(
         # shape to imitate (`EXCLUDE_FROM_CANONICAL_POOL_DIRS` covers test and
         # legacy dirs, NOT vendor).
         from chameleon_mcp._thresholds import threshold_int
-        from chameleon_mcp.bootstrap.discovery import (
-            EXCLUDE_FROM_CLUSTERING_DIRS,
-            _expand_brace_groups,
-            discover_files,
-        )
+        from chameleon_mcp.bootstrap.discovery import discover_files
         from chameleon_mcp.extractors.treesitter.grammars import _EXTENSION_GRAMMARS
 
         # Same brace shape discover_files' own default uses: "**/*.{ts,tsx,...}".
@@ -1099,21 +1235,16 @@ def _secondary_language_files(
             # on precisely the repo the cap exists for (the threshold's own
             # comment names "a Go monorepo with a small TS tooling dir").
             # A capped sample is the point; refusing the whole language is not.
-            # `Path.glob` does NOT brace-expand -- this repo hand-rolls
-            # `_expand_brace_groups` precisely because `{`/`}` are literal
-            # characters to pathlib. Passing the braced form here matched
-            # nothing, so the size-guard case yielded ZERO secondary coverage:
-            # the exact outcome this branch exists to prevent.
-            # Exclusions applied by hand, because this path deliberately skips
-            # `discover_files`. Without them a vendored third-party file is
-            # canonical-witness eligible (EXCLUDE_FROM_CANONICAL_POOL_DIRS
-            # covers test and legacy dirs, not vendor), which is the hazard the
-            # normal path exists to prevent.
-            discovered = sorted(
-                path
-                for expanded in _expand_brace_groups(glob)
-                for path in repo_root.glob(expanded)
-                if not (EXCLUDE_FROM_CLUSTERING_DIRS & set(path.parts))
+            # Same walk and same filters as the branch above, minus the ceiling:
+            # the scope override, the gitignore filter and the containment checks
+            # are what keep a vendored or out-of-repo file from becoming the
+            # canonical witness, and they cannot lapse just because the repo is
+            # large.
+            discovered = _discover_past_the_size_guard(
+                repo_root,
+                glob,
+                paths_glob=paths_glob,
+                workspace_roots=workspace_roots,
             )
         discovered = [p for p in discovered if p.suffix.lower() in wanted]
         if not discovered:
@@ -3684,19 +3815,28 @@ def _bootstrap_single(
                 )
             except Exception:
                 pass
-        # The function catalog backs the cross-file duplication prefilter. Both
-        # TypeScript/JS and Ruby files carry the callable_signatures extras the
-        # builder reads, so the catalog is built for every supported language. It
-        # is hashed into the trust SHA, so it is written inside this same atomic
-        # transaction. Best-effort: a build failure must not abort the commit.
         # The primary parse plus every secondary language the repo really has.
         _index_files = list(parse_result.files) + _secondary_files
+        # The function catalog backs the cross-file duplication prefilter. Every
+        # supported language carries the callable_signatures extras the builder
+        # reads. It is hashed into the trust SHA, so it is written inside this
+        # same atomic transaction. Best-effort: a build failure must not abort
+        # the commit.
+        #
+        # PRIMARY files only -- the one index builder that deliberately does not
+        # take the secondary corpus. A cataloged function records name, arity and
+        # file but no language, and `select_candidates` pairs on name-token
+        # overlap plus arity alone, so a Go `ParseOrder(a, b)` and a TypeScript
+        # `parseOrder(a, b)` match: editing the TypeScript file surfaces the Go
+        # function as a reuse lead and pays a reviewer spawn on a pair no reuse
+        # can ever join. Widening this one needs the catalog to carry the
+        # language first.
         try:
             from chameleon_mcp.function_catalog import build_function_catalog
 
             (txn_dir / "function_catalog.json").write_text(
                 json.dumps(
-                    build_function_catalog(_index_files, repo_root),
+                    build_function_catalog(parse_result.files, repo_root),
                     indent=2,
                     sort_keys=True,
                 ),
@@ -3709,11 +3849,9 @@ def _bootstrap_single(
         # is written inside this same atomic transaction. Best-effort: a build
         # failure must not abort the commit.
         try:
-            from chameleon_mcp.calls_index import build_calls_index
-
             (txn_dir / "calls_index.json").write_text(
                 json.dumps(
-                    build_calls_index(_index_files, repo_root, language=extractor.language),
+                    _calls_index_per_language(_index_files, repo_root, extractor.language),
                     indent=2,
                     sort_keys=True,
                 ),

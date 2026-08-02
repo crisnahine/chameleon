@@ -51,11 +51,23 @@ pub struct CalleeEntry {
     pub truncated: bool,
 }
 
+/// caller file -> caller symbol -> the (callee file, callee symbol, grade) it
+/// reaches. The inverse of `callees`.
+pub type OutgoingIndex = BTreeMap<String, BTreeMap<String, Vec<(String, String, Grade)>>>;
+
 /// The whole cross-file picture, built once from a parsed corpus.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct CodeIndex {
     /// file -> symbol -> who calls it.
     pub callees: BTreeMap<String, BTreeMap<String, CalleeEntry>>,
+    /// `callees` read the other way round, inverted once during the build.
+    ///
+    /// Derived state, so it is kept off the wire: `index` already serializes
+    /// every edge under `callees`, and emitting each one a second time would
+    /// double a report a person reads. An index restored from that JSON
+    /// therefore carries none, which `callees_of` detects and walks instead.
+    #[serde(skip)]
+    pub outgoing: OutgoingIndex,
     /// file -> the names it exports, and whether the set is enumerable.
     pub exports: BTreeMap<String, ExportSet>,
     /// target file -> importing files.
@@ -354,6 +366,17 @@ impl CodeIndex {
             let total = rows.len();
             let truncated = total > MAX_CALLERS_PER_CALLEE;
             rows.truncate(MAX_CALLERS_PER_CALLEE);
+            // Invert here, after the truncation, so the two views describe the
+            // same rows: a caller dropped by the per-callee cap is not a call
+            // this index can claim to know about either.
+            for row in &rows {
+                idx.outgoing
+                    .entry(row.path.clone())
+                    .or_default()
+                    .entry(row.caller.clone())
+                    .or_default()
+                    .push((file.clone(), name.clone(), row.grade));
+            }
             idx.callees.entry(file).or_default().insert(
                 name,
                 CalleeEntry {
@@ -362,6 +385,12 @@ impl CodeIndex {
                     truncated,
                 },
             );
+        }
+        for names in idx.outgoing.values_mut() {
+            for calls in names.values_mut() {
+                calls.sort();
+                calls.dedup();
+            }
         }
 
         idx
@@ -386,9 +415,27 @@ impl CodeIndex {
 
     /// Outgoing calls from one symbol.
     ///
-    /// Built by inverting the caller map. Chameleon rebuilds this by scanning
-    /// every stored row on every query; doing it once here is free.
+    /// Read straight off the inverse the build produced, so a query costs the
+    /// calls this one symbol makes rather than a walk of every caller row in
+    /// the repo. Chameleon rebuilds its equivalent per query; doing it once
+    /// here is what makes that unnecessary.
     pub fn callees_of(&self, file: &str, caller: &str) -> Vec<(String, String, Grade)> {
+        if self.outgoing.is_empty() && !self.callees.is_empty() {
+            // A restored index. `outgoing` is derived and stays off the wire,
+            // and a build always fills both, so this is the deserialized case
+            // alone -- returning nothing here would be the "nothing calls it"
+            // answer for edges this same index positively lists.
+            return self.walk_callees(file, caller);
+        }
+        self.outgoing
+            .get(file)
+            .and_then(|names| names.get(caller))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The pre-inversion walk, kept for an index that arrived without one.
+    fn walk_callees(&self, file: &str, caller: &str) -> Vec<(String, String, Grade)> {
         let mut out = Vec::new();
         for (callee_file, names) in &self.callees {
             for (callee_name, entry) in names {
@@ -1077,6 +1124,59 @@ mod tests {
         let out = idx.callees_of("a.py", "main");
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].1, "helper");
+    }
+
+    /// The stored inverse has to give the same answer as the walk it replaced,
+    /// including for a caller that reaches several files and for one that
+    /// reaches nothing.
+    #[test]
+    fn the_stored_inverse_agrees_with_the_walk_it_replaced() {
+        let files = corpus(&[
+            ("pkg/util.py", "def helper():\n    return 1\n"),
+            ("pkg/other.py", "def second():\n    return 2\n"),
+            (
+                "pkg/app.py",
+                "from pkg.util import helper\nfrom pkg.other import second\n\ndef run():\n    return helper() + second()\n\ndef idle():\n    return 0\n",
+            ),
+        ]);
+        let idx = CodeIndex::build(&files);
+        for (file, caller) in [
+            ("pkg/app.py", "run"),
+            ("pkg/app.py", "idle"),
+            ("pkg/app.py", "<module>"),
+            ("pkg/util.py", "helper"),
+            ("nope.py", "gone"),
+        ] {
+            assert_eq!(
+                idx.callees_of(file, caller),
+                idx.walk_callees(file, caller),
+                "{file}::{caller}"
+            );
+        }
+        assert_eq!(idx.callees_of("pkg/app.py", "run").len(), 2);
+    }
+
+    /// `outgoing` is derived and deliberately off the wire, so a restored index
+    /// carries none. Answering `[]` there would be the "nothing calls it"
+    /// answer for edges the same index positively lists.
+    #[test]
+    fn a_restored_index_still_answers_outgoing_calls() {
+        let files = corpus(&[(
+            "a.py",
+            "def helper():\n    return 1\n\ndef main():\n    return helper()\n",
+        )]);
+        let idx = CodeIndex::build(&files);
+        let restored: CodeIndex =
+            serde_json::from_str(&serde_json::to_string(&idx).unwrap()).unwrap();
+        assert!(
+            restored.outgoing.is_empty(),
+            "the inverse is not on the wire"
+        );
+        assert_eq!(
+            restored.callees_of("a.py", "main"),
+            idx.callees_of("a.py", "main")
+        );
+        assert_eq!(restored.callees_of("a.py", "main")[0].1, "helper");
     }
 
     #[test]

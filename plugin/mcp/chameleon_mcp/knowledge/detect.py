@@ -749,8 +749,10 @@ def score_frameworks(
     An empty tuple means nothing cleared the bar -- which is the honest answer
     for a repo whose framework the taxonomy does not describe.
 
-    Fails open: any error yields an empty tuple, matching the contract
-    `_classify_framework` already keeps.
+    Fails open, at the finest grain the error allows: a repo it cannot read or a
+    weight it cannot resolve yields an empty tuple, matching the contract
+    `_classify_framework` already keeps, while a profile that raises costs only
+    itself and the rest of the sweep still answers.
     """
     if not enabled():
         return ()
@@ -761,14 +763,20 @@ def score_frameworks(
     except (OSError, TypeError):
         return ()
 
-    w_def = threshold_float("TAXONOMY_TIER_DEFINITIVE")
-    w_cfg = threshold_float("TAXONOMY_TIER_STRONG_CONFIG")
-    w_conv = threshold_float("TAXONOMY_TIER_STRONG_CONVENTION")
-    floor = threshold_float("TAXONOMY_REPORT_FLOOR")
-    max_dirs = threshold_int("TAXONOMY_MANIFEST_DIRS")
-    max_globs = threshold_int("TAXONOMY_GLOBS_PER_FRAMEWORK")
-    dir_budget = threshold_int("TAXONOMY_SCAN_DIRS")
-    max_depth = threshold_int("TAXONOMY_SCAN_DEPTH")
+    try:
+        w_def = threshold_float("TAXONOMY_TIER_DEFINITIVE")
+        w_cfg = threshold_float("TAXONOMY_TIER_STRONG_CONFIG")
+        w_conv = threshold_float("TAXONOMY_TIER_STRONG_CONVENTION")
+        floor = threshold_float("TAXONOMY_REPORT_FLOOR")
+        max_dirs = threshold_int("TAXONOMY_MANIFEST_DIRS")
+        max_globs = threshold_int("TAXONOMY_GLOBS_PER_FRAMEWORK")
+        dir_budget = threshold_int("TAXONOMY_SCAN_DIRS")
+        max_depth = threshold_int("TAXONOMY_SCAN_DEPTH")
+    except KeyError:
+        # `threshold` raises for a name its table does not declare, and there is
+        # no honest fallback for a weight: the numbers ARE the scoring rule, so a
+        # sweep that cannot read them reports nothing rather than guessing.
+        return ()
 
     try:
         declared = _manifest_dep_names(root, max_dirs)
@@ -779,92 +787,107 @@ def score_frameworks(
     out: list[dict[str, Any]] = []
 
     for profile in concepts("framework-profile"):
-        langs = [str(x).casefold() for x in profile.get("language") or () if isinstance(x, str)]
-        # A language filter narrows the sweep; without one every profile is a
-        # candidate, which is what a polyglot repo needs.
-        if want_lang is not None and langs and want_lang not in langs:
-            continue
+        # Scored under a guard, because the loader validates `term` and `kind`
+        # and nothing else: every other field arrives as whatever the document
+        # holds, and a `language`, `file_archetypes` or `layout` that is not
+        # iterable raises rather than scoring. One malformed entry costs its own
+        # profile here, where the alternative is losing the whole sweep -- and
+        # with it every framework the repo really does use.
+        try:
+            # Strings only. The declared languages are set-joined after the
+            # sweep, so a non-string entry is not merely meaningless there, it
+            # can be unhashable.
+            declared_langs = [x for x in profile.get("language") or () if isinstance(x, str)]
+            langs = [x.casefold() for x in declared_langs]
+            # A language filter narrows the sweep; without one every profile is a
+            # candidate, which is what a polyglot repo needs.
+            if want_lang is not None and langs and want_lang not in langs:
+                continue
 
-        parsed = parse_hint(str(profile.get("detection_hint") or ""))
-        signals: dict[str, list[str]] = {
-            "definitive": [],
-            "strong_config": [],
-            "strong_convention": [],
-        }
-        # One PATH proves one thing. Several profiles name the same file in both
-        # their hint and their layout, and counting it twice turned a single
-        # `package.json` into a 0.92 for pnpm-workspaces on every JS repo.
-        seen_paths: set[str] = set()
-
-        for dep in parsed["deps"]:
-            if _dep_declared(dep, declared):
-                signals["definitive"].append(dep)
-
-        for filename in parsed["files"]:
-            key = filename.strip("/")
-            if key in seen_paths or _is_language_manifest(key):
-                continue
-            if _layout_hit(root, filename):
-                seen_paths.add(key)
-                signals["strong_config"].append(filename)
-
-        # Convention signals come from the STRUCTURED fields, so they need no
-        # prose parsing: the globs and the layout are already machine-readable.
-        checked = 0
-        for archetype in profile.get("file_archetypes") or ():
-            if checked >= max_globs:
-                break
-            pattern = archetype.get("pattern") if isinstance(archetype, dict) else None
-            if not isinstance(pattern, str) or pattern.strip("/") in seen_paths:
-                continue
-            if _is_language_manifest(pattern.strip("/")):
-                continue
-            checked += 1
-            if _glob_hit(root, pattern, dir_budget, max_depth):
-                seen_paths.add(pattern.strip("/"))
-                signals["strong_convention"].append(pattern)
-        for entry in profile.get("layout") or ():
-            if checked >= max_globs:
-                break
-            if not isinstance(entry, str) or not entry.endswith("/"):
-                continue
-            key = entry.strip("/")
-            if key in seen_paths:
-                continue
-            checked += 1
-            if _layout_hit(root, entry):
-                seen_paths.add(key)
-                signals["strong_convention"].append(entry)
-
-        weights = (
-            [w_def] * len(signals["definitive"])
-            + [w_cfg] * len(signals["strong_config"])
-            + [w_conv] * len(signals["strong_convention"])
-        )
-        if not weights:
-            continue
-        # One conventional directory is not a framework. `app/` alone scores
-        # exactly at the spec's 0.60 floor, which would make every repo with an
-        # `app/` directory a Remix repo -- so a framework carried by conventions
-        # ALONE needs two independent ones. A definitive or config signal still
-        # stands on its own, because those name the framework.
-        if not signals["definitive"] and not signals["strong_config"]:
-            if len(signals["strong_convention"]) < 2:
-                continue
-        miss = 1.0
-        for w in weights:
-            miss *= 1.0 - w
-        score = 1.0 - miss
-        if score < floor:
-            continue
-        out.append(
-            {
-                "framework": profile["term"],
-                "score": round(score, 4),
-                "signals": {k: v for k, v in signals.items() if v},
-                "language": list(profile.get("language") or ()),
+            parsed = parse_hint(str(profile.get("detection_hint") or ""))
+            signals: dict[str, list[str]] = {
+                "definitive": [],
+                "strong_config": [],
+                "strong_convention": [],
             }
-        )
+            # One PATH proves one thing. Several profiles name the same file in
+            # both their hint and their layout, and counting it twice turned a
+            # single `package.json` into a 0.92 for pnpm-workspaces on every JS
+            # repo.
+            seen_paths: set[str] = set()
+
+            for dep in parsed["deps"]:
+                if _dep_declared(dep, declared):
+                    signals["definitive"].append(dep)
+
+            for filename in parsed["files"]:
+                key = filename.strip("/")
+                if key in seen_paths or _is_language_manifest(key):
+                    continue
+                if _layout_hit(root, filename):
+                    seen_paths.add(key)
+                    signals["strong_config"].append(filename)
+
+            # Convention signals come from the STRUCTURED fields, so they need no
+            # prose parsing: the globs and the layout are already machine-readable.
+            checked = 0
+            for archetype in profile.get("file_archetypes") or ():
+                if checked >= max_globs:
+                    break
+                pattern = archetype.get("pattern") if isinstance(archetype, dict) else None
+                if not isinstance(pattern, str) or pattern.strip("/") in seen_paths:
+                    continue
+                if _is_language_manifest(pattern.strip("/")):
+                    continue
+                checked += 1
+                if _glob_hit(root, pattern, dir_budget, max_depth):
+                    seen_paths.add(pattern.strip("/"))
+                    signals["strong_convention"].append(pattern)
+            for entry in profile.get("layout") or ():
+                if checked >= max_globs:
+                    break
+                if not isinstance(entry, str) or not entry.endswith("/"):
+                    continue
+                key = entry.strip("/")
+                if key in seen_paths:
+                    continue
+                checked += 1
+                if _layout_hit(root, entry):
+                    seen_paths.add(key)
+                    signals["strong_convention"].append(entry)
+
+            weights = (
+                [w_def] * len(signals["definitive"])
+                + [w_cfg] * len(signals["strong_config"])
+                + [w_conv] * len(signals["strong_convention"])
+            )
+            if not weights:
+                continue
+            # One conventional directory is not a framework. `app/` alone scores
+            # exactly at the spec's 0.60 floor, which would make every repo with
+            # an `app/` directory a Remix repo -- so a framework carried by
+            # conventions ALONE needs two independent ones. A definitive or
+            # config signal still stands on its own, because those name the
+            # framework.
+            if not signals["definitive"] and not signals["strong_config"]:
+                if len(signals["strong_convention"]) < 2:
+                    continue
+            miss = 1.0
+            for w in weights:
+                miss *= 1.0 - w
+            score = 1.0 - miss
+            if score < floor:
+                continue
+            out.append(
+                {
+                    "framework": profile["term"],
+                    "score": round(score, 4),
+                    "signals": {k: v for k, v in signals.items() if v},
+                    "language": declared_langs,
+                }
+            )
+        except Exception:
+            continue
 
     # A framework carried by conventions ALONE is dropped when some other
     # framework for the same language named itself in a manifest. Shared layout

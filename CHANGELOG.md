@@ -19,10 +19,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   fine.
 - **A declared support tier per language** (`language_support.py`), reported by
   `/chameleon-doctor` and by `lint_file`. The new languages get derivation — archetypes,
-  canonical witness, conventions, signatures, imports — and NOT lint rules, secret
-  detection, the reverse index, or graded call edges. That absence is stated rather than
-  left to be inferred from rules that never fire, because an empty findings list and a
-  clean file are indistinguishable to a caller.
+  canonical witness, conventions, signatures, imports — plus secret and eval-sink
+  detection, which read a file's content rather than a derived shape and so need no
+  extractor. They do NOT get convention lint rules, the reverse index, or graded call
+  edges. That absence is stated rather than left to be inferred from rules that never
+  fire, because an empty findings list and a clean file are indistinguishable to a
+  caller.
 - **Supply-chain review for the ecosystems that had none.** Seventeen manifests are read
   where eight were: Python (requirements/pyproject/Pipfile/setup.cfg), Go, Rust, PHP and
   Java/Gradle, each with the finding classes its ecosystem actually has. `setup.py` stays

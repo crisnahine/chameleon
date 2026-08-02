@@ -147,17 +147,28 @@ pub fn cluster(files: &[ParsedFile]) -> Vec<Archetype> {
         .iter()
         .map(|(k, _)| k.top_level_kinds.iter().cloned().collect())
         .collect();
-    for i in 0..n {
-        for j in (i + 1)..n {
-            if groups[i].0.path_bucket != groups[j].0.path_bucket
-                || groups[i].0.jsx != groups[j].0.jsx
-            {
-                continue;
-            }
-            if jaccard(&shapes[i], &shapes[j]) >= SHAPE_JACCARD {
-                let (a, b) = (find(&mut parent, i), find(&mut parent, j));
-                if a != b {
-                    parent[a] = b;
+    // A merge already REQUIRES an identical path bucket and jsx flag, so
+    // grouping on those before the pairwise pass is exact rather than a
+    // prefilter -- no pair outside a bucket could have merged. It is what keeps
+    // the quadratic term per-directory instead of repo-wide, over a corpus the
+    // binary admits up to 200,000 files. Indices stay ascending within a bucket,
+    // so the pairs are visited in the order they always were and the union-find
+    // roots -- and therefore the cohort ordering below -- are unchanged.
+    let mut by_bucket: BTreeMap<(&str, bool), Vec<usize>> = BTreeMap::new();
+    for (i, (key, _)) in groups.iter().enumerate() {
+        by_bucket
+            .entry((key.path_bucket.as_str(), key.jsx))
+            .or_default()
+            .push(i);
+    }
+    for bucket in by_bucket.values() {
+        for (pos, &i) in bucket.iter().enumerate() {
+            for &j in &bucket[pos + 1..] {
+                if jaccard(&shapes[i], &shapes[j]) >= SHAPE_JACCARD {
+                    let (a, b) = (find(&mut parent, i), find(&mut parent, j));
+                    if a != b {
+                        parent[a] = b;
+                    }
                 }
             }
         }

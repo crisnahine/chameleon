@@ -9,6 +9,8 @@ be added to one and forgotten in the other.
 
 from __future__ import annotations
 
+import json
+
 from chameleon_mcp import language_support as ls
 
 
@@ -85,6 +87,13 @@ def test_lint_file_states_when_nothing_was_checked(tmp_path, monkeypatch):
     an extraction-tier one it means no rule exists to run -- and a caller
     reading `violations: []` as "clean" is exactly the vacuous silence the tier
     registry exists to prevent, now at the tool surface.
+
+    The fixture is polyglot because an extraction-tier language is never a
+    repo's PRIMARY: bootstrap refuses a tree with no TypeScript, Ruby or Python
+    signal, so a Go-only fixture cannot produce a profile at all. TypeScript
+    primary with a Go service beside it is the shape cross-language indexing
+    actually derives, and the shape where reading `violations: []` as "clean" is
+    a live hazard.
     """
     from chameleon_mcp import tools
 
@@ -93,49 +102,56 @@ def test_lint_file_states_when_nothing_was_checked(tmp_path, monkeypatch):
     monkeypatch.setenv("CHAMELEON_HMAC_KEY_PATH", str(tmp_path / "hmac.key"))
 
     repo = tmp_path / "svc"
+    (repo / "web" / "src").mkdir(parents=True)
     (repo / "internal" / "service").mkdir(parents=True)
+    (repo / "package.json").write_text(
+        json.dumps({"name": "svc", "devDependencies": {"typescript": "^5.0.0"}}),
+        encoding="utf-8",
+    )
+    (repo / "tsconfig.json").write_text("{}", encoding="utf-8")
     (repo / "go.mod").write_text("module example.com/x\n\ngo 1.22\n", encoding="utf-8")
     for name in ("alpha", "beta", "gamma", "delta"):
+        (repo / "web" / "src" / f"{name}.ts").write_text(
+            f"export class {name.title()}Client {{\n"
+            f"  find(id: string): string {{\n    return id;\n  }}\n}}\n",
+            encoding="utf-8",
+        )
         (repo / "internal" / "service" / f"{name}.go").write_text(
             f"package service\n\ntype {name}Service struct {{}}\n\n"
             f"func (s *{name}Service) Find(id string) string {{\n\treturn id\n}}\n",
             encoding="utf-8",
         )
-    import subprocess
-
-    for args in (["init", "-q"], ["add", "-A"]):
-        subprocess.run(["git", *args], cwd=repo, check=False, capture_output=True)
-    subprocess.run(
-        ["git", "-c", "user.email=t@e", "-c", "user.name=T", "commit", "-qm", "i"],
-        cwd=repo,
-        check=False,
-        capture_output=True,
-    )
 
     report = tools.bootstrap_repo(str(repo)).get("data", {})
-    if report.get("status") != "success":
-        import pytest as _pytest
-
-        _pytest.skip(f"bootstrap unavailable here: {report.get('error')}")
+    assert report.get("status") == "success", report.get("error")
 
     detected = tools.detect_repo(str(repo / "go.mod")).get("data", {})
     tools.trust_profile(detected["repo_id"], repo.name)
     archetypes = list(
         tools.describe_codebase(detected["repo_id"]).get("data", {}).get("archetypes") or []
     )
-    if not archetypes:
-        import pytest as _pytest
-
-        _pytest.skip("no archetype clustered at this fixture size")
+    go_archetypes = [a for a in archetypes if str(a.get("witness", "")).endswith(".go")]
+    assert go_archetypes, f"the Go corpus derived no archetype: {archetypes}"
 
     result = tools.lint_file(
         detected["repo_id"],
-        archetypes[0]["name"],
+        go_archetypes[0]["name"],
         "package service\n\nfunc X() {}\n",
         str(repo / "internal" / "service" / "x.go"),
     ).get("data", {})
     assert result.get("lint_coverage") == "extraction-tier"
     assert "no per-edit lint rules" in (result.get("lint_coverage_note") or "")
+
+    # The control that makes the marker mean something: a first-class file in
+    # the SAME repo carries no tier note, so an empty `violations` there really
+    # does say "checked and clean".
+    checked = tools.lint_file(
+        detected["repo_id"],
+        archetypes[0]["name"],
+        "export const x = 1;\n",
+        str(repo / "web" / "src" / "x.ts"),
+    ).get("data", {})
+    assert "lint_coverage" not in checked
 
 
 def test_an_unsupported_language_says_so_rather_than_guessing():

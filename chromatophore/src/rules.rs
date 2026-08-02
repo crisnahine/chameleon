@@ -13,11 +13,13 @@
 //! them -- and what a rule CANNOT do here is lower its own bar, or make a
 //! judgment-call kind (smell, idiom, pattern) block at any confidence at all.
 
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
+use std::rc::Rc;
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};
+use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator, Tree};
 
 use crate::lang::BoundLanguage;
 use crate::mine::ArchetypeIndex;
@@ -370,15 +372,61 @@ fn glob_match(pattern: &str, path: &str) -> bool {
     segments_match(&pat, &seg)
 }
 
+/// How many `**` segments one pattern may name, after adjacent ones collapse.
+///
+/// The walk below already visits each (pattern index, path index) pair at most
+/// once, so this is a refusal of absurd input rather than the thing that keeps
+/// the walk cheap. Refusing is only the safe direction because nothing real
+/// reaches it -- an `exclude` that stops matching evaluates the files it was
+/// written to skip -- and eight non-adjacent globstars is not a pattern anyone
+/// writes.
+const MAX_GLOBSTARS: usize = 8;
+
 /// `**` spans zero or more path segments; everything else matches one.
+///
+/// An explicit stack over (pattern index, path index) states, with a visited
+/// set, rather than recursion: `**` forks once per remaining path segment, so
+/// two of them backtrack combinatorially down a deep tree. Marking each state
+/// makes the walk linear in the product of the two lengths, and keeps this in
+/// line with the property `extract.rs` states for every other walk in the crate
+/// -- one walk, explicitly stacked, never recursive.
 fn segments_match(pat: &[&str], seg: &[&str]) -> bool {
-    match pat.first() {
-        None => seg.is_empty(),
-        Some(&"**") => (0..=seg.len()).any(|i| segments_match(&pat[1..], &seg[i..])),
-        Some(p) => {
-            !seg.is_empty() && segment_match(p, seg[0]) && segments_match(&pat[1..], &seg[1..])
+    // `**/**` means what `**` means, so folding a run is free and takes the
+    // pattern that provokes the fork out of the count below.
+    let mut folded: Vec<&str> = Vec::with_capacity(pat.len());
+    for part in pat {
+        if *part == "**" && folded.last() == Some(&"**") {
+            continue;
+        }
+        folded.push(part);
+    }
+    if folded.iter().filter(|p| **p == "**").count() > MAX_GLOBSTARS {
+        return false;
+    }
+
+    let stride = seg.len() + 1;
+    let mut visited = vec![false; (folded.len() + 1) * stride];
+    let mut stack = vec![(0usize, 0usize)];
+    while let Some((p, s)) = stack.pop() {
+        if std::mem::replace(&mut visited[p * stride + s], true) {
+            continue;
+        }
+        match folded.get(p) {
+            // The pattern is spent: a match only if the path is too.
+            None => {
+                if s == seg.len() {
+                    return true;
+                }
+            }
+            Some(&"**") => stack.extend((s..=seg.len()).map(|next| (p + 1, next))),
+            Some(part) => {
+                if s < seg.len() && segment_match(part, seg[s]) {
+                    stack.push((p + 1, s + 1));
+                }
+            }
         }
     }
+    false
 }
 
 /// One segment. `*` matches any run of characters that are not a separator --
@@ -435,6 +483,65 @@ fn eval_literal(rule: &Rule, path: &str, source: &str) -> Vec<Finding> {
         .collect()
 }
 
+/// The most recent parse, held for whichever rule asks next.
+struct CachedTree {
+    language: String,
+    source: String,
+    tree: Tree,
+}
+
+/// (grammar name, query source) -- everything a compiled query is bound to.
+type QueryKey = (String, String);
+
+/// A query bound to one grammar, or the reason it can never run.
+type CompiledQuery = std::result::Result<Rc<Query>, Unsupported>;
+
+thread_local! {
+    /// Compiled queries, keyed on (grammar, query source).
+    ///
+    /// A `Query` is compiled against one grammar, so it cannot be built at load
+    /// time -- the language is only known per file. Twenty rules over five
+    /// thousand files otherwise compile the same twenty queries a hundred
+    /// thousand times. The grammar name is part of the key because `tsx` clones
+    /// the TypeScript spec onto a DIFFERENT grammar: sharing a slot would run a
+    /// query against the tree of another parser.
+    static QUERIES: RefCell<HashMap<QueryKey, CompiledQuery>> = RefCell::new(HashMap::new());
+
+    /// One slot, because callers loop rules INSIDE files: every rule after the
+    /// first asks for the parse the previous one just paid for. Keyed on the
+    /// source TEXT rather than a hash or a buffer address -- a hash can collide
+    /// and a freed buffer's address gets reused, and either one hands back
+    /// another file's tree, which would report findings at lines that do not
+    /// exist. The cost is holding one file's bytes, already capped by
+    /// `Limits::max_file_bytes`.
+    static LAST_PARSE: RefCell<Option<CachedTree>> = const { RefCell::new(None) };
+}
+
+/// Compile this rule's query for this grammar, once.
+fn compiled_query(rule: &Rule, bound: &BoundLanguage) -> CompiledQuery {
+    let key = (bound.spec.name.clone(), rule.matcher.rule.clone());
+    QUERIES.with(|cell| {
+        cell.borrow_mut()
+            .entry(key)
+            .or_insert_with(|| {
+                let query = Query::new(&bound.language, &rule.matcher.rule)
+                    .map_err(|e| Unsupported::BadQuery(format!("{e:?}")))?;
+                // A query with no captures parses, matches, and yields nothing
+                // -- the rule then reports CLEAN forever. A rule that quietly
+                // never fires is worse than one that says it cannot run, which
+                // is the whole reason `Unsupported` exists rather than an empty
+                // finding list.
+                if query.capture_names().is_empty() {
+                    return Err(Unsupported::BadQuery(
+                        "query declares no captures, so it can never report a finding".into(),
+                    ));
+                }
+                Ok(Rc::new(query))
+            })
+            .clone()
+    })
+}
+
 /// Evaluate a tree-sitter S-expression query.
 ///
 /// The capture named `@violation` marks the reported node; without one, the
@@ -447,51 +554,54 @@ fn eval_query(
     source: &str,
     bound: &BoundLanguage,
 ) -> std::result::Result<Vec<Finding>, Unsupported> {
-    let query = Query::new(&bound.language, &rule.matcher.rule)
-        .map_err(|e| Unsupported::BadQuery(format!("{e:?}")))?;
-    // A query with no captures parses, matches, and yields nothing -- the rule
-    // then reports CLEAN forever. A rule that quietly never fires is worse than
-    // one that says it cannot run, which is the whole reason `Unsupported`
-    // exists rather than an empty finding list.
-    if query.capture_names().is_empty() {
-        return Err(Unsupported::BadQuery(
-            "query declares no captures, so it can never report a finding".into(),
-        ));
-    }
-
-    let mut parser = Parser::new();
-    parser
-        .set_language(&bound.language)
-        .map_err(|e| Unsupported::BadQuery(e.to_string()))?;
-    let Some(tree) = parser.parse(source, None) else {
-        return Ok(Vec::new());
-    };
-
+    let query = compiled_query(rule, bound)?;
     let violation_idx = query.capture_index_for_name("violation");
     let bytes = source.as_bytes();
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&query, tree.root_node(), bytes);
-    let mut out = Vec::new();
 
-    // StreamingIterator, not Iterator: the underlying cursor is mutated per
-    // step, so owned data has to be pulled out inside the loop.
-    while let Some(m) = matches.next() {
-        let node = match violation_idx {
-            Some(idx) => m.captures.iter().find(|c| c.index == idx).map(|c| c.node),
-            None => m.captures.first().map(|c| c.node),
+    LAST_PARSE.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let usable = slot
+            .as_ref()
+            .is_some_and(|c| c.language == bound.spec.name && c.source == source);
+        if !usable {
+            let mut parser = Parser::new();
+            parser
+                .set_language(&bound.language)
+                .map_err(|e| Unsupported::BadQuery(e.to_string()))?;
+            *slot = parser.parse(source, None).map(|tree| CachedTree {
+                language: bound.spec.name.clone(),
+                source: source.to_string(),
+                tree,
+            });
+        }
+        let Some(cached) = slot.as_ref() else {
+            return Ok(Vec::new());
         };
-        let Some(node) = node else { continue };
-        out.push(Finding {
-            rule_id: rule.id.clone(),
-            severity: rule.severity,
-            message: rule.message.clone(),
-            path: path.to_string(),
-            line: node.start_position().row + 1,
-            excerpt: node.utf8_text(bytes).unwrap_or("").trim().to_string(),
-            blocking: rule.may_block(),
-        });
-    }
-    Ok(out)
+
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&query, cached.tree.root_node(), bytes);
+        let mut out = Vec::new();
+
+        // StreamingIterator, not Iterator: the underlying cursor is mutated per
+        // step, so owned data has to be pulled out inside the loop.
+        while let Some(m) = matches.next() {
+            let node = match violation_idx {
+                Some(idx) => m.captures.iter().find(|c| c.index == idx).map(|c| c.node),
+                None => m.captures.first().map(|c| c.node),
+            };
+            let Some(node) = node else { continue };
+            out.push(Finding {
+                rule_id: rule.id.clone(),
+                severity: rule.severity,
+                message: rule.message.clone(),
+                path: path.to_string(),
+                line: node.start_position().row + 1,
+                excerpt: node.utf8_text(bytes).unwrap_or("").trim().to_string(),
+                blocking: rule.may_block(),
+            });
+        }
+        Ok(out)
+    })
 }
 
 /// Load rules from a YAML-ish TOML document.
@@ -720,7 +830,7 @@ exclude = ["**/tests/**", "scripts/*"]
         match evaluate(
             &r,
             "app/lib.py",
-            "KEY = 'AKIAIOSFODNN7EXAMPLE'\n",
+            "KEY = 'AKIAIOSFODNN7EXAMPLE'\n", // chameleon-ignore secret-detected-in-content
             bound,
             &no_cohorts(),
         ) {
@@ -795,6 +905,43 @@ exclude = ["**/tests/**", "scripts/*"]
         assert!(glob_match("**/handlers.py", "src/a/b/handlers.py"));
         assert!(glob_match("app_*_test.py", "x/app_user_test.py"));
         assert!(!glob_match("app_*_test.py", "x/app_user.py"));
+    }
+
+    /// `**` forks once per remaining segment, so several of them in one pattern
+    /// used to backtrack combinatorially: this exact pattern against this exact
+    /// path took 3.8 seconds per file. The visited set makes the state space
+    /// |pattern| x |path|, and the answer is unchanged in both directions.
+    #[test]
+    fn several_globstars_do_not_backtrack_combinatorially() {
+        let deep: String = std::iter::repeat_n("a", 40).collect::<Vec<_>>().join("/");
+        let pattern = "**/a/**/a/**/a/**/a/**/a/**/a/**/a/**/z.py";
+
+        // The timing bound is the regression guard, loose enough not to flake on
+        // a loaded machine and far under the seconds the recursion cost.
+        let started = std::time::Instant::now();
+        let hit = glob_match(pattern, &format!("{deep}/z.py"));
+        let miss = glob_match(pattern, &format!("{deep}/other.py"));
+        let elapsed = started.elapsed();
+
+        assert!(hit, "the pattern still matches what it always matched");
+        assert!(!miss, "and still refuses what it always refused");
+        assert!(
+            elapsed.as_millis() < 500,
+            "the walk backtracked: took {elapsed:?}"
+        );
+    }
+
+    /// `**/**` means what `**` means, so folding a run is answer-preserving --
+    /// and it is what keeps the repeated-globstar spelling under the cap.
+    #[test]
+    fn consecutive_globstars_fold_and_an_absurd_pattern_is_refused() {
+        assert!(glob_match("**/**/**/tests/**", "app/a/b/tests/test_x.py"));
+        assert!(!glob_match("**/**/**/tests/**", "app/lib.py"));
+        // Past MAX_GLOBSTARS once folding can do no more: refused rather than
+        // walked. Nine non-adjacent globstars is not a pattern anyone writes.
+        let absurd = "**/a/**/a/**/a/**/a/**/a/**/a/**/a/**/a/**/z.py";
+        assert_eq!(absurd.matches("**/").count(), 9);
+        assert!(!glob_match(absurd, "a/a/a/a/a/a/a/a/z.py"));
     }
 
     /// A literal path is exact. Suffix-matching it silently over-excludes.
@@ -999,6 +1146,58 @@ exclude = ["**/tests/**", "scripts/*"]
             evaluate(&r, "a.py", "f()\n", py, &no_cohorts()),
             Err(Unsupported::BadQuery(_))
         ));
+    }
+
+    /// The compiled-query cache is keyed on the GRAMMAR as well as the query
+    /// text. `tsx` clones the TypeScript spec onto a different grammar, and a
+    /// query compiles against exactly one -- a slot shared on the text alone
+    /// would run one language's query over another language's tree.
+    #[test]
+    fn the_query_cache_does_not_cross_grammars() {
+        let reg = Registry::load().unwrap();
+        let py = reg.by_name("python").unwrap();
+        let ts = reg.by_name("typescript").unwrap();
+        let mut r = load_one();
+        // Language-agnostic, so both files reach the query rather than being
+        // declined by the language gate ahead of it.
+        r.languages = Vec::new();
+        r.matcher.paths = Paths::default();
+
+        assert_eq!(
+            evaluate(&r, "a.py", "print('x')\n", py, &no_cohorts())
+                .unwrap()
+                .len(),
+            1
+        );
+        // TypeScript spells the node `call_expression`, so the same text is not
+        // a valid query there and must be reported as one that cannot run.
+        assert!(matches!(
+            evaluate(&r, "a.ts", "print('x');\n", ts, &no_cohorts()),
+            Err(Unsupported::BadQuery(_))
+        ));
+    }
+
+    /// The parse cache holds one file, keyed on the source TEXT. A stale tree
+    /// would report findings at lines belonging to the previous file, or carry
+    /// findings into a file that has none.
+    #[test]
+    fn the_parse_cache_does_not_serve_a_stale_tree() {
+        let reg = Registry::load().unwrap();
+        let py = reg.by_name("python").unwrap();
+        let mut r = load_one();
+        r.matcher.paths = Paths::default();
+
+        let first = evaluate(&r, "a.py", "print('x')\n", py, &no_cohorts()).unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].line, 1);
+
+        let second = evaluate(&r, "b.py", "x = 1\ny = 2\nprint('y')\n", py, &no_cohorts()).unwrap();
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].line, 3, "the second file's tree, not the first's");
+
+        assert!(evaluate(&r, "c.py", "z = 3\n", py, &no_cohorts())
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

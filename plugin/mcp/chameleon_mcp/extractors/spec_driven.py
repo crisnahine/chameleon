@@ -11,14 +11,18 @@ contains Go".
 `select_extractor` in the registry places these AFTER TypeScript and Ruby (whose
 own markers are equally strong) and BEFORE Python, whose detector claims any
 repo holding one `.py` file and would otherwise swallow a Go or Rust repo that
-ships a single helper script.
+ships a single helper script. That position is only right while Python's claim
+IS that weak one, so the registry breaks the other case with
+:func:`outranked_by`.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+from chameleon_mcp._thresholds import threshold_int
 from chameleon_mcp.extractors._base import ExtractorUnavailableError, ParseResult
+from chameleon_mcp.extractors.treesitter.grammars import extensions_by_language
 from chameleon_mcp.extractors.treesitter.lang.specs import ALL as _SPECS
 
 # Build manifests that identify a repo as belonging to a language. Every entry
@@ -54,11 +58,6 @@ _MARKERS: dict[str, tuple[str, ...]] = {
     "typescript": ("tsconfig.json", "jsconfig.json"),
 }
 
-# Extensions whose presence, alongside a marker, confirms the repo actually
-# holds source of that language. A `composer.json` in a JS repo is real but says
-# nothing on its own.
-_MARKER_GLOB_CAP = 4000
-
 
 class SpecDrivenExtractor:
     """Detects one spec-driven language; parsing belongs to tree-sitter.
@@ -90,19 +89,13 @@ class SpecDrivenExtractor:
         # Python and Ruby invisible as SECONDARY languages: a polyglot repo's
         # Python service was never parsed and never indexed, even though
         # tree-sitter has a Python grammar and the repo carried a pyproject.
-        # `_EXTENSION_GRAMMARS` is the one place that knows which extensions map
-        # to which language, spec-driven and first-class alike.
-        from chameleon_mcp.extractors.treesitter.grammars import _EXTENSION_GRAMMARS
-
-        by_language: dict[str, list[str]] = {}
-        for ext, entry in _EXTENSION_GRAMMARS.items():
-            by_language.setdefault(entry[2], []).append(ext)
-
+        # The grammar table is the one place that knows which extensions map to
+        # which language, spec-driven and first-class alike.
         found: list[str] = []
-        for language, extensions in sorted(by_language.items()):
+        for language, extensions in extensions_by_language().items():
             if language == exclude or language not in _MARKERS:
                 continue
-            probe = SpecDrivenExtractor(language, tuple(sorted(extensions)))
+            probe = SpecDrivenExtractor(language, extensions)
             try:
                 if probe.can_handle(repo_root):
                     found.append(language)
@@ -118,8 +111,16 @@ class SpecDrivenExtractor:
                 # A marker may sit one level down in a monorepo half.
                 if not _marker_in_child(repo_root, markers):
                     return False
-            return _has_source(repo_root, self._extensions)
-        except OSError:
+            count, exhausted = _scan_source(repo_root, self._extensions, first_only=True)
+            # An exhausted budget answers nothing, and the manifest above already
+            # says the repo is BUILT as this language -- so an undecided walk
+            # keeps the claim rather than dropping the language's whole corpus.
+            return count > 0 or exhausted
+        except Exception:
+            # Not just OSError: the walk imports discovery's exclusion set at
+            # call time, and select_extractor's loop does not wrap can_handle,
+            # so an ImportError here would abort the whole bootstrap instead of
+            # costing this one language.
             return False
 
     def parse_repo(
@@ -148,33 +149,86 @@ def _marker_in_child(repo_root: Path, markers: tuple[str, ...]) -> bool:
     return False
 
 
-def _has_source(repo_root: Path, extensions: tuple[str, ...]) -> bool:
-    """Whether the repo holds at least one source file of these extensions.
+def _scan_source(
+    repo_root: Path, extensions: tuple[str, ...], *, first_only: bool
+) -> tuple[int, bool]:
+    """Count the repo's source files of these extensions; report an exhausted walk.
 
-    Bounded: a marker plus one matching file is all the evidence needed, so the
-    walk stops at the first hit and gives up after a cap rather than crawling a
-    giant tree to answer a yes/no question.
+    Returns ``(count, exhausted)``. The walk gives up after
+    ``SPEC_MARKER_GLOB_CAP`` entries rather than crawling a giant tree to answer
+    a yes/no question, and ``exhausted`` is what keeps that budget from reading
+    as an absence -- a language reported absent is one whose whole corpus is
+    silently dropped. ``first_only`` stops at the first hit, which is all the
+    marker-plus-source bar needs.
+
+    Exclusions are tested on the REPO-RELATIVE path. `rglob` yields absolute
+    paths, so testing those matches directories ABOVE the checkout too: a repo
+    living under `build/`, `tmp/` or `vendor/` would have every one of its own
+    files skipped and answer "no source" for every language. Within the repo the
+    exclusion still earns its keep -- `rglob` descends node_modules / .venv /
+    vendor, and a large one could spend the whole budget before reaching real
+    source. Suffixes are lowercased to match grammar selection, which does the
+    same, so a `.CS` or `.PHP` file counts for both or for neither.
     """
+    wanted = {ext.lower() for ext in extensions}
+    cap = threshold_int("SPEC_MARKER_GLOB_CAP")
     seen = 0
+    count = 0
     try:
         from chameleon_mcp.bootstrap.discovery import EXCLUDE_FROM_CLUSTERING_DIRS
 
         for path in repo_root.rglob("*"):
-            # Excluded trees do not spend the budget. `rglob` descends
-            # node_modules / .venv / vendor, and a repo with a large one could
-            # exhaust the cap before reaching any real source, reporting the
-            # language absent -- and a language reported absent here is one whose
-            # whole corpus is silently dropped.
-            if EXCLUDE_FROM_CLUSTERING_DIRS & set(path.parts):
+            try:
+                rel = path.relative_to(repo_root)
+            except ValueError:
+                continue
+            if EXCLUDE_FROM_CLUSTERING_DIRS & set(rel.parts):
                 continue
             seen += 1
-            if seen > _MARKER_GLOB_CAP:
-                return False
-            if path.suffix in extensions and path.is_file():
-                return True
+            if seen > cap:
+                return count, True
+            if path.suffix.lower() in wanted and path.is_file():
+                count += 1
+                if first_only:
+                    return count, False
     except OSError:
-        return False
-    return False
+        return count, False
+    return count, False
+
+
+def outranked_by(repo_root: Path, language: str, candidates: tuple[str, ...]) -> str | None:
+    """The candidate language whose claim on ``repo_root`` beats ``language``'s.
+
+    Both halves of the test matter. A candidate must clear the SAME
+    manifest-plus-source bar :meth:`SpecDrivenExtractor.can_handle` demands, so
+    a Go repo's lone `.py` helper script still makes no claim on it. And it must
+    then carry strictly more source, so a Go repo that pins a `requirements.txt`
+    for its tooling does not hand itself to Python either. What is left is the
+    genuine tie -- a PyO3 crate's `pyproject.toml` beside its `Cargo.toml`, a
+    Django repo with a `services/x/go.mod` sidecar -- where the language with
+    the larger corpus is the one the repo is actually written in.
+
+    Counts come from the same bounded walk detection uses, so a tree past the
+    budget is compared on its first `SPEC_MARKER_GLOB_CAP` entries. The manifest
+    bar is applied FIRST and costs nothing when it fails, so the ordinary Go or
+    Rust repo -- no competing manifest anywhere -- pays no counting walk at all.
+    """
+    by_language = extensions_by_language()
+    qualified: list[tuple[str, tuple[str, ...]]] = []
+    for candidate in candidates:
+        extensions = by_language.get(candidate, ())
+        if extensions and SpecDrivenExtractor(candidate, extensions).can_handle(repo_root):
+            qualified.append((candidate, extensions))
+    if not qualified:
+        return None
+
+    winner: str | None = None
+    best, _ = _scan_source(repo_root, by_language.get(language, ()), first_only=False)
+    for candidate, extensions in qualified:
+        count, _ = _scan_source(repo_root, extensions, first_only=False)
+        if count > best:
+            winner, best = candidate, count
+    return winner
 
 
 def extractor_classes() -> list[type]:

@@ -50,7 +50,8 @@ def _spec_driven_extractor_classes() -> list[type[Extractor]]:
 # Before Python, because `PythonExtractor.can_handle` claims any repo holding a
 # single `.py` file -- a Go or Rust repo that ships one helper script would
 # otherwise be profiled as Python, which is the silent-wrong-answer case rather
-# than a missing one.
+# than a missing one. That position only settles the weak half of the question;
+# `_resolve_first_class_precedence` settles the other half below.
 EXTRACTORS: list[type[Extractor]] = [
     TypeScriptExtractor,
     RubyExtractor,
@@ -79,10 +80,11 @@ def select_extractor(repo_root: Path) -> Extractor | None:
     worked. Selection order is the only thing that changes; the ``ParsedFile``
     contract is identical either way.
     """
-    for ext_cls in EXTRACTORS:
+    for index, ext_cls in enumerate(EXTRACTORS):
         ext = ext_cls()
         if not ext.can_handle(repo_root):
             continue
+        ext = _resolve_first_class_precedence(ext, repo_root, EXTRACTORS[index + 1 :])
         # Detection and precedence stay the DUMPERS' -- language choice is a
         # marker-file question (Gemfile, tsconfig.json, pyproject.toml) that has
         # nothing to do with which parser reads the files, and downstream code
@@ -101,6 +103,44 @@ def select_extractor(repo_root: Path) -> Extractor | None:
                 pass
         return ext
     return None
+
+
+def _resolve_first_class_precedence(
+    ext: Extractor, repo_root: Path, remaining: list[type[Extractor]]
+) -> Extractor:
+    """Hand a spec-driven match back to a first-class language that outranks it.
+
+    The spec-driven detectors sit ahead of Python so a Go or Rust repo shipping
+    one helper script is not profiled as Python on the strength of a single
+    `.py` file. That is right only while Python's claim IS the weak marker-less
+    one. A repo that carries a Python BUILD MANIFEST and more Python source than
+    Go or Rust source -- a PyO3 crate's ``pyproject.toml`` beside its
+    ``Cargo.toml``, a Django repo with a ``services/x/go.mod`` sidecar -- is a
+    Python repo, and the extraction tier it would otherwise fall to has no lint
+    rules, no reverse index and no framework classification.
+
+    Only extractors LATER in the registry are considered, so nothing here can
+    overturn the TypeScript/Ruby precedence that already ran, and only
+    non-spec-driven ones, so the extraction tier never reshuffles internally.
+    Fails open to the match already in hand.
+    """
+    try:
+        from chameleon_mcp.extractors.spec_driven import SpecDrivenExtractor, outranked_by
+
+        if not isinstance(ext, SpecDrivenExtractor):
+            return ext
+        candidates = (cls() for cls in remaining)
+        later = {c.language: c for c in candidates if not isinstance(c, SpecDrivenExtractor)}
+        winner = outranked_by(repo_root, ext.language, tuple(later)) if later else None
+        if winner is None:
+            return ext
+        # The winner's own detector still has the last word, and it is asked only
+        # here: a repo the spec-driven detectors already claimed must not pay
+        # Python's marker-less `.py` scan on every bootstrap.
+        claimed = later[winner]
+        return claimed if claimed.can_handle(repo_root) else ext
+    except Exception:
+        return ext
 
 
 def _treesitter_enabled() -> bool:

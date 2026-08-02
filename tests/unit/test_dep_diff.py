@@ -384,6 +384,38 @@ def test_manifest_basenames_cover_the_documented_npm_and_bundler_set():
     } <= set(MANIFEST_LOCKFILE_BASENAMES)
 
 
+def test_the_manifest_basename_set_is_exactly_the_documented_union():
+    """The per-ecosystem assertions are subset checks, so between them nothing
+    pins the TOTAL: a stray basename added by hand -- a path that then routes
+    into an arm that cannot parse it -- satisfies every one of them. This is the
+    assertion that fails when the set grows a member nobody documented."""
+    assert set(MANIFEST_LOCKFILE_BASENAMES) == {
+        # npm / yarn / pnpm
+        "package.json",
+        "package-lock.json",
+        "npm-shrinkwrap.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        # Bundler. `*.gemspec` is shape-matched, not listed.
+        "Gemfile",
+        "Gemfile.lock",
+        # Python. `requirements*.txt` is shape-matched by
+        # `_is_requirements_manifest`, so only the plain name appears here.
+        "requirements.txt",
+        "pyproject.toml",
+        "Pipfile",
+        "setup.cfg",
+        # Go / Rust / PHP
+        "go.mod",
+        "Cargo.toml",
+        "composer.json",
+        # Java
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+    }
+
+
 # ---------------------------------------------------------------------------
 # render_findings — sanitized, severity-grouped advisory lines for pr-review
 # ---------------------------------------------------------------------------

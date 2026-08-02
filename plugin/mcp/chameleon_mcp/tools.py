@@ -3747,13 +3747,22 @@ def lint_file(
     # `violations` list means "nothing was checked", not "nothing is wrong". A
     # caller cannot tell those apart from the payload alone, and the difference
     # is the whole value of the answer -- so the tier is stated.
+    #
+    # Keyed on the LINTED FILE's own language, via the same wide gate the
+    # security scans use. `profile_language` falls back to the profile's PRIMARY
+    # whenever the narrow `detect_language` has no answer, so on a `.go` file in
+    # a TypeScript-primary polyglot repo -- the shape cross-language clustering
+    # produces -- it reads first-class and the caveat stays silent on exactly
+    # the language it exists for. The profile's language remains the fallback
+    # for a call that passes no file_path.
     try:
         from chameleon_mcp.language_support import EXTRACTION, describe, tier_for
         from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
-        if tier_for(profile_language) == EXTRACTION:
+        coverage_language = _sink_lang or profile_language
+        if tier_for(coverage_language) == EXTRACTION:
             out["lint_coverage"] = "extraction-tier"
-            out["lint_coverage_note"] = sanitize_for_chameleon_context(describe(profile_language))
+            out["lint_coverage_note"] = sanitize_for_chameleon_context(describe(coverage_language))
     except Exception:
         pass
     return _envelope(out, truncated=truncated)
@@ -4411,11 +4420,23 @@ def get_symbol_edit_plan(repo: str, file_path: str, symbol_name: str) -> dict:
         data = imp.get("data") if isinstance(imp, dict) else None
         # `found` decides whether an empty list is an ANSWER or an absence.
         # query_symbol_importers fails open with found:False + importers:[] for a
-        # missing reverse index, an untrusted grant, and any language outside
-        # REVERSE_INDEXED_LANGUAGES ({typescript, python}) -- so every other
-        # language hit this unconditionally and the response asserted a
-        # verified-zero importer set while `complete` stayed True.
+        # missing reverse index and an untrusted grant, so without this the
+        # response asserted a verified-zero importer set while `complete` stayed
+        # True.
         if not (data or {}).get("found"):
+            complete = False
+        # `found` alone does not cover a language the profile is not PRIMARY in.
+        # The importer surfaces -- the reverse index for TS/Python, the constant
+        # graph for Ruby -- are built from the primary parse only, while a
+        # secondary language still gets signatures and same-file call edges. Its
+        # module is simply absent from an index that loaded fine, which reads as
+        # found:True with an empty list: a verified-zero blast radius for a
+        # symbol nothing ever indexed.
+        from chameleon_mcp.enforcement_calibration import _stored_profile_languages
+        from chameleon_mcp.lint_engine import detect_language as _detect_language
+
+        profile_languages = _stored_profile_languages(_effective_profile_dir(repo_root))
+        if profile_languages and _detect_language(str(p)) not in profile_languages:
             complete = False
         # `importers` is a LIST of {name, count, sites}, not a name-keyed dict:
         # the row carries the exported name, so the filter belongs on the row.
@@ -15416,17 +15437,13 @@ def scan_dependency_changes(repo: str, base_ref: str = "main") -> dict:
     data = {
         "status": "ok",
         "base_ref": base_ref,
-        # Membership OR the pattern arms: `requirements-dev.txt` and
-        # `requirements/base.txt` are matched by shape rather than by basename,
-        # so a plain set test left them in NEITHER this list nor
-        # `uncovered_manifests` -- the consumer saw no evidence a Python
-        # manifest had changed at all unless a finding happened to fire.
-        "manifests_changed": [
-            p
-            for p in changed
-            if p.rsplit("/", 1)[-1] in dep_diff.MANIFEST_LOCKFILE_BASENAMES
-            or dep_diff.is_parsed_manifest(p)
-        ],
+        # `is_parsed_manifest` owns the whole question, basename arms included:
+        # a manifest matched by SHAPE (`requirements-dev.txt`, `*.gemspec`)
+        # belongs in this list as much as one matched by name, and a set test
+        # here would leave it in NEITHER this list nor `uncovered_manifests` --
+        # the consumer would see no evidence a manifest changed at all unless a
+        # finding happened to fire.
+        "manifests_changed": [_san(p) for p in changed if dep_diff.is_parsed_manifest(p)],
         "findings": serialized,
         "summary": summary,
         "advisory": True,
@@ -15437,7 +15454,7 @@ def scan_dependency_changes(repo: str, base_ref: str = "main") -> dict:
     # the consumer reads "not covered, hand-review" instead of an empty findings
     # list that looks clean -- the honesty contract this scanner's own docstring
     # promises.
-    uncovered = [p for p in changed if dep_diff.is_uncovered_manifest(p)]
+    uncovered = [_san(p) for p in changed if dep_diff.is_uncovered_manifest(p)]
     if uncovered:
         data["uncovered_manifests"] = uncovered
     if truncated_files:

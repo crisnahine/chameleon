@@ -273,10 +273,20 @@ def test_language_filter_narrows_the_sweep(tmp_path):
 
 def test_detection_fails_open(tmp_path, monkeypatch):
     assert detect.score_frameworks(tmp_path / "nope") == ()
+
+    # The kill switch has to be measured against a tree that genuinely scores.
+    # An empty directory names no framework with the taxonomy ON either, so
+    # asserting () over one holds whether or not the switch does anything.
+    root = _repo(
+        tmp_path,
+        {"Gemfile": "gem 'rails'\n", "config/application.rb": "", "app/models/user.rb": ""},
+    )
+    assert "rails" in {r["framework"] for r in detect.score_frameworks(root)}
+
     monkeypatch.setenv(loader.DISABLE_ENV, "0")
     loader.load_taxonomy.cache_clear()
     try:
-        assert detect.score_frameworks(tmp_path) == ()
+        assert detect.score_frameworks(root) == ()
     finally:
         loader.load_taxonomy.cache_clear()
 

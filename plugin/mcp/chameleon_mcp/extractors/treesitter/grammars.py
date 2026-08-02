@@ -81,13 +81,23 @@ def _register_spec_extensions() -> None:
     Derived rather than written twice: the spec already declares what a language
     is called and which files it claims, and a second hand-maintained copy is
     exactly how a discovery glob and a grammar lookup drift apart.
+
+    A spec with no grammar module is a hard error rather than a skip. Skipping
+    it left the language selectable everywhere else -- the extractor still built
+    its tables and the registry still registered its detector -- so it would win
+    a repo, resolve no extension, parse zero files, and write a profile that
+    looks clean because it is empty. Raising costs the tree-sitter backend and
+    degrades to the dump scripts, which is a failure an operator can see.
     """
     from chameleon_mcp.extractors.treesitter.lang.specs import ALL
 
     for spec in ALL:
         entry = _SPEC_GRAMMAR_MODULES.get(spec.name)
         if entry is None:
-            continue
+            raise TreeSitterUnavailableError(
+                f"language spec {spec.name!r} names no grammar package in "
+                "_SPEC_GRAMMAR_MODULES; every spec needs the wheel that parses it"
+            )
         module_name, factory_attr = entry
         for ext in spec.extensions:
             _EXTENSION_GRAMMARS.setdefault(ext, (module_name, factory_attr, spec.name))
@@ -181,6 +191,19 @@ def supported_extensions(language: str | None = None) -> tuple[str, ...]:
     if language is None:
         return tuple(sorted(_EXTENSION_GRAMMARS))
     return tuple(sorted(ext for ext, e in _EXTENSION_GRAMMARS.items() if e[2] == language))
+
+
+def extensions_by_language() -> dict[str, tuple[str, ...]]:
+    """Every language this extractor knows, mapped to the extensions it claims.
+
+    The inverse of :func:`supported_extensions`, for callers that need the whole
+    language set rather than one language's files -- repo detection asks "which
+    languages could this tree hold" before it knows which to ask about.
+    """
+    by_language: dict[str, list[str]] = {}
+    for ext, entry in _EXTENSION_GRAMMARS.items():
+        by_language.setdefault(entry[2], []).append(ext)
+    return {language: tuple(sorted(exts)) for language, exts in sorted(by_language.items())}
 
 
 def probe() -> dict[str, str]:

@@ -10,6 +10,12 @@ env-var name (``CHAMELEON_<NAME>``).
 
 Existing modules keep their local constants (for back-compat), but new
 readers should use ``threshold('NAME')`` to pick up env overrides.
+
+Every threshold belongs in the ``DEFAULTS`` literal below. The literal IS the
+operator surface the docs enumerate, and ``threshold()`` raises ``KeyError`` for
+any name it does not declare, so a name a consumer module adds to the table at
+import time resolves only once that module happens to have been imported --
+which turns a documented knob into an import-order accident.
 """
 
 from __future__ import annotations
@@ -82,6 +88,15 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # subprocess timeout the dump scripts relied on: in-process there is no
     # child to kill, so the bound has to live in the parser itself.
     "TS_PARSE_TIMEOUT_MICROS": 5_000_000,
+    # Bounds the marker-plus-source probe walk that decides whether a repo holds
+    # a spec-driven language. A MISS walks until the cap, and the probe runs once
+    # per candidate language, so this is what keeps detection off an unbounded
+    # walk of a huge tree.
+    "SPEC_MARKER_GLOB_CAP": 4000,
+    # Parameters recorded for one spec-driven callable signature. A longer list is
+    # a generated or pathological declaration: the signature stops being useful
+    # and the memory is not free.
+    "SPEC_MAX_PARAMS": 64,
     # Mirrors the rules file may import. SessionStart re-reads every one of them
     # inside its 3s budget, so a monorepo with hundreds of workspaces bounds the
     # fan-out here rather than paying it on every session load.
@@ -889,6 +904,33 @@ DEFAULTS: Final[dict[str, int | float]] = {
     "IDIOM_MINER_MIN_RECURRENCE": 3,
     "IDIOM_MINER_MIN_SESSIONS": 2,
     "IDIOM_CANDIDATE_MAX": 50,
+    # Declared + mined code ownership (ownership.py). The mined half bounds one
+    # `git log --name-only` walk; the declared half bounds the CODEOWNERS read.
+    #
+    # Bounds the one git-log walk. Ownership skews recent, so a deeper walk buys
+    # little beyond diluting a file's current owner with its original author.
+    "OWNERSHIP_MAX_COMMITS": 2_000,
+    # A commit touching more than this is a sweep (mass reformat, license header,
+    # dependency bump); whoever ran it did not thereby become the owner of every
+    # file it touched, so it is skipped rather than counted.
+    "OWNERSHIP_MAX_FILES_PER_COMMIT": 30,
+    # Artifact bounds: files kept (most-committed first) and authors per file.
+    "OWNERSHIP_MAX_FILES": 5_000,
+    "OWNERSHIP_MAX_AUTHORS_PER_FILE": 5,
+    # A mined author is only offered as an owner when they wrote at least this
+    # share of the file's commits. Below it there is no dominant author, and
+    # naming the top of a flat distribution would be a guess dressed as a fact.
+    "OWNERSHIP_MIN_DOMINANT_SHARE": 0.5,
+    "OWNERSHIP_GIT_TIMEOUT_SECONDS": 25,
+    # Read cap on the CODEOWNERS file itself. Real ones are kilobytes; anything
+    # past this is not a rules file.
+    "OWNERSHIP_MAX_CODEOWNERS_BYTES": 200_000,
+    "OWNERSHIP_MAX_RULES": 2_000,
+    # Per-pattern length bound. The compiled form of a pattern nests `.*` groups
+    # once per `**`, so an absurdly long pattern is refused rather than handed to
+    # the regex engine.
+    "OWNERSHIP_MAX_PATTERN_CHARS": 512,
+    "OWNERSHIP_MAX_OWNER_CHARS": 120,
 }
 
 

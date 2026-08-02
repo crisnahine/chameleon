@@ -65,15 +65,15 @@ def enabled() -> bool:
 
 
 @lru_cache(maxsize=1)
-def load_taxonomy() -> dict[str, Any]:
-    """The whole taxonomy document, or an empty one.
+def _parsed_taxonomy() -> dict[str, Any]:
+    """The shipped file, read and validated once.
 
-    Fails open. A malformed or missing file costs the taxonomy layer and
-    nothing else -- every caller treats an empty document as "no vocabulary
-    available", which is the pre-taxonomy behavior.
+    Deliberately does NOT consult the kill switch. A switch read inside an
+    `lru_cache` body is latched by the first call, so the layer would keep
+    serving whatever the process happened to start with while `detect`, which
+    reads the switch on every call, disagreed about whether the layer is on.
+    The gate lives in the accessors below instead.
     """
-    if not enabled():
-        return {"meta": {}, "concepts": []}
     try:
         raw = json.loads(_TAXONOMY_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -93,6 +93,20 @@ def load_taxonomy() -> dict[str, Any]:
     return {"meta": raw.get("meta") or {}, "concepts": clean}
 
 
+def load_taxonomy() -> dict[str, Any]:
+    """The whole taxonomy document, or an empty one.
+
+    Fails open. A malformed or missing file costs the taxonomy layer and
+    nothing else -- every caller treats an empty document as "no vocabulary
+    available", which is the pre-taxonomy behavior. The kill switch reads the
+    same way, and is read HERE, per call, so turning it off empties the layer
+    for every reader at the same moment.
+    """
+    if not enabled():
+        return {"meta": {}, "concepts": []}
+    return _parsed_taxonomy()
+
+
 @lru_cache(maxsize=1)
 def _by_term() -> dict[str, dict[str, Any]]:
     """Case-folded term -> concept, with aliases resolving to the same entry.
@@ -100,13 +114,17 @@ def _by_term() -> dict[str, dict[str, Any]]:
     A term wins over an alias: `Proxy` is a design pattern in its own right and
     also an alias of something else, and the named entry is what a caller asking
     for "Proxy" means.
+
+    Indexes the parsed file rather than the gated reader, for the reason
+    `_parsed_taxonomy` gives: an index built through the gate would latch the
+    kill switch into a second cache. Its callers hold the gate.
     """
     index: dict[str, dict[str, Any]] = {}
-    for c in load_taxonomy()["concepts"]:
+    for c in _parsed_taxonomy()["concepts"]:
         for alias in c.get("aliases") or ():
             if isinstance(alias, str):
                 index.setdefault(alias.casefold(), c)
-    for c in load_taxonomy()["concepts"]:
+    for c in _parsed_taxonomy()["concepts"]:
         index[c["term"].casefold()] = c
     return index
 
@@ -114,21 +132,40 @@ def _by_term() -> dict[str, dict[str, Any]]:
 @lru_cache(maxsize=1)
 def _by_kind() -> dict[str, tuple[dict[str, Any], ...]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
-    for c in load_taxonomy()["concepts"]:
+    for c in _parsed_taxonomy()["concepts"]:
         grouped.setdefault(c["kind"], []).append(c)
     return {k: tuple(v) for k, v in grouped.items()}
 
 
+def _clear_caches() -> None:
+    """Forget the parsed file and both indexes built from it.
+
+    The three are one cache to a caller: clearing the document while the
+    indexes still hold entries built from the previous read is how one file
+    gets answered two different ways.
+    """
+    _parsed_taxonomy.cache_clear()
+    _by_term.cache_clear()
+    _by_kind.cache_clear()
+
+
+# `load_taxonomy` is the name a caller reaches the taxonomy cache by; the caches
+# themselves sit one level down, behind the kill-switch gate.
+load_taxonomy.cache_clear = _clear_caches
+
+
 def concepts(kind: str | None = None) -> tuple[dict[str, Any], ...]:
     """Every concept, or every concept of one kind."""
+    if not enabled():
+        return ()
     if kind is None:
-        return tuple(load_taxonomy()["concepts"])
+        return tuple(_parsed_taxonomy()["concepts"])
     return _by_kind().get(kind, ())
 
 
 def concept(term: str) -> dict[str, Any] | None:
     """One concept by term or alias, case-insensitively."""
-    if not isinstance(term, str):
+    if not isinstance(term, str) or not enabled():
         return None
     return _by_term().get(term.casefold())
 
