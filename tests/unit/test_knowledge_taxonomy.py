@@ -517,16 +517,27 @@ def test_the_read_cap_and_its_repair_are_wired(tmp_path):
     pad = "<dependency><artifactId>filler</artifactId></dependency>\n"
     dropped = (
         "<!-- dropped in v3: <groupId>org.springframework.boot</groupId>"
-        "<artifactId>spring-boot-starter-web</artifactId>"
+        "<artifactId>spring-boot-starter-web</artifactId>\n"
     )
-    body = "<project><dependencies>\n" + pad * ((cap // len(pad)) + 5) + dropped
-    (tmp_path / "pom.xml").write_text(body, encoding="utf-8")
+    head = "<project><dependencies>\n"
+    # The comment must sit ENTIRELY inside the cap while its `-->` falls beyond
+    # it: that is the only arrangement where the repair does any work. Padding
+    # the comment past the cut instead makes the assertion pass whether or not
+    # the trim runs, which pins nothing.
+    fill = (cap - len(head) - len(dropped)) // len(pad)
+    body = head + pad * fill + dropped + pad * 200 + "-->\n</dependencies></project>"
     assert len(body) > cap, "fixture must exceed the cap for the repair to run"
+    assert len(head + pad * fill + dropped) <= cap, "the comment must survive the cut"
+    (tmp_path / "pom.xml").write_text(body, encoding="utf-8")
 
     found = detect._manifest_dep_names(tmp_path, 40)
     assert "filler" in found, "the readable head must still be mined"
     assert "org.springframework.boot" not in found
     assert "spring-boot-starter-web" not in found
+    # And prove the fixture is load-bearing: without the repair the same cut
+    # returns the commented-out coordinates.
+    untrimmed = detect._declared_deps("pom.xml", body[:cap])
+    assert "spring-boot-starter-web" in untrimmed, "fixture no longer exercises the repair"
 
 
 def test_an_earlier_unterminated_comment_is_also_trimmed():
