@@ -34,8 +34,16 @@ _LEAKS: dict[str, tuple[str, str]] = {
 
 
 @pytest.fixture
-def repo(tmp_path: Path) -> Path:
-    """A minimal profiled repo the Stop re-check can resolve."""
+def repo(tmp_path: Path, monkeypatch) -> Path:
+    """A minimal profiled repo the Stop re-check can resolve.
+
+    Carries the full `test-env-isolation-triad`: this drives the live Stop gate
+    against a profile under tmp_path, so the data dir and HMAC key must be
+    redirected too, not just the tmp-repo allowance.
+    """
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_HMAC_KEY_PATH", str(tmp_path / "hmac"))
     root = tmp_path / "repo"
     profile = root / ".chameleon"
     profile.mkdir(parents=True)

@@ -26,9 +26,14 @@ from chameleon_mcp import tools
 
 @pytest.fixture
 def plan_env(tmp_path: Path, monkeypatch):
-    """A trusted repo whose artifacts the plan reads."""
+    """A trusted repo whose artifacts the plan reads.
+
+    All three of the taught `test-env-isolation-triad` variables, so the run
+    cannot reach the developer's real plugin data or HMAC key.
+    """
     monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_HMAC_KEY_PATH", str(tmp_path / "hmac"))
     repo = tmp_path / "repo"
     (repo / ".chameleon").mkdir(parents=True)
     (repo / "src").mkdir()
@@ -52,7 +57,9 @@ def test_a_bad_symbol_argument_fails_open(plan_env: Path):
 def test_a_path_outside_any_repo_fails_open_with_a_reason(plan_env: Path):
     out = tools.get_symbol_edit_plan(str(plan_env), "/etc/passwd", "x")
     assert out["data"]["found"] is False
-    assert out["data"].get("reason") in {"path-unresolved", "file-outside-repo"}
+    # Pinned, not either-of: /etc/passwd takes exactly one branch, so accepting
+    # both would let a regression that swaps them pass.
+    assert out["data"].get("reason") == "path-unresolved", out["data"].get("reason")
 
 
 def test_an_untrusted_repo_yields_nothing(plan_env: Path):
@@ -150,7 +157,13 @@ def test_importers_are_filtered_by_name_from_the_row_list():
 
 
 def test_the_tool_is_registered_on_the_mcp_server():
-    """A tool nothing exposes is a tool nobody can call."""
+    """A tool nothing exposes is a tool nobody can call.
+
+    Asserted against the LIVE registry, not `hasattr`: a plain import with no
+    `@_wire_tool` decorator satisfies `hasattr` and would ship a tool no client
+    can reach.
+    """
     from chameleon_mcp import server
 
-    assert hasattr(server, "get_symbol_edit_plan")
+    live = {t.name for t in server.mcp._tool_manager.list_tools()}
+    assert "get_symbol_edit_plan" in live, sorted(live)

@@ -77,6 +77,7 @@ def test_a_real_sink_still_fires(language: str, source: str):
     assert _evals(source, language=language), f"{language}: real eval( no longer detected"
 
 
+@pytest.mark.perf
 @pytest.mark.parametrize("language", ["typescript", "go", "java", "csharp", "rust", "php"])
 def test_unclosed_block_comments_do_not_blow_the_latency_budget(language: str):
     """Guards the quadratic, not the exact timing.
@@ -84,7 +85,9 @@ def test_unclosed_block_comments_do_not_blow_the_latency_budget(language: str):
     The lazy `/\\*.*?\\*/` form took ~950ms here; the linear form takes single-
     digit milliseconds. The bound is deliberately loose (a CI box under load is
     still nowhere near 950ms), so this fails on a reintroduced quadratic rather
-    than on ordinary timing noise.
+    than on ordinary timing noise. Marked `perf` so a loaded box can deselect
+    it (`-m "not perf"`) without losing the rest of this module; the repo's
+    standing latency budgets live in tests/bench_hot_path.py.
     """
     body = "x\n/* never closed\n" * 4000
     started = time.perf_counter()

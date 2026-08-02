@@ -63,6 +63,12 @@ def pytest_configure(config):
         "real_judge_spawn: exercises the real judge._spawn_reviewer (subprocess "
         "mocked by the test); opts out of the no-real-spawn autouse guard.",
     )
+    config.addinivalue_line(
+        "markers",
+        "perf: asserts a wall-clock bound rather than a behavior. Deselect with "
+        '-m "not perf" on a loaded box; the repo\'s standing latency budgets live '
+        "in tests/bench_hot_path.py, not here.",
+    )
 
 
 @pytest.fixture(autouse=True)

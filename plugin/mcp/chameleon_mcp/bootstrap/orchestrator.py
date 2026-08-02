@@ -27,8 +27,10 @@ import json
 import os
 import re
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from chameleon_mcp.bootstrap.canonical import (
     _hash_cluster_key,
@@ -940,7 +942,7 @@ def _extensions_for_extractor(extractor: Extractor) -> tuple[str, ...]:
     return extensions
 
 
-def _sample_across_dirs(paths: list, cap: int) -> list:
+def _sample_across_dirs(paths: list[Path], cap: int) -> list[Path]:
     """Take ``cap`` paths spread across directories, not the first ``cap`` sorted.
 
     Truncating a sorted list starves whole areas of the tree: over four 10-file
@@ -973,7 +975,7 @@ def _sample_across_dirs(paths: list, cap: int) -> list:
     return out
 
 
-def _primary_sparse_threshold(primary_files) -> int:
+def _primary_sparse_threshold(primary_files: Iterable[Any]) -> int:
     """The sparse floor the PRIMARY corpus alone would have produced.
 
     Two things have to line up or a repo silently loses archetypes. The count
@@ -993,7 +995,7 @@ def _primary_sparse_threshold(primary_files) -> int:
     )
 
 
-def _language_of_member(member) -> str | None:
+def _language_of_member(member: Any) -> str | None:
     """The language of one clustered file, by extension, or None when unknown.
 
     Used to keep secondary-language members out of convention extraction. None
@@ -1127,9 +1129,7 @@ def _secondary_language_files(
         collected = []
         for parsed in probe.parse_repo(repo_root, paths=discovered).files:
             try:
-                from chameleon_mcp.extractors.treesitter.grammars import language_for_path
-
-                if language_for_path(parsed.path) in secondary:
+                if _language_of_member(parsed) in secondary:
                     collected.append(parsed)
             except Exception:
                 continue
@@ -1355,9 +1355,9 @@ class BootstrapReport:
     cross-workspace JOIN in _amend_root_profile_with_workspaces. Never persisted
     per-workspace; each row is {importer(ws-rel), name, module, line}."""
     package_name: str | None = None
-    #: Python import-name -> workspace-relative package dir, the Python half of
-    #: the cross-workspace package map (see symbol_index.python_package_dirs).
-    python_packages: dict = field(default_factory=dict)
+    #: Python import-name -> workspace-relative package dir, the Python half
+    #: of the cross-workspace package map (symbol_index.python_package_dirs).
+    python_packages: dict[str, str] = field(default_factory=dict)
     """WP-C5: this workspace's package.json `name` (e.g. @scope/a) -- the link the
     coordinator JOIN uses to resolve a sibling's `@scope/a` import to this dir."""
 

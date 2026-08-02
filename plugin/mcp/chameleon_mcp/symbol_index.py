@@ -819,7 +819,17 @@ def python_package_dirs(ws_root: Path | str) -> dict[str, str]:
                         continue
                     if not child.name.isidentifier():
                         continue
-                    if not any((child / f"__init__{s}").is_file() for s in _PY_INDEX_SUFFIXES):
+                    # A PEP 420 namespace package has no __init__ but is still
+                    # importable, and the sibling resolver `_python_source_roots`
+                    # already probes `src/` unconditionally for exactly that
+                    # reason. Require an __init__ only in the FLAT layout, where
+                    # any directory would otherwise look like a package.
+                    has_init = any(
+                        (child / f"__init__{suffix}").is_file() for suffix in _PY_INDEX_SUFFIXES
+                    )
+                    if not has_init and not (
+                        prefix and any(child.glob(f"*{_PY_INDEX_SUFFIXES[0]}"))
+                    ):
                         continue
                     out.setdefault(child.name, f"{prefix}{child.name}")
                 except OSError:

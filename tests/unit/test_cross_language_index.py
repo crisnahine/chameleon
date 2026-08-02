@@ -76,7 +76,14 @@ def test_a_secondary_language_is_detected_only_with_its_build_manifest(tmp_path:
     (tmp_path / "vendor" / "stray.go").write_text("package v\n\nfunc F() {}\n", encoding="utf-8")
     assert SpecDrivenExtractor.languages_present(tmp_path) == ()
 
+    # Manifest present, but the only source is VENDORED -- `_has_source` skips the
+    # excluded trees, so third-party code can neither prove a language nor spend
+    # the walk budget on the way to first-party code.
     (tmp_path / "go.mod").write_text("module x\n\ngo 1.22\n", encoding="utf-8")
+    assert SpecDrivenExtractor.languages_present(tmp_path) == ()
+
+    (tmp_path / "svc").mkdir()
+    (tmp_path / "svc" / "main.go").write_text("package s\n\nfunc F() {}\n", encoding="utf-8")
     assert SpecDrivenExtractor.languages_present(tmp_path) == ("go",)
 
 
@@ -482,6 +489,9 @@ def test_typescript_is_visible_as_a_secondary_language(tmp_path: Path):
     (tmp_path / "app" / "models").mkdir(parents=True)
     (tmp_path / "Gemfile").write_text('source "https://rubygems.org"\n', encoding="utf-8")
     (tmp_path / "package.json").write_text('{"name":"app"}', encoding="utf-8")
+    # `tsconfig.json` is the marker distinguishing a repo that COMPILES its own
+    # TypeScript from one that merely carries a package.json for prettier.
+    (tmp_path / "tsconfig.json").write_text('{"compilerOptions":{}}', encoding="utf-8")
     for i in range(6):
         (tmp_path / "app" / "models" / f"m{i}.rb").write_text(
             f"class M{i}; end\n", encoding="utf-8"
@@ -551,3 +561,21 @@ def test_the_size_guard_fallback_still_finds_files(tmp_path: Path, monkeypatch):
         f"fallback returned {names}: it must find the real source (not []) "
         "and must still exclude vendor/"
     )
+
+
+def test_a_tooling_only_package_json_is_not_a_typescript_app(tmp_path: Path):
+    """A root `package.json` for prettier is routine in Ruby and Python repos.
+
+    Treating it as a TypeScript secondary meant the only `.js` surviving the
+    node_modules exclusion was a handful of root config files, which share a path
+    bucket and a `module.exports` shape, clear the sparse floor, and put a BUILD
+    CONFIG forward as the canonical witness to imitate.
+    """
+    (tmp_path / "app").mkdir()
+    (tmp_path / "Gemfile").write_text('source "https://rubygems.org"\n', encoding="utf-8")
+    (tmp_path / "package.json").write_text('{"devDependencies":{"prettier":"3"}}', encoding="utf-8")
+    (tmp_path / "jest.config.js").write_text("module.exports = {};\n", encoding="utf-8")
+    for i in range(6):
+        (tmp_path / "app" / f"m{i}.rb").write_text(f"class M{i}; end\n", encoding="utf-8")
+
+    assert SpecDrivenExtractor.languages_present(tmp_path, exclude="ruby") == ()

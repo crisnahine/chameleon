@@ -4348,6 +4348,15 @@ def get_symbol_edit_plan(repo: str, file_path: str, symbol_name: str) -> dict:
                 if cls_rel == rel and symbol_name in by_name:
                     entry, kind = by_name[symbol_name], "class"
                     break
+        if not isinstance(entry, dict) and sigs is not None:
+            # The artifact's third section: exported value bindings (a const, an
+            # arrow function bound to a name). They carry a start_line, and
+            # "where does it start" is the first question this tool answers, so
+            # skipping them returned found:False for a symbol the index knows.
+            for val_rel, by_name in sigs.value_items():
+                if val_rel == rel and symbol_name in by_name:
+                    entry, kind = by_name[symbol_name], "value"
+                    break
         if isinstance(entry, dict) and isinstance(entry.get("start_line"), int):
             definition = {
                 "path": _san(_rr(rel)),

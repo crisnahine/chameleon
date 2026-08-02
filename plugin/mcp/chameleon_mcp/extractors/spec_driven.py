@@ -43,7 +43,15 @@ _MARKERS: dict[str, tuple[str, ...]] = {
     # it costs nothing on a TS repo and everything on the most common polyglot
     # shape there is -- a Rails app with `app/javascript/`, a Django app with a
     # `frontend/` React tree. Those derived zero TypeScript archetypes.
-    "typescript": ("package.json", "tsconfig.json", "jsconfig.json"),
+    # `package.json` alone is NOT enough: a root one for prettier or husky is
+    # routine in Ruby and Python repos, and the only `.js` left after
+    # `discover_files` excludes node_modules is then a handful of root config
+    # files (jest.config.js, tailwind.config.js) -- which share a path bucket and
+    # a `module.exports` shape, clear the sparse floor, and put a BUILD CONFIG
+    # forward as the canonical witness to imitate. `tsconfig`/`jsconfig` state
+    # that the repo compiles its own sources, which a tooling-only dependency
+    # does not.
+    "typescript": ("tsconfig.json", "jsconfig.json"),
 }
 
 # Extensions whose presence, alongside a marker, confirms the repo actually
@@ -149,7 +157,16 @@ def _has_source(repo_root: Path, extensions: tuple[str, ...]) -> bool:
     """
     seen = 0
     try:
+        from chameleon_mcp.bootstrap.discovery import EXCLUDE_FROM_CLUSTERING_DIRS
+
         for path in repo_root.rglob("*"):
+            # Excluded trees do not spend the budget. `rglob` descends
+            # node_modules / .venv / vendor, and a repo with a large one could
+            # exhaust the cap before reaching any real source, reporting the
+            # language absent -- and a language reported absent here is one whose
+            # whole corpus is silently dropped.
+            if EXCLUDE_FROM_CLUSTERING_DIRS & set(path.parts):
+                continue
             seen += 1
             if seen > _MARKER_GLOB_CAP:
                 return False
