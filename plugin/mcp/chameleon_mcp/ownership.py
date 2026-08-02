@@ -150,8 +150,20 @@ def _glob_body(pattern: str) -> str:
                 while j < n and pattern[j] == "*":
                     j += 1
                 if j < n and pattern[j] == "/":
-                    out.append("(?:.*/)?")
-                    i = j + 1
+                    # Collapse a run of `**/` into ONE group. Emitting one
+                    # `(?:.*/)?` per segment gives sequential optional `.*`
+                    # groups, whose split points multiply -- `**/` repeated a
+                    # couple of dozen times inside the 512-char cap makes
+                    # `owners_for` hang on a non-matching path, and CODEOWNERS
+                    # is a repo-controlled file. Consecutive `**/` are
+                    # semantically identical to one anyway.
+                    while pattern.startswith("**/", i):
+                        i += 3
+                        while i < n and pattern[i] == "/":
+                            i += 1
+                    if not out or out[-1] != "(?:.*/)?":
+                        out.append("(?:.*/)?")
+                    continue
                 else:
                     out.append(".*")
                     i = j

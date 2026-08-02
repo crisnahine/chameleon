@@ -964,11 +964,14 @@ job that must be reproducible.
 
 Set the three lens flags false and pick the blocking posture you want:
 
-```jsonc
-// .chameleon/config.json
+In `<repo>/.chameleon/config.json` — the loader is strict `json.loads`, so this
+block is copyable as-is. Use `"enforce"` instead of `"shadow"` to keep the
+calibrated blocks while still spawning nothing.
+
+```json
 {
   "enforcement": {
-    "mode": "shadow",           // or "enforce" to keep the blocks
+    "mode": "shadow",
     "correctness_judge": false,
     "duplication_review": false,
     "idiom_review": false
