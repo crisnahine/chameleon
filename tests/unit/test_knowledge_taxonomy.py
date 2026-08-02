@@ -491,11 +491,18 @@ def test_a_truncated_read_loses_names_but_never_invents_them():
     pom = head + pad * ((cap - len(head) - 40) // len(pad)) + dropped
     cut = pom[:cap]
     assert cut.rfind("<!--") > cut.rfind("-->"), "fixture must cut inside the comment"
-    assert detect._declared_deps("pom.xml", detect._trim_truncated(cut)) == {"filler"}
+    assert detect._declared_deps("pom.xml", detect._trim_truncated("pom.xml", cut)) == {"filler"}
 
     req = "flask==3\n" + ("# pad\n" * 3000) + "django-environ==0.11\n"
     mid_token = req[: req.index("django-environ") + 6]
-    assert detect._declared_deps("requirements.txt", detect._trim_truncated(mid_token)) == {"flask"}
+    trimmed = detect._trim_truncated("requirements.txt", mid_token)
+    assert detect._declared_deps("requirements.txt", trimmed) == {"flask"}
+
+    # And the repair must not become the opposite error. `<!--` inside a TOML
+    # string is not a comment opener, so trimming from it would drop every real
+    # dependency after it -- quieter than a false claim, and no less wrong.
+    toml_with_marker = 'name = "a <!-- b"\nflask==3\n'
+    assert detect._trim_truncated("pyproject.toml", toml_with_marker) == toml_with_marker
 
 
 def test_go_block_directives_survive_a_trailing_comment():
@@ -521,6 +528,14 @@ def test_a_self_closing_exclusions_tag_does_not_swallow_the_next_dependency():
         "</dependency></dependencies>"
     )
     assert detect._declared_deps("pom.xml", pom) == {"guava", "spring-boot-starter-web"}
+
+    # An <exclusions> left unclosed (malformed, or cut by the cap) must not spill
+    # its excluded coordinates into the result.
+    unclosed = (
+        "<dependency><artifactId>keep</artifactId>"
+        "<exclusions><exclusion><artifactId>drop</artifactId>"
+    )
+    assert detect._declared_deps("pom.xml", unclosed) == {"keep"}
 
 
 def test_the_poetry_interpreter_constraint_is_not_a_package():

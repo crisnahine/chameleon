@@ -325,6 +325,8 @@ _POM_EMPTY_EXCLUSIONS_RE: Final[re.Pattern[str]] = re.compile(
 _POM_EXCLUSIONS_RE: Final[re.Pattern[str]] = re.compile(
     r"<exclusions\b[^>]*>.*?</exclusions>", re.DOTALL | re.IGNORECASE
 )
+# Whatever the two patterns above left behind is an opener with no close.
+_POM_EXCLUSIONS_OPEN_RE: Final[re.Pattern[str]] = re.compile(r"<exclusions\b", re.IGNORECASE)
 _GRADLE_BLOCK_COMMENT_RE: Final[re.Pattern[str]] = re.compile(r"/\*.*?\*/", re.DOTALL)
 # `(?<!:)` keeps a URL scheme's own `//` from reading as a comment: a
 # `maven { url "https://..." }` sharing a line with a coordinate would otherwise
@@ -345,7 +347,18 @@ _PY_MANIFESTS: Final[frozenset[str]] = frozenset({"requirements.txt", "pyproject
 _MANIFEST_MAX_CHARS: Final[int] = 50_000
 
 
-def _trim_truncated(text: str) -> str:
+# Comment delimiters per manifest, for truncation repair only. Keyed by format
+# because the trim must not fire on one that has no such comment syntax: a
+# `<!--` inside a TOML description is a string, not an opener, and cutting from
+# it would drop every real dependency after it.
+_TRUNCATION_COMMENTS: Final[dict[str, tuple[tuple[str, str], ...]]] = {
+    "pom.xml": (("<!--", "-->"),),
+    "build.gradle": (("/*", "*/"),),
+    "build.gradle.kts": (("/*", "*/"),),
+}
+
+
+def _trim_truncated(manifest: str, text: str) -> str:
     """Drop the unreliable tail of a manifest the read cap cut short.
 
     Truncation makes a read produce WRONG names rather than merely fewer, in two
@@ -358,12 +371,13 @@ def _trim_truncated(text: str) -> str:
 
     Dropping the last (partial) line and anything after an unterminated comment
     opener puts truncation back on the safe side: fewer names, never invented
-    ones.
+    ones. The comment half is scoped by format, because over-trimming loses real
+    declarations -- the opposite error, and no less wrong for being quieter.
     """
     newline = text.rfind("\n")
     if newline != -1:
         text = text[: newline + 1]
-    for opener, closer in (("<!--", "-->"), ("/*", "*/")):
+    for opener, closer in _TRUNCATION_COMMENTS.get(manifest, ()):
         start = text.rfind(opener)
         if start != -1 and text.find(closer, start) == -1:
             text = text[:start]
@@ -456,6 +470,13 @@ def _declared_deps(manifest: str, text: str) -> set[str]:
         # declarations to a bare element match.
         body = _XML_COMMENT_RE.sub(" ", text)
         body = _POM_EXCLUSIONS_RE.sub(" ", _POM_EMPTY_EXCLUSIONS_RE.sub(" ", body))
+        # An <exclusions> left unclosed (malformed, or cut by the read cap) would
+        # otherwise spill its excluded coordinates into the result, so everything
+        # from the opener on is dropped -- losing declarations rather than
+        # claiming ones the file negates.
+        unclosed = _POM_EXCLUSIONS_OPEN_RE.search(body)
+        if unclosed is not None:
+            body = body[: unclosed.start()]
         return {n for m in _POM_ARTIFACT_RE.finditer(body) if (n := m.group(1).casefold())}
 
     if manifest in ("build.gradle", "build.gradle.kts"):
@@ -507,7 +528,7 @@ def _manifest_dep_names(root: Path, max_dirs: int) -> frozenset[str]:
                 with path.open("r", encoding="utf-8", errors="replace") as fh:
                     text = fh.read(_MANIFEST_MAX_CHARS + 1)
                 if len(text) > _MANIFEST_MAX_CHARS:
-                    text = _trim_truncated(text[:_MANIFEST_MAX_CHARS])
+                    text = _trim_truncated(manifest, text[:_MANIFEST_MAX_CHARS])
             except OSError:
                 continue
             try:
