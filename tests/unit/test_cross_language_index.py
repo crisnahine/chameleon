@@ -228,37 +228,39 @@ def test_clustering_never_merges_two_languages(dense_mixed_repo: Path):
         assert len(exts) == 1, f"cluster {cluster.key.path_pattern_bucket} mixes {exts}"
 
 
-def test_adding_a_language_never_raises_the_sparse_bar_for_the_primary():
-    """Covering a new language must not cost the primary its archetypes.
+def test_the_threshold_pin_uses_the_post_generated_filter_primary_count():
+    """The pin must count files the way `cluster_files` counts them.
 
-    `cluster_files` derives the sparse threshold from the TOTAL member count and
-    the tiers are stepped (<1000 -> 3, <5000 -> 4, else 5). Feeding it secondary
-    files therefore moves the bar for everyone: 995 TypeScript files plus 10 Go
-    files crosses 1000, the threshold goes 3 -> 4, and every 3-member TypeScript
-    cluster the repo used to get is dropped as sparse. Nothing in the suite would
-    show it -- the archetypes simply stop existing on large repos.
-
-    The orchestrator pins the threshold to the PRIMARY corpus, so this asserts
-    the arithmetic that made the pin necessary.
+    An earlier version pinned from `len(parse_result.files)`, the PRE-filter
+    number, while the path it replaced summed members AFTER `is_likely_generated`
+    dropped files. That reintroduced the regression it was added to prevent, in a
+    different shape: a SINGLE-language repo with 990 real files and 20 generated
+    ones went 3 -> 4 and lost every 3-member cluster, having gained nothing from
+    the feature.
     """
     from chameleon_mcp.bootstrap.clustering import _adaptive_sparse_threshold
 
-    primary_only = _adaptive_sparse_threshold(995)
-    with_secondaries = _adaptive_sparse_threshold(995 + 10)
-    assert primary_only == 3 and with_secondaries == 4, (primary_only, with_secondaries)
+    assert _adaptive_sparse_threshold(990) == 3
+    assert _adaptive_sparse_threshold(1010) == 4, "the tier boundary this guards moved"
 
 
 def test_the_orchestrator_pins_the_threshold_to_the_primary_corpus(monkeypatch, tmp_path: Path):
-    """The pin itself: `cluster_files` receives the primary-derived threshold."""
+    """Asserts the VALUE, not merely that a kwarg was passed.
+
+    A not-None check would still pass if the pin were computed from the COMBINED
+    corpus, which is the precise regression it claims to guard. The fixture
+    therefore carries a secondary language, so pinned and unpinned differ.
+    """
     from chameleon_mcp.bootstrap import orchestrator
 
     seen: dict = {}
     real = orchestrator.cluster_files
 
     def spy(files, *args, **kwargs):
+        materialized = list(files)
         seen["min_cluster_size"] = kwargs.get("min_cluster_size")
-        seen["n_files"] = len(list(files))
-        return real(files, *args, **kwargs)
+        seen["n_files"] = len(materialized)
+        return real(materialized, *args, **kwargs)
 
     monkeypatch.setattr(orchestrator, "cluster_files", spy)
     monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
@@ -267,11 +269,79 @@ def test_the_orchestrator_pins_the_threshold_to_the_primary_corpus(monkeypatch, 
 
     repo = tmp_path / "r"
     (repo / "src").mkdir(parents=True)
+    (repo / "svc").mkdir(parents=True)
     (repo / "package.json").write_text('{"name":"r"}', encoding="utf-8")
+    (repo / "go.mod").write_text("module m\n\ngo 1.22\n", encoding="utf-8")
     for i in range(4):
         (repo / "src" / f"m{i}.ts").write_text(f"export const v{i} = {i};\n", encoding="utf-8")
+    for i in range(4):
+        (repo / "svc" / f"s{i}.go").write_text(f"package s\n\nfunc F{i}() {{}}\n", encoding="utf-8")
     for argv in (["git", "init", "-q"], ["git", "add", "-A"], ["git", "commit", "-qm", "i"]):
         subprocess.run(argv, cwd=repo, check=True, capture_output=True)
 
     orchestrator.bootstrap_repo(repo)
-    assert seen.get("min_cluster_size") is not None, "threshold was left to the total count"
+
+    from chameleon_mcp.bootstrap.clustering import _adaptive_sparse_threshold
+
+    assert seen["n_files"] > 4, "clustering did not receive the secondary language"
+    assert seen["min_cluster_size"] == _adaptive_sparse_threshold(4), (
+        f"threshold {seen['min_cluster_size']} was not derived from the 4-file "
+        f"primary corpus (clustering saw {seen['n_files']} files)"
+    )
+
+
+def test_the_secondary_parse_honors_discovery_exclusions(tmp_path: Path):
+    """Vendored third-party source must never reach clustering.
+
+    `parse_repo` with no `paths=` falls to a raw glob over the whole tree, which
+    skips `discover_files` and therefore `EXCLUDE_FROM_CLUSTERING_DIRS`
+    (`vendor`, `node_modules`, `dist`, `.venv`), the gitignore filter and the
+    repo size guard. Harmless while these files only reached index artifacts;
+    not harmless once they reach canonical-witness selection, where a vendored
+    file could become the witness injected per-edit as the shape to imitate --
+    `EXCLUDE_FROM_CANONICAL_POOL_DIRS` covers test and legacy dirs, not vendor.
+    """
+    (tmp_path / "svc").mkdir()
+    (tmp_path / "vendor" / "github.com" / "x").mkdir(parents=True)
+    (tmp_path / "package.json").write_text('{"name":"r"}', encoding="utf-8")
+    (tmp_path / "go.mod").write_text("module m\n\ngo 1.22\n", encoding="utf-8")
+    (tmp_path / "app.ts").write_text("export const a = 1;\n", encoding="utf-8")
+    for i in range(3):
+        (tmp_path / "svc" / f"s{i}.go").write_text(
+            f"package s\n\nfunc F{i}() {{}}\n", encoding="utf-8"
+        )
+    for i in range(5):
+        (tmp_path / "vendor" / "github.com" / "x" / f"v{i}.go").write_text(
+            f"package x\n\nfunc V{i}() {{}}\n", encoding="utf-8"
+        )
+
+    rels = sorted(
+        str(Path(f.path).relative_to(tmp_path))
+        for f in _secondary_language_files(tmp_path, "typescript")
+    )
+    assert rels == ["svc/s0.go", "svc/s1.go", "svc/s2.go"], rels
+
+
+def test_the_primary_sparse_threshold_excludes_secondaries_and_generated_files():
+    """The two boundary crossings, tested at the tier where they differ.
+
+    A 4-file fixture cannot discriminate (every tier under 1000 is 3), so this
+    exercises the computation directly at the 1000 boundary instead.
+    """
+    from types import SimpleNamespace
+
+    from chameleon_mcp.bootstrap.orchestrator import _primary_sparse_threshold
+
+    real = [SimpleNamespace(content_first_200_bytes="const x = 1;\n") for _ in range(990)]
+    generated = [
+        SimpleNamespace(content_first_200_bytes="// @generated by protoc\n") for _ in range(20)
+    ]
+
+    # 990 real files stay under the boundary even with 20 generated ones present.
+    assert _primary_sparse_threshold(real + generated) == 3, (
+        "generated files were counted, pushing a single-language repo over 1000"
+    )
+    # And the raw count would have crossed it, which is what makes this load-bearing.
+    from chameleon_mcp.bootstrap.clustering import _adaptive_sparse_threshold
+
+    assert _adaptive_sparse_threshold(len(real + generated)) == 4

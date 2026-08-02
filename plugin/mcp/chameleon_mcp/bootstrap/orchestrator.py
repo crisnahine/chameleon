@@ -46,6 +46,7 @@ from chameleon_mcp.bootstrap.discovery import (
     TooManyFilesError,
     discover_files,
     discovery_stats,
+    is_likely_generated,
 )
 from chameleon_mcp.bootstrap.naming import propose_archetype_name
 from chameleon_mcp.bootstrap.tool_config import read_tool_configs
@@ -939,6 +940,42 @@ def _extensions_for_extractor(extractor: Extractor) -> tuple[str, ...]:
     return extensions
 
 
+def _primary_sparse_threshold(primary_files) -> int:
+    """The sparse floor the PRIMARY corpus alone would have produced.
+
+    Two things have to line up or a repo silently loses archetypes. The count
+    must exclude the SECONDARY languages, because `cluster_files` otherwise
+    derives the floor from the combined total and the tiers are stepped
+    (<1000 -> 3, <5000 -> 4, else 5): 995 TypeScript files plus 10 Go files
+    crosses 1000, the floor moves 3 -> 4, and every 3-member TypeScript cluster
+    is dropped as sparse. And it must be taken AFTER the generated-file filter,
+    the way `cluster_files` counts, or the same boundary is crossed a second way
+    -- 990 real files plus 20 generated ones -- this time on a SINGLE-language
+    repo that gained nothing from cross-language coverage at all.
+
+    Neither shape shows up in a test suite: the archetypes just stop existing.
+    """
+    return _adaptive_sparse_threshold(
+        sum(1 for pf in primary_files if not is_likely_generated(pf.content_first_200_bytes))
+    )
+
+
+def _language_of_member(member) -> str | None:
+    """The language of one clustered file, by extension, or None when unknown.
+
+    Used to keep secondary-language members out of convention extraction. None
+    is treated as primary by the caller: an extension the grammar table does not
+    know cannot be a secondary-language file, since the secondary set is built
+    from that same table.
+    """
+    try:
+        from chameleon_mcp.extractors.treesitter.grammars import language_for_path
+
+        return language_for_path(getattr(member, "path", member))
+    except Exception:
+        return None
+
+
 def _secondary_language_files(repo_root: Path, primary_language: str) -> list:
     """Parsed files for every OTHER language the repo genuinely contains.
 
@@ -972,10 +1009,32 @@ def _secondary_language_files(repo_root: Path, primary_language: str) -> list:
         secondary = [lang for lang in probe._languages if lang != primary_language]
         if not secondary:
             return []
-        # Parse ONLY the secondary languages: the primary's files are already in
-        # `parse_result` and re-parsing them would double every row.
+        # Discovery FIRST, then parse the discovered paths. Calling
+        # `parse_repo(repo_root)` with no `paths=` falls to a raw
+        # `repo_root.glob("**/*")`, which is exactly the case the extractor's own
+        # docstring warns about: it "would silently re-include everything
+        # discovery ruled out". That means `vendor/`, `node_modules/`, `dist/`,
+        # `.venv/`, the gitignore filter and the repo size guard -- all of which
+        # live in `discover_files`, not in the extractor. Harmless while these
+        # files only reached three index artifacts; not harmless now that they
+        # reach clustering and canonical-witness selection, where a vendored
+        # third-party file could become the witness injected per-edit as the
+        # shape to imitate (`EXCLUDE_FROM_CANONICAL_POOL_DIRS` covers test and
+        # legacy dirs, NOT vendor).
+        from chameleon_mcp.bootstrap.discovery import discover_files
+        from chameleon_mcp.extractors.treesitter.grammars import _EXTENSION_GRAMMARS
+
+        # Same brace shape discover_files' own default uses: "**/*.{ts,tsx,...}".
+        stems = sorted(
+            {ext.lstrip(".") for ext, entry in _EXTENSION_GRAMMARS.items() if entry[2] in secondary}
+        )
+        if not stems:
+            return []
+        discovered = discover_files(repo_root, glob=f"**/*.{{{','.join(stems)}}}")
+        if not discovered:
+            return []
         collected = []
-        for parsed in probe.parse_repo(repo_root).files:
+        for parsed in probe.parse_repo(repo_root, paths=discovered).files:
             try:
                 from chameleon_mcp.extractors.treesitter.grammars import language_for_path
 
@@ -2900,7 +2959,7 @@ def _bootstrap_single(
     clustering = cluster_files(
         list(parse_result.files) + _secondary_files,
         repo_root=repo_root,
-        min_cluster_size=_adaptive_sparse_threshold(len(parse_result.files)),
+        min_cluster_size=_primary_sparse_threshold(parse_result.files),
     )
     files_skipped_generated = len(clustering.skipped_generated)
     sparse_dropped_files = sum(c.size for c in clustering.sparse_clusters)
@@ -3062,7 +3121,16 @@ def _bootstrap_single(
         cluster_id, _sel = _resolve_cluster_id(cluster, selection)
         arch_name = _cid_to_archname.get(cluster_id) if cluster_id else None
         if arch_name:
-            files_by_archetype.setdefault(arch_name, []).extend(cluster.members)
+            # PRIMARY-language members only. `extract_all_conventions` takes one
+            # repo-wide language and gates most of its passes on it, so a Go file
+            # arriving under an archetype key would be measured with the
+            # primary's semantics (key exports, error handling, class contract,
+            # test pairing, doc coverage). A secondary-language archetype
+            # therefore carries a shape and a witness but no convention rules:
+            # absent guidance rather than wrong guidance.
+            files_by_archetype.setdefault(arch_name, []).extend(
+                m for m in cluster.members if _language_of_member(m) in (None, extractor.language)
+            )
 
     # Re-check each archetype's witness for commented-out code: the strippers
     # blanked comments before every other scan, so this is the one place the
