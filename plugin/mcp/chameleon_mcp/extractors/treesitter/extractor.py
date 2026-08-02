@@ -57,11 +57,20 @@ class TreeSitterExtractor:
     a repo that merely changed parsing backends.
     """
 
-    def __init__(self, language: str) -> None:
+    def __init__(self, language: str, extra_languages: tuple[str, ...] = ()) -> None:
         if language not in _TABLES:
             raise ValueError(f"no tree-sitter tables for language {language!r}")
         self.language = language
-        self._languages = (language,)
+        # `.language` stays SINGULAR and stays the primary: archetype naming, the
+        # framework-aware layers and every lint gate branch on it, so widening it
+        # would silently restyle a repo that merely gained a second language.
+        # `_languages` is the parse filter, and it may hold more: a caller that
+        # wants the secondary languages INDEXED (symbols, calls) without letting
+        # them reach clustering passes them here and parses into a separate
+        # ParseResult. Unknown names are dropped rather than raising -- a
+        # secondary language is an enrichment, never a reason to fail a profile.
+        extras = tuple(dict.fromkeys(x for x in extra_languages if x in _TABLES and x != language))
+        self._languages = (language, *extras)
 
     @staticmethod
     def supports(language: str) -> bool:

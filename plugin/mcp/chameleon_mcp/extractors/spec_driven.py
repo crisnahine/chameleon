@@ -52,6 +52,31 @@ class SpecDrivenExtractor:
         self.language = language
         self._extensions = extensions
 
+    @staticmethod
+    def languages_present(repo_root: Path, *, exclude: str | None = None) -> tuple[str, ...]:
+        """Every spec-driven language this repo genuinely contains.
+
+        Same bar as :meth:`can_handle` -- a build manifest AND real source --
+        applied to each language rather than to one. A repo whose PRIMARY
+        language is TypeScript but which also ships a real Go service answers
+        ``("go",)``, so the index builders can cover both while archetype
+        derivation stays on the primary. The manifest requirement is what keeps
+        a single vendored `.go` file from making that claim.
+        """
+        from chameleon_mcp.extractors.treesitter.lang.specs import EXTENSIONS_BY_LANGUAGE
+
+        found: list[str] = []
+        for language, extensions in sorted(EXTENSIONS_BY_LANGUAGE.items()):
+            if language == exclude:
+                continue
+            probe = SpecDrivenExtractor(language, tuple(extensions))
+            try:
+                if probe.can_handle(repo_root):
+                    found.append(language)
+            except Exception:
+                continue
+        return tuple(found)
+
     def can_handle(self, repo_root: Path) -> bool:
         """True when a build manifest AND real source of this language exist."""
         try:

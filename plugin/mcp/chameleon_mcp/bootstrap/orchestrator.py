@@ -938,6 +938,55 @@ def _extensions_for_extractor(extractor: Extractor) -> tuple[str, ...]:
     return extensions
 
 
+def _secondary_language_files(repo_root: Path, primary_language: str) -> list:
+    """Parsed files for every OTHER language the repo genuinely contains.
+
+    Chameleon binds one extractor, and therefore one language, per profile:
+    `select_extractor` returns the first match and `parse_repo` filters to it,
+    so a real Go service living beside a TypeScript app is not merely ungraded,
+    it is never parsed. Its symbols are absent from `search_codebase`, and
+    `describe_codebase` reports a repo that does not exist.
+
+    These files feed the three index builders that carry NO language gate
+    (symbol signatures, the function catalog, the call index) and nothing else.
+    Clustering, conventions, canonicals and every framework-aware layer keep
+    reading the primary parse alone, so a second language enriches what the repo
+    can ANSWER without restyling what it enforces.
+
+    Each secondary language must clear the same bar the spec extractor applies
+    to a primary: a build manifest AND real source. Bounded, and fail-open to
+    `[]` -- a secondary language that will not parse costs its own rows, never
+    the profile.
+    """
+    if os.environ.get("CHAMELEON_CROSS_LANGUAGE_INDEX") == "0":
+        return []
+    try:
+        from chameleon_mcp.extractors.spec_driven import SpecDrivenExtractor
+        from chameleon_mcp.extractors.treesitter.extractor import TreeSitterExtractor
+
+        extras = SpecDrivenExtractor.languages_present(repo_root, exclude=primary_language)
+        if not extras:
+            return []
+        probe = TreeSitterExtractor(primary_language, extra_languages=extras)
+        secondary = [lang for lang in probe._languages if lang != primary_language]
+        if not secondary:
+            return []
+        # Parse ONLY the secondary languages: the primary's files are already in
+        # `parse_result` and re-parsing them would double every row.
+        collected = []
+        for parsed in probe.parse_repo(repo_root).files:
+            try:
+                from chameleon_mcp.extractors.treesitter.grammars import language_for_path
+
+                if language_for_path(parsed.path) in secondary:
+                    collected.append(parsed)
+            except Exception:
+                continue
+        return collected
+    except Exception:
+        return []
+
+
 def _glob_for_extractor(extractor: Extractor) -> str:
     suffixes = _extensions_for_extractor(extractor)
     if len(suffixes) == 1:
@@ -3422,12 +3471,14 @@ def _bootstrap_single(
         # builder reads, so the catalog is built for every supported language. It
         # is hashed into the trust SHA, so it is written inside this same atomic
         # transaction. Best-effort: a build failure must not abort the commit.
+        # The primary parse plus every secondary language the repo really has.
+        _index_files = parse_result.files + _secondary_language_files(repo_root, extractor.language)
         try:
             from chameleon_mcp.function_catalog import build_function_catalog
 
             (txn_dir / "function_catalog.json").write_text(
                 json.dumps(
-                    build_function_catalog(parse_result.files, repo_root),
+                    build_function_catalog(_index_files, repo_root),
                     indent=2,
                     sort_keys=True,
                 ),
@@ -3444,7 +3495,7 @@ def _bootstrap_single(
 
             (txn_dir / "calls_index.json").write_text(
                 json.dumps(
-                    build_calls_index(parse_result.files, repo_root, language=extractor.language),
+                    build_calls_index(_index_files, repo_root, language=extractor.language),
                     indent=2,
                     sort_keys=True,
                 ),
@@ -3485,7 +3536,7 @@ def _bootstrap_single(
 
             (txn_dir / "symbol_signatures.json").write_text(
                 json.dumps(
-                    build_symbol_signatures(parse_result.files, repo_root),
+                    build_symbol_signatures(_index_files, repo_root),
                     indent=2,
                     sort_keys=True,
                 ),
