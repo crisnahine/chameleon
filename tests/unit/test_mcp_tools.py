@@ -42,6 +42,7 @@ REGISTERED_TOOLS = [
     "get_callees",
     "get_blast_radius",
     "query_symbol_importers",
+    "get_symbol_edit_plan",
     "get_crossfile_context",
     "get_contract_breaks",
     "get_duplication_candidates",
@@ -94,15 +95,18 @@ def test_server_imports_and_registers_every_tool():
         assert callable(getattr(server, name))
 
 
-def test_registered_tool_count_is_pinned_at_20():
-    """The live FastMCP registry carries EXACTLY the 20-tool surface: a dropped
+def test_registered_tool_count_is_pinned_at_21():
+    """The live FastMCP registry carries EXACTLY the 21-tool surface: a dropped
     registration, a renamed dispatcher, or a stray extra @mcp.tool all fail
     here. Went from 19 to 20 when `explain_concept` added the taxonomy's pull
     channel -- the push channels are token-budgeted, so a 541-entry vocabulary
-    has to be asked for."""
+    has to be asked for -- and from 20 to 21 with `get_symbol_edit_plan`, which
+    answers the three questions a symbol-level edit asks (range, callers,
+    importers) in one call instead of making the caller stitch three response
+    shapes together."""
     live = {t.name for t in server.mcp._tool_manager.list_tools()}
     assert live == set(REGISTERED_TOOLS)
-    assert len(live) == 20
+    assert len(live) == 21
 
 
 class TestDispatchers:
