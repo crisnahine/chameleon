@@ -219,12 +219,40 @@ def _json_dep_names(text: str, sections: tuple[str, ...]) -> set[str]:
     return out
 
 
+# Table names that hold dependencies, wherever they appear in the document. The
+# set is the contract rather than the paths: enumerating vendor paths misses the
+# next tool, and every one of these names means dependencies in every ecosystem
+# that uses it.
+_DEP_TABLE_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "dependencies",  # PEP 621, poetry, Cargo, [target.*.], [workspace.]
+        "dev-dependencies",  # poetry, Cargo, pdm
+        "build-dependencies",  # Cargo
+        "optional-dependencies",  # PEP 621
+        "dependency-groups",  # PEP 735
+    }
+)
+
+# `packages` means dependencies ONLY as a Pipfile's own top-level table. It is
+# the most overloaded key in pyproject.toml -- under `[tool.setuptools]` and
+# `[tool.mypy]` it names the project's OWN modules -- so matching it at any
+# depth would read a vendored `flask/` package directory as a Flask dependency,
+# which is the same false claim the per-manifest parsers exist to prevent.
+_ROOT_ONLY_DEP_TABLE_KEYS: Final[frozenset[str]] = frozenset({"packages", "dev-packages"})
+
+# Deep enough for `[tool.hatch.envs.default.dependencies]`, bounded so a
+# pathological document cannot drive unbounded recursion.
+_TOML_MAX_DEPTH: Final[int] = 8
+
+
 def _toml_dep_names(text: str) -> set[str]:
     """Dependency names from the dependency TABLES of a TOML manifest.
 
-    Covers PEP 621 `[project]`, poetry, Pipfile, and Cargo shapes in one pass,
-    because a repo's pyproject may use either Python convention and the Cargo
-    tables happen to share the mapping/sequence shape.
+    Walks for the table NAMES rather than for known paths, so PEP 621, PEP 735,
+    poetry groups, pdm, hatch environments, Pipfile, and Cargo's plain,
+    `[workspace.]` and `[target.'cfg(...)'.]` tables are all covered by one
+    rule -- and a tool that adopts the same conventional names later is covered
+    without an edit.
     """
     import tomllib
 
@@ -237,60 +265,79 @@ def _toml_dep_names(text: str) -> set[str]:
 
     out: set[str] = set()
 
-    def _absorb(block: object) -> None:
-        # A dependency table is either a sequence of requirement strings (PEP
-        # 621, Cargo's rare array form) or a mapping of name -> constraint
-        # (poetry, Pipfile, Cargo's usual form). Keys are names in the mapping
-        # form; values are constraints and must never be read as names.
+    def _absorb(block: object, depth: int) -> None:
+        # A dependency table is a sequence of requirement strings (PEP 621,
+        # Cargo's array form), a mapping of name -> constraint (poetry, Pipfile,
+        # Cargo's usual form), or a mapping of GROUP -> sequence (PEP 621
+        # optional-dependencies, PEP 735 dependency-groups). The three are told
+        # apart by shape: values that are all lists mean the keys are group
+        # labels, never package names.
+        if depth > _TOML_MAX_DEPTH:
+            return
         if isinstance(block, list):
             for item in block:
                 if isinstance(item, str) and (n := _dep_name(item)):
                     out.add(n)
         elif isinstance(block, dict):
+            if block and all(isinstance(v, list) for v in block.values()):
+                for group in block.values():
+                    _absorb(group, depth + 1)
+                return
             for key in block:
                 if n := _dep_name(key):
                     out.add(n)
 
-    project = doc.get("project")
-    if isinstance(project, dict):
-        _absorb(project.get("dependencies"))
-        optional = project.get("optional-dependencies")
-        if isinstance(optional, dict):
-            for group in optional.values():
-                _absorb(group)
+    def _walk(node: object, depth: int) -> None:
+        if depth > _TOML_MAX_DEPTH or not isinstance(node, dict):
+            return
+        for key, value in node.items():
+            if key in _DEP_TABLE_KEYS or (depth == 0 and key in _ROOT_ONLY_DEP_TABLE_KEYS):
+                _absorb(value, depth)
+            elif isinstance(value, dict):
+                _walk(value, depth + 1)
 
-    tool = doc.get("tool")
-    if isinstance(tool, dict):
-        poetry = tool.get("poetry")
-        if isinstance(poetry, dict):
-            _absorb(poetry.get("dependencies"))
-            _absorb(poetry.get("dev-dependencies"))
-            groups = poetry.get("group")
-            if isinstance(groups, dict):
-                for group in groups.values():
-                    if isinstance(group, dict):
-                        _absorb(group.get("dependencies"))
-
-    # Pipfile
-    _absorb(doc.get("packages"))
-    _absorb(doc.get("dev-packages"))
-
-    # Cargo.toml
-    _absorb(doc.get("dependencies"))
-    _absorb(doc.get("dev-dependencies"))
-    _absorb(doc.get("build-dependencies"))
-
+    _walk(doc, 0)
     return out
 
 
 _GEMFILE_RE: Final[re.Pattern[str]] = re.compile(r"""^\s*gem\s+['"]([^'"]+)['"]""", re.MULTILINE)
 _GO_REQUIRE_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\s*(?:require\s+)?([a-z0-9][a-z0-9._/-]*\.[a-z]{2,}/[^\s]+)\s+v", re.MULTILINE
+    r"^\s*(?:require\s+)?([a-z0-9][a-z0-9._/-]*\.[a-z]{2,}/[^\s]+)\s+v"
 )
 _POM_ARTIFACT_RE: Final[re.Pattern[str]] = re.compile(
     r"<(?:artifactId|groupId)>\s*([^<\s]+)\s*</(?:artifactId|groupId)>"
 )
 _GRADLE_COORD_RE: Final[re.Pattern[str]] = re.compile(r"""['"]([a-zA-Z0-9._-]+:[a-zA-Z0-9._-]+)""")
+
+_XML_COMMENT_RE: Final[re.Pattern[str]] = re.compile(r"<!--.*?-->", re.DOTALL)
+# An <exclusions> block names what the build must NOT pull in, so its
+# coordinates mean the opposite of a declaration.
+_POM_EXCLUSIONS_RE: Final[re.Pattern[str]] = re.compile(
+    r"<exclusions\b.*?</exclusions>", re.DOTALL | re.IGNORECASE
+)
+_GRADLE_BLOCK_COMMENT_RE: Final[re.Pattern[str]] = re.compile(r"/\*.*?\*/", re.DOTALL)
+_GRADLE_LINE_COMMENT_RE: Final[re.Pattern[str]] = re.compile(r"//[^\n]*")
+
+# PEP 503 treats `_`, `-` and `.` runs as equivalent. Applied to Python
+# manifests only: a Ruby gem (`activerecord_import`) and a Go module path carry
+# meaningful underscores, so normalizing everywhere would break those instead.
+_PY_MANIFESTS: Final[frozenset[str]] = frozenset({"requirements.txt", "pyproject.toml", "Pipfile"})
+
+# Matches `orchestrator._read_marker_text`'s cap. A manifest past this is not a
+# manifest, and reading it whole is how a hostile or generated file turns a
+# bounded scan into a MemoryError.
+_MANIFEST_MAX_BYTES: Final[int] = 50_000
+
+
+def _with_pep503(names: set[str]) -> set[str]:
+    """Both the written and the PEP 503-normalized spelling of each name.
+
+    Kept as BOTH rather than replaced, so a taxonomy hint spelling a package
+    either way still matches. `orchestrator._python_dep_names` normalizes for the
+    same reason; the two answer the same question about the same file and must
+    not disagree.
+    """
+    return names | {re.sub(r"[-_.]+", "-", n) for n in names}
 
 
 def _declared_deps(manifest: str, text: str) -> set[str]:
@@ -313,7 +360,8 @@ def _declared_deps(manifest: str, text: str) -> set[str]:
         return _json_dep_names(text, sections)
 
     if manifest in ("pyproject.toml", "Pipfile", "Cargo.toml"):
-        return _toml_dep_names(text)
+        found = _toml_dep_names(text)
+        return _with_pep503(found) if manifest in _PY_MANIFESTS else found
 
     if manifest == "requirements.txt":
         out: set[str] = set()
@@ -324,22 +372,55 @@ def _declared_deps(manifest: str, text: str) -> set[str]:
                 continue
             if n := _dep_name(line):
                 out.add(n)
-        return out
+        return _with_pep503(out)
 
     if manifest == "Gemfile":
         return {n for m in _GEMFILE_RE.finditer(text) if (n := m.group(1).casefold())}
 
     if manifest == "go.mod":
-        return {n for m in _GO_REQUIRE_RE.finditer(text) if (n := m.group(1).casefold())}
+        # Per line, because `// indirect` marks a TRANSITIVE dependency: a CLI
+        # that merely pulls a web framework in through something else must not
+        # be classified as using it, and real go.mod files are mostly such
+        # lines.
+        #
+        # `exclude`/`retract`/`replace` must be tracked as BLOCKS, not matched
+        # per line: their parenthesized bodies are indented, so the directive
+        # keyword never appears on the line carrying the module path, and an
+        # explicitly EXCLUDED module would otherwise score as a dependency.
+        out = set()
+        skipping_block = False
+        for line in text.splitlines():
+            stripped = line.strip()
+            if skipping_block:
+                if stripped.startswith(")"):
+                    skipping_block = False
+                continue
+            if stripped.startswith(("replace", "exclude", "retract")):
+                # `exclude (` opens a block; `exclude one/module v1` is one line.
+                skipping_block = stripped.endswith("(")
+                continue
+            if stripped.startswith("//") or "// indirect" in line:
+                continue
+            m = _GO_REQUIRE_RE.match(line)
+            if m:
+                out.add(m.group(1).casefold())
+        return out
 
     if manifest == "pom.xml":
-        return {n for m in _POM_ARTIFACT_RE.finditer(text) if (n := m.group(1).casefold())}
+        # A commented-out coordinate is the record of a dependency REMOVED, and
+        # an <exclusions> block names what must not be pulled in; both read as
+        # declarations to a bare element match.
+        body = _POM_EXCLUSIONS_RE.sub(" ", _XML_COMMENT_RE.sub(" ", text))
+        return {n for m in _POM_ARTIFACT_RE.finditer(body) if (n := m.group(1).casefold())}
 
     if manifest in ("build.gradle", "build.gradle.kts"):
         # Gradle coordinates are `group:artifact:version`; both halves of the
-        # leading pair are worth recording, since profiles name either.
+        # leading pair are worth recording, since profiles name either. Comments
+        # go first: a commented-out `implementation "g:a:v"` is the commonest way
+        # a removed dependency lingers in a build file.
+        body = _GRADLE_LINE_COMMENT_RE.sub(" ", _GRADLE_BLOCK_COMMENT_RE.sub(" ", text))
         out = set()
-        for m in _GRADLE_COORD_RE.finditer(text):
+        for m in _GRADLE_COORD_RE.finditer(body):
             group, _, artifact = m.group(1).partition(":")
             out.add(group.casefold())
             if artifact:
@@ -373,10 +454,24 @@ def _manifest_dep_names(root: Path, max_dirs: int) -> frozenset[str]:
             try:
                 if not path.is_file():
                     continue
-                text = path.read_text(encoding="utf-8", errors="replace")
+                # Capped like `orchestrator._read_marker_text`, its sibling for
+                # exactly this job: a manifest is a small declarative file, and
+                # an unbounded read of a multi-gigabyte or device file raises
+                # MemoryError, which is not an OSError and escapes every guard
+                # between here and the caller.
+                with path.open("r", encoding="utf-8", errors="replace") as fh:
+                    text = fh.read(_MANIFEST_MAX_BYTES)
             except OSError:
                 continue
-            names |= _declared_deps(manifest, text)
+            try:
+                names |= _declared_deps(manifest, text)
+            except Exception:
+                # Parsing is best-effort per manifest. A deeply nested document
+                # raises RecursionError from json/tomllib, which is neither the
+                # ValueError the parsers catch nor an OSError, and this module's
+                # documented contract is that any failure yields no signal
+                # rather than propagating.
+                continue
     return frozenset(names)
 
 

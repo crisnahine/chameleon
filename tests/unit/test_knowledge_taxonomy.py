@@ -415,6 +415,96 @@ def test_prose_in_a_manifest_is_never_a_dependency():
         assert detect._declared_deps(manifest, text) == expected, manifest
 
 
+def test_a_removed_or_excluded_dependency_is_not_a_declaration():
+    """The build files carry their own negations, and each means the OPPOSITE of
+    a declaration: a commented-out coordinate records a dependency that was
+    dropped, `<exclusions>` names what must not be pulled in, go's `exclude` and
+    `retract` blocks the same, and `// indirect` marks a transitive. Reading any
+    of them as a dependency classifies a repo as a framework it removed.
+    """
+    # A pom that DROPPED Spring must not classify as Spring.
+    pom = (
+        "<project><dependencies>"
+        "<!-- dropped in v3: <groupId>org.springframework.boot</groupId>"
+        "<artifactId>spring-boot-starter-web</artifactId> -->"
+        "<dependency><groupId>junit</groupId><artifactId>junit</artifactId></dependency>"
+        "</dependencies></project>"
+    )
+    assert detect._declared_deps("pom.xml", pom) == {"junit"}
+
+    excluded = (
+        "<dependency><artifactId>real</artifactId><exclusions><exclusion>"
+        "<artifactId>spring-boot-starter-web</artifactId>"
+        "</exclusion></exclusions></dependency>"
+    )
+    assert detect._declared_deps("pom.xml", excluded) == {"real"}
+
+    # A commented-out Gradle coordinate is the commonest way a removed
+    # dependency lingers, in both comment forms.
+    gradle = (
+        "dependencies {\n"
+        "  // implementation 'org.springframework.boot:spring-boot-starter-web:3.2'\n"
+        "  /* implementation 'io.ktor:ktor-server-core:2.3' */\n"
+        "  implementation 'com.google.guava:guava:33.0-jre'\n"
+        "}\n"
+    )
+    assert detect._declared_deps("build.gradle", gradle) == {"com.google.guava", "guava"}
+
+    # go.mod: an excluded module, and a transitive one, are not dependencies.
+    # The block bodies are INDENTED, so the directive keyword never appears on
+    # the line carrying the module path -- a per-line prefix check misses it.
+    gomod = (
+        "module example.com/x\n\n"
+        "require (\n"
+        "\tgithub.com/labstack/echo/v4 v4.11.0\n"
+        "\tgithub.com/spf13/cobra v1.8.0 // indirect\n"
+        ")\n\n"
+        "exclude (\n\tgithub.com/gin-gonic/gin v1.9.1\n)\n"
+    )
+    assert detect._declared_deps("go.mod", gomod) == {"github.com/labstack/echo/v4"}
+
+
+def test_packages_means_dependencies_only_in_a_pipfile():
+    """`packages` is the most overloaded key in pyproject.toml: under
+    `[tool.setuptools]` and `[tool.mypy]` it names the project's OWN modules.
+    Matching it at any depth reads a vendored `flask/` directory as a Flask
+    dependency -- a false claim arriving through a structural read rather than a
+    scrape, which is subtler but no less wrong."""
+    own_modules = (
+        '[project]\nname = "myapp"\ndependencies = ["click>=8"]\n\n'
+        '[tool.setuptools]\npackages = ["flask", "myapp"]\n'
+    )
+    assert detect._declared_deps("pyproject.toml", own_modules) == {"click"}
+    # But a Pipfile's own top-level table still means dependencies.
+    assert detect._declared_deps("Pipfile", '[packages]\ndjango = "*"\n') == {"django"}
+
+
+def test_every_conventional_dependency_table_is_read():
+    """Reading only the well-known PATHS misses the next tool. These are the
+    shapes a paths-based reader dropped -- PEP 735, pdm, hatch environments, and
+    Cargo's workspace and target-specific tables -- each of which can be the ONLY
+    place a framework is declared."""
+    shapes = {
+        '[dependency-groups]\ndev = ["pytest>=8"]\n': {"pytest"},
+        '[tool.pdm.dev-dependencies]\nlint = ["ruff"]\n': {"ruff"},
+        '[tool.hatch.envs.default]\ndependencies = ["pytest"]\n': {"pytest"},
+        '[tool.poetry.group.dev.dependencies]\npytest = "^8"\n': {"pytest"},
+        '[project]\ndependencies = ["flask>=3"]\n'
+        '[project.optional-dependencies]\ndev = ["pytest"]\n': {"flask", "pytest"},
+    }
+    for text, expected in shapes.items():
+        assert detect._declared_deps("pyproject.toml", text) == expected, text
+
+    cargo = {
+        "[target.'cfg(unix)'.dependencies]\nnix = '0.27'\n": {"nix"},
+        '[workspace.dependencies]\naxum = "0.7"\n': {"axum"},
+        # The detailed form's VALUES are constraints, never names.
+        '[dependencies]\nserde = { version = "1", features = ["derive"] }\n': {"serde"},
+    }
+    for text, expected in cargo.items():
+        assert detect._declared_deps("Cargo.toml", text) == expected, text
+
+
 def test_a_dependency_name_must_end_where_a_name_legally_can():
     """A prefix match would read any token that merely STARTS with a framework's
     name as that framework, which is the same false claim one layer down: a

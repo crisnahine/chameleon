@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 
 from chameleon_mcp.bootstrap.orchestrator import _classify_framework
+from chameleon_mcp.knowledge.detect import score_frameworks
 
 # --- Python ---------------------------------------------------------------- #
 
@@ -119,11 +120,32 @@ def test_ruby_library_still_none(tmp_path):
 
 
 def test_rails_arm_refusal_is_not_overturned_by_the_fallback(tmp_path):
-    """The arms adjudicate their own names. A Gemfile naming rails in a comment
-    only -- no real dependency -- must stay None rather than have the fallback
-    re-assert 'rails' on the weaker, name-only evidence the detector sees."""
-    (tmp_path / "Gemfile").write_text("# we migrated off rails last year\ngem 'nokogiri'\n")
-    assert _classify_framework(tmp_path, "ruby") is None
+    """The arms adjudicate their own names, and this pins the Ruby half of that.
+
+    The fixture is built so rails ACTUALLY SCORES in the fallback -- Rails'
+    conventional layout is present, which is a strong_convention signal, and it
+    clears the report floor on its own. What is absent is the corroboration the
+    arm requires: no `gem 'rails'` line and no `config/application.rb`. So the
+    arm refuses, and the skip is what keeps the fallback from re-asserting the
+    name on the weaker, file-name-only evidence.
+
+    A fixture without the layout would pass with `adjudicated=frozenset()` too,
+    since rails would never score at all -- the assertion would hold for the
+    wrong reason and pin nothing.
+    """
+    (tmp_path / "Gemfile").write_text("gem 'nokogiri'\n")
+    for rel in ("app/models", "app/controllers", "app/views", "config", "db"):
+        (tmp_path / rel).mkdir(parents=True, exist_ok=True)
+    (tmp_path / "app" / "models" / "user.rb").write_text("class User; end\n")
+    (tmp_path / "app" / "controllers" / "users_controller.rb").write_text("class C; end\n")
+    (tmp_path / "config" / "routes.rb").write_text("Rails.application.routes.draw do\nend\n")
+    (tmp_path / "db" / "schema.rb").write_text("ActiveRecord::Schema.define do\nend\n")
+
+    # The premise: rails is a live candidate here, not an absent one.
+    scored = {row["framework"] for row in score_frameworks(tmp_path, "ruby")}
+    assert "rails" in scored, "fixture no longer makes rails score; the test would be vacuous"
+
+    assert _classify_framework(tmp_path, "ruby") != "rails"
 
 
 # --- TypeScript ------------------------------------------------------------ #
