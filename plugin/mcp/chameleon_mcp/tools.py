@@ -15192,18 +15192,27 @@ def scan_dependency_changes(repo: str, base_ref: str = "main") -> dict:
     data = {
         "status": "ok",
         "base_ref": base_ref,
+        # Membership OR the pattern arms: `requirements-dev.txt` and
+        # `requirements/base.txt` are matched by shape rather than by basename,
+        # so a plain set test left them in NEITHER this list nor
+        # `uncovered_manifests` -- the consumer saw no evidence a Python
+        # manifest had changed at all unless a finding happened to fire.
         "manifests_changed": [
-            p for p in changed if p.rsplit("/", 1)[-1] in dep_diff.MANIFEST_LOCKFILE_BASENAMES
+            p
+            for p in changed
+            if p.rsplit("/", 1)[-1] in dep_diff.MANIFEST_LOCKFILE_BASENAMES
+            or dep_diff.is_parsed_manifest(p)
         ],
         "findings": serialized,
         "summary": summary,
         "advisory": True,
     }
-    # A changed dependency manifest of an ecosystem this scanner does not parse
-    # (Python requirements/pyproject/Pipfile, go.mod, Cargo, composer) is NOT
-    # reviewed by the checks above. Surface it so the consumer reads "not
-    # covered, hand-review" instead of an empty findings list that looks clean --
-    # the honesty contract this scanner's own docstring promises.
+    # A changed dependency file this scanner does not parse -- `setup.py`
+    # (arbitrary code) and the foreign lockfiles, which carry no resolved-host
+    # keyword to key on -- is NOT reviewed by the checks above. Surface it so
+    # the consumer reads "not covered, hand-review" instead of an empty findings
+    # list that looks clean -- the honesty contract this scanner's own docstring
+    # promises.
     uncovered = [p for p in changed if dep_diff.is_uncovered_manifest(p)]
     if uncovered:
         data["uncovered_manifests"] = uncovered

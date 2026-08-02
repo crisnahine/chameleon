@@ -149,7 +149,32 @@ def _is_requirements_manifest(path: str) -> bool:
     base = path.rsplit("/", 1)[-1]
     if not base.endswith(".txt"):
         return False
-    return base.startswith("requirements") or "/requirements/" in f"/{path}"
+    if base.startswith("requirements"):
+        return True
+    # A `requirements/` DIRECTORY holds pip files, but only as the repo's own
+    # top-level one. The unbounded form matched `docs/requirements/notes.txt`
+    # and `spec/requirements/acceptance.txt`, where prose parsed as pip
+    # FABRICATES dependencies -- "Latency, throughput, and cost are the
+    # metrics." reported `latency` as a new dependency, and a bare URL as a
+    # FIX-severity non-registry source. Nothing structural separates a docs
+    # `requirements/` from a pip one, so the root-only rule takes the safe
+    # side: `backend/requirements/base.txt` is missed (its siblings named
+    # `requirements*.txt` still parse), and no prose file is ever read as a
+    # manifest.
+    segments = path.split("/")
+    return len(segments) == 2 and segments[0] == "requirements"
+
+
+def is_parsed_manifest(path: str) -> bool:
+    """True iff this module has an arm that reads ``path``.
+
+    The complement of `is_uncovered_manifest` for the files this module knows
+    about, and the reason it exists separately: some manifests are matched by
+    SHAPE rather than by basename (`requirements-dev.txt`), so a caller testing
+    `MANIFEST_LOCKFILE_BASENAMES` membership alone would report them as neither
+    parsed nor uncovered -- an invisible third state.
+    """
+    return path.rsplit("/", 1)[-1] in MANIFEST_LOCKFILE_BASENAMES or _is_requirements_manifest(path)
 
 
 def is_uncovered_manifest(path: str) -> bool:
@@ -891,7 +916,13 @@ _COMPOSER_DEP_SECTIONS = frozenset({"require", "require-dev"})
 # is the same false claim `_toml_dep_names` excludes poetry's `python` to avoid.
 # Applied to the whole composer name set, so the whole-document reader and the
 # section reader cannot disagree about the same file.
-_COMPOSER_PLATFORM_RE = re.compile(r"^(?:php(?:-64bit)?|hhvm|composer(?:-\w+-api)?|(?:ext|lib)-)")
+# Anchored on purpose. Unanchored, `^php` swallowed every package whose VENDOR
+# starts with those letters -- phpunit/phpunit, phpstan/phpstan,
+# phpseclib/phpseclib, composer/installers -- so a typosquat of any of them was
+# invisible, and `detect._json_dep_names` and this reader disagreed about the
+# same file. A platform requirement never contains a `/`, which is the other
+# half of the discriminator.
+_COMPOSER_PLATFORM_RE = re.compile(r"^(?:(?:php|hhvm|composer)(?:-[\w-]+)?|(?:ext|lib)-[\w-]+)$")
 
 
 def _composer_side_names(diff_text: str, marker: str) -> set[str]:
@@ -1048,8 +1079,46 @@ _COMPOSER_ARTIFACT_REPO_RE = re.compile(r'"type"\s*:\s*"(artifact|package)"')
 _POM_REPOSITORY_RE = re.compile(r"^\s*<(repository|pluginRepository)>")
 _POM_SYSTEM_PATH_RE = re.compile(r"<systemPath>\s*([^<]+)")
 _GRADLE_REPO_URL_RE = re.compile(
+    # A `url` that is release METADATA rather than a repository is excluded by
+    # the negative lookbehind on its block. `publishing { pom { url / licenses
+    # { license { url } } / scm { url } / developers } }` is standard in any
+    # library build file, and three FIX-severity "non-default package
+    # repository" findings on a routine release-metadata edit is the kind of
+    # false positive that teaches a reviewer to ignore the whole check.
     r"""\burl\s*[=(]?\s*(?:uri\s*\(\s*)?["']((?:https?|file)://[^"']+)["']"""
 )
+
+# Block openers whose `url` entries describe the project, not a repository.
+_GRADLE_METADATA_BLOCK_RE = re.compile(
+    r"\b(?:publishing|pom|licenses?|scm|developers?|issueManagement)\b\s*\{"
+)
+
+
+def _gradle_metadata_lines(diff_text: str) -> set[int]:
+    """Line indices sitting inside a publishing/pom metadata block.
+
+    Brace-depth tracked from the opener. When the opener is outside the diff's
+    context window the block is invisible and the line is NOT excluded -- the
+    check stays as loud as it was rather than guessing a suppression.
+    """
+    inside: set[int] = set()
+    depth = 0
+    for index, raw in enumerate(diff_text.splitlines()):
+        body = raw[1:] if raw[:1] in "+- " else raw
+        if depth > 0:
+            inside.add(index)
+            depth += body.count("{") - body.count("}")
+            if depth <= 0:
+                depth = 0
+            continue
+        if _GRADLE_METADATA_BLOCK_RE.search(body):
+            inside.add(index)
+            depth = 1 + body.count("{") - body.count("}") - 1
+            if depth < 0:
+                depth = 0
+    return inside
+
+
 _GRADLE_FLATDIR_RE = re.compile(r"\b(flatDir)\b")
 _GRADLE_FILE_DEP_RE = re.compile(
     r"\b(?:implementation|api|compile|compileOnly|compileClasspath|runtimeOnly"
@@ -1304,7 +1373,16 @@ def _scan_new_dependencies_generic(path: str, arm: _Arm, diff_text: str) -> list
         matched.sort(key=lambda n: (line.find(n) if n in line else len(line), n))
         if not matched:
             continue
-        groups = [":".join(matched)] if arm.coordinate_line and len(matched) > 1 else matched
+        # Pair the halves, never join the whole list: one Gradle line can carry
+        # two coordinates (`implementation("a:b"); testImplementation("c:d")`),
+        # and joining all four halves reported the non-existent `a:b:c` while
+        # losing `c:d` entirely.
+        if arm.coordinate_line and len(matched) > 1:
+            groups = [":".join(pair) for pair in zip(matched[0::2], matched[1::2], strict=False)]
+            if len(matched) % 2:
+                groups.append(matched[-1])
+        else:
+            groups = matched
         seen.update(matched)
         for name in groups:
             out.append(
@@ -1324,8 +1402,17 @@ def _scan_nonregistry_source_generic(path: str, arm: _Arm, diff_text: str) -> li
     """2.5d: an added line declaring a dependency source outside the registry (FIX)."""
     out: list[DepFinding] = []
     seen: set[tuple[str, str]] = set()
-    for raw in diff_text.splitlines():
+    # Gradle release metadata carries `url` entries that describe the project
+    # rather than a repository; they are located once per diff, not per line.
+    metadata_lines = (
+        _gradle_metadata_lines(diff_text)
+        if arm.manifest in ("build.gradle", "build.gradle.kts")
+        else frozenset()
+    )
+    for index, raw in enumerate(diff_text.splitlines()):
         if not raw.startswith("+") or raw.startswith("+++"):
+            continue
+        if index in metadata_lines:
             continue
         line = raw[1:]
         body = _line_body(arm.manifest, line)

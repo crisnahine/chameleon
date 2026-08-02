@@ -250,7 +250,7 @@ For new files (not modifications), list sibling files in the same directory. Che
 
 ### Step 2.5: Dependency-change review (always, for manifest/lockfile diffs)
 
-**Trigger:** the diff touches a dependency manifest or lockfile of ANY ecosystem — the npm/Bundler set the tool parses (`package.json`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`, `Gemfile`, `Gemfile.lock`) or one it does not (Python `requirements*.txt` / `pyproject.toml` / `Pipfile` / `setup.py`, Go, Rust, PHP). When no such file is in the diff, skip this step (`skipped — no manifest in diff` in the pass execution manifest).
+**Trigger:** the diff touches a dependency manifest or lockfile of ANY ecosystem — the set the tool parses (npm/Bundler plus Python `requirements*.txt` / `pyproject.toml` / `Pipfile` / `setup.cfg`, Go `go.mod`, Rust `Cargo.toml`, PHP `composer.json`, and Java `pom.xml` / `build.gradle`) or one it does not (`setup.py`, and the foreign lockfiles `poetry.lock` / `Pipfile.lock` / `go.sum` / `Cargo.lock` / `composer.lock`). When no such file is in the diff, skip this step (`skipped — no manifest in diff` in the pass execution manifest).
 
 This step calls `scan_dependency_changes` once for the whole diff (a pure diff parse: no network, no install), routes its deterministic findings, hand-reviews the ecosystems the scanner does not parse at the same severities, and runs the checks 2.5a (new-dependency ACK), 2.5b (non-registry resolved host), 2.5c (install lifecycle script), 2.5d (non-registry source), and 2.5e (minified manifest).
 

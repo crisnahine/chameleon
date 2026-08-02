@@ -685,7 +685,16 @@ def test_collect_fetches_the_new_manifests_including_variable_requirements_names
     collect_dependency_findings(
         [
             "requirements-dev.txt",
+            # A `requirements/` DIRECTORY is honored only at the repo root.
+            # Nothing structural separates `docs/requirements/` from a pip one,
+            # and parsing prose as pip FABRICATED dependencies -- "Latency,
+            # throughput, and cost are the metrics." reported `latency` as new
+            # and a bare URL as a FIX-severity non-registry source. Missing this
+            # nested layout is the safe side of that trade; a file named
+            # `requirements*.txt` still parses at any depth.
             "backend/requirements/base.txt",
+            "requirements/base.txt",
+            "docs/requirements/notes.txt",
             "pyproject.toml",
             "go.mod",
             "Cargo.toml",
@@ -700,13 +709,13 @@ def test_collect_fetches_the_new_manifests_including_variable_requirements_names
     assert "src/app.py" not in fetched and "README.md" not in fetched
     assert sorted(fetched) == [
         "Cargo.toml",
-        "backend/requirements/base.txt",
         "build.gradle.kts",
         "composer.json",
         "go.mod",
         "pom.xml",
         "pyproject.toml",
         "requirements-dev.txt",
+        "requirements/base.txt",
     ]
 
 
