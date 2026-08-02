@@ -1,0 +1,15 @@
+# HTML.
+
+name = "html"
+extensions = [".html", ".htm"]
+
+skip_subtree_nodes = ["comment"]
+
+[top_level_kinds]
+element = "Element"
+script_element = "ScriptElement"
+style_element = "StyleElement"
+doctype = "Doctype"
+comment = ""
+
+[flags]

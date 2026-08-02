@@ -1,0 +1,39 @@
+# Lua.
+
+name = "lua"
+extensions = [".lua"]
+
+function_nodes = ["function_declaration", "function_definition"]
+branch_nodes = ["if_statement", "elseif_statement", "for_statement", "while_statement", "repeat_statement"]
+nesting_nodes = ["if_statement", "for_statement", "while_statement", "repeat_statement", "do_statement"]
+skip_subtree_nodes = ["comment", "string_content"]
+
+[top_level_kinds]
+function_declaration = "FunctionDeclaration"
+assignment_statement = "AssignmentStatement"
+variable_declaration = "VariableDeclaration"
+function_call = "FunctionCall"
+if_statement = "IfStatement"
+for_statement = "ForStatement"
+while_statement = "WhileStatement"
+return_statement = "ReturnStatement"
+comment = ""
+
+[params]
+positional = ["identifier"]
+rest = ["vararg_expression"]
+
+[fields]
+name = "name"
+parameters = "parameters"
+body = "body"
+call_function = "name"
+member_object = "table"
+member_property = ["field", "method"]
+
+[calls]
+nodes = ["function_call"]
+member_nodes = ["dot_index_expression", "method_index_expression"]
+self_names = ["self"]
+
+[flags]

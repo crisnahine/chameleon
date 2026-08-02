@@ -1,0 +1,143 @@
+# Python.
+#
+# The reference spec: it is the language the differential harness checks against
+# chameleon's own libcst dumper, so the kind vocabulary below is libcst's, not
+# tree-sitter's. `function_definition` emits "FunctionDef" because that is what
+# every downstream consumer already reads.
+
+name = "python"
+extensions = [".py", ".pyi"]
+
+function_nodes = ["function_definition"]
+class_nodes = ["class_definition"]
+branch_nodes = [
+  "if_statement",
+  "elif_clause",
+  "while_statement",
+  "for_statement",
+  "except_clause",
+  "conditional_expression",
+  "case_clause",
+]
+nesting_nodes = [
+  "if_statement",
+  "while_statement",
+  "for_statement",
+  "with_statement",
+  "try_statement",
+  "match_statement",
+]
+chained_nesting_nodes = ["elif_clause"]
+
+skip_subtree_nodes = ["comment", "string_content"]
+
+[top_level_kinds]
+function_definition = "FunctionDef"
+decorated_definition = "FunctionDef"
+class_definition = "ClassDef"
+import_statement = "Import"
+import_from_statement = "ImportFrom"
+future_import_statement = "ImportFrom"
+expression_statement = "Expr"
+type_alias_statement = "TypeAlias"
+if_statement = "If"
+for_statement = "For"
+while_statement = "While"
+try_statement = "Try"
+with_statement = "With"
+match_statement = "Match"
+return_statement = "Return"
+raise_statement = "Raise"
+assert_statement = "Assert"
+delete_statement = "Del"
+global_statement = "Global"
+nonlocal_statement = "Nonlocal"
+pass_statement = "Pass"
+break_statement = "Break"
+continue_statement = "Continue"
+comment = ""
+
+# A bare `expression_statement` is only "Expr" when it really is an expression.
+# Assignment lives inside it in this grammar, and the consumers distinguish
+# Assign / AugAssign / AnnAssign from Expr.
+
+[top_level_refine.expression_statement]
+assignment = "Assign"
+augmented_assignment = "AugAssign"
+
+# `x: int = 1` is an AnnAssign, not an Assign. The grammar expresses the
+# difference as a `type` field on the same `assignment` node, so the refinement
+# keys on field presence rather than node kind.
+[top_level_refine_field.assignment]
+type = "AnnAssign"
+
+# Chameleon counts a comprehension's `if` and a ternary as branches but not a
+# `with`; nesting is the inverse for `try`/`with`. Matching that split is what
+# keeps body-shape norms comparable across the two engines.
+
+# Never descended into. `string_content` matters more than it looks: without it
+# a docstring mentioning `foo()` becomes a recorded call edge.
+
+[params]
+positional = ["identifier"]
+wrapper = ["typed_parameter"]
+optional = ["default_parameter", "typed_default_parameter"]
+rest = ["list_splat_pattern"]
+keyword_rest = ["dictionary_splat_pattern"]
+separator = ["keyword_separator"]
+
+[fields]
+name = "name"
+parameters = "parameters"
+body = "body"
+return_type = "return_type"
+superclass = "superclasses"
+call_function = "function"
+member_object = "object"
+member_property = "attribute"
+param_type = "type"
+
+[calls]
+nodes = ["call"]
+member_nodes = ["attribute"]
+self_names = ["self", "cls"]
+
+[imports]
+module_nodes = ["import_statement"]
+from_nodes = ["import_from_statement", "future_import_statement"]
+module_field = "module_name"
+alias_nodes = ["aliased_import"]
+wildcard_nodes = ["wildcard_import"]
+
+[imports.implicit_module]
+future_import_statement = "__future__"
+
+[flags]
+sole_definition_default_export = true
+has_default_export = false
+supports_jsx = false
+async_markers = ["async"]
+decorator_nodes = ["decorator"]
+# Python's grammar wraps small statements one level deeper than the meaningful
+# node; unwrapping is what makes top-level kinds match libcst's.
+unwrap_nodes = ["decorated_definition"]
+# Python has no export keyword: every name bound at module level is importable,
+# including assignment targets and names bound inside a top-level try/except
+# import fallback or an `if TYPE_CHECKING` gate.
+# An imported name really IS a module attribute in Python.
+imports_are_exports = true
+export_assignment_nodes = ["assignment"]
+export_descend_nodes = [
+  "expression_statement",
+  "if_statement",
+  "elif_clause",
+  "else_clause",
+  "try_statement",
+  "except_clause",
+  "finally_clause",
+  "for_statement",
+  "while_statement",
+  "with_statement",
+  "block",
+]
+package_index_names = ["__init__.py", "__init__.pyi"]

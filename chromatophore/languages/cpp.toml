@@ -1,0 +1,55 @@
+# C++.
+
+name = "cpp"
+extensions = [".cpp", ".cc", ".cxx", ".hpp", ".hh"]
+
+function_nodes = ["function_definition", "lambda_expression"]
+class_nodes = ["class_specifier", "struct_specifier", "enum_specifier"]
+branch_nodes = ["if_statement", "for_statement", "for_range_loop", "while_statement", "do_statement", "case_statement", "catch_clause", "conditional_expression"]
+nesting_nodes = ["if_statement", "for_statement", "for_range_loop", "while_statement", "do_statement", "switch_statement", "try_statement"]
+skip_subtree_nodes = ["comment", "string_content"]
+
+[top_level_kinds]
+function_definition = "FunctionDefinition"
+declaration = "Declaration"
+class_specifier = "ClassSpecifier"
+struct_specifier = "StructSpecifier"
+enum_specifier = "EnumSpecifier"
+namespace_definition = "NamespaceDefinition"
+template_declaration = "TemplateDeclaration"
+type_definition = "TypeDefinition"
+preproc_include = "PreprocInclude"
+using_declaration = "UsingDeclaration"
+comment = ""
+
+[params]
+positional = ["parameter_declaration"]
+optional = ["optional_parameter_declaration"]
+
+[fields]
+name = "declarator"
+class_name = "name"
+declarator_unwrap = ["function_declarator", "pointer_declarator", "reference_declarator"]
+parameters = "parameters"
+body = "body"
+call_function = "function"
+member_object = "argument"
+member_property = "field"
+param_type = "type"
+
+[child_kinds]
+superclass = "base_class_clause"
+
+[calls]
+nodes = ["call_expression"]
+member_nodes = ["field_expression"]
+constructor_nodes = ["new_expression"]
+self_names = ["this"]
+
+[imports]
+module_nodes = ["preproc_include"]
+module_field = "path"
+
+[flags]
+# An access specifier is not a base class.
+heritage_skip_nodes = ["access_specifier"]

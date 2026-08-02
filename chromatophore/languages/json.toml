@@ -1,0 +1,13 @@
+# JSON. No callables, no imports. It earns a spec because manifests and
+# lockfiles are dependency-policy evidence, and a rule needs a parsed tree.
+
+name = "json"
+extensions = [".json"]
+
+skip_subtree_nodes = ["comment"]
+
+[top_level_kinds]
+object = "Object"
+array = "Array"
+
+[flags]

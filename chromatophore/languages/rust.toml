@@ -1,0 +1,54 @@
+# Rust.
+
+name = "rust"
+extensions = [".rs"]
+
+function_nodes = ["function_item"]
+class_nodes = ["struct_item", "enum_item", "trait_item", "impl_item"]
+branch_nodes = ["if_expression", "match_arm", "while_expression", "for_expression", "loop_expression"]
+nesting_nodes = ["if_expression", "match_expression", "while_expression", "for_expression", "loop_expression"]
+skip_subtree_nodes = ["line_comment", "block_comment", "string_content"]
+
+[top_level_kinds]
+function_item = "Fn"
+struct_item = "Struct"
+enum_item = "Enum"
+trait_item = "Trait"
+impl_item = "Impl"
+mod_item = "Mod"
+use_declaration = "Use"
+const_item = "Const"
+static_item = "Static"
+type_item = "TypeAlias"
+macro_definition = "MacroDef"
+line_comment = ""
+block_comment = ""
+
+[params]
+positional = ["parameter", "self_parameter"]
+
+[fields]
+name = "name"
+parameters = "parameters"
+body = "body"
+return_type = "return_type"
+call_function = "function"
+member_object = "value"
+member_property = "field"
+param_type = "type"
+
+[calls]
+nodes = ["call_expression", "macro_invocation"]
+member_nodes = ["field_expression"]
+self_names = ["self"]
+
+[imports]
+module_nodes = ["use_declaration"]
+# `use a::b::{C, D}` nests its list; the local name is the LAST segment.
+descend_nodes = ["scoped_use_list", "use_list"]
+alias_nodes = ["use_as_clause"]
+alias_segment = "last"
+
+[flags]
+async_markers = ["async"]
+decorator_nodes = ["attribute_item"]

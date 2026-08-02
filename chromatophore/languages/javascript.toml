@@ -1,0 +1,113 @@
+# JavaScript. Same consumer vocabulary as TypeScript, minus the type nodes.
+
+name = "javascript"
+extensions = [".js", ".jsx", ".mjs", ".cjs"]
+
+function_nodes = ["function_declaration", "generator_function_declaration", "function_expression", "arrow_function", "method_definition"]
+class_nodes = ["class_declaration", "class"]
+branch_nodes = ["if_statement", "for_statement", "for_in_statement", "while_statement", "do_statement", "switch_case", "catch_clause", "ternary_expression"]
+nesting_nodes = ["if_statement", "for_statement", "for_in_statement", "while_statement", "do_statement", "switch_statement", "try_statement"]
+skip_subtree_nodes = ["comment", "string_fragment", "import_attribute"]
+
+[top_level_kinds]
+function_declaration = "FunctionDeclaration"
+generator_function_declaration = "FunctionDeclaration"
+function_expression = "FunctionDeclaration"
+generator_function = "FunctionDeclaration"
+class = "ClassDeclaration"
+class_declaration = "ClassDeclaration"
+import_statement = "ImportDeclaration"
+export_statement = "ExportDeclaration"
+# `ts.SyntaxKind[k]` reverse-lookups to the FIRST alias sharing the numeric
+# value, and VariableStatement shares its value with FirstStatement -- so the
+# vocabulary downstream reads is literally "FirstStatement".
+lexical_declaration = "FirstStatement"
+variable_declaration = "FirstStatement"
+expression_statement = "ExpressionStatement"
+if_statement = "IfStatement"
+for_statement = "ForStatement"
+while_statement = "WhileStatement"
+try_statement = "TryStatement"
+return_statement = "ReturnStatement"
+comment = ""
+
+[params]
+positional = ["identifier"]
+rest = ["rest_pattern"]
+destructured = ["object_pattern", "array_pattern"]
+
+[fields]
+name = "name"
+parameters = "parameters"
+body = "body"
+declaration = "declaration"
+call_function = "function"
+member_object = "object"
+member_property = "property"
+
+[child_kinds]
+# No TS/JS class node has a `superclass` FIELD: the bases hang off a
+# `class_heritage` child. Reading the field left every class in the corpus with
+# `extends: null` and `bases: []` -- a positive claim of no base class.
+superclass = "class_heritage"
+
+[default_export_kinds]
+identifier = "Identifier"
+class = "ClassDeclaration"
+function_expression = "FunctionDeclaration"
+arrow_function = "ArrowFunction"
+call_expression = "CallExpression"
+object = "ObjectLiteralExpression"
+array = "ArrayLiteralExpression"
+new_expression = "NewExpression"
+
+[calls]
+nodes = ["call_expression"]
+member_nodes = ["member_expression"]
+constructor_nodes = ["new_expression"]
+self_names = ["this"]
+super_nodes = ["super"]
+
+[imports]
+module_nodes = ["import_statement"]
+from_nodes = ["import_statement"]
+module_field = "source"
+alias_nodes = ["import_specifier"]
+# `import Button from "m"` binds the module default, not a named export.
+default_binding_nodes = ["identifier"]
+star_export_alias_nodes = ["namespace_export"]
+# `import * as x` binds a local; it does NOT open this file's export set.
+wildcard_nodes = []
+descend_nodes = ["import_clause", "named_imports"]
+star_export_nodes = ["export_statement"]
+export_clause_nodes = ["export_clause"]
+
+# `export default <expression>` is an ExportAssignment to the reference, not an
+# ExportDeclaration; a declaration form unwraps before this table is consulted.
+[top_level_refine.export_statement]
+identifier = "ExportAssignment"
+arrow_function = "ExportAssignment"
+function_expression = "ExportAssignment"
+call_expression = "ExportAssignment"
+object = "ExportAssignment"
+array = "ExportAssignment"
+new_expression = "ExportAssignment"
+member_expression = "ExportAssignment"
+
+[emit]
+# The reference emits `implements` and neither `bases` nor `class_attrs`.
+class_bases = false
+class_implements = true
+class_attrs = false
+signature_is_async = false
+signature_decorators = "when_present"
+
+[flags]
+name_from_declarator = true
+self_kind = "this"
+has_default_export = true
+explicit_exports = true
+supports_jsx = true
+async_markers = ["async"]
+unwrap_nodes = ["export_statement"]
+heritage_trailing_identifier = true

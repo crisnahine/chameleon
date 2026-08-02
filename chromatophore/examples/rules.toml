@@ -1,0 +1,115 @@
+# Example rules, in the universal schema.
+#
+# Each one is a worked example of a different `kind` and a different matcher, so
+# the file doubles as the schema's documentation. Real rules are mined from a
+# repo rather than written by hand -- `good_example` and `counterexample` are
+# meant to be lifted from the repo's own canonical witness and its own
+# highest-visibility violation, which is why they are strings and not prose.
+
+[[rule]]
+id = "py.logging.no-print-in-lib"
+kind = "convention"
+languages = ["python"]
+archetypes = ["*"]
+severity = "warn"
+mode = "enforce"
+message = "print() in library code -- use the project logger"
+rationale = """
+Library modules route output through a logger so it carries levels and
+correlation ids. print() bypasses both and is invisible in production."""
+calibrated_confidence = 0.97
+source = "derived"
+drift = "stable"
+
+[rule.match]
+engine = "tree-sitter-query"
+rule = '(call function: (identifier) @violation (#eq? @violation "print"))'
+
+[rule.match.paths]
+exclude = ["**/tests/**", "scripts/**", "**/conftest.py"]
+
+# ---------------------------------------------------------------------------
+
+[[rule]]
+id = "py.errors.no-bare-except"
+kind = "anti-pattern"
+languages = ["python"]
+archetypes = ["*"]
+severity = "error"
+mode = "shadow"
+message = "bare `except:` swallows KeyboardInterrupt and SystemExit"
+rationale = """
+A bare except catches BaseException, so it silently eats the two exceptions a
+process must never ignore. Name the exception you actually expect."""
+calibrated_confidence = 0.99
+source = "derived"
+
+[rule.match]
+engine = "tree-sitter-query"
+# `(except_clause)` alone matches every except clause, bare or not, and this
+# grammar puts no field on the exception type, so there is nothing to negate
+# structurally. A `#match?` on the clause text is the honest way to say it:
+# a bare clause is `except` followed immediately by the colon.
+rule = '((except_clause) @violation (#match? @violation "^except[ \t]*:"))'
+
+[rule.match.paths]
+exclude = ["**/tests/**"]
+
+# ---------------------------------------------------------------------------
+
+[[rule]]
+id = "rust.errors.no-unwrap"
+kind = "anti-pattern"
+languages = ["rust"]
+archetypes = ["*"]
+severity = "error"
+mode = "shadow"
+message = ".unwrap() panics -- propagate with `?` or .expect(\"invariant\")"
+rationale = """
+Handler and library code must not panic on bad input. Panics are for tests and
+startup, where the process dying is the correct outcome."""
+calibrated_confidence = 0.91
+source = "derived"
+
+[rule.match]
+engine = "tree-sitter-query"
+rule = '''
+(call_expression
+  function: (field_expression
+    field: (field_identifier) @m
+    (#eq? @m "unwrap"))) @violation
+'''
+
+[rule.match.paths]
+exclude = ["**/tests/**", "**/benches/**", "examples/**"]
+
+# ---------------------------------------------------------------------------
+
+# A dependency policy. This is the shape a mined "prefer the wrapper" rule
+# takes: it is `taught` because a human ratified the direction, and the mining
+# pass then confirmed the repo agrees.
+[[rule]]
+id = "ts.deps.use-http-wrapper"
+kind = "dependency-policy"
+languages = ["typescript", "tsx", "javascript"]
+archetypes = ["*"]
+severity = "error"
+# Shadow, not enforce: `literal` is a bare substring, so this fires on a comment
+# that merely names the package and cannot tell `'axios'` from `"axios"`. A
+# dependency policy wants a real matcher; this one logs what it WOULD block.
+mode = "shadow"
+message = "import the http client from '@/lib/http' -- never axios directly"
+rationale = """
+The wrapper adds auth refresh, retry, tracing, and error normalization. Direct
+axios calls skip all four."""
+good_example = "import { http } from '@/lib/http';"
+counterexample = "src/legacy/report.ts:3 -- import axios from 'axios'"
+calibrated_confidence = 0.95
+source = "taught"
+
+[rule.match]
+engine = "literal"
+rule = "axios"
+
+[rule.match.paths]
+exclude = ["src/lib/http.ts", "**/*.test.ts", "**/*.spec.ts"]
