@@ -208,11 +208,16 @@ def _blank_string_literals(content: str, file_path: str | None, language: str | 
             _blank_python_strings,
             _blank_ruby_heredocs,
             _blank_ruby_percent_literals,
-            detect_language,
         )
 
         if language is None and file_path:
-            language = detect_language(file_path)
+            # The SECURITY language: this helper now has to serve the five
+            # extraction-tier languages, and the narrow answer is None for all
+            # of them -- which is what dropped them into the flat fallback and
+            # let an apostrophe in a comment eat their inline escape.
+            from chameleon_mcp.lint_engine import security_language
+
+            language = security_language(file_path)
         if language == "ruby":
             out = _blank_ruby_heredocs(content)
             out = _RUBY_STRING_DQ.sub(_blank_match_to_spaces, out)
@@ -227,11 +232,24 @@ def _blank_string_literals(content: str, file_path: str | None, language: str | 
             return _blank_python_strings(content)
         if language == "typescript":
             return _blank_ts_string_literals(content)
-        # An unknown language only shares the quote/backtick SHAPES, not the
-        # grammar, so it keeps the flat pairing: the brace-aware scanner would
-        # read an unbalanced backtick in prose (markdown, a plain-text config)
-        # as an unterminated template and blank the rest of the file. Nothing
-        # archetype-independent hard-blocks on such a file anyway --
+        # The five extraction-tier languages get their OWN string forms. They
+        # used to fall through to the flat pairing below, and that stopped being
+        # harmless the moment they became block-eligible: the flat pattern pairs
+        # apostrophes across lines, so an ordinary Rust comment ("Doesn't
+        # validate input") pairs its apostrophe with the `'` of a `<'a>`
+        # lifetime and blanks everything between -- including a
+        # `// chameleon-ignore eval-call` line. The block then has no inline
+        # escape at all, which is the one thing an escape hatch may never do.
+        from chameleon_mcp.lint_engine import blank_c_family_string_literals
+
+        c_family = blank_c_family_string_literals(content, language or "")
+        if c_family is not None:
+            return c_family
+        # A genuinely unknown language only shares the quote/backtick SHAPES,
+        # not the grammar, so it keeps the flat pairing: the brace-aware scanner
+        # would read an unbalanced backtick in prose (markdown, a plain-text
+        # config) as an unterminated template and blank the rest of the file.
+        # Nothing archetype-independent hard-blocks on such a file --
         # block_eligible_on_file drops those rules when the language is None.
         return _TS_STRING.sub(_blank_match_to_spaces, content)
     except Exception:
@@ -570,7 +588,10 @@ def block_eligible_on_file(hard: list[dict], *, language: str | None) -> list[di
     ``chameleon-ignore`` directive, so the block has no escape. They stay in the
     advisory violation list; only the BLOCK set drops them here. On a recognized
     code language the set is returned unchanged. Pass the file's
-    ``detect_language()`` result; a code string keeps the rules, None drops the
+    ``security_language()`` result -- NOT ``detect_language()``, which answers a
+    narrower question (does this language have a dimension extractor) and would
+    hand None for every extraction-tier source file, silently exempting it from
+    the credential and eval blocks. A code string keeps the rules, None drops the
     archetype-independent ones. Archetype-dependent rules are untouched (only the
     archetype-independent ones are dropped). A non-code file CAN still resolve to
     an archetype via a legacy extension-blind ``paths_pattern``, so this gate is

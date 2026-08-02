@@ -152,7 +152,11 @@ def test_describe_names_what_is_missing_for_an_extraction_language():
     text = ls.describe("go")
     assert "extraction tier" in text
     assert "lint rules" in text
-    assert "secret" in text
+    assert "reverse/exports index" in text
+    # Secret and eval detection are NOT missing at this tier: they read content
+    # rather than a derived shape, so they need no extractor. Naming them here
+    # would send someone hunting for a gap that was closed.
+    assert "secret" not in text
 
 
 def test_first_class_languages_are_listed_before_extraction_ones():

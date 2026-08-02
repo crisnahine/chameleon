@@ -3297,11 +3297,16 @@ def lint_file(
     # interpolation) are content facts about the caller's own submission, like the
     # secret scan above, so they run before the trust/canonical gates and ride the
     # early-return paths too. eval-call is block-eligible; the rest are advisory.
-    # Language is inferred from the path; with no recognizable extension only the
-    # language-agnostic eval( shape fires, which is the block-eligible one.
-    _sink_lang = _detect_language(file_path) if file_path else None
-    if _sink_lang not in ("typescript", "ruby", "python"):
-        _sink_lang = None
+    # The SECURITY language, not the extractor one: this scan reads content, not
+    # a derived shape. Narrowing it to the three extractor languages sent every
+    # other source file down `scan_dangerous_sinks`' raw-content branch, where
+    # `eval(` matches inside comments and strings -- and since the block
+    # partition now treats those languages as blockable, a Go file whose only
+    # `eval(` sits in a `// TODO` comment would BLOCK. Passing the real language
+    # is what reaches the per-language string/comment stripper.
+    from chameleon_mcp.lint_engine import security_language as _security_language
+
+    _sink_lang = _security_language(file_path) if file_path else None
     sink_violations: list[dict] = []
     try:
         from chameleon_mcp.lint_engine import scan_dangerous_sinks as _scan_dangerous_sinks

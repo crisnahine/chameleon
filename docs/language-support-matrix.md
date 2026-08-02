@@ -28,8 +28,14 @@ frameworks add a deeper, framework-aware layer on top):
   in-process by tree-sitter from a declarative spec (`extractors/treesitter/lang/specs.py`) rather
   than a hand-written table module. They get the DERIVATION half only: archetype clustering, a
   canonical witness, conventions, callable signatures and imports. They do NOT get per-edit lint
-  rules, secret/eval detection, the reverse/exports index, or graded cross-file call edges (same-file
-  edges only). The split is declared in `chameleon_mcp/language_support.py`, reported by
+  rules, the reverse/exports index, or graded cross-file call edges (same-file edges only). They DO
+  get secret and eval-sink detection, block-eligible on the same terms as a first-class language:
+  those two checks read the content rather than a derived shape, so they need no extractor, and
+  gating them on the extractor question made a hardcoded AWS key advisory in a `.go` file while the
+  identical key in a `.rb` file blocked. The wider gate is `lint_engine.security_language`;
+  `detect_language` stays narrow because handing a heuristic extractor a language it has no arm for
+  yields an empty snapshot that mismatches every real archetype query. The split is declared in
+  `chameleon_mcp/language_support.py`, reported by
   `/chameleon-doctor`, and pinned by tests that compare the declaration against the actual wiring --
   a rule that never fires is indistinguishable from a clean codebase, so the absence is stated
   rather than left to be inferred. Detection requires a build MANIFEST (`go.mod`, `Cargo.toml`,

@@ -460,12 +460,18 @@ def _ignore_hint(paths: object, rule: str = "<rule>") -> str:
     backstop can hold files in both languages at once — then both forms are
     shown).
     """
-    from chameleon_mcp.lint_engine import detect_language
+    # The SECURITY language, since those are the files that can carry a block:
+    # with the narrow answer a `.go` file contributed None, was discarded below,
+    # and a Stop block covering one `.rb` and one `.go` file offered only the
+    # `#` form -- a syntax error in Go. That is the exact inverse of the case
+    # this helper exists to prevent, and it became reachable when Go started
+    # being able to block at all.
+    from chameleon_mcp.lint_engine import security_language
 
     if isinstance(paths, str) or paths is None:
         paths = [paths] if paths else []
-    langs = {detect_language(str(p)) for p in paths if p}
-    # A notebook cell is Python (detect_language('.ipynb') is None), so a deny on
+    langs = {security_language(str(p)) for p in paths if p}
+    # A notebook cell is Python (no extension answer for '.ipynb'), so a deny on
     # cell content must offer the `#` token, not the `//` fallback that would be a
     # SyntaxError in the cell.
     if any(str(p).lower().endswith(".ipynb") for p in paths if p):
@@ -5384,7 +5390,7 @@ def _record_bash_write_mutations(
     if not targets:
         return
 
-    from chameleon_mcp.lint_engine import detect_language
+    from chameleon_mcp.lint_engine import security_language
     from chameleon_mcp.profile.loader import find_repo_root
     from chameleon_mcp.profile.trust import trust_state_for
 
@@ -5399,9 +5405,12 @@ def _record_bash_write_mutations(
         except (OSError, ValueError):
             continue
 
-        # Only TS/Ruby files can resolve to an archetype; skip the rest before
-        # any stat so a write to a log/data file costs nothing.
-        if detect_language(p.name) is None:
+        # Only a source file can resolve to an archetype or carry a credential
+        # worth blocking on; skip the rest before any stat so a write to a
+        # log/data file costs nothing. The WIDE gate, because a Bash-written
+        # `.go` file leaking an AWS key must reach the secret scan exactly as a
+        # `.rb` one does -- the narrow gate skipped it before any scan ran.
+        if security_language(p.name) is None:
             continue
         try:
             if not p.is_file():
@@ -5490,7 +5499,6 @@ def _record_bash_write_mutations(
         # set only when a calibrated block-eligible rule actually fired here.
         try:
             from chameleon_mcp.enforcement_calibration import active_block_rules
-            from chameleon_mcp.lint_engine import detect_language
             from chameleon_mcp.violation_class import (
                 block_eligible_on_file,
                 build_ignore_index,
@@ -5501,11 +5509,14 @@ def _record_bash_write_mutations(
 
             active = active_block_rules(_enf_profile_dir(repo_root))
             hard = hard_class_violations(violations, active)
-            # A non-code file (detect_language None) never hard-blocks on an
+            # A non-code file (no language at all) never hard-blocks on an
             # archetype-independent rule -- it has no inline chameleon-ignore
             # escape -- so it must not arm the Stop backstop either, keeping the
-            # arming and the backstop re-lint consistent.
-            hard = block_eligible_on_file(hard, language=detect_language(file_path))
+            # arming and the backstop re-lint consistent. The WIDE gate: an
+            # extraction-tier language has no dimension extractor but does have
+            # an inline ignore syntax, so its credentials are as blockable as
+            # any other source file's.
+            hard = block_eligible_on_file(hard, language=security_language(file_path))
             # Without an archetype only the archetype-independent hard rules (a
             # deterministic secret) can be enforced at Stop, so record only those
             # as blockable here -- matching the backstop's no-archetype re-lint.
@@ -5905,9 +5916,19 @@ def _lint_file_in_process(
     # Run it here so the deterministic eval() stop reaches both the PostToolUse
     # advisory and the Stop backstop, not only the lint_file MCP tool.
     try:
-        from chameleon_mcp.lint_engine import scan_dangerous_sinks
+        from chameleon_mcp.lint_engine import scan_dangerous_sinks, security_language
 
-        violations.extend(v.to_dict() for v in scan_dangerous_sinks(content, language=language))
+        # The SECURITY language, not `language` (the extractor one used above for
+        # dimensions and shape rules). Handing this scan the narrow answer sent
+        # every extraction-tier file down the raw-content branch, where `eval(`
+        # matches inside comments and strings; the turn-end re-check keeps such a
+        # finding now that the partition is wide, and eval-call is
+        # archetype-independent, so it would refuse the turn on first sighting
+        # over a `// eval(x)` note. The wide answer reaches the real stripper.
+        violations.extend(
+            v.to_dict()
+            for v in scan_dangerous_sinks(content, language=security_language(file_path))
+        )
     except Exception:
         pass
 
@@ -5975,9 +5996,14 @@ def _scan_archetype_independent(
     ``repo_root`` lets the style scan honor rubocop's path Exclude globs (it needs
     the repo-relative path); without it an absolute path can't match a glob.
     """
-    from chameleon_mcp.lint_engine import detect_language
+    from chameleon_mcp.lint_engine import detect_language, security_language
 
     language = detect_language(file_path)
+    # The sink scan needs a CODE/PROSE answer, not a has-a-dimension-extractor
+    # one: an `eval`-class sink in a `.php` or `.java` file is as runnable as one
+    # in `.py`, and the narrow gate exempted all five extraction-tier languages
+    # from the check entirely.
+    sink_language = security_language(file_path)
     out: list[dict] = []
     try:
         from chameleon_mcp.lint_engine import scan_secrets
@@ -5988,7 +6014,7 @@ def _scan_archetype_independent(
         out.extend(secret_violations)
     except Exception:
         pass
-    if language is not None:
+    if sink_language is not None:
         # Gate the dangerous-sink scan to recognized code languages, mirroring the
         # PreToolUse proposed-content gate: on a non-code file (markdown / plain
         # text / config prose) scan_dangerous_sinks falls through to its raw-content
@@ -5998,7 +6024,7 @@ def _scan_archetype_independent(
         try:
             from chameleon_mcp.lint_engine import scan_dangerous_sinks
 
-            out.extend(v.to_dict() for v in scan_dangerous_sinks(content, language=language))
+            out.extend(v.to_dict() for v in scan_dangerous_sinks(content, language=sink_language))
         except Exception:
             pass
         # A phantom import (a relative/aliased specifier resolving to no file) is a
@@ -6085,7 +6111,7 @@ def _posttool_no_archetype_advisory(
 
     hard: list[dict] = []
     try:
-        from chameleon_mcp.lint_engine import detect_language
+        from chameleon_mcp.lint_engine import security_language
         from chameleon_mcp.violation_class import (
             block_eligible_on_file,
             is_archetype_independent,
@@ -6103,11 +6129,12 @@ def _posttool_no_archetype_advisory(
         hard = [
             v for v in violations if is_hard_class(v) and is_archetype_independent(v.get("rule"))
         ]
-        # A non-code file (markdown / config prose, detect_language None) never
+        # A non-code file (markdown / config prose, no language) never
         # hard-blocks on an archetype-independent rule: the token stays advisory in
         # `violations`, it just does not arm the Stop backstop. Such a file cannot
-        # carry a chameleon-ignore directive, so a block would have no escape.
-        hard = block_eligible_on_file(hard, language=detect_language(file_path))
+        # carry a chameleon-ignore directive, so a block would have no escape. The
+        # WIDE gate, so an extraction-tier source file is not mistaken for prose.
+        hard = block_eligible_on_file(hard, language=security_language(file_path))
         try:
             from chameleon_mcp.violation_class import build_ignore_index, is_violation_ignored
 
@@ -6415,7 +6442,9 @@ def _proposed_hard_eval_violations(
     ``(violations, named_suppressed)``; the scan is capped at the same ceiling as
     the secret scan, with content past the cap left to the PostToolUse/Stop scans.
 
-    Gated to recognized code languages (``detect_language`` is not None): the
+    Gated to SOURCE languages -- ``security_language``, the WIDER gate, so PHP
+    (whose dynamic-execution builtin is the canonical RCE this rule targets) is
+    covered where the narrow gate answered None and so never denied at all. The
     literal text ``eval(`` in prose/config/fixtures
     (``.md``/``.txt``/``.json``/``.yaml``) must not hard-block the write in
     enforce mode. For a recognized language ``scan_dangerous_sinks`` runs the
@@ -6431,7 +6460,7 @@ def _proposed_hard_eval_violations(
     recovered and scanned as Python so an ``eval()`` there is denied exactly like
     one in a ``.py``; markdown/prose cells are never scanned.
     """
-    from chameleon_mcp.lint_engine import detect_language, scan_dangerous_sinks
+    from chameleon_mcp.lint_engine import scan_dangerous_sinks, security_language
     from chameleon_mcp.violation_class import (
         IgnoreIndex,
         build_ignore_index,
@@ -6439,7 +6468,11 @@ def _proposed_hard_eval_violations(
         is_violation_ignored,
     )
 
-    language = detect_language(file_path)
+    # The WIDE gate: PHP's eval() is the canonical RCE this rule exists for, and
+    # the narrow one returned None for it, so the pre-write deny never ran. Safe
+    # to widen only because scan_dangerous_sinks now strips comments and strings
+    # for these languages -- on raw content a `// eval(x)` note would deny.
+    language = security_language(file_path)
     clipped = _deny_scan_content(proposed)
     if language is None:
         notebook_src = _notebook_python_to_scan(clipped, file_path, tool_name, cell_type)
@@ -6883,16 +6916,16 @@ def posttool_verify() -> int:
                     secret_note = ""
                     try:
                         if _content_has_hard_secret(content, file_path):
-                            from chameleon_mcp.lint_engine import detect_language
+                            from chameleon_mcp.lint_engine import security_language
 
-                            # Only a recognized code language arms the backstop:
-                            # a credential-shaped token in markdown / config PROSE
-                            # (detect_language None) stays advisory, has no inline
+                            # Only a source file arms the backstop: a
+                            # credential-shaped token in markdown / config PROSE
+                            # (no language at all) stays advisory, has no inline
                             # chameleon-ignore escape, and the Stop re-lint drops
                             # it anyway. Arming it would only over-arm, diverging
                             # from the other arming sites and the re-lint, which
                             # all gate non-code via block_eligible_on_file.
-                            if detect_language(file_path) is not None:
+                            if security_language(file_path) is not None:
                                 record_violation(
                                     file_state,
                                     now=_started,
@@ -7180,7 +7213,7 @@ def posttool_verify() -> int:
             decision_outcome = "advised"
             try:
                 from chameleon_mcp.enforcement_calibration import active_block_rules
-                from chameleon_mcp.lint_engine import detect_language
+                from chameleon_mcp.lint_engine import security_language
                 from chameleon_mcp.violation_class import (
                     block_eligible_on_file,
                     build_ignore_index,
@@ -7190,13 +7223,17 @@ def posttool_verify() -> int:
                 )
 
                 active = active_block_rules(_enf_profile_dir(repo_root))
-                # A non-code file (detect_language None) never hard-blocks on an
+                # A non-code file (no language at all) never hard-blocks on an
                 # archetype-independent rule: it can resolve to an archetype via a
                 # legacy extension-blind paths_pattern, but it still has no inline
                 # chameleon-ignore escape, so eval/secret stay advisory, not armed.
+                # The WIDE gate -- this is the dominant path (a file that DID
+                # resolve to an archetype), so leaving it narrow would exempt every
+                # extraction-tier language from blocking no matter what the
+                # no-archetype sites do.
                 hard = block_eligible_on_file(
                     hard_class_violations(violations, active),
-                    language=detect_language(file_path),
+                    language=security_language(file_path),
                 )
                 # An inline `chameleon-ignore <rule>` directive (or a bare one)
                 # downgrades the matching rule to advisory on the annotated

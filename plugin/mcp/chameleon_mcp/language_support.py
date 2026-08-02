@@ -48,8 +48,10 @@ class LanguageCapabilities:
     #: The per-edit lint rules: naming, imports, inheritance, shape, test
     #: quality. Each needs a per-language signal source in lint_engine.
     lint_rules: bool
-    #: Secret and eval-class detection. Gated behind lint_engine.detect_language
-    #: with everything else, so it follows lint_rules today.
+    #: Secret and eval-class detection. Gated on `lint_engine.security_language`,
+    #: which is deliberately WIDER than `detect_language`: these two checks read
+    #: content rather than a derived shape, so they need no per-language
+    #: extractor and every source language gets them.
     security_lint: bool
 
     def missing(self) -> tuple[str, ...]:
@@ -95,7 +97,13 @@ def _extraction(language: str) -> LanguageCapabilities:
         graded_call_edges=False,
         cross_file_index=False,
         lint_rules=False,
-        security_lint=False,
+        # TRUE, and the asymmetry is the point: the secret and eval-sink scans
+        # read content rather than a derived shape, so they need no per-language
+        # extractor. Gating them on the narrow `detect_language` exempted every
+        # extraction-tier language from the two checks that are not style
+        # opinions -- an AWS key in a `.go` file was advisory where the identical
+        # key in a `.rb` file was block-eligible.
+        security_lint=True,
     )
 
 
