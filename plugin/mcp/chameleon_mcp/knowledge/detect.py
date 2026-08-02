@@ -327,11 +327,64 @@ _POM_EXCLUSIONS_RE: Final[re.Pattern[str]] = re.compile(
 )
 # Whatever the two patterns above left behind is an opener with no close.
 _POM_EXCLUSIONS_OPEN_RE: Final[re.Pattern[str]] = re.compile(r"<exclusions\b", re.IGNORECASE)
-_GRADLE_BLOCK_COMMENT_RE: Final[re.Pattern[str]] = re.compile(r"/\*.*?\*/", re.DOTALL)
-# `(?<!:)` keeps a URL scheme's own `//` from reading as a comment: a
-# `maven { url "https://..." }` sharing a line with a coordinate would otherwise
-# take the coordinate with it when the rest of the line is stripped.
-_GRADLE_LINE_COMMENT_RE: Final[re.Pattern[str]] = re.compile(r"(?<!:)//[^\n]*")
+
+
+def _strip_gradle_comments(text: str) -> tuple[str, int | None]:
+    """Gradle source with comments removed, plus any unterminated block's start.
+
+    A regex cannot do this, because Gradle strings carry both halves of a block
+    comment: an ordinary build file with `exclude '**/*.class'` on one line and
+    `exclude '**/build/**'` on another gives `/\\*.*?\\*/` an opener inside the
+    first glob and a closer inside the second, and everything between them --
+    the whole `dependencies` block -- disappears. Tracking quotes is what tells
+    a comment from a path pattern.
+
+    Quote tracking also subsumes the URL case: a `//` inside `"https://..."` is
+    string content here, so no lookbehind is needed to protect it.
+
+    Returns the stripped text and, when the input ends inside an unterminated
+    block comment, that comment's start index -- which is what truncation repair
+    needs to know.
+    """
+    out: list[str] = []
+    unterminated: int | None = None
+    quote: str | None = None
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if quote is not None:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n:
+            following = text[i + 1]
+            if following == "/":
+                end = text.find("\n", i)
+                i = n if end == -1 else end
+                continue
+            if following == "*":
+                end = text.find("*/", i + 2)
+                if end == -1:
+                    unterminated = i
+                    break
+                out.append(" ")
+                i = end + 2
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out), unterminated
+
 
 # PEP 503 treats `_`, `-` and `.` runs as equivalent. Applied to Python
 # manifests only: a Ruby gem (`activerecord_import`) and a Go module path carry
@@ -351,11 +404,16 @@ _MANIFEST_MAX_CHARS: Final[int] = 50_000
 # because the trim must not fire on one that has no such comment syntax: a
 # `<!--` inside a TOML description is a string, not an opener, and cutting from
 # it would drop every real dependency after it.
+#
+# Only XML is listed. A literal `<` cannot appear in XML text or an attribute
+# value, so `<!--` in a pom is always a real opener and a plain search is exact.
+# Gradle is NOT here: `/*` is legal string content there, so finding its
+# unterminated comment needs the quote-aware scanner instead.
 _TRUNCATION_COMMENTS: Final[dict[str, tuple[tuple[str, str], ...]]] = {
     "pom.xml": (("<!--", "-->"),),
-    "build.gradle": (("/*", "*/"),),
-    "build.gradle.kts": (("/*", "*/"),),
 }
+
+_GRADLE_MANIFESTS: Final[frozenset[str]] = frozenset({"build.gradle", "build.gradle.kts"})
 
 
 def _trim_truncated(manifest: str, text: str) -> str:
@@ -377,6 +435,10 @@ def _trim_truncated(manifest: str, text: str) -> str:
     newline = text.rfind("\n")
     if newline != -1:
         text = text[: newline + 1]
+    if manifest in _GRADLE_MANIFESTS:
+        _, unterminated = _strip_gradle_comments(text)
+        if unterminated is not None:
+            text = text[:unterminated]
     for opener, closer in _TRUNCATION_COMMENTS.get(manifest, ()):
         # To a fixpoint, not once: cutting at the LAST unterminated opener can
         # expose an EARLIER one that is also unterminated, and stopping there
@@ -461,7 +523,7 @@ def _declared_deps(manifest: str, text: str) -> set[str]:
                 # The trailing comment is stripped first because `exclude ( //
                 # dropped: CVE-...` is legal and common -- reading the raw line
                 # end would miss the paren and let the excluded module through.
-                skipping_block = _GRADLE_LINE_COMMENT_RE.sub("", stripped).rstrip().endswith("(")
+                skipping_block = stripped.split("//", 1)[0].rstrip().endswith("(")
                 continue
             if stripped.startswith("//") or "// indirect" in line:
                 continue
@@ -490,7 +552,7 @@ def _declared_deps(manifest: str, text: str) -> set[str]:
         # leading pair are worth recording, since profiles name either. Comments
         # go first: a commented-out `implementation "g:a:v"` is the commonest way
         # a removed dependency lingers in a build file.
-        body = _GRADLE_LINE_COMMENT_RE.sub(" ", _GRADLE_BLOCK_COMMENT_RE.sub(" ", text))
+        body, _ = _strip_gradle_comments(text)
         out = set()
         for m in _GRADLE_COORD_RE.finditer(body):
             group, _, artifact = m.group(1).partition(":")

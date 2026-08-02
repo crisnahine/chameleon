@@ -455,6 +455,30 @@ def test_a_removed_or_excluded_dependency_is_not_a_declaration():
     same_line = 'maven { url "https://x.io/m2" }; implementation "io.ktor:ktor-core:2"\n'
     assert detect._declared_deps("build.gradle", same_line) == {"io.ktor", "ktor-core"}
 
+
+def test_a_gradle_path_glob_is_not_a_block_comment():
+    """Gradle strings carry both halves of a block comment. An ordinary build
+    file with Ant patterns gives a regex an opener inside `**/*` and a closer
+    inside `**/`, so everything between them -- the whole dependencies block --
+    is swallowed and the repo detects as no framework at all. Only quote
+    tracking tells a comment from a path pattern."""
+    build = (
+        "jar { exclude '**/*.class' }\n"
+        "dependencies {\n"
+        "  implementation 'io.ktor:ktor-server-core:2.3'\n"
+        "}\n"
+        "test { exclude '**/build/**' }\n"
+    )
+    assert detect._declared_deps("build.gradle", build) == {"io.ktor", "ktor-server-core"}
+
+    # Real comments are still removed, in both forms.
+    commented = (
+        "// implementation 'org.springframework.boot:spring-boot-starter-web:3.2'\n"
+        "/* implementation 'io.ktor:ktor-server-core:2' */\n"
+        "implementation 'com.google.guava:guava:33'\n"
+    )
+    assert detect._declared_deps("build.gradle", commented) == {"com.google.guava", "guava"}
+
     # go.mod: an excluded module, and a transitive one, are not dependencies.
     # The block bodies are INDENTED, so the directive keyword never appears on
     # the line carrying the module path -- a per-line prefix check misses it.
