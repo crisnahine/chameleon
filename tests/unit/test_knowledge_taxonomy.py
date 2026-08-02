@@ -505,6 +505,48 @@ def test_a_truncated_read_loses_names_but_never_invents_them():
     assert detect._trim_truncated("pyproject.toml", toml_with_marker) == toml_with_marker
 
 
+def test_the_read_cap_and_its_repair_are_wired(tmp_path):
+    """Drives a real over-cap manifest from DISK through `_manifest_dep_names`.
+
+    The other truncation tests call `_trim_truncated` on hand-built strings, so
+    they would all still pass if the trim call were deleted or the cap
+    comparison flipped. This one fails if the wiring is wrong rather than the
+    function.
+    """
+    cap = detect._MANIFEST_MAX_CHARS
+    pad = "<dependency><artifactId>filler</artifactId></dependency>\n"
+    dropped = (
+        "<!-- dropped in v3: <groupId>org.springframework.boot</groupId>"
+        "<artifactId>spring-boot-starter-web</artifactId>"
+    )
+    body = "<project><dependencies>\n" + pad * ((cap // len(pad)) + 5) + dropped
+    (tmp_path / "pom.xml").write_text(body, encoding="utf-8")
+    assert len(body) > cap, "fixture must exceed the cap for the repair to run"
+
+    found = detect._manifest_dep_names(tmp_path, 40)
+    assert "filler" in found, "the readable head must still be mined"
+    assert "org.springframework.boot" not in found
+    assert "spring-boot-starter-web" not in found
+
+
+def test_an_earlier_unterminated_comment_is_also_trimmed():
+    """Cutting at the LAST unterminated opener can expose an EARLIER one that is
+    also unterminated; stopping there leaves its body live, which is the same
+    fabrication one nesting level up."""
+    nested = (
+        "<project><dependencies>\n<!-- disabled block:\n"
+        "<dependency><groupId>org.springframework.boot</groupId>"
+        "<artifactId>spring-boot-starter-web</artifactId></dependency>\n"
+        "<!-- TODO restore before v4\n"
+    )
+    trimmed = detect._trim_truncated("pom.xml", nested)
+    assert trimmed.count("<!--") <= trimmed.count("-->")
+    assert detect._declared_deps("pom.xml", trimmed) == set()
+    # A properly closed comment is still left alone.
+    ok = "<project>\n<!-- note -->\n<dependency><artifactId>guava</artifactId></dependency>\n"
+    assert detect._declared_deps("pom.xml", detect._trim_truncated("pom.xml", ok)) == {"guava"}
+
+
 def test_go_block_directives_survive_a_trailing_comment():
     """`exclude ( // dropped: CVE-...` is legal go.mod. Reading the raw line end
     misses the paren, so the block never opens and the EXCLUDED module inside it

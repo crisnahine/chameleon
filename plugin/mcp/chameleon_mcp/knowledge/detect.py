@@ -378,8 +378,14 @@ def _trim_truncated(manifest: str, text: str) -> str:
     if newline != -1:
         text = text[: newline + 1]
     for opener, closer in _TRUNCATION_COMMENTS.get(manifest, ()):
-        start = text.rfind(opener)
-        if start != -1 and text.find(closer, start) == -1:
+        # To a fixpoint, not once: cutting at the LAST unterminated opener can
+        # expose an EARLIER one that is also unterminated, and stopping there
+        # leaves its body live -- which is the fabrication this exists to
+        # prevent, just one nesting level up.
+        while True:
+            start = text.rfind(opener)
+            if start == -1 or text.find(closer, start) != -1:
+                break
             text = text[:start]
     return text
 
