@@ -1021,6 +1021,7 @@ def _secondary_language_files(repo_root: Path, primary_language: str) -> list:
         # third-party file could become the witness injected per-edit as the
         # shape to imitate (`EXCLUDE_FROM_CANONICAL_POOL_DIRS` covers test and
         # legacy dirs, NOT vendor).
+        from chameleon_mcp._thresholds import threshold_int
         from chameleon_mcp.bootstrap.discovery import discover_files
         from chameleon_mcp.extractors.treesitter.grammars import _EXTENSION_GRAMMARS
 
@@ -1033,6 +1034,14 @@ def _secondary_language_files(repo_root: Path, primary_language: str) -> list:
         discovered = discover_files(repo_root, glob=f"**/*.{{{','.join(stems)}}}")
         if not discovered:
             return []
+        # Bounded like every other derivation input. The primary corpus has
+        # REPO_SIZE_GUARD; a secondary language had nothing, so a small-primary /
+        # huge-secondary repo could mint unbounded archetypes into the
+        # trust-hashed profile. Deterministic truncation (discover_files returns
+        # sorted paths) so two runs of the same tree agree.
+        cap = threshold_int("CROSS_LANGUAGE_MAX_SECONDARY_FILES")
+        if len(discovered) > cap:
+            discovered = discovered[:cap]
         collected = []
         for parsed in probe.parse_repo(repo_root, paths=discovered).files:
             try:
@@ -2962,7 +2971,17 @@ def _bootstrap_single(
         min_cluster_size=_primary_sparse_threshold(parse_result.files),
     )
     files_skipped_generated = len(clustering.skipped_generated)
-    sparse_dropped_files = sum(c.size for c in clustering.sparse_clusters)
+    # Primary members only, so this stays comparable with `files_processed`
+    # (also primary-only). Counting secondary members here let
+    # sparse_dropped_files exceed the clustered total the same report
+    # publishes -- 6 primary files in one dense cluster beside 20 sparse
+    # secondary ones read as 'dropped 20 of 6'.
+    sparse_dropped_files = sum(
+        1
+        for c in clustering.sparse_clusters
+        for m in c.members
+        if _language_of_member(m) in (None, extractor.language)
+    )
 
     sparse_warnings = _build_sparse_warnings(clustering.sparse_clusters, repo_root)
     bimodal_warnings = _build_bimodal_warnings(clustering.bimodal_clusters, repo_root)

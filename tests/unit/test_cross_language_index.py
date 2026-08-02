@@ -345,3 +345,118 @@ def test_the_primary_sparse_threshold_excludes_secondaries_and_generated_files()
     from chameleon_mcp.bootstrap.clustering import _adaptive_sparse_threshold
 
     assert _adaptive_sparse_threshold(len(real + generated)) == 4
+
+
+def test_the_secondary_corpus_is_bounded(tmp_path: Path, monkeypatch):
+    """A secondary language may not mint unbounded archetypes.
+
+    The primary corpus has REPO_SIZE_GUARD; a secondary had no ceiling at all,
+    so a repo whose primary is small and whose secondary is huge (a Go monorepo
+    beside a small TS tooling dir) would derive an archetype per 3-file Go
+    directory into the trust-hashed profile, with nothing bounding the count.
+    """
+    monkeypatch.setenv("CHAMELEON_CROSS_LANGUAGE_MAX_SECONDARY_FILES", "5")
+    (tmp_path / "svc").mkdir()
+    (tmp_path / "package.json").write_text('{"name":"r"}', encoding="utf-8")
+    (tmp_path / "go.mod").write_text("module m\n\ngo 1.22\n", encoding="utf-8")
+    (tmp_path / "app.ts").write_text("export const a = 1;\n", encoding="utf-8")
+    for i in range(30):
+        (tmp_path / "svc" / f"s{i}.go").write_text(
+            f"package s\n\nfunc F{i}() {{}}\n", encoding="utf-8"
+        )
+
+    files = _secondary_language_files(tmp_path, "typescript")
+    assert len(files) == 5, f"secondary corpus unbounded: {len(files)}"
+
+
+def test_the_cap_truncates_deterministically(tmp_path: Path, monkeypatch):
+    """Two runs over the same tree must agree, or the profile churns."""
+    monkeypatch.setenv("CHAMELEON_CROSS_LANGUAGE_MAX_SECONDARY_FILES", "4")
+    (tmp_path / "svc").mkdir()
+    (tmp_path / "package.json").write_text('{"name":"r"}', encoding="utf-8")
+    (tmp_path / "go.mod").write_text("module m\n\ngo 1.22\n", encoding="utf-8")
+    (tmp_path / "app.ts").write_text("export const a = 1;\n", encoding="utf-8")
+    for i in range(12):
+        (tmp_path / "svc" / f"s{i:02d}.go").write_text(
+            f"package s\n\nfunc F{i}() {{}}\n", encoding="utf-8"
+        )
+
+    first = [f.path for f in _secondary_language_files(tmp_path, "typescript")]
+    second = [f.path for f in _secondary_language_files(tmp_path, "typescript")]
+    assert first == second and len(first) == 4, (first, second)
+
+
+def test_conventions_never_receive_a_secondary_language_file(
+    dense_mixed_repo: Path, monkeypatch, tmp_path: Path
+):
+    """The asymmetry the design rests on, asserted on the committed artifact.
+
+    `extract_all_conventions` takes ONE repo-wide language and gates a dozen
+    passes on it, so a Go file arriving under an archetype key would be measured
+    with TypeScript semantics. A secondary-language archetype must therefore
+    carry a shape and a witness but NO convention rules -- absent guidance
+    rather than wrong guidance.
+    """
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_HMAC_KEY_PATH", str(tmp_path / "hmac"))
+    for argv in (["git", "init", "-q"], ["git", "add", "-A"], ["git", "commit", "-qm", "i"]):
+        subprocess.run(argv, cwd=dense_mixed_repo, check=True, capture_output=True)
+
+    from chameleon_mcp.bootstrap.orchestrator import bootstrap_repo
+
+    assert bootstrap_repo(dense_mixed_repo).status == "success"
+    profile = dense_mixed_repo / ".chameleon"
+    archetypes = json.loads((profile / "archetypes.json").read_text())["archetypes"]
+    conventions = json.loads((profile / "conventions.json").read_text())["conventions"]
+
+    go_archetypes = {
+        n for n, a in archetypes.items() if str(a.get("paths_pattern", "")).endswith(":go")
+    }
+    assert go_archetypes, sorted(archetypes)
+
+    # Every per-archetype conventions section must be silent about the Go ones.
+    for section, by_archetype in conventions.items():
+        if not isinstance(by_archetype, dict):
+            continue
+        leaked = go_archetypes & set(by_archetype)
+        assert not leaked, f"conventions section {section!r} carries Go archetypes {leaked}"
+
+
+def test_no_secondary_file_is_handed_to_convention_extraction(
+    dense_mixed_repo: Path, monkeypatch, tmp_path: Path
+):
+    """Guards the FILTER, not just its outcome.
+
+    The sibling test asserts no Go archetype reaches `conventions.json`, and that
+    holds even unfiltered -- the TypeScript-gated extractors simply yield nothing
+    for Go source, so the contract is satisfied by accident. What must be pinned
+    is that the Go files never arrive at all: an extractor that started returning
+    a value for foreign input (or a primary language whose passes are less
+    selective) would otherwise publish it under a Go archetype key silently.
+    """
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_HMAC_KEY_PATH", str(tmp_path / "hmac"))
+    for argv in (["git", "init", "-q"], ["git", "add", "-A"], ["git", "commit", "-qm", "i"]):
+        subprocess.run(argv, cwd=dense_mixed_repo, check=True, capture_output=True)
+
+    from chameleon_mcp.bootstrap import orchestrator
+
+    seen: dict = {}
+    real = orchestrator.extract_all_conventions
+
+    def spy(*args, **kwargs):
+        by_archetype = kwargs.get("files_by_archetype") or {}
+        seen["suffixes"] = {
+            Path(getattr(m, "path", m)).suffix for members in by_archetype.values() for m in members
+        }
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(orchestrator, "extract_all_conventions", spy)
+    orchestrator.bootstrap_repo(dense_mixed_repo)
+
+    assert seen.get("suffixes"), "extract_all_conventions was never reached"
+    assert ".go" not in seen["suffixes"], (
+        f"Go files were handed to convention extraction: {sorted(seen['suffixes'])}"
+    )

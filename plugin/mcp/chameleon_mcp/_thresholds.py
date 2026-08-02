@@ -22,6 +22,12 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # How many workspaces a monorepo bootstrap analyzes. A sampling cap, not a
     # safety guard -- REPO_SIZE_GUARD is the post-exclusion DoS backstop.
     "WORKSPACE_FANOUT_CAP": 500,
+    # Ceiling on files a SECONDARY language contributes to derivation. The
+    # primary corpus is bounded by REPO_SIZE_GUARD; without a ceiling here a
+    # repo whose primary is small and whose secondary is huge (a Go monorepo
+    # with a small TS tooling dir) derives an unbounded number of
+    # secondary archetypes into the trust-hashed profile.
+    "CROSS_LANGUAGE_MAX_SECONDARY_FILES": 4000,
     # Taxonomy-scored framework detection. The four tier weights and the report
     # floor are the codex's own numbers (architecture spec 5.2); they are here
     # rather than inline so an operator can retune a noisy detection without a
