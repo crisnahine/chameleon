@@ -91,6 +91,14 @@ LANG_PREFIXES = (
 # A rule may only live here if the CONSTRUCT does not exist in that language --
 # not merely because nobody got to it. Anything else belongs in the report.
 JUSTIFIED_ABSENCE: dict[str, dict[str, str]] = {
+    "eval-call": {
+        # This walk probes only LANGUAGES above, so a declared language outside
+        # that tuple reads as unproven even when the engine really implements it.
+        # PHP's bare dynamic-execution builtin IS detected (the C-family stripper
+        # blanks its comments and strings first, and the sink then fires), it is
+        # simply not probeable here until this matrix grows a PHP arm.
+        "php": "declared and implemented, but this matrix probes only ts/ruby/python",
+    },
     "then-without-catch": {
         "ruby": "no Promise.then equivalent; Ruby async is blocks/fibers",
         "python": "awaitables have no .then; the analogue is an un-awaited coroutine",

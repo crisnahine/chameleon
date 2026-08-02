@@ -91,3 +91,29 @@ def test_unclosed_block_comments_do_not_blow_the_latency_budget(language: str):
     scan_dangerous_sinks(body, language=language)
     elapsed_ms = (time.perf_counter() - started) * 1000
     assert elapsed_ms < 400, f"{language}: {elapsed_ms:.0f}ms -- the quadratic scan is back"
+
+
+@pytest.mark.parametrize(
+    ("language", "source"),
+    [
+        # Each cut mid multi-line LITERAL, the form each language spans lines with.
+        ("go", "package m\nvar s = `SELECT\n  eval(x)\n"),
+        ("java", 'class C { String s = """\n  eval(x)\n'),
+        ("csharp", 'class C { const string S = """\n  eval(x)\n'),
+        ("php", "<?php\n$a = <<<EOT\n eval($x)\n"),
+        ("rust", 'fn f() { let s = r#"\n eval(x)\n'),
+    ],
+)
+def test_an_unterminated_multiline_literal_does_not_leak_a_sink(language: str, source: str):
+    """The C-family half of the clipped-content problem.
+
+    The TS and Python strippers carry unterminated arms for BOTH their comment
+    and their multi-line string forms; the C-family originally got one only for
+    block comments. A >100KB Go backtick literal, Java or C# text block, PHP
+    heredoc or Rust raw string cut by the ~100k clip therefore left its tail
+    scanned as live code, and a dynamic-execution token inside it fired at error
+    severity on a file that merely got truncated.
+    """
+    assert _evals(source, language=language) == [], (
+        f"{language}: a clipped multi-line literal leaked a false sink"
+    )

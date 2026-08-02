@@ -29,7 +29,13 @@ def test_block_rule_languages_python_scoping():
     assert BLOCK_RULE_LANGUAGES["file-naming-convention-violation"] is None
     assert BLOCK_RULE_LANGUAGES["import-preference-violation"] is None
     assert BLOCK_RULE_LANGUAGES["secret-detected-in-content"] is None
-    assert BLOCK_RULE_LANGUAGES["eval-call"] is None
+    # eval-call is SCOPED, not language-independent: its detector's lookbehind
+    # excludes only a receiver call, so it matches a DEFINITION too. Go, Rust,
+    # Java and C# have no builtin of that name, so a function defined with it was
+    # an error-severity, block-eligible violation on well-formed code once the
+    # security gate widened to those languages. Python keeps the rule.
+    assert "python" in BLOCK_RULE_LANGUAGES["eval-call"]
+    assert not {"go", "rust", "java", "csharp"} & BLOCK_RULE_LANGUAGES["eval-call"]
     # Rules that must NOT block for Python: there is no Python JSX, so the
     # rule has no Python signal source and stays inert.
     assert "python" not in BLOCK_RULE_LANGUAGES["jsx-presence-mismatch"]

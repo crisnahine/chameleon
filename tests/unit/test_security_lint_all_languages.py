@@ -184,3 +184,48 @@ def test_the_registry_agrees_with_the_security_wiring():
             f"{language}: registry says security_lint={caps.security_lint} but a "
             f"hardcoded credential in {filename} is block-eligible={blocks}"
         )
+
+
+@pytest.mark.parametrize(
+    ("filename", "source"),
+    [
+        ("a.go", "package m\nfunc eval(x string) error { return nil }\n"),
+        ("a.rs", "pub fn eval(x: &str) -> bool { true }\n"),
+        ("A.java", "class C { Object eval(String s) { return null; } }\n"),
+        ("A.cs", "class C { object eval(string s) { return null; } }\n"),
+    ],
+)
+def test_defining_a_function_named_eval_is_not_block_eligible(filename: str, source: str):
+    """Widening the security gate must not make well-formed code blockable.
+
+    The detector's lookbehind excludes only a receiver call, so it matches a
+    DEFINITION as readily as a call. Go, Rust, Java and C# have no builtin of
+    that name, so every hit in them is a user-defined symbol -- and the widened
+    gate promoted each from advisory to an error-severity BLOCK, which under
+    enforce is a PostToolUse block plus a Stop turn refusal.
+    """
+    language = security_language(filename)
+    violations = [v.to_dict() for v in scan_dangerous_sinks(source, language=language)]
+    tag_secret_hardness(violations)
+
+    assert violations, f"{filename}: the detector no longer fires; this test guards nothing"
+    assert block_eligible_on_file(violations, language=language) == [], (
+        f"{filename}: defining a function named eval is block-eligible in {language}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("filename", "source"),
+    [
+        ("a.php", '<?php\neval($_GET["c"]);\n'),
+        ("a.py", "def f():\n    eval(x)\n"),
+        ("a.ts", "function f(){ eval(x) }\n"),
+        ("a.rb", "def f; eval(x); end\n"),
+    ],
+)
+def test_a_real_dynamic_execution_sink_still_blocks(filename: str, source: str):
+    """The other direction: scoping the rule must not disarm its true positives."""
+    language = security_language(filename)
+    violations = [v.to_dict() for v in scan_dangerous_sinks(source, language=language)]
+    tag_secret_hardness(violations)
+    assert block_eligible_on_file(violations, language=language), filename

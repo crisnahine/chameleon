@@ -401,8 +401,21 @@ BLOCK_RULE_LANGUAGES: dict[str, frozenset[str] | None] = {
     # set, decides whether it actually blocks.
     "inheritance-convention-violation": frozenset({"ruby", "python"}),
     "file-naming-convention-violation": None,
+    # A leaked credential is a content fact in any language, so this one is
+    # genuinely language-independent.
     "secret-detected-in-content": None,
-    "eval-call": None,
+    # Scoped to the languages where a bare `eval(` IS the dangerous construct.
+    # `_EVAL_CALL_RE` is `(?<![.\w])eval\s*\(`, whose lookbehind excludes only
+    # `.eval(`, so it matches a DEFINITION as readily as a call. Go, Rust, Java
+    # and C# have no eval builtin, so every hit there is a user-defined symbol:
+    # `func eval(x string)`, `pub fn eval(...)`, `Object eval(String s)` each
+    # produced an error-severity, block-eligible violation on well-formed code
+    # once the security gate widened to those languages. Ruby's arms cover its
+    # `*_eval` / `send(:eval)` forms; Python has `eval`/`exec`; PHP's bare
+    # `eval(` is the canonical RCE this rule exists for. The four without the
+    # construct are omitted rather than left to fire vacuously -- the same
+    # reasoning `phantom-import` and `jsx-presence-mismatch` are scoped by.
+    "eval-call": frozenset({"typescript", "ruby", "python", "php"}),
 }
 
 
@@ -596,7 +609,26 @@ def block_eligible_on_file(hard: list[dict], *, language: str | None) -> list[di
     archetype-independent ones are dropped). A non-code file CAN still resolve to
     an archetype via a legacy extension-blind ``paths_pattern``, so this gate is
     applied at the with-archetype block sites too, not only the no-archetype
-    ones."""
-    if language is not None:
-        return hard
-    return [v for v in hard if not is_archetype_independent(v.get("rule"))]
+    ones.
+
+    A recognized language is then filtered a second time, per RULE. A rule with
+    a language scope in ``BLOCK_RULE_LANGUAGES`` may only block in a language
+    that scope names. ``eval-call`` is why: its detector's lookbehind excludes
+    only a method call on a receiver, so it matches a DEFINITION as readily as a
+    call. Go, Rust, Java and C# have no dynamic-execution builtin of that name,
+    so a function DEFINED with it is an ordinary user symbol -- and once the
+    security gate widened to those languages, each such definition became an
+    error-severity, block-eligible violation on well-formed code. Calibration
+    reads the same table but keys on the repo's PRIMARY language, so in a
+    polyglot repo it cannot scope a Go file inside a TypeScript profile; this
+    gate sees the file's own language and can.
+
+    The advisory list is untouched either way -- only the BLOCK set narrows."""
+    if language is None:
+        return [v for v in hard if not is_archetype_independent(v.get("rule"))]
+
+    def _blocks_in_language(rule: object) -> bool:
+        scope = BLOCK_RULE_LANGUAGES.get(rule) if isinstance(rule, str) else None
+        return scope is None or language in scope
+
+    return [v for v in hard if _blocks_in_language(v.get("rule"))]

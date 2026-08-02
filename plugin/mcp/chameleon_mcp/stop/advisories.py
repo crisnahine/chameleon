@@ -1438,7 +1438,10 @@ def _crossworkspace_existence_advisory_lines(*, repo_root: Path, state, cfg) -> 
         from chameleon_mcp import hook_helper as hh
         from chameleon_mcp._thresholds import threshold_int
         from chameleon_mcp.lint_engine import detect_language
-        from chameleon_mcp.phantom_imports import _current_export_names
+        from chameleon_mcp.phantom_imports import (
+            _current_export_names,
+            _python_current_export_names,
+        )
         from chameleon_mcp.profile.loader import find_repo_root
         from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
@@ -1485,7 +1488,18 @@ def _crossworkspace_existence_advisory_lines(*, repo_root: Path, state, cfg) -> 
                 content = p.read_bytes()[:1_000_000].decode("utf-8", errors="replace")
             except OSError:
                 continue
-            current, open_set = _current_export_names(content)
+            # Per LANGUAGE, matching the sibling in stop/gates.py. Widening the
+            # guard above to admit Python without widening this scan made every
+            # Python edit a false positive: `_current_export_names` looks for TS
+            # `export` tokens, finds none in a `.py` file, and returns an EMPTY
+            # name set with open_set False -- so `broken_importers` reported
+            # every cross-workspace-imported name of that module as removed,
+            # the live re-check confirmed the importer still references it, and
+            # the repoint suppression is specifier-based and cannot filter it.
+            if lang == "python":
+                current, open_set = _python_current_export_names(content, p)
+            else:
+                current, open_set = _current_export_names(content)
             if open_set:
                 continue
             seen += 1

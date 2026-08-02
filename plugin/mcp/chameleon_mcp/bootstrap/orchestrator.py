@@ -1061,7 +1061,11 @@ def _secondary_language_files(
         # shape to imitate (`EXCLUDE_FROM_CANONICAL_POOL_DIRS` covers test and
         # legacy dirs, NOT vendor).
         from chameleon_mcp._thresholds import threshold_int
-        from chameleon_mcp.bootstrap.discovery import discover_files
+        from chameleon_mcp.bootstrap.discovery import (
+            EXCLUDE_FROM_CLUSTERING_DIRS,
+            _expand_brace_groups,
+            discover_files,
+        )
         from chameleon_mcp.extractors.treesitter.grammars import _EXTENSION_GRAMMARS
 
         # Same brace shape discover_files' own default uses: "**/*.{ts,tsx,...}".
@@ -1071,9 +1075,21 @@ def _secondary_language_files(
         if not stems:
             return []
         glob = f"**/*.{{{','.join(stems)}}}"
+        # The user's scope NARROWS the extension glob, it does not replace it.
+        # `discover_files` treats the two as mutually exclusive
+        # (`target_glob = paths_glob if paths_glob else glob`), so passing both
+        # discarded the extension filter entirely: `discovered` became every file
+        # under the scope -- markdown, images, and the whole primary corpus,
+        # which `probe.parse_repo` then re-parsed before the post-filter dropped
+        # it. Intersect instead: discover under the scope, then keep only paths
+        # whose suffix is one this secondary set actually wants.
+        wanted = {f".{stem}" for stem in stems}
         try:
             discovered = discover_files(
-                repo_root, glob=glob, paths_glob=paths_glob, workspace_roots=workspace_roots
+                repo_root,
+                glob=glob,
+                paths_glob=paths_glob,
+                workspace_roots=workspace_roots,
             )
         except TooManyFilesError:
             # The size guard fires above REPO_SIZE_GUARD, and the blanket
@@ -1081,7 +1097,23 @@ def _secondary_language_files(
             # on precisely the repo the cap exists for (the threshold's own
             # comment names "a Go monorepo with a small TS tooling dir").
             # A capped sample is the point; refusing the whole language is not.
-            discovered = sorted(repo_root.glob(glob))
+            # `Path.glob` does NOT brace-expand -- this repo hand-rolls
+            # `_expand_brace_groups` precisely because `{`/`}` are literal
+            # characters to pathlib. Passing the braced form here matched
+            # nothing, so the size-guard case yielded ZERO secondary coverage:
+            # the exact outcome this branch exists to prevent.
+            # Exclusions applied by hand, because this path deliberately skips
+            # `discover_files`. Without them a vendored third-party file is
+            # canonical-witness eligible (EXCLUDE_FROM_CANONICAL_POOL_DIRS
+            # covers test and legacy dirs, not vendor), which is the hazard the
+            # normal path exists to prevent.
+            discovered = sorted(
+                path
+                for expanded in _expand_brace_groups(glob)
+                for path in repo_root.glob(expanded)
+                if not (EXCLUDE_FROM_CLUSTERING_DIRS & set(path.parts))
+            )
+        discovered = [p for p in discovered if p.suffix.lower() in wanted]
         if not discovered:
             return []
         # Bounded like every other derivation input. The primary corpus has

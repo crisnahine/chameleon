@@ -512,3 +512,42 @@ def test_the_user_scope_override_applies_to_secondary_languages_too(tmp_path: Pa
     scoped = _secondary_language_files(tmp_path, "typescript", paths_glob="apps/web/**/*")
     names = sorted(Path(f.path).name for f in scoped)
     assert "out.go" not in names, f"scope override ignored for secondary languages: {names}"
+
+
+def test_the_size_guard_fallback_still_finds_files(tmp_path: Path, monkeypatch):
+    """The fallback must not be dead, and must not skip the exclusions.
+
+    It shipped passing the BRACED glob to `Path.glob`, which does not
+    brace-expand -- this repo hand-rolls `_expand_brace_groups` for exactly that
+    reason -- so it matched nothing and the size-guard case yielded ZERO
+    secondary coverage, the outcome it exists to prevent. It also bypasses
+    `discover_files`, so the exclusions have to be applied by hand or a vendored
+    third-party file becomes canonical-witness eligible.
+    """
+    from chameleon_mcp.bootstrap import orchestrator
+    from chameleon_mcp.bootstrap.discovery import TooManyFilesError
+
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    (tmp_path / "svc").mkdir()
+    (tmp_path / "vendor").mkdir()
+    (tmp_path / "package.json").write_text('{"name":"r"}', encoding="utf-8")
+    (tmp_path / "go.mod").write_text("module m\n\ngo 1.22\n", encoding="utf-8")
+    (tmp_path / "app.ts").write_text("export const a = 1;\n", encoding="utf-8")
+    for i in range(3):
+        (tmp_path / "svc" / f"s{i}.go").write_text(
+            f"package s\nfunc F{i}() {{}}\n", encoding="utf-8"
+        )
+    (tmp_path / "vendor" / "v.go").write_text("package v\nfunc V() {}\n", encoding="utf-8")
+
+    def _boom(*args, **kwargs):
+        raise TooManyFilesError(999_999)
+
+    monkeypatch.setattr("chameleon_mcp.bootstrap.discovery.discover_files", _boom)
+    names = sorted(
+        Path(f.path).name for f in orchestrator._secondary_language_files(tmp_path, "typescript")
+    )
+
+    assert names == ["s0.go", "s1.go", "s2.go"], (
+        f"fallback returned {names}: it must find the real source (not []) "
+        "and must still exclude vendor/"
+    )

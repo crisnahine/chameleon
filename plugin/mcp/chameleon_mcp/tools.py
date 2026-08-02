@@ -4318,6 +4318,17 @@ def get_symbol_edit_plan(repo: str, file_path: str, symbol_name: str) -> dict:
     if gate is None or not gate.grants_root(repo_root):
         return _envelope({**empty, "status": "untrusted"})
 
+    # Emit paths in the repo-ARG coordinate system, as every sibling call-graph
+    # tool does. This tool answers from the FILE's own workspace profile, so in a
+    # nested-workspace monorepo its keys are workspace-relative while
+    # query_symbol_importers reroots its sites internally -- one response would
+    # otherwise mix two coordinate systems, and a caller feeding a
+    # workspace-relative path back into get_callers gets a false total of 0.
+    _arg_root, _ = _resolve_repo_arg(repo)
+
+    def _rr(rel_path: object) -> object:
+        return _reroot_rel(rel_path, repo_root, _arg_root)
+
     rel = module_key_for_path(p, repo_root)
     if rel is None:
         return _envelope({**empty, "reason": "file-outside-repo"})
@@ -4339,7 +4350,7 @@ def get_symbol_edit_plan(repo: str, file_path: str, symbol_name: str) -> dict:
                     break
         if isinstance(entry, dict) and isinstance(entry.get("start_line"), int):
             definition = {
-                "path": _san(rel),
+                "path": _san(_rr(rel)),
                 "start_line": entry["start_line"],
                 "end_line": entry.get("end_line"),
                 "kind": kind,
@@ -4364,6 +4375,10 @@ def get_symbol_edit_plan(repo: str, file_path: str, symbol_name: str) -> dict:
         # caller read "3 references" off a symbol with 112 and conclude the edit
         # is small.
         references_total = (entry or {}).get("total") or len(rows)
+        # The index's own total is a LOWER BOUND when a contributing file hit the
+        # dump-time cap, so a capped index cannot claim a verified count.
+        if getattr(index, "capped_files", None):
+            complete = False
         if (entry or {}).get("truncated"):
             complete = False
         cap = threshold_int("EDIT_PLAN_MAX_SITES")
@@ -4372,7 +4387,7 @@ def get_symbol_edit_plan(repo: str, file_path: str, symbol_name: str) -> dict:
         for row in rows[:cap]:
             references.append(
                 {
-                    "path": _san(str(row.get("path", ""))),
+                    "path": _san(str(_rr(row.get("path", "")))),
                     "caller": _san(str(row.get("caller", ""))),
                     "line": row.get("line"),
                     "grade": _san(str(row.get("grade", ""))),
@@ -4385,6 +4400,14 @@ def get_symbol_edit_plan(repo: str, file_path: str, symbol_name: str) -> dict:
     try:
         imp = query_symbol_importers(repo, str(p))
         data = imp.get("data") if isinstance(imp, dict) else None
+        # `found` decides whether an empty list is an ANSWER or an absence.
+        # query_symbol_importers fails open with found:False + importers:[] for a
+        # missing reverse index, an untrusted grant, and any language outside
+        # REVERSE_INDEXED_LANGUAGES ({typescript, python}) -- so every other
+        # language hit this unconditionally and the response asserted a
+        # verified-zero importer set while `complete` stayed True.
+        if not (data or {}).get("found"):
+            complete = False
         # `importers` is a LIST of {name, count, sites}, not a name-keyed dict:
         # the row carries the exported name, so the filter belongs on the row.
         rows_by_name = [

@@ -308,7 +308,11 @@ _C_CHAR_LITERAL = r"'(?:\\[^\n]*?|[^'\\\n])'"
 _C_UNTERMINATED_BLOCK_COMMENT = r"/\*[\s\S]*$"
 
 
-def _c_family_pattern(*extra: str, block_comment: str | None = None) -> re.Pattern:
+def _c_family_pattern(
+    *extra: str,
+    block_comment: str | None = None,
+    unterminated: tuple[str, ...] = (),
+) -> re.Pattern:
     """Comments + string forms for one C-family language.
 
     ``extra`` holds the language's own literal forms and is placed BEFORE the
@@ -332,7 +336,16 @@ def _c_family_pattern(*extra: str, block_comment: str | None = None) -> re.Patte
                 *extra,
                 _C_DQ_STRING,
                 _C_CHAR_LITERAL,
+                # Unterminated openers, last so a closed form always wins. The
+                # lint path scans a ~100k-char clip, and a clip landing inside a
+                # construct leaves its body unstripped -- the TS and Python
+                # strippers carry the same arms for the same reason. Without the
+                # string arm a clipped Go backtick literal, Java text block, C#
+                # verbatim string or PHP heredoc leaves its tail scanned as live
+                # code, and a dynamic-execution token inside it fires at error
+                # severity on a file that merely got cut.
                 _C_UNTERMINATED_BLOCK_COMMENT,
+                *unterminated,
             )
         ),
         re.DOTALL,
@@ -347,7 +360,7 @@ def _c_family_pattern(*extra: str, block_comment: str | None = None) -> re.Patte
 # half-typed proposed content, where `let s = r"` with no closer is ordinary.
 _STRING_OR_COMMENT_BY_LANGUAGE: dict[str, re.Pattern] = {
     # Go: raw strings are backtick-delimited and honor no escapes.
-    "go": _c_family_pattern(r"`[^`]*`"),
+    "go": _c_family_pattern(r"`[^`]*`", unterminated=(r"`[\s\S]*$",)),
     # Rust: r"..." / r#"..."# with a matched hash count, so a `"` inside a raw
     # string does not end it. The backreference is this pattern's only group.
     # The nested-comment arm comes first because Rust block comments NEST, and
@@ -356,15 +369,26 @@ _STRING_OR_COMMENT_BY_LANGUAGE: dict[str, re.Pattern] = {
     # scanned as live code, which is a block-eligible finding on well-formed
     # Rust. Commenting out code that has comments in it is the whole reason
     # Rust nests them.
+    # A Rust plain `"..."` may contain literal newlines, so it needs the
+    # multi-line form as well as the raw one; the shared `_C_DQ_STRING` is
+    # line-bounded because Go/Java/C# plain strings cannot span lines.
     "rust": _c_family_pattern(
         r'r(#*)"[\s\S]*?"\1',
+        r'"(?:\\.|[^"\\])*"',
+        unterminated=(r'r#*"[\s\S]*$', r'"[\s\S]*$'),
         block_comment=r"/\*(?:[^/*]|\*(?!/)|/(?!\*)|" + _C_BLOCK_COMMENT + r")*\*/",
     ),
     # Java: a text block is triple-quoted and spans lines.
-    "java": _c_family_pattern(r'"""[\s\S]*?"""'),
+    "java": _c_family_pattern(r'"""[\s\S]*?"""', r'"""[\s\S]*$'),
     # C#: verbatim @"..." escapes an embedded quote by doubling it. Interpolated
     # $"..." needs no arm -- the `$` sits outside the plain string form.
-    "csharp": _c_family_pattern(r'@"(?:[^"]|"")*"'),
+    # C# 11 raw string literals are triple-quoted and span lines.
+    "csharp": _c_family_pattern(
+        r'"""[\s\S]*?"""',
+        r'"""[\s\S]*$',
+        r'@"(?:[^"]|"")*"',
+        r'@"[\s\S]*$',
+    ),
     # PHP: `#` line comments, heredoc/nowdoc terminated by the label it opened
     # with, and the single-quoted string -- PHP's dominant literal form, which
     # must come BEFORE the `#` comment arm. Without it `$tag = 'issue #42';`
@@ -375,7 +399,10 @@ _STRING_OR_COMMENT_BY_LANGUAGE: dict[str, re.Pattern] = {
     "php": _c_family_pattern(
         r"<<<[ \t]*['\"]?(\w+)['\"]?\r?\n[\s\S]*?\r?\n[ \t]*\1(?!\w)",
         r"'(?:\\.|[^'\\])*'",
+        # PHP double-quoted strings may span lines too.
+        r'"(?:\\.|[^"\\])*"',
         r"#[^\n]*",
+        unterminated=(r"<<<[ \t]*['\"]?\w+['\"]?\r?\n[\s\S]*$",),
     ),
 }
 

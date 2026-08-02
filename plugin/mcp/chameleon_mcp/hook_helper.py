@@ -6027,31 +6027,35 @@ def _scan_archetype_independent(
             out.extend(v.to_dict() for v in scan_dangerous_sinks(content, language=sink_language))
         except Exception:
             pass
-        # A phantom import (a relative/aliased specifier resolving to no file) is a
-        # content fact independent of the archetype, exactly like the secret and
-        # eval scans above -- the docstrings on this path and on the Stop relint
-        # both promise it blocks on an unarchetyped file. It was never scanned
-        # here, so a hallucinated import in a brand-new file at the repo root or in
-        # an unclustered directory shipped with no edit-time advisory and no
-        # turn-end refusal. Resolve needs the repo root + a rules map for tsconfig
-        # aliases; ``rules`` may be None (callers without the profile loaded), in
-        # which case alias resolution degrades to the on-disk check.
-        if repo_root is not None:
-            try:
-                from chameleon_mcp.phantom_imports import lint_phantom_imports
+    # A phantom import (a relative/aliased specifier resolving to no file) is a
+    # content fact independent of the archetype, exactly like the secret and
+    # eval scans above -- the docstrings on this path and on the Stop relint
+    # both promise it blocks on an unarchetyped file. Resolve needs the repo root
+    # + a rules map for tsconfig aliases; ``rules`` may be None (callers without
+    # the profile loaded), in which case alias resolution degrades to the on-disk
+    # check.
+    #
+    # Deliberately OUTSIDE the widened sink gate above: phantom-import is a
+    # dimension-extractor question, not a content-security one, and it is still
+    # handed the narrow `language`. It self-guards to [] on a falsy language, so
+    # nesting it under the wide gate bought only a wasted call while reading as
+    # though phantom imports run for Go.
+    if repo_root is not None:
+        try:
+            from chameleon_mcp.phantom_imports import lint_phantom_imports
 
-                out.extend(
-                    v.to_dict()
-                    for v in lint_phantom_imports(
-                        content,
-                        file_path=file_path,
-                        repo_root=repo_root,
-                        language=language,
-                        rules=rules,
-                    )
+            out.extend(
+                v.to_dict()
+                for v in lint_phantom_imports(
+                    content,
+                    file_path=file_path,
+                    repo_root=repo_root,
+                    language=language,
+                    rules=rules,
                 )
-            except Exception:
-                pass
+            )
+        except Exception:
+            pass
     if rules is not None:
         try:
             from chameleon_mcp.lint_engine import scan_style_rules
