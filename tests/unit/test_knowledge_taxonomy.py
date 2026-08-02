@@ -369,6 +369,63 @@ def test_classifier_now_answers_for_a_language_it_never_covered(tmp_path):
     assert _classify_framework(tmp_path, "php") == "laravel"
 
 
+def test_prose_in_a_manifest_is_never_a_dependency():
+    """Framework names are ordinary words -- flask, express, next, solid, astro,
+    hono -- so a scrape of package-shaped tokens turns any description, comment,
+    or README excerpt that spells one into a dependency claim. Each manifest is
+    read through its own declaration surface instead; these are the exact traps
+    the scrape fell into, one per format.
+    """
+    traps = {
+        "pyproject.toml": (
+            '[project]\ndescription = "a lightweight alternative to flask"\n'
+            'dependencies = ["click>=8"]\n',
+            {"click"},
+        ),
+        "Cargo.toml": (
+            '[package]\ndescription = "a fast alternative to axum"\n\n'
+            '[dependencies]\nactix-web = "4"\n',
+            {"actix-web"},
+        ),
+        "composer.json": (
+            '{"description": "like laravel but small", "require": {"symfony/console": "^6"}}',
+            {"symfony/console"},
+        ),
+        "build.gradle": (
+            'dependencies {\n  implementation "org.springframework.boot:spring-boot-starter-web:3.2"\n}\n'
+            "// mentions ktor in a comment\n",
+            {"org.springframework.boot", "spring-boot-starter-web"},
+        ),
+        "requirements.txt": (
+            '# fastapi is not used here\nflask-login>=0.6 ; python_version < "3.12"\n-r base.txt\n',
+            {"flask-login"},
+        ),
+        "pom.xml": (
+            "<project><description>not spring</description><dependencies><dependency>"
+            "<groupId>org.example</groupId><artifactId>widget</artifactId>"
+            "</dependency></dependencies></project>",
+            {"org.example", "widget"},
+        ),
+        "go.mod": (
+            "module example.com/x\n\ngo 1.22\n\nrequire (\n\tgithub.com/gin-gonic/gin v1.9.1\n)\n",
+            {"github.com/gin-gonic/gin"},
+        ),
+    }
+    for manifest, (text, expected) in traps.items():
+        assert detect._declared_deps(manifest, text) == expected, manifest
+
+
+def test_a_gem_clause_is_a_dependency_signal(tmp_path):
+    """Ruby profiles spell the manifest word as a noun ("sinatra gem"), which the
+    marker table missed -- so both Ruby profiles beyond Rails contributed no
+    dependency signal at all and could never be detected."""
+    assert detect.parse_hint("sinatra gem; get/post blocks")["deps"] == ("sinatra",)
+    assert detect.parse_hint("rspec-rails gem; .rspec")["deps"] == ("rspec-rails",)
+    # "Gemfile with rails" is a FILE clause, not a dependency one; the marker
+    # needs a following space, so the word inside "Gemfile" cannot trigger it.
+    assert detect.parse_hint("Gemfile with rails; bin/rails")["deps"] == ()
+
+
 def test_every_framework_gets_an_anti_hallucination_line():
     """Six hand-written strings meant the other 58 got no line at all, which is
     the same silence as not detecting them."""

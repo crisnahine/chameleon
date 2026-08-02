@@ -103,8 +103,26 @@ def test_rails_via_gemfile(tmp_path):
     assert _classify_framework(tmp_path, "ruby") == "rails"
 
 
-def test_ruby_no_rails_none(tmp_path):
+def test_ruby_framework_beyond_the_rails_arm(tmp_path):
+    """Sinatra is a framework. This asserted ``None`` when the Ruby arm knew only
+    Rails and dead-ended, so every other Ruby framework was invisible; the arm now
+    hands a miss to the taxonomy fallback, which names it."""
     (tmp_path / "Gemfile").write_text("gem 'sinatra'\n")
+    assert _classify_framework(tmp_path, "ruby") == "sinatra"
+
+
+def test_ruby_library_still_none(tmp_path):
+    """A gem that is a LIBRARY, not a framework, still yields None -- the taxonomy
+    describes no profile for it, so nothing clears the bar."""
+    (tmp_path / "Gemfile").write_text("gem 'nokogiri'\n")
+    assert _classify_framework(tmp_path, "ruby") is None
+
+
+def test_rails_arm_refusal_is_not_overturned_by_the_fallback(tmp_path):
+    """The arms adjudicate their own names. A Gemfile naming rails in a comment
+    only -- no real dependency -- must stay None rather than have the fallback
+    re-assert 'rails' on the weaker, name-only evidence the detector sees."""
+    (tmp_path / "Gemfile").write_text("# we migrated off rails last year\ngem 'nokogiri'\n")
     assert _classify_framework(tmp_path, "ruby") is None
 
 

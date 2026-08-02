@@ -59,6 +59,11 @@ _DEP_MARKERS: Final[tuple[str, ...]] = (
     "in build.gradle",
     "deps",
     "dep",
+    # Ruby profiles spell the manifest word as the noun: "sinatra gem",
+    # "rspec-rails gem". It must stay AFTER "in gemfile" so that marker keeps
+    # priority, and it needs a trailing space or clause end to match, so
+    # "Gemfile with rails" is not mistaken for a dependency clause.
+    "gem",
 )
 
 # Manifest files, and how to pull declared dependency names out of each.
@@ -166,6 +171,163 @@ def parse_hint(hint: str) -> dict[str, tuple[str, ...]]:
     return {"deps": tuple(dict.fromkeys(deps)), "files": tuple(dict.fromkeys(files))}
 
 
+def _dep_name(raw: object) -> str:
+    """The leading project name of a requirement string, casefolded.
+
+    Strips the version specifier, extras, environment marker, URL, and trailing
+    comment a manifest line may carry, so `flask-login>=0.6 ; python_version <
+    "3.12"` yields `flask-login`.
+    """
+    m = re.match(r"\s*@?([A-Za-z0-9][A-Za-z0-9._/-]*)", str(raw))
+    return m.group(1).casefold() if m else ""
+
+
+def _json_dep_names(text: str, sections: tuple[str, ...]) -> set[str]:
+    """Dependency keys from the named object sections of a JSON manifest."""
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        return set()
+    if not isinstance(doc, dict):
+        return set()
+    out: set[str] = set()
+    for section in sections:
+        block = doc.get(section)
+        if isinstance(block, dict):
+            out.update(str(k).casefold() for k in block)
+    return out
+
+
+def _toml_dep_names(text: str) -> set[str]:
+    """Dependency names from the dependency TABLES of a TOML manifest.
+
+    Covers PEP 621 `[project]`, poetry, Pipfile, and Cargo shapes in one pass,
+    because a repo's pyproject may use either Python convention and the Cargo
+    tables happen to share the mapping/sequence shape.
+    """
+    import tomllib
+
+    try:
+        doc = tomllib.loads(text)
+    except (tomllib.TOMLDecodeError, ValueError):
+        return set()
+    if not isinstance(doc, dict):
+        return set()
+
+    out: set[str] = set()
+
+    def _absorb(block: object) -> None:
+        # A dependency table is either a sequence of requirement strings (PEP
+        # 621, Cargo's rare array form) or a mapping of name -> constraint
+        # (poetry, Pipfile, Cargo's usual form). Keys are names in the mapping
+        # form; values are constraints and must never be read as names.
+        if isinstance(block, list):
+            for item in block:
+                if isinstance(item, str) and (n := _dep_name(item)):
+                    out.add(n)
+        elif isinstance(block, dict):
+            for key in block:
+                if n := _dep_name(key):
+                    out.add(n)
+
+    project = doc.get("project")
+    if isinstance(project, dict):
+        _absorb(project.get("dependencies"))
+        optional = project.get("optional-dependencies")
+        if isinstance(optional, dict):
+            for group in optional.values():
+                _absorb(group)
+
+    tool = doc.get("tool")
+    if isinstance(tool, dict):
+        poetry = tool.get("poetry")
+        if isinstance(poetry, dict):
+            _absorb(poetry.get("dependencies"))
+            _absorb(poetry.get("dev-dependencies"))
+            groups = poetry.get("group")
+            if isinstance(groups, dict):
+                for group in groups.values():
+                    if isinstance(group, dict):
+                        _absorb(group.get("dependencies"))
+
+    # Pipfile
+    _absorb(doc.get("packages"))
+    _absorb(doc.get("dev-packages"))
+
+    # Cargo.toml
+    _absorb(doc.get("dependencies"))
+    _absorb(doc.get("dev-dependencies"))
+    _absorb(doc.get("build-dependencies"))
+
+    return out
+
+
+_GEMFILE_RE: Final[re.Pattern[str]] = re.compile(r"""^\s*gem\s+['"]([^'"]+)['"]""", re.MULTILINE)
+_GO_REQUIRE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:require\s+)?([a-z0-9][a-z0-9._/-]*\.[a-z]{2,}/[^\s]+)\s+v", re.MULTILINE
+)
+_POM_ARTIFACT_RE: Final[re.Pattern[str]] = re.compile(
+    r"<(?:artifactId|groupId)>\s*([^<\s]+)\s*</(?:artifactId|groupId)>"
+)
+_GRADLE_COORD_RE: Final[re.Pattern[str]] = re.compile(r"""['"]([a-zA-Z0-9._-]+:[a-zA-Z0-9._-]+)""")
+
+
+def _declared_deps(manifest: str, text: str) -> set[str]:
+    """Dependency names a manifest DECLARES, never words it merely contains.
+
+    Each format is read through its own declaration surface rather than scraped
+    for package-shaped tokens. The scrape this replaced turned any prose that
+    happened to spell a framework into a dependency claim -- a `pyproject.toml`
+    whose description read "a lightweight alternative to flask" detected as
+    Flask -- and framework names are ordinary words (flask, express, next,
+    solid, astro, hono), so the collision is the common case rather than the
+    rare one. Fails open to an empty set per manifest.
+    """
+    if manifest in ("package.json", "composer.json"):
+        sections = (
+            ("dependencies", "devDependencies", "peerDependencies")
+            if manifest == "package.json"
+            else ("require", "require-dev")
+        )
+        return _json_dep_names(text, sections)
+
+    if manifest in ("pyproject.toml", "Pipfile", "Cargo.toml"):
+        return _toml_dep_names(text)
+
+    if manifest == "requirements.txt":
+        out: set[str] = set()
+        for line in text.splitlines():
+            line = line.strip()
+            # `-r base.txt` / `-e .` are directives, not requirements.
+            if not line or line.startswith(("#", "-")):
+                continue
+            if n := _dep_name(line):
+                out.add(n)
+        return out
+
+    if manifest == "Gemfile":
+        return {n for m in _GEMFILE_RE.finditer(text) if (n := m.group(1).casefold())}
+
+    if manifest == "go.mod":
+        return {n for m in _GO_REQUIRE_RE.finditer(text) if (n := m.group(1).casefold())}
+
+    if manifest == "pom.xml":
+        return {n for m in _POM_ARTIFACT_RE.finditer(text) if (n := m.group(1).casefold())}
+
+    if manifest in ("build.gradle", "build.gradle.kts"):
+        # Gradle coordinates are `group:artifact:version`; both halves of the
+        # leading pair are worth recording, since profiles name either.
+        out = set()
+        for m in _GRADLE_COORD_RE.finditer(text):
+            group, _, artifact = m.group(1).partition(":")
+            out.add(group.casefold())
+            if artifact:
+                out.add(artifact.casefold())
+        return out
+
+    return set()
+
+
 def _manifest_dep_names(root: Path, max_dirs: int) -> frozenset[str]:
     """Every dependency name declared anywhere in the repo's manifests.
 
@@ -193,26 +355,7 @@ def _manifest_dep_names(root: Path, max_dirs: int) -> frozenset[str]:
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            if manifest == "package.json":
-                try:
-                    doc = json.loads(text)
-                except ValueError:
-                    continue
-                if isinstance(doc, dict):
-                    for section in ("dependencies", "devDependencies", "peerDependencies"):
-                        block = doc.get(section)
-                        if isinstance(block, dict):
-                            names.update(str(k).casefold() for k in block)
-                continue
-            # Everything else: every package-shaped token on a non-comment line.
-            # Coarse on purpose -- a false dependency name only matters if it
-            # happens to equal a framework's own package name.
-            for line in text.splitlines():
-                stripped = line.strip()
-                if not stripped or stripped.startswith("#"):
-                    continue
-                for m in _PKG_RE.finditer(stripped.casefold()):
-                    names.add(m.group(0))
+            names |= _declared_deps(manifest, text)
     return frozenset(names)
 
 

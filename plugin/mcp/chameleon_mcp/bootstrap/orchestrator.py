@@ -575,6 +575,16 @@ def _inherited_signals_root(repo_root: Path) -> Path | None:
     return None
 
 
+# What each hardcoded arm below decides for itself. A name listed here is the
+# arm's to answer or refuse, and the taxonomy fallback never overrides its
+# refusal -- see `_taxonomy_framework`. Keep each set in step with its arm: a
+# name the arm starts returning but that is missing here would let the fallback
+# re-assert it on weaker, name-only evidence.
+_RUBY_ARM_FRAMEWORKS: frozenset[str] = frozenset({"rails"})
+_PYTHON_ARM_FRAMEWORKS: frozenset[str] = frozenset({"django", "flask", "fastapi"})
+_TS_ARM_FRAMEWORKS: frozenset[str] = frozenset({"nextjs", "nestjs"})
+
+
 def _classify_framework(repo_root: Path, language: str | None) -> str | None:
     """Best-effort discrete framework family for the repo, or None.
 
@@ -593,7 +603,7 @@ def _classify_framework(repo_root: Path, language: str | None) -> str | None:
                     r"^\s*gem\s+['\"]rails['\"]", _read_marker_text(gemfile), re.MULTILINE
                 ):
                     return "rails"
-            return None
+            return _taxonomy_framework(repo_root, language, adjudicated=_RUBY_ARM_FRAMEWORKS)
         if language == "python":
             # A manage.py whose CONTENT is a real Django entrypoint is the
             # strongest, corroborated Django signal (stronger than an incidental
@@ -628,7 +638,7 @@ def _classify_framework(repo_root: Path, language: str | None) -> str | None:
                 return "flask"
             if _has("django"):
                 return "django"
-            return None
+            return _taxonomy_framework(repo_root, language, adjudicated=_PYTHON_ARM_FRAMEWORKS)
         if language == "typescript":
             deps: set[str] = set()
             for d in dirs:
@@ -641,16 +651,21 @@ def _classify_framework(repo_root: Path, language: str | None) -> str | None:
                 for ext in (".js", ".mjs", ".ts", ".cjs")
             ):
                 return "nextjs"
-            return _taxonomy_framework(repo_root, language)
+            return _taxonomy_framework(repo_root, language, adjudicated=_TS_ARM_FRAMEWORKS)
         # A language the six hardcoded arms never covered -- Go, Rust, Java,
         # PHP, everything else. Before the taxonomy there was nothing to say
-        # here at all.
+        # here at all, and no arm has adjudicated anything, so nothing is skipped.
         return _taxonomy_framework(repo_root, language)
     except Exception:
         return None
 
 
-def _taxonomy_framework(repo_root: Path, language: str | None) -> str | None:
+def _taxonomy_framework(
+    repo_root: Path,
+    language: str | None,
+    *,
+    adjudicated: frozenset[str] = frozenset(),
+) -> str | None:
     """The scored fallback, for a framework no hardcoded arm names.
 
     Deliberately a FALLBACK rather than a replacement. The six arms above encode
@@ -660,12 +675,24 @@ def _taxonomy_framework(repo_root: Path, language: str | None) -> str | None:
     which is every framework outside the six and every language outside the
     three.
 
+    `adjudicated` names the frameworks the calling arm ALREADY decided about, and
+    they are skipped here even when they score. This is what keeps the fallback
+    from overturning a rejection the arm made on stronger evidence: the detector
+    reads file NAMES only, so a bare `manage.py` belonging to a click task-runner
+    scores django at the strong_config tier, which is exactly the misdetection
+    the arm's content check exists to prevent. Without the skip, adding the
+    fallback to a language silently re-opens it.
+
     Fails open to None like everything else in this classifier.
     """
     try:
-        from chameleon_mcp.knowledge.detect import primary_framework
+        from chameleon_mcp.knowledge.detect import score_frameworks
 
-        return primary_framework(repo_root, language)
+        for row in score_frameworks(repo_root, language):
+            name = row.get("framework")
+            if isinstance(name, str) and name not in adjudicated:
+                return name
+        return None
     except Exception:
         return None
 
