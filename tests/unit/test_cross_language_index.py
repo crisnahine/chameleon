@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -369,21 +370,61 @@ def test_the_secondary_corpus_is_bounded(tmp_path: Path, monkeypatch):
     assert len(files) == 5, f"secondary corpus unbounded: {len(files)}"
 
 
-def test_the_cap_truncates_deterministically(tmp_path: Path, monkeypatch):
-    """Two runs over the same tree must agree, or the profile churns."""
-    monkeypatch.setenv("CHAMELEON_CROSS_LANGUAGE_MAX_SECONDARY_FILES", "4")
-    (tmp_path / "svc").mkdir()
+def test_the_cap_is_applied_by_spreading_not_truncating(tmp_path: Path, monkeypatch):
+    """Guards the CALL SITE, not just the sampler.
+
+    A single-directory fixture cannot tell round-robin from `[:cap]`, so this
+    lays the secondary files across several directories: sorted truncation keeps
+    only the alphabetically-first ones and starves the rest, which is exactly the
+    invisible, arbitrary gap the sampler exists to prevent.
+    """
+    monkeypatch.setenv("CHAMELEON_CROSS_LANGUAGE_MAX_SECONDARY_FILES", "6")
     (tmp_path / "package.json").write_text('{"name":"r"}', encoding="utf-8")
     (tmp_path / "go.mod").write_text("module m\n\ngo 1.22\n", encoding="utf-8")
     (tmp_path / "app.ts").write_text("export const a = 1;\n", encoding="utf-8")
-    for i in range(12):
-        (tmp_path / "svc" / f"s{i:02d}.go").write_text(
-            f"package s\n\nfunc F{i}() {{}}\n", encoding="utf-8"
-        )
+    for d in ("alpha", "beta", "gamma"):
+        (tmp_path / d).mkdir()
+        for i in range(5):
+            (tmp_path / d / f"s{i}.go").write_text(
+                f"package {d}\n\nfunc F{i}() {{}}\n", encoding="utf-8"
+            )
 
-    first = [f.path for f in _secondary_language_files(tmp_path, "typescript")]
+    first = _secondary_language_files(tmp_path, "typescript")
+    assert len(first) == 6, len(first)
+
+    dirs = Counter(Path(f.path).parent.name for f in first)
+    assert set(dirs) == {"alpha", "beta", "gamma"}, (
+        f"the cap starved whole directories instead of spreading: {dict(dirs)}"
+    )
+
     second = [f.path for f in _secondary_language_files(tmp_path, "typescript")]
-    assert first == second and len(first) == 4, (first, second)
+    assert [f.path for f in first] == second, "sampling is not deterministic"
+
+
+def test_the_cap_spreads_across_directories_instead_of_starving_them():
+    """Alphabetical truncation is worse than thinner uniform coverage.
+
+    Taking the first `cap` sorted paths gives one directory full coverage and
+    later ones none, so a developer working in a starved area gets no archetype
+    and no way to see why the gap exists. Round-robin keeps every area
+    represented, and stays deterministic so two runs agree.
+    """
+    from chameleon_mcp.bootstrap.orchestrator import _sample_across_dirs
+
+    paths = [f"{d}/f{i}.go" for d in ("alpha", "beta", "gamma", "zeta") for i in range(10)]
+
+    kept = _sample_across_dirs(paths, 12)
+    assert len(kept) == 12
+    per_dir = Counter(p.split("/")[0] for p in kept)
+    assert set(per_dir) == {"alpha", "beta", "gamma", "zeta"}, per_dir
+    assert max(per_dir.values()) - min(per_dir.values()) <= 1, per_dir
+    # Sorted truncation is what this replaces, and it starves two whole dirs.
+    starved = Counter(p.split("/")[0] for p in sorted(paths)[:12])
+    assert len(starved) < 4, starved
+
+    assert _sample_across_dirs(paths, 12) == kept, "sampling is not deterministic"
+    assert len(_sample_across_dirs(paths[:5], 12)) == 5, "cap larger than input"
+    assert _sample_across_dirs([], 5) == []
 
 
 def test_conventions_never_receive_a_secondary_language_file(

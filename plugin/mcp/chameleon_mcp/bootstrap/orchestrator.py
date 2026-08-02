@@ -940,6 +940,39 @@ def _extensions_for_extractor(extractor: Extractor) -> tuple[str, ...]:
     return extensions
 
 
+def _sample_across_dirs(paths: list, cap: int) -> list:
+    """Take ``cap`` paths spread across directories, not the first ``cap`` sorted.
+
+    Truncating a sorted list starves whole areas of the tree: over four 10-file
+    directories with a cap of 12, `alpha` keeps all ten and `gamma`/`zeta` keep
+    none, so a developer working there gets no archetype at all and no way to
+    see why. Alphabetical coverage is worse than thinner uniform coverage,
+    because the gap is invisible and arbitrary.
+
+    Round-robins one file per directory per pass, directories and files both in
+    sorted order, so the result is deterministic: two runs over the same tree
+    agree, which the profile depends on.
+    """
+    by_dir: dict[str, list] = {}
+    for path in sorted(paths):
+        by_dir.setdefault(str(Path(path).parent), []).append(path)
+    out: list = []
+    rounds = 0
+    while len(out) < cap:
+        added = False
+        for key in sorted(by_dir):
+            bucket = by_dir[key]
+            if rounds < len(bucket):
+                out.append(bucket[rounds])
+                added = True
+                if len(out) >= cap:
+                    break
+        if not added:
+            break
+        rounds += 1
+    return out
+
+
 def _primary_sparse_threshold(primary_files) -> int:
     """The sparse floor the PRIMARY corpus alone would have produced.
 
@@ -1041,7 +1074,7 @@ def _secondary_language_files(repo_root: Path, primary_language: str) -> list:
         # sorted paths) so two runs of the same tree agree.
         cap = threshold_int("CROSS_LANGUAGE_MAX_SECONDARY_FILES")
         if len(discovered) > cap:
-            discovered = discovered[:cap]
+            discovered = _sample_across_dirs(discovered, cap)
         collected = []
         for parsed in probe.parse_repo(repo_root, paths=discovered).files:
             try:
