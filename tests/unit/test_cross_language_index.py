@@ -130,7 +130,11 @@ def test_the_index_covers_both_languages_end_to_end(mixed_repo: Path, monkeypatc
     monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
     monkeypatch.setenv("CHAMELEON_HMAC_KEY_PATH", str(tmp_path / "hmac"))
-    for argv in (["git", "init", "-q"], ["git", "add", "-A"], ["git", "commit", "-qm", "init"]):
+    for argv in (
+        ["git", "init", "-q"],
+        ["git", "add", "-A"],
+        ["git", "-c", "user.email=t@e", "-c", "user.name=T", "commit", "-qm", "init"],
+    ):
         subprocess.run(argv, cwd=mixed_repo, check=True, capture_output=True)
 
     from chameleon_mcp.bootstrap.orchestrator import bootstrap_repo
@@ -199,7 +203,11 @@ def test_every_language_gets_its_own_archetype(dense_mixed_repo: Path, monkeypat
     monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
     monkeypatch.setenv("CHAMELEON_HMAC_KEY_PATH", str(tmp_path / "hmac"))
-    for argv in (["git", "init", "-q"], ["git", "add", "-A"], ["git", "commit", "-qm", "init"]):
+    for argv in (
+        ["git", "init", "-q"],
+        ["git", "add", "-A"],
+        ["git", "-c", "user.email=t@e", "-c", "user.name=T", "commit", "-qm", "init"],
+    ):
         subprocess.run(argv, cwd=dense_mixed_repo, check=True, capture_output=True)
 
     from chameleon_mcp.bootstrap.orchestrator import bootstrap_repo
@@ -390,7 +398,11 @@ def test_conventions_never_receive_a_secondary_language_file(
     monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
     monkeypatch.setenv("CHAMELEON_HMAC_KEY_PATH", str(tmp_path / "hmac"))
-    for argv in (["git", "init", "-q"], ["git", "add", "-A"], ["git", "commit", "-qm", "i"]):
+    for argv in (
+        ["git", "init", "-q"],
+        ["git", "add", "-A"],
+        ["git", "-c", "user.email=t@e", "-c", "user.name=T", "commit", "-qm", "i"],
+    ):
         subprocess.run(argv, cwd=dense_mixed_repo, check=True, capture_output=True)
 
     from chameleon_mcp.bootstrap.orchestrator import bootstrap_repo
@@ -428,7 +440,11 @@ def test_no_secondary_file_is_handed_to_convention_extraction(
     monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
     monkeypatch.setenv("CHAMELEON_HMAC_KEY_PATH", str(tmp_path / "hmac"))
-    for argv in (["git", "init", "-q"], ["git", "add", "-A"], ["git", "commit", "-qm", "i"]):
+    for argv in (
+        ["git", "init", "-q"],
+        ["git", "add", "-A"],
+        ["git", "-c", "user.email=t@e", "-c", "user.name=T", "commit", "-qm", "i"],
+    ):
         subprocess.run(argv, cwd=dense_mixed_repo, check=True, capture_output=True)
 
     from chameleon_mcp.bootstrap import orchestrator
