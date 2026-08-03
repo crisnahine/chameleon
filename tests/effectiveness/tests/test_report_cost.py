@@ -291,6 +291,7 @@ def test_runner_records_turns_into_run_json(monkeypatch, tmp_path):
             self.session_id = "sess-1"
             self.result_text = ""
             self.bash_commands = []
+            self.terminal_reason = "completed"
 
     results = [
         ("success", 12, 0),

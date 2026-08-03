@@ -15,6 +15,11 @@ class ActResult:
     phase_outcomes: list[PhaseOutcome]
     checkpoint_parse_errors: int = 0
     notes: str = ""
+    # End-state of the act's own worker session (see ClaudeSession). The runner
+    # reads it to tell a worker that finished from one that stopped mid-task,
+    # whose checkpoints describe only the phases it reached. Defaulted for the
+    # preflight act, which spawns nothing.
+    terminal_reason: str = ""
 
 
 def dispatcher_actions(session, dispatcher: str) -> list[str]:

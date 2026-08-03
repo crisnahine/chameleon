@@ -52,6 +52,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   which would have searched a Go repo for `.ts` files, found none, and written a
   clean-looking profile over zero files. It now raises.
 
+### Tests
+
+Harness-only. No plugin behaviour changes with any of these; what changes is
+whether the release gate can be believed.
+
+- **The journey harness scored acts whose worker never ran them.** A plugin
+  installed at the user level can register a PreToolUse hook that answers
+  `permissionDecision: "defer"`, and in print mode the CLI honours that by ending
+  the run and handing the Edit or Write back un-executed. Acts died that way,
+  wrote nothing, and still reported `subtype: "success"`, `is_error: false` and
+  exit 0, so nothing downstream could tell them from a clean pass. Workers now
+  spawn with `--setting-sources project,local`, which drops user-scope plugins.
+  Chameleon
+  itself still loads through `--plugin-dir` and every one of its hooks still
+  fires, and a fixture's own `.claude/settings*.json` is still read. The new
+  `CHAMELEON_JOURNEY_SETTING_SOURCES` puts the user scope back for anyone who
+  needs to reproduce it; the effectiveness eval shares the same spawn, so it gets
+  both the fix and the flag.
+- **A run could go green on a dead worker.** The stream-json parser records
+  `terminal_reason`, `stop_reason` and the name of any deferred tool, and
+  `abnormal_termination()` turns those into a reason string. The journey runner
+  marks every phase of such an act ERROR, keeping the act's own verdict in the
+  note, and the effectiveness runner errors the cell rather than scoring it.
+  Before this, a phase whose worker died before reaching it emitted no events and
+  landed as SKIP, and SKIP alone never failed a run.
+- **Not every unclean end state is a lost result.** `abnormal_termination()`
+  takes `work_complete`: an act that reported PASS on every phase it declared, or
+  an eval cell that produced a scoreable diff, already holds what it came for, so
+  exhausting the turn cap on the way out is a budget fact rather than a missing
+  answer. Failing those would also bias the eval, because turn-cap rates differ
+  per arm and the dropped cells would not fall evenly across them. A deferred
+  tool is fatal either way: the state the session saw is not the state it asked
+  for.
+- **The end state was read off the wrong result frame.** One `claude -p` process
+  emits several when a background task finishes after the main run has ended its
+  turn: the CLI wakes the same session, and that segment emits its own frame
+  tagged `origin: {"kind": "task-notification"}`. A last-frame-wins rule read the
+  wakeup's `completed` over the run's own `max_turns` or `tool_deferred`: act 08's
+  own frame reported `error_max_turns` at $3.90 and the wakeup behind it reported
+  success at $8.47. End state now comes from the first untagged frame. Cost still
+  comes from the last, because `total_cost_usd` is cumulative over the whole
+  session and reading the run's own frame would have halved that act's recorded
+  spend. A deferral in any segment stays sticky.
+- **Seven acts hit the turn cap before their last phase.** Caps raised: 04 to 60,
+  04b to 110, 06 to 55, 08 to 75, 09 to 110, 10 to 55, 10b to 65. A cap set from
+  a run that itself ran out of turns only reproduces the failure, so each new one
+  clears the turn count of the longest run that actually completed.
+- `run.md` truncated its notes at 80 characters, which cut an abnormal-termination
+  reason off before the act's own verdict; the column now holds 200. Act 01's
+  pinned MCP tool count moved from 19 to 21.
+
 ## [4.9.2] - 2026-07-31
 
 ### Fixed

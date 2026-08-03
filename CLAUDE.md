@@ -18,8 +18,9 @@ chameleon/
 ├── plugin/            the installable plugin surface (this is what a marketplace install copies)
 │   ├── .claude-plugin/  plugin.json (plugin manifest)
 │   ├── .mcp.json        MCP server registration (${CLAUDE_PLUGIN_ROOT}-relative)
-│   ├── hooks/           session-start, preflight-and-advise, posttool-recorder,
-│   │                    posttool-verify, callout-detector, stop-backstop
+│   ├── hooks/           session-start, preflight-and-advise, peer-skill-advise,
+│   │                    posttool-recorder, posttool-verify, callout-detector,
+│   │                    stop-backstop
 │   │                    (+ _resolve-python.sh, run-hook.cmd, hooks.json)
 │   ├── skills/          using-chameleon (auto) + 14 user-invocable slash commands
 │   ├── agents/          code-scout, pattern-reviewer, recall-lens, verifier,
@@ -40,7 +41,7 @@ chameleon/
 ```
 
 `chromatophore/` is deliberately outside `plugin/`: a marketplace install copies
-`plugin/` verbatim, and 9,500 lines of Rust plus a 39 MB binary do not belong in
+`plugin/` verbatim, and 9,800 lines of Rust plus a 39 MB binary do not belong in
 a plugin payload. It is also outside chameleon's CI paths (every lint and test
 target names explicit directories), so it carries its own gates -- run them from
 `chromatophore/`, not from the repo root.
@@ -59,38 +60,79 @@ The user-invocable commands: `init`, `refresh`, `status`, `teach`, `auto-idiom`,
 
 ### Lint and format
 
-Python is linted with ruff (line-length 100, config in `plugin/mcp/pyproject.toml`; `E402` and `E501` are intentionally ignored — see the comments there):
+Python is linted with ruff. The config is `plugin/mcp/pyproject.toml` (line-length
+100; `E402` and `E501` are ignored on purpose, see the comments there). Run it from
+`plugin/mcp/`, not from the repo root:
 
 ```bash
-plugin/mcp/.venv/bin/ruff check .          # lint
-plugin/mcp/.venv/bin/ruff format .         # format
+cd plugin/mcp
+.venv/bin/ruff check chameleon_mcp/ ../../tests/unit/          # lint
+.venv/bin/ruff format chameleon_mcp/ ../../tests/unit/         # format
 ```
+
+The directory matters. Ruff resolves config per file by walking up from the file,
+and nothing above `tests/` carries one, so those files take whatever config ruff
+found from the current directory. From the repo root that is nothing, and they fall
+back to ruff's default line-length 88: `ruff check .` then reports the 3 `E402`
+hits the real config ignores, and `ruff format --check .` calls hundreds of files
+unformatted (442 today, none of them under `plugin/mcp/`). The two paths above are
+what the pre-push gate covers; wider ones (`../../tests/`, `../../scripts/`) carry
+pre-existing offenses, so a clean run there is not today's baseline.
 
 ### Run the journey harness
 
 ```bash
 plugin/mcp/.venv/bin/python -m tests.journey.runner               # full run (~$40, ~95 min)
-plugin/mcp/.venv/bin/python -m tests.journey.runner --list        # list acts
+plugin/mcp/.venv/bin/python -m tests.journey.runner --list        # list the 21 acts
 plugin/mcp/.venv/bin/python -m tests.journey.runner --dry-run     # preflight only, no Claude spawn
 plugin/mcp/.venv/bin/python -m tests.journey.runner --model claude-sonnet-5   # pin the worker model
-plugin/mcp/.venv/bin/python -m tests.journey.runner --acts 02_init_flow,12_pr_review --max-budget-usd 12
+plugin/mcp/.venv/bin/python -m tests.journey.runner --acts 02_init_flow,12_pr_review --max-budget-usd 13
 ```
 
 The journey harness drives real `claude -p` subprocesses against committed seed fixtures. Run before each release. All state is isolated to a per-run dir under `tests/journey/results/`; the developer's own `~/.local/share/chameleon/` is never touched.
 
 `--max-budget-usd` is checked against the sum of the selected acts' ceilings, so a
-cap below that sum refuses to start rather than running partway — pair a small cap
-with `--acts`. Ceilings are upper bounds re-derived from recorded per-act cost (see
-the comment above `_ACTS`), so the default has to clear their sum, not the typical
-spend. Worker model defaults to the floating `sonnet` alias; pin an exact id when
-the results will be compared across runs.
+cap below that sum refuses to start rather than running partway - pair a small cap
+with `--acts`. The guard only refuses when the sum is strictly over the cap, so the
+example above needs 13: those two acts carry $3.00 and $10.00 ceilings, 13 starts
+and 12 refuses. All 21 sum to $80.30 against a default cap of $100. Ceilings are
+upper bounds re-derived from recorded per-act cost (see the comment above
+`_ACTS`), so the default has to clear their sum, not the typical spend. Worker
+model defaults to the floating `sonnet` alias; pin an exact id when the results
+will be compared across runs.
+
+**Workers run without user-scope settings.** `spawn_claude` passes
+`--setting-sources project,local`, so a plugin installed at the user level never
+loads into a worker. One that registers a PreToolUse hook answering
+`permissionDecision: "defer"` ends the run in print mode and hands the Edit or
+Write back un-executed, which reads as a healthy session: `subtype: "success"`,
+`is_error: false`, exit 0. The chameleon plugin still loads through
+`--plugin-dir` and every one of its hooks still fires, and a fixture's own
+`.claude/settings*.json` is still read. Override with
+`CHAMELEON_JOURNEY_SETTING_SOURCES` when you need to reproduce the user-scope
+environment; the same spawn serves the effectiveness eval, so the flag moves both.
+
+**A red act now also means the worker died.** After each act the runner reads the
+session's end state and, on anything abnormal, records every declared phase as
+ERROR with the act's own verdict kept in the note (`run.md` truncates notes at 200
+chars to keep both visible). Read the reason before you debug the assertion:
+
+- `tool_deferred`: always fatal. The CLI handed a tool back un-executed, so the
+  files the act asserts on were never written.
+- `max_turns` and the other end states: fatal only when the act did NOT report
+  PASS on every phase it declared. An act holding its whole result exhausted the
+  turn cap on the way out, which is a budget fact, not a lost result.
+- `timeout`: the process was killed at `timeout_s` and left no result frame.
+
+A phase that emitted no checkpoint events lands as SKIP, and SKIP alone never
+fails a run, so before this gate existed a dead worker went green.
 
 ### Build and test the Rust engine
 
 ```bash
 cd chromatophore
 cargo build --release                 # 24 grammars, ~32s cold
-cargo test --release                  # 157 tests
+cargo test --release                  # 163 tests
 cargo clippy --release --all-targets  # must be clean
 cargo fmt --check
 
@@ -121,7 +163,7 @@ These verify chameleon's hook functions (posttool_verify, etc.) with mocked depe
 PYTHONPATH=. plugin/mcp/.venv/bin/python -m pytest tests/journey/harness/tests/ -v
 ```
 
-These verify the harness library itself (context, checkpoints, expect, fixtures setup). They do NOT test chameleon; that's the journey runner's job.
+These verify the harness library itself: context, checkpoints, expect, fixtures setup, the stream-json parser (`test_claude_parser.py`), and the runner's end-state gate (`test_act_termination_wiring.py`). They do NOT test chameleon; that's the journey runner's job.
 
 ### QA batteries against a real profiled repo
 
@@ -144,10 +186,18 @@ CHAMELEON_TEST_PYTHON_REPO=/abs/path/to/python-repo \
 CHAMELEON_TEST_TS_REPO=... CHAMELEON_TEST_RUBY_REPO=... \
   PYTHONPATH=. plugin/mcp/.venv/bin/python tests/qa_crosscutting.py
 
+# /chameleon-auto-idiom support surface (coverage + candidate dedup) - needs BOTH repos
+CHAMELEON_TEST_TS_REPO=... CHAMELEON_TEST_RUBY_REPO=... \
+  PYTHONPATH=. plugin/mcp/.venv/bin/python tests/qa_auto_idiom.py
+
 # Drive 10 simulated tasks through the real PreToolUse + PostToolUse hooks
 CHAMELEON_TEST_TS_REPO=... CHAMELEON_TEST_RUBY_REPO=... \
   PYTHONPATH=. plugin/mcp/.venv/bin/python tests/qa_hook_simulation.py
 ```
+
+There is no battery for the extraction tier. Go, Rust, Java, C# and PHP are covered
+by unit tests only, so a full battery run exercises three of the eight supported
+languages. Say so when reporting; a green battery is not whole-surface coverage.
 
 ### Effectiveness eval (A/B: does chameleon improve agent output?)
 
@@ -204,7 +254,7 @@ Exercise each MCP tool + hook once on a healthy profile: the `qa_*.py` batteries
 - **Trust states**: every tool under untrusted / stale / trusted.
 
 ### Pass 3 — full surface (beyond tools + hooks)
-- **Slash-command / skill flows**: drive each `/chameleon-*` end-to-end (init, refresh, status, teach, auto-idiom, trust, disable, pause-15m, doctor, pr-review, receiving-code-review, explain) — the skill logic + output, not just the underlying tool.
+- **Slash-command / skill flows**: drive each `/chameleon-*` end-to-end (init, refresh, status, teach, auto-idiom, trust, disable, pause-15m, doctor, pr-review, receiving-code-review, explain, deep-work) - the skill logic + output, not just the underlying tool.
 - **Statusline**: `plugin/bin/chameleon-statusline.sh` with a sample payload — correct format, within the <100ms budget, respects `CHAMELEON_DISABLE`.
 - **MCP stdio server**: `python -m chameleon_mcp.server` — call a tool over the real stdio transport, not just in-process.
 - **Daemon**: `daemon.py` / `daemon_client.py` — startup, socket, idle-timeout self-exit, `daemon_status`.
@@ -213,12 +263,12 @@ Exercise each MCP tool + hook once on a healthy profile: the `qa_*.py` batteries
 - **Schema migrations**: load an old-schema-version profile — migrate or reject cleanly (don't crash).
 
 ### Out of scope for `/qa` (use the right method, don't fake it)
-- **Journey harness** (real `claude -p` editing): `/chameleon-journey` or `tests/journey/runner.py` — ~$40, ~95 min. Run before a release, not on every `/qa`. Ask before spending.
+- **Journey harness** (real `claude -p` editing): `/chameleon-journey` or `tests/journey/runner.py` - ~$40, ~95 min. Run before a release, not on every `/qa`. Ask before spending. Read a red act's reason first: ERROR on every phase of one act means the worker session ended abnormally, not that the assertions failed (see "Run the journey harness").
 - **Visual statusline rendering** in the live terminal, and **cross-platform** (Linux / other Python versions): CI matrix + manual, not `/qa`.
 - Say plainly when one of these was NOT run.
 
 ### Rules
-- Prefer the free real-repo test (9 bootstrapped repos in `~/Documents/Projects/Testing Apps/`) over the ~$40 journey harness.
+- Prefer the free real-repo test (3 bootstrapped repos in `~/Documents/Projects/Testing Apps/`: `bulletproof-react`, `mastodon`, `py-flask-flaskbb`) over the ~$40 journey harness.
 - Fix CHAMELEON, not the test, when a test surfaces a gap. Tests enforce the spec.
 - Verify load-bearing claims yourself before relaying them.
 - After any fix: 2-3 rounds of review (read-only `Explore` agents, or back up first — review subagents can mutate the working tree), THEN run the matrix.

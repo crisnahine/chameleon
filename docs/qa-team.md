@@ -9,7 +9,7 @@ Five standing QA engineers, defined as dispatchable agents under `.claude/agents
 | 1 | `qa-upgrade-migration` | What happens to existing users when this update ships - old state under new code, trust/data survival, downgrade, mid-workflow upgrade | Any release; any schema/engine/artifact change |
 | 2 | `qa-regression` | Re-run every original failing scenario from the prior campaign; attack each fix with adjacent inputs | After any remediation release |
 | 3 | `qa-enforcement` | Blocking paths in anger: mode matrix, escape hatches, Stop backstop, escalation, calibration honesty | Any enforcement/blocking/calibration change |
-| 4 | `qa-language-depth` | Full hostile treatment of the TS/Ruby/Python pipelines on real repos: rule precision, archetype quality, boundary inputs, monorepos | Any AST/lint/bootstrap/cross-file change |
+| 4 | `qa-language-depth` | Full hostile treatment of the TS/Ruby/Python pipelines on real repos: rule precision, archetype quality, boundary inputs, monorepos. Owns the extraction tier too (Go/Rust/Java/C#/PHP) and polyglot derivation: detection needs a manifest plus real source, an extraction-tier archetype must carry the honest `lint_coverage` marker rather than an empty violation list, and a secondary language must derive its own archetypes without moving the primary | Any AST/lint/bootstrap/cross-file/spec change |
 | 5 | `qa-failure-recovery` | SIGKILL mid-write, races, corrupt state, stale sockets, closed pipes - and whether it recovers | Any hook/daemon/transport/locking/atomic-write change |
 
 ## The mindset (all five)

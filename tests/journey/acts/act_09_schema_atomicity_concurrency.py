@@ -378,9 +378,9 @@ def run(ctx: JourneyContext) -> ActResult:
         cwd=cwd,
         env={**ctx.env, "CHAMELEON_JOURNEY_CHECKPOINT": str(ctx.current_checkpoint_file)},
         transcript_path=transcript,
-        # Six phases of real tool work; 70 ran out mid-act (phase 31 never
-        # attempted in two consecutive runs, error_max_turns at the cap).
-        max_turns=95,
+        # Six phases of real tool work; the longest completed run spent 92 turns,
+        # with its last phase checkpoint landing at turn 89.
+        max_turns=110,
         allowed_tools=[
             "Bash",
             "Read",
@@ -656,4 +656,5 @@ def run(ctx: JourneyContext) -> ActResult:
         cost_usd=session.cost_usd,
         phase_outcomes=list(outcomes.values()),
         checkpoint_parse_errors=parse_errors,
+        terminal_reason=session.terminal_reason,
     )

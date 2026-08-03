@@ -33,6 +33,44 @@ verifiability.
    directory to the GitHub release as `<run_id>-run.md` /
    `<run_id>-metrics.json` assets.
 
+## Spawn environment: read this before comparing two runs
+
+The harness that spawns every eval cell changed what a worker loads, and
+nothing in the published numbers says which side of that change a run sat on.
+
+`spawn_claude` now passes `--setting-sources project,local`, so a worker loads
+no user-scope settings and no user-installed plugins. Chameleon itself is
+unaffected: it loads through `--plugin-dir` and every one of its hooks still
+fires. Before the change a worker also inherited whatever the operator had
+installed at user scope, third-party hooks included, and one of those hooks
+answering `permissionDecision: "defer"` on a `PreToolUse` is enough to end a
+session with its `Edit` handed back un-executed while it still exits 0. Two
+runs on opposite sides of that line are not the same experiment, however
+identical their invocations look, and the numbers alone will not tell you.
+
+Every run published in this file ran with user scope loaded, as did the
+`baselines.json` seeded on 2026-06-12. Nothing here is on the new side of the
+line, so no date test is needed to read what is already below.
+
+For a run published later, tell the two sides apart by date. Find when the
+change landed:
+
+    git log -S'--setting-sources' -- tests/journey/harness/claude.py
+
+A run whose `run_id` timestamp (`effectiveness_<YYYYMMDD>T<HHMMSS>Z`) predates
+that commit ran with user scope loaded. The command answers only once the change
+is committed; while it still sits in the working tree it prints nothing, which
+means the same thing by another route - no run can be on the new side of a line
+the history does not carry yet.
+
+`baselines.json` names no environment either. Each (tier, category, arm) entry
+carries a `run_id` and the file carries an `updated` date; that `run_id` is the
+only handle, so resolve a baseline through it and apply the same date test.
+Until the schema grows an explicit field, a re-seed under policy 2 is what
+retires the ambiguity: seeding from a fresh run replaces every pre-change
+`run_id` at once, which is the point of re-seeding rather than letting entries
+age individually. Do not mix a pre-change baseline with post-change numbers.
+
 ## Runs
 
 ### effectiveness_20260615T175635Z (dup tier, causal round 1)
@@ -60,6 +98,12 @@ Reproduction notes: spawns real `claude -p` sessions (each run cost ~$60);
 requirements are listed in `../README.md`. Judge-panel winners are LLM votes,
 so a re-run reproduces the harness mechanics and the statistical machinery,
 not the exact vote sequence; expect the same shape, not identical tables.
+Both invocations above are still the right command, but they no longer run the
+same experiment: both runs predate `--setting-sources project,local`, so their
+workers loaded the operator's user-scope settings and plugins and a re-run
+today does not. See "Spawn environment" above. The cell-status rule also
+widened afterwards, from a non-zero return code to any abnormal end state that
+left no diff, so a re-run can drop cells these runs would have counted.
 
 
 ## Flat study artifacts

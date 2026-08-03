@@ -48,7 +48,7 @@ from tests.effectiveness.worktrees import (  # noqa: E402
     session_diff,
 )
 from tests.journey.harness import preflight as journey_preflight  # noqa: E402
-from tests.journey.harness.claude import spawn_claude  # noqa: E402
+from tests.journey.harness.claude import abnormal_termination, spawn_claude  # noqa: E402
 from tests.journey.harness.context import build_context  # noqa: E402
 from tests.journey.harness.fixtures import GitVersionError, setup_fixture  # noqa: E402
 
@@ -519,10 +519,27 @@ def _run_one_cell(args, ctx, pack, fixture_repo, task, arm, rep) -> dict:
             "transcript": str(transcript),
             "baseline_sha": baseline_sha,
             "model": cell_model,
+            "terminal_reason": getattr(session, "terminal_reason", ""),
+            "stop_reason": getattr(session, "stop_reason", ""),
             **result_meta,
         }
-        if session.returncode != 0:
-            reason = f"session returncode {session.returncode}"
+        # Read the worktree before judging the session, for two reasons: an
+        # error cell keeps its worktree for forensics, so it needs the patch
+        # written beside it or there is nothing to inspect; and a cell that
+        # already produced changed files carries a scoreable result, which is
+        # what decides whether an unclean end state cost anything.
+        changed = _changed_files(dest, baseline_sha)
+        diff = _session_diff(dest, baseline_sha)
+        (ctx.run_dir / "diffs" / f"{cell_id}.patch").write_text(diff, encoding="utf-8")
+        # Wider than the return code, which a session that stopped mid-task
+        # still reports as 0 alongside subtype "success" -- scoring that cell
+        # would measure a diff missing the edit the session never made. A cell
+        # that changed files and then ran out of turns is scored on what it
+        # wrote: dropping it would shrink the measured population, and turn-cap
+        # rates differ per arm, so the loss would not fall evenly across them.
+        abnormal = abnormal_termination(session, work_complete=bool(changed))
+        if abnormal:
+            reason = f"session ended abnormally: {abnormal}"
             subtype = result_meta.get("result_subtype")
             if subtype and subtype != "success":
                 reason += f" ({subtype})"
@@ -535,9 +552,6 @@ def _run_one_cell(args, ctx, pack, fixture_repo, task, arm, rep) -> dict:
                 session=session_meta,
                 model=cell_model,
             )
-        changed = _changed_files(dest, baseline_sha)
-        diff = _session_diff(dest, baseline_sha)
-        (ctx.run_dir / "diffs" / f"{cell_id}.patch").write_text(diff, encoding="utf-8")
         score_ctx = ScoreContext(
             task=task,
             arm=arm.name,

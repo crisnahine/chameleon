@@ -20,13 +20,13 @@ PHASE 1, manifests:
   Verify each is valid JSON. Verify the chameleon plugin name is present.
   emit checkpoint completed phase 1
 
-PHASE 2, MCP boot + 19 tools:
+PHASE 2, MCP boot + 21 tools:
   emit checkpoint started phase 2
   The MCP server is launched automatically by Claude Code (chameleon-mcp).
   Call chameleon-mcp::chameleon_telemetry with action="doctor" (no params
   needed). Verify the response.
   Also verify the tool registry: count the chameleon-mcp::* tools you have
-  access to via your tool listing. Expected: 19 tools (16 top-level
+  access to via your tool listing. Expected: 21 tools (18 top-level
   conformance/comprehension tools + the chameleon_lifecycle /
   chameleon_review / chameleon_telemetry dispatchers; pinned — update this
   count when a tool is added or removed).
@@ -136,4 +136,5 @@ def run(ctx: JourneyContext) -> ActResult:
         cost_usd=session.cost_usd,
         phase_outcomes=list(outcomes.values()),
         checkpoint_parse_errors=parse_errors,
+        terminal_reason=session.terminal_reason,
     )

@@ -24,21 +24,35 @@ or a `qa_*.py` battery, run artifact recorded) · `FAIL` (opens a gap in
 
 ## A. The cell grid (derived from code, not memory)
 
-The supported-language set is closed at three, verified in code:
+The cell grid covers the FIRST-CLASS languages, and that scoping is deliberate
+(`docs/chameleon-goal.md` § Task 0). Verified in code:
 
-- `detect_language()` returns only `typescript` / `ruby` / `python` / `None`
-  (`plugin/mcp/chameleon_mcp/lint_engine.py:158`).
-- `EXTRACTORS = [TypeScriptExtractor, RubyExtractor, PythonExtractor]`
-  (`plugin/mcp/chameleon_mcp/extractors/registry.py:26`).
+- The first-class three are declared in `chameleon_mcp/language_support.py`
+  (`_CAPABILITIES` seeds `typescript`, `ruby`, `python` via `_first_class`), and they
+  are the only ones `detect_language()` classifies, the gate every per-edit lint rule
+  reads (`plugin/mcp/chameleon_mcp/lint_engine.py`, `detect_language`).
 - Extensions: TS/JS `.ts .tsx .js .jsx .mjs .cjs`; Ruby `.rb`; Python `.py .pyi`
-  (`lint_engine.py:78-80`). No Go/Rust/Java/C# extractor, dumper, or detection
-  signal exists — they MUST NOT appear here.
+  (`lint_engine.py`, `_TS_EXTENSIONS` / `_RUBY_EXTENSIONS` / `_PY_EXTENSIONS`).
+- Go, Rust, Java, C# and PHP ARE supported, at the extraction tier: five declarative
+  specs in `extractors/treesitter/lang/specs.py` (`ALL`), spliced into `EXTRACTORS`
+  by `_spec_driven_extractor_classes()` in `extractors/registry.py`. They derive a
+  profile (archetypes, canonical witness, signatures, imports) and get secret and
+  eval-sink detection; they get no per-edit lint rules, no reverse index and no graded
+  cross-file edges. They carry **no cell here**: the tier ships covered by unit tests
+  (`tests/unit/test_spec_driven_lang.py`, `tests/unit/test_language_support.py`), with
+  no golden repo and no human sign-off. That is the recorded scope, not an oversight:
+  a cell added later needs a golden repo first.
 
-The framework-aware families are the discrete returns of `_classify_framework`
+The framework-aware families, the ones that earn a deeper layer and therefore a cell,
+are the six the hardcoded arms of `_classify_framework` return
 (`plugin/mcp/chameleon_mcp/bootstrap/orchestrator.py`): `rails`, `django`, `flask`,
-`fastapi`, `nextjs`, `nestjs`, else `None` (agnostic). DRF is **not** a separate
-tag — it is recognized as Django-family plus the dedicated DRF/Django authz-guard
-layer, so it is a sub-cell of Django.
+`fastapi`, `nextjs`, `nestjs`. DRF is **not** a separate tag: it is recognized as
+Django-family plus the dedicated DRF/Django authz-guard layer, so it is a sub-cell of
+Django. The stored `framework` tag itself is wider: when no arm matches,
+`_classify_framework` falls through to `_taxonomy_framework`, which scores the 64
+framework profiles in `chameleon_mcp/knowledge/taxonomy.json` and can return any of
+them. Those tags are descriptive metadata with no behavior attached, so they open no
+cell either.
 
 | # | Cell (language × framework) | Tier | Golden repo | Profiled |
 |---|---|:--:|---|:--:|
@@ -66,7 +80,7 @@ Edge / robustness:
 | # | Repo | Purpose | Tier |
 |---|---|---|:--:|
 | E1 | `gitlabhq` | large/real Rails repo (size, cross-file at scale) | 1 (size check) |
-| E2 | `golden-messy` (built) | polyglot, odd-but-legal syntax, stale data-dir state, in-progress merge | 2 |
+| E2 | `golden-messy` (built) | polyglot, odd-but-legal syntax, stale data-dir state, in-progress merge. Since polyglot derivation landed this cell is no longer crash-resilience alone: bootstrap clusters every secondary language the repo genuinely contains, so the pass signal now includes per-language archetypes plus a primary that did not move (see the runbook) | 2 |
 
 Dimension notes (scoping):
 
@@ -217,8 +231,12 @@ the reasoning and the accepted cost.
 
 This tracker reflects reality on the date it was generated:
 
-- The cell grid and the framework family list are derived from code (`lint_engine.py`,
-  `extractors/registry.py`, `bootstrap/orchestrator.py`) — not from memory.
+- The cell grid and the framework family list are derived from code
+  (`language_support.py`, `lint_engine.py`, `extractors/registry.py`,
+  `bootstrap/orchestrator.py`), not from memory.
+- The grid covers the first-class tier only. The five extraction-tier languages ship
+  with unit-test coverage and no cell, which means no human has driven them through a
+  real session; read the empty space as unverified, not as verified-absent.
 - No cell is marked `PASS`. Per the goal, only a human running a real session may do
   that, and that has not happened yet. Since the 2026-07-27 amendment a Tier-2 cell
   may instead be marked `PASS-AUTO` by the journey harness or a `qa_*.py` battery;

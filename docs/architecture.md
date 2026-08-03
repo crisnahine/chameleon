@@ -5,7 +5,7 @@
 This document describes how chameleon works as built. It is the reference for
 the bootstrap pipeline, the hook stack, the MCP tool surface, the enforcement
 and review gate, the profile schema, the state stores, and the security model.
-It tracks engine version **3.6.0** and profile **schema version 8**. When the
+It tracks engine version **4.10.0** and profile **schema version 8**. When the
 code and this document disagree, the code is right; please file an issue.
 
 ## Contents
@@ -16,6 +16,7 @@ code and this document disagree, the code is right; please file an issue.
 - [Repository layout](#repository-layout)
 - [The profile](#the-profile)
 - [Bootstrap and refresh pipeline](#bootstrap-and-refresh-pipeline)
+- [Language tiers](#language-tiers)
 - [Production-ref derivation](#production-ref-derivation)
 - [Cluster signature function](#cluster-signature-function)
 - [Canonical selection](#canonical-selection)
@@ -69,7 +70,8 @@ verify goes to a human regardless of gate color. See
 [What stays human](#what-stays-human) for the full list.
 
 **Supported stacks:** TypeScript / JavaScript, Ruby, and Python as first-class
-languages. Claude Code only. The core is framework-agnostic: it learns each
+languages, plus Go, Rust, Java, C# and PHP at the extraction tier. Claude Code
+only. The core is framework-agnostic: it learns each
 repo's conventions from the repo's own structure (clustering, naming,
 signatures), so it works on any framework, not just well-known ones. Where a
 framework has strong, well-known conventions, chameleon adapts for deeper,
@@ -79,13 +81,20 @@ layer is lighter than the Rails/Django ones (framework detection, naming roles,
 and framework-specific anti-hallucination guidance, rather than the full
 guard/contract derivation), but it is no longer absent.
 
-All three languages are first-class at the extractor level: the TypeScript
+Five more languages are supported one tier down: Go, Rust, Java, C#, PHP. See
+[Language tiers](#language-tiers) for what each tier gets and why the split
+exists.
+
+The three first-class languages each have a dedicated parser: the TypeScript
 extractor uses the TypeScript Compiler API, the Ruby extractor uses Prism, and
 the Python extractor uses libcst (bundled with the plugin, so Python repos need
-nothing extra installed). Python framework awareness keys on filename
-conventions (`models.py`/`views.py`/`serializers.py` → cross-app role
-archetypes) and the web-layer directory (`routes/`, `blueprints/`), with
-decorators and base classes captured for finer discrimination.
+nothing extra installed). All three also parse in-process through tree-sitter,
+which is the default backend; the dump scripts are the fallback, kept because
+they need no Python-side parser at all (`CHAMELEON_TREE_SITTER=0` reverts to
+them). Python framework awareness keys on filename conventions
+(`models.py`/`views.py`/`serializers.py` → cross-app role archetypes) and the
+web-layer directory (`routes/`, `blueprints/`), with decorators and base classes
+captured for finer discrimination.
 
 ---
 
@@ -119,20 +128,24 @@ no repo-specific knowledge; the profile carries no code.
 |  Hooks (subprocess-per-call, fail-open)     Skills (static prose)        |
 |  - session-start        (SessionStart)      - using-chameleon (auto)     |
 |  - preflight-and-advise  (PreToolUse)       - 14 user-invocable /commands|
+|  - peer-skill-advise     (PreToolUse)                                    |
 |  - posttool-recorder     (PostToolUse)                                   |
 |  - posttool-verify       (PostToolUse)                                   |
 |  - callout-detector      (UserPromptSubmit)                              |
 |  - stop-backstop         (Stop / SubagentStop)                          |
 |                              |                                           |
 |                              v                                           |
-|  MCP server (chameleon-mcp, FastMCP, stdio) -- 19 tools                  |
+|  MCP server (chameleon-mcp, FastMCP, stdio) -- 21 tools                  |
 |                              |                                           |
 |              +---------------+----------------+                          |
 |              v                                v                          |
 |  AST extractors                     Bootstrap / refresh pipeline         |
-|  - ts_dump.mjs    (TS Compiler API) detect -> discover -> parse ->       |
-|  - prism_dump.rb  (Prism)           cluster -> canonical -> conventions  |
-|  - libcst_dump.py (libcst CST)      -> atomic commit                     |
+|  - tree-sitter, in-process (default) detect -> discover -> parse ->      |
+|      * TS/JS, Ruby, Python          cluster -> canonical -> conventions  |
+|      * Go, Rust, Java, C#, PHP      -> atomic commit                     |
+|        (declarative specs)                                               |
+|  - dump-script fallback:                                                 |
+|      ts_dump.mjs / prism_dump.rb / libcst_dump.py                        |
 +--------------------------------------------------------------------------+
 
 Per-repo, committed to git:           Per-user, local only (never committed):
@@ -176,6 +189,7 @@ chameleon/
 │   │   ├── _resolve-python.sh     # interpreter resolution ladder (>=3.11)
 │   │   ├── session-start
 │   │   ├── preflight-and-advise
+│   │   ├── peer-skill-advise
 │   │   ├── posttool-recorder
 │   │   ├── posttool-verify
 │   │   ├── callout-detector
@@ -190,6 +204,11 @@ chameleon/
 │   │   ├── uv.lock, package.json  # committed locks
 │   │   ├── typescript-checksums.json  # build-time SHA-256 manifest (not verified at runtime)
 │   │   └── chameleon_mcp/         # the Python package (see below)
+│   │       ├── extractors/
+│   │       │   └── treesitter/    # in-process backend + lang/specs.py (the
+│   │       │                      # declarative specs for Go/Rust/Java/C#/PHP)
+│   │       └── knowledge/         # taxonomy.json (541 concepts) + its loader
+│   │                              # and the scored framework detector
 │   ├── scripts/                   # runtime scripts shipped with the plugin
 │   │   ├── ts_dump.mjs            # TypeScript AST extractor (Node)
 │   │   ├── prism_dump.rb          # Ruby AST extractor (Prism)
@@ -198,6 +217,8 @@ chameleon/
 │   │   └── setup.sh               # prerequisite check + dependency warm-up
 │   └── bin/
 │       └── chameleon-statusline.sh    # status line (<100ms budget)
+├── chromatophore/                 # the Rust extraction engine, NOT shipped in the
+│                                  # plugin, built separately, carries its own gates
 ├── scripts/                       # dev-only tooling (not shipped)
 │   ├── bump-version.sh            # keeps six manifests in sync
 │   └── ...
@@ -209,8 +230,10 @@ The Python package (`plugin/mcp/chameleon_mcp/`) is the brain. The load-bearing
 modules: `server.py` (FastMCP tool registry), `tools.py` (tool implementations),
 `hook_helper.py` (the hook dispatch entry point and all gate logic),
 `bootstrap/` (the derivation pipeline), `extractors/` (language dispatch),
-`profile/` (schema, loader, config, trust), `conventions.py` and `lint_engine.py`
-(convention derivation and linting), `enforcement.py` and
+`language_support.py` (the per-language tier declaration everything else reads),
+`knowledge/` (the compiled-in taxonomy, its loader, and the scored framework
+detector), `profile/` (schema, loader, config, trust), `conventions.py` and
+`lint_engine.py` (convention derivation and linting), `enforcement.py` and
 `enforcement_calibration.py` (the block gate and its calibration), `judge.py`
 and friends (the advisory review layer), and the cross-file index modules
 (`symbol_index.py`, `calls_index.py`, `function_catalog.py`,
@@ -336,7 +359,14 @@ The pipeline stages, in order:
 
 ### Extractors and limits
 
-All three extractors are long-lived subprocesses fed file paths on stdin,
+Two backends, one `ParsedFile` contract. The in-process tree-sitter path is the
+default and the only path for the five spec-driven languages; the dump scripts
+below are the fallback for the first-class three and the path a missing grammar
+or an ABI mismatch falls back to. The tree-sitter walker mirrors the same
+ceilings (`TS_MAX_AST_NODES`, `TS_MAX_CALL_SITES`, `TS_MAX_CALLABLE_SIGNATURES`
+in `_thresholds.py`), so the bounds below hold either way.
+
+The three dump-script extractors are long-lived subprocesses fed file paths on stdin,
 emitting NDJSON on stdout, read under a 600-second wall-clock timeout. They are
 spawned from a neutral working directory with the interpreter's
 startup-injection environment scrubbed so they never load repo-controlled
@@ -360,6 +390,81 @@ version-scoped directory under the data dir. `plugin/mcp/typescript-checksums.js
 a SHA-256 manifest generated by `scripts/generate-typescript-checksums.sh` (dev tooling, repo root). It
 is a build-time integrity reference only; it is **not** cryptographically
 verified on the extraction hot path.
+
+---
+
+## Language tiers
+
+Chameleon supports eight languages at two depths, and the split is declared as
+data in `chameleon_mcp/language_support.py` rather than left to be inferred from
+which lists a language appears in. `/chameleon-doctor` and
+`docs/language-support-matrix.md` both read the tier from that one place, and
+`tests/unit/test_language_support.py` pins the declaration against the real
+wiring.
+
+The split exists to prevent one specific failure. A language wired into the
+extractor but not into the lint engine derives archetypes, conventions and
+signatures perfectly well while every lint rule silently returns nothing, and
+that silence is indistinguishable from "your code is clean". Naming the tier
+turns an invisible absence into a stated one.
+
+| | First-class (TS/JS, Ruby, Python) | Extraction (Go, Rust, Java, C#, PHP) |
+|---|:--:|:--:|
+| Archetypes, canonical witness | yes | yes |
+| Callable signatures, imports | yes | yes |
+| Conventions | yes | the language-agnostic sections only (see below) |
+| Secret + eval-sink detection | yes | yes |
+| Per-edit lint rules | yes | no |
+| Reverse/exports index (`query_symbol_importers`, removed-export checks) | yes | no |
+| Graded cross-file call edges | yes | same-file edges only |
+
+An extraction-tier language is a declarative `LanguageSpec` in
+`extractors/treesitter/lang/specs.py`: node kinds and grammar field names, which
+`spec_driven.build` turns into the same table object the walker calls for the
+first-class three. Adding one is data, not code, and
+`tests/unit/test_spec_driven_lang.py` validates each spec against its LOADED
+grammar, so a spec naming a node the grammar does not have fails in CI rather
+than matching nothing. `_spec_driven_extractor_classes()` splices them into
+`EXTRACTORS` between Ruby and Python: after TS/Ruby because those carry equally
+strong markers, before Python because `PythonExtractor.can_handle` claims any
+repo holding a single `.py` file. Detection requires a build MANIFEST (`go.mod`,
+`Cargo.toml`, `pom.xml`/`build.gradle`, `global.json`, `composer.json`) plus real
+source, so one vendored `.go` file does not make a repo Go, and
+`_resolve_first_class_precedence` hands a match back to a first-class language
+that outranks it, so a PyO3 crate's `pyproject.toml` beside its `Cargo.toml`
+still profiles as Python.
+
+`CHAMELEON_TREE_SITTER=0` turns off the in-process backend. The first-class
+three fall back to their dump scripts; the extraction tier has no fallback, so
+a repo it claims stops at `failed_extractor_unavailable` with an error naming
+the switch, rather than silently profiling as something else.
+
+**Which conventions actually derive at the extraction tier.** The sections keyed
+off the parsed shape run for every language: repo-wide preferred imports,
+`callable_signatures`, `body_shape`, and the path-only file-naming half of
+`naming`. The sections that dispatch on language do not: identifier `naming` and
+`doc_coverage` both re-read file bytes through language-specific scanners that
+return nothing for an unknown language, and `error_handling`, `inheritance`,
+`method_calls`, `required_guards`, `class_contract` and `key_exports` are each
+gated on the first-class three. So an extraction-tier archetype carries a shape
+and a witness, and absent guidance rather than wrong guidance.
+
+**Two languages in one repo.** Bootstrap binds one extractor, and therefore one
+primary language, per profile. Everything else the repo genuinely contains is
+picked up as a *secondary corpus* (`_secondary_language_files`, kill switch
+`CHAMELEON_CROSS_LANGUAGE_INDEX=0`): each secondary language must clear the same
+manifest-plus-source bar a primary does, its files go through the same
+`discover_files` filters (gitignore, vendor, symlink, containment), and the
+sampling cap is split evenly across the languages present before it is
+round-robined across directories, so a package-per-directory Go monorepo beside
+one Ruby service cannot starve Ruby to zero. Secondary files reach clustering
+and canonical selection (so a second language derives its own archetypes and
+witness), plus `calls_index.json` and `symbol_signatures.json`. They do NOT
+reach `extract_all_conventions`, which takes one repo-wide language, and they do
+NOT reach `function_catalog.json`: a cataloged function records no language, so
+a Go `ParseOrder` and a TypeScript `parseOrder` would pair as a reuse lead no
+reuse can ever join. The calls index is built once per language and merged, so
+each corpus is graded by its own resolver instead of the primary's.
 
 ---
 
@@ -525,6 +630,13 @@ applicable, a 0.60 dominance frequency: a convention is the archetype's norm
 only when the clear majority of its members share it. Sections that do not clear
 their gate stay empty. All thresholds live in `_thresholds.py`.
 
+Sections also vary by language, and an empty section can mean either "no norm
+cleared the gate" or "no arm exists for this language". `extract_all_conventions`
+takes one repo-wide language, so a polyglot repo's secondary corpus reaches
+clustering but never this pass at all. See
+[Language tiers](#language-tiers) for which sections an extraction-tier language
+gets and which it does not.
+
 - **`naming`** dominant identifier casing (Ruby methods/classes/constants),
   TypeScript interface prefix, and the dominant file-basename casing and suffix.
   The file-naming convention is block-eligible under calibration.
@@ -574,17 +686,30 @@ byte-reproducible, are hashed into the trust SHA, and fail open to "no facts"
   files that import it by name plus the import line. Backs the edit-time
   blast-radius advisory and the cross-file symbol-existence check (a name that
   was exported is gone and an indexed importer still references it).
-- **`function_catalog.json`** (all three languages): per function, the name, kind,
-  arity, and two body hashes (plain and parameter-normalized). The body hash
-  drops the name line, collapses whitespace, and hashes the rest, but only for
-  bodies past a minimum length. No body text is stored. This is the cheap
-  candidate-narrowing layer for cross-file duplication; the LLM caller judges
-  equivalence against real bodies.
-- **`calls_index.json`** (all three languages): callee file to callable name to
-  recorded caller rows. It stores exactly five deterministic grades and never
-  name-only repo-wide matches (the false-positive bulk):
+- **`function_catalog.json`** (the PRIMARY language only, whatever it is): per
+  function, the name, kind, arity, and two body hashes (plain and
+  parameter-normalized). The body hash drops the name line, collapses
+  whitespace, and hashes the rest, but only for bodies past a minimum length. No
+  body text is stored. This is the cheap candidate-narrowing layer for
+  cross-file duplication; the LLM caller judges equivalence against real bodies.
+  Deliberately the one index that skips a polyglot repo's secondary corpus: a
+  cataloged function carries no language, and candidates pair on name-token
+  overlap plus arity, so a Go `ParseOrder` and a TypeScript `parseOrder` would
+  match and cost a reviewer spawn on a pair no reuse can ever join.
+- **`calls_index.json`** (every language in the repo, primary and secondary):
+  callee file to callable name to recorded caller rows. Built once per language
+  and merged, because the builder binds one module resolver for the whole index:
+  a mixed file list resolved every secondary file's import specifiers under the
+  primary's rules and silently lost every cross-file grade. Partitions are
+  disjoint (one extension maps to one language) and an edge is recorded only
+  when caller and callee are in the same build, so the merge is a plain union.
+  It stores exactly five deterministic grades and never name-only repo-wide
+  matches (the false-positive bulk):
   - `same_file` a bare call to a same-file callable, or a `this.`/`self.` call
-    to a same-file class member.
+    to a same-file class member. The only grade an extraction-tier language
+    reaches: each graded cross-file edge below needs a per-language resolver, and
+    the five specs have none. (`self`, `this`, `$this`, `self::` and `static::`
+    are each declared per spec, so the intra-class edge is recorded.)
   - `import` (TS and Python) a call of a named import matched on its local
     binding and recorded under the exported name, where the callee exists in the
     target's closed export set.
@@ -604,8 +729,9 @@ byte-reproducible, are hashed into the trust SHA, and fail open to "no facts"
   [Atomicity](#atomicity-locking-and-crash-safety)), a failed rebuild drops the
   old copy rather than carrying it forward: stale caller facts fed to the judge
   are worse than none.
-- **`symbol_signatures.json`** (all three languages): per callable, the parameter
-  shape, declared types (TS only), and body span, for the judge's
+- **`symbol_signatures.json`** (every language in the repo, primary and
+  secondary): per callable, the parameter shape, declared types (TypeScript and
+  Python; Ruby has no static types), and body span, for the judge's
   forward-definition hydration.
 - **`constant_index.json`** (Ruby only): each referenced constant to its defining
   class, so a `Const.method` call site resolves to exactly one class for the
@@ -647,8 +773,9 @@ extraction-tier languages have no reverse index, so neither contributes edges.
 
 ## Hook stack
 
-Six hook scripts are wired across six Claude Code events (PostToolUse is
-registered twice; `stop-backstop` is reused for Stop and SubagentStop). All
+Seven hook scripts are wired across six Claude Code events (PreToolUse and
+PostToolUse are each registered twice; `stop-backstop` is reused for Stop and
+SubagentStop). All
 registrations route through `run-hook.cmd <script>`, a polyglot wrapper that is
 valid as both a Windows batch file and a Unix bash script.
 
@@ -656,6 +783,7 @@ valid as both a Windows batch file and a Unix bash script.
 |---|---|---|---|
 | SessionStart | startup, resume, clear, compact | `session-start` | 3s |
 | PreToolUse | Edit, Write, NotebookEdit | `preflight-and-advise` | 3s |
+| PreToolUse | Skill | `peer-skill-advise` | 3s |
 | PostToolUse | Bash, Edit, Write, NotebookEdit | `posttool-recorder` | 3s |
 | PostToolUse | Edit, Write, NotebookEdit | `posttool-verify` | 3s |
 | UserPromptSubmit | (all prompts) | `callout-detector` | 3s |
@@ -805,7 +933,7 @@ Every tool is registered in `server.py` via the `_wire_tool` decorator and
 delegates to `tools.py`. Every file-reading tool goes through `safe_open`
 (lstat first, realpath, repo-boundary prefix match) and re-checks artifact
 mtimes per call so a `/chameleon-teach` or `/chameleon-refresh` is picked up
-without a stale cache. The server exposes **19 tools**: the 16
+without a stale cache. The server exposes **21 tools**: the 18
 comprehension/conformance tools an agent needs mid-edit stay top-level, and
 every operator/workflow function is folded behind three dispatchers
 (`chameleon_lifecycle`, `chameleon_review`, `chameleon_telemetry`). A
@@ -828,7 +956,7 @@ full signature + summary, generated from the live `tools.py` signatures via
 the FastMCP `instructions` field — the only server text guaranteed in model
 context at session start under deferred tool loading — as a skill-style
 "when to search for these tools" trigger plus the shared response
-conventions. All 16 read tools and `chameleon_telemetry` carry
+conventions. All 18 read tools and `chameleon_telemetry` carry
 `readOnlyHint`/`idempotentHint` tool annotations; the two mutating
 dispatchers deliberately do not. Row-heavy responses are shaped for token
 economy at the source: `get_callers` groups one row per (path, caller,
@@ -848,7 +976,7 @@ body excerpt. `search_codebase` also pages via `offset` (clamped to
 `COMPREHEND_SEARCH_MAX_OFFSET`) over the same deterministic ranking,
 returning `next_offset` while more matches remain.
 
-### Kept top-level (16 tools)
+### Kept top-level (18 tools)
 
 | Tool | Purpose |
 |---|---|
@@ -857,7 +985,9 @@ returning `next_offset` while more matches remain.
 | `get_pattern_context` | Collapsed call: archetype + canonical + rules + idioms + meta in one round trip. |
 | `get_canonical_excerpt` | The canonical witness source for an archetype. |
 | `get_rules` | Repo-global rules keyed by source. |
-| `lint_file` | Validate file content against an archetype; returns violations and confidence. |
+| `explain_concept` | Define a software-engineering concept from the compiled-in taxonomy. Repo-INDEPENDENT: it takes no `repo` and never makes a claim about your code. |
+| `lint_file` | Validate file content against an archetype; returns violations and confidence. At the extraction tier it also returns `lint_coverage: "extraction-tier"` plus a note, so an empty `violations` list is never read as "clean". |
+| `get_symbol_edit_plan` | Definition line range + recorded references + cross-file importers for one symbol, in one call. `complete: false` whenever a leg was unavailable or truncated. |
 | `search_codebase` | Find symbols by name or file from the committed index, ranked. Comprehension. |
 | `describe_codebase` | Structural overview: language, framework, archetypes, totals, god symbols. Comprehension. |
 | `get_callers` | Deterministic committed callers of a function. |
@@ -925,6 +1055,25 @@ Observability and health — 15 actions, all read-only.
 | `get_prose_rule_candidates` | Doc-stated "use X not Y" rules, corroborated against the repo's imports. Propose-only. |
 | `daemon_status` | Advisor daemon liveness and version. |
 | `doctor` | Installation health triage. |
+
+### The compiled-in taxonomy
+
+`chameleon_mcp/knowledge/taxonomy.json` is a static, offline catalogue of 541
+named software-engineering concepts: 90 language constructs, 80 meta-concepts,
+64 framework profiles, 54 principles, 53 tooling entries, 49 design patterns, 44
+architecture patterns, 31 refactorings, 25 language profiles, 23 code smells, and
+the testing/concurrency/distributed pattern sets. It ships with the plugin, is
+never fetched, and describes the FIELD, never your repo, which is why
+`explain_concept` takes no `repo` argument and returns a definition rather than a
+claim.
+
+Two other consumers read the same file. `knowledge/detect.py` scores the 64
+framework profiles from manifest and config-file NAMES (no file body is parsed,
+no repo code runs) and backs the `_taxonomy_framework` fallback in the
+classifier, so a repo outside the six hardcoded families can still carry a
+framework tag. `knowledge/loader.py` is the shared, cached reader; the whole
+layer is bounded by the `TAXONOMY_*` thresholds and killed with
+`CHAMELEON_TAXONOMY=0`.
 
 ---
 
@@ -1934,8 +2083,10 @@ exactly this clause: 32 operator tools were folded into the three dispatchers
 tool name becoming the `action` and the original arguments becoming `params`,
 unchanged in name and value (the full mapping is the dispatcher tables in the
 MCP server section and the v3 CHANGELOG entry); the 16 comprehension and
-conformance tools stayed top-level, and the underlying Python functions kept
-their signatures, so direct imports were unaffected.
+conformance tools that existed then stayed top-level, and the underlying Python
+functions kept their signatures, so direct imports were unaffected. Two have
+been added since, `explain_concept` and `get_symbol_edit_plan`, so the top-level
+count is 18 today.
 
 ---
 
@@ -1956,8 +2107,16 @@ anyone considering dropping mandatory review.
   heuristics.
 - **Intent and rationale** why a pattern exists and when it is correct to break
   it. `idioms.md` stores one sentence per idiom; it does not reason.
-- **Unsupported languages** Go, Rust, Java, SQL, YAML return an empty
-  snapshot and zero violations.
+- **Unsupported languages** SQL, YAML, and anything with neither a first-class
+  extractor nor a spec return an empty snapshot and zero violations.
+- **Extraction-tier languages** Go, Rust, Java, C#, PHP. These DO derive a profile
+  (archetypes, canonical witness, signatures, imports) and DO get secret and
+  eval-sink findings, so they are not the empty case above. What they get no
+  mechanism for is the per-edit lint rules, the reverse/exports index, and the
+  graded cross-file call edges, so convention conformance, hallucinated-symbol
+  checks and blast radius are human work in those languages, and an empty
+  `violations` list there means "no rule ran", not "clean". `lint_file` says so
+  in its `lint_coverage` field; `/chameleon-doctor` says so per language.
 - **Anything below sample-size thresholds** sparse repos and brand-new
   directories where conventions are still forming.
 - **Performance and runtime behavior** N+1 queries, quadratic loops, memory,

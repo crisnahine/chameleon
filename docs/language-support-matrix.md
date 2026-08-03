@@ -18,6 +18,15 @@
 > supported language gets the same capability, with the same purpose, except
 > where a capability is genuinely specific to a language or framework.** This doc
 > is the basis for closing the gap.
+>
+> **Scope of the tables below: the three FIRST-CLASS languages.** Chameleon supports
+> eight. The five extraction-tier ones (Go, Rust, Java, C#, PHP) have no columns here
+> and are not counted in any tally - the per-dimension grid was built to compare
+> languages that all reach the same pipeline, and adding a column that is `-` for 200
+> of 210 rows would measure nothing. What that tier does and does not get is stated in
+> full in the bullet below and in `chameleon_mcp/language_support.py`, which is the
+> source of truth for it. Read a missing column as "out of scope for this grid", never
+> as "unsupported".
 
 Supported languages (the agnostic core works on any framework; the named
 frameworks add a deeper, framework-aware layer on top):
@@ -27,16 +36,34 @@ frameworks add a deeper, framework-aware layer on top):
 - **Extraction tier** - Go (`.go`), Rust (`.rs`), Java (`.java`), C# (`.cs`), PHP (`.php`), parsed
   in-process by tree-sitter from a declarative spec (`extractors/treesitter/lang/specs.py`) rather
   than a hand-written table module. They get the DERIVATION half only: archetype clustering, a
-  canonical witness, conventions, callable signatures and imports. They do NOT get per-edit lint
-  rules, the reverse/exports index, or graded cross-file call edges (same-file edges only). They DO
-  get secret and eval-sink detection, block-eligible on the same terms as a first-class language:
-  those two checks read the content rather than a derived shape, so they need no extractor, and
-  gating them on the extractor question made a hardcoded AWS key advisory in a `.go` file while the
-  identical key in a `.rb` file blocked. The wider gate is `lint_engine.security_language`;
-  `detect_language` stays narrow because handing a heuristic extractor a language it has no arm for
-  yields an empty snapshot that mismatches every real archetype query. The split is declared in
-  `chameleon_mcp/language_support.py`, reported by
-  `/chameleon-doctor`, and pinned by tests that compare the declaration against the actual wiring --
+  canonical witness, callable signatures, imports, and the convention sections that key off the
+  parsed shape rather than a language arm (repo-wide preferred imports, `callable_signatures`,
+  `body_shape`, and the path-only file-naming half of `naming`; the rest stay empty - see
+  "What 'conventions' means at the extraction tier" below). They do NOT get per-edit lint
+  rules, the reverse/exports index, or graded cross-file call edges (same-file edges only).
+  They DO get secret and eval-sink detection - with one deliberate asymmetry in
+  block-eligibility, stated here because it is exactly the kind of thing that reads as parity
+  when it is not:
+  - `secret-detected-in-content` is language-independent and block-eligible everywhere
+    (`violation_class.BLOCK_RULE_LANGUAGES` maps it to `None`). A hardcoded AWS key in a `.go`
+    file blocks on the same terms as the identical key in a `.rb` file. Gating this on the
+    extractor question is what made it advisory in Go, and that is the gap the widened gate
+    closed.
+  - `eval-call` FIRES at error severity in every source language, but is block-eligible only
+    for `typescript`, `ruby`, `python` and `php`. `_EVAL_CALL_RE` matches a DEFINITION as
+    readily as a call, and Go, Rust, Java and C# have no `eval` builtin - so `func eval(x
+    string)`, `pub fn eval(...)` and `Object eval(String s)` each produced a block-eligible
+    violation on well-formed code once the gate widened. Those four are omitted rather than
+    left to block on a false positive. Route by the returned severity plus block-eligibility,
+    never by the rule name.
+
+  The wider security gate is `lint_engine.security_language`; `detect_language` stays narrow
+  because handing a heuristic extractor a language it has no arm for yields an empty snapshot
+  that mismatches every real archetype query. The split is declared in
+  `chameleon_mcp/language_support.py`, reported by `/chameleon-doctor` (its `language_support`
+  check warns for any profile carrying an extraction-tier language) and by `lint_file` itself
+  (`lint_coverage: "extraction-tier"` plus a note, so an empty `violations` list is never read
+  as "clean"), and pinned by tests that compare the declaration against the actual wiring --
   a rule that never fires is indistinguishable from a clean codebase, so the absence is stated
   rather than left to be inferred. Detection requires a build MANIFEST (`go.mod`, `Cargo.toml`,
   `pom.xml`/`build.gradle`, `global.json`, `composer.json`), so a single vendored `.go` file inside a
@@ -45,7 +72,39 @@ frameworks add a deeper, framework-aware layer on top):
 
 Legend: ✅ full · ⚠️ partial · ❌ missing (parity gap) · - n/a (legitimate exclusive)
 
+### What "conventions" means at the extraction tier
+
+`extract_all_conventions` takes ONE repo-wide language and dispatches half its passes on
+it, so "conventions derive" is true but not uniform. Measured on a real bootstrapped Go
+repo, split by why:
+
+- **Derives** (keyed off the parsed shape, so language-neutral): repo-wide preferred
+  imports (`repo_imports`), `callable_signatures`, `body_shape` (once the archetype clears
+  `BODY_SHAPE_MIN_FUNCTIONS`), and the file-basename half of `naming` (path-only).
+- **Stays empty** (each dispatches on the first-class three): identifier `naming` and
+  `doc_coverage` - both re-read file bytes through `extract_declarations_from_content` /
+  `compute_doc_coverage_from_content`, which return nothing for an unknown language -
+  plus `error_handling`, `inheritance` (Ruby/Python), `method_calls` (Ruby),
+  `required_guards` (Ruby/Python), `class_contract` and `key_exports`.
+- **Runs but should be read as no-signal**: `test_pairing`. `_candidate_test_paths` and
+  `_is_test_path` both fall through to the TypeScript branch for any language that is not
+  `ruby` or `python`, so a Go repo is measured against `x.test.go` / `__tests__/` shapes and
+  its real `x_test.go` files are counted as SOURCE rather than dropped as tests. Every
+  candidate is existence-gated, so a wrong guess is free and the section simply stays empty
+  below the frequency floor - but do not read that emptiness as "this repo has no tests".
+
+So an extraction-tier archetype carries a shape, a witness and a signature set, with
+absent guidance rather than wrong guidance. Two further scoping facts worth stating
+because neither is visible from the tier name: an extraction-tier language CAN be a
+repo's primary (a `go.mod` plus real Go source and no first-class signal bootstraps as
+`language: go`), and in a polyglot repo a SECONDARY language reaches clustering and the
+indexes but never `extract_all_conventions` at all, so it derives archetypes and a
+witness with no convention rows whatsoever.
+
 ## At a glance
+
+Counts below cover the three first-class languages only; the extraction tier is
+excluded by the scoping note in the lede.
 
 - **210** capabilities mapped across the three languages, in 14 dimensions.
 - **133** are at full parity today - all three languages ✅ (up from 108, and from 63 before the Python parity work).
@@ -167,6 +226,7 @@ identically regardless of language.
 | Shape-fuzzy merge (_shape_fuzzy_merge) | ✅ | ✅ | ✅ | Group key includes jsx_present (always False for Ruby/Python, inert there) and default_export_kind (lang-specific node-kind names). Functionally identical across langs; only the discriminating power of jsx_present is TS-only. |
 | Bimodal-split detection | ✅ | ✅ | ✅ | Two of the four inspected dimensions are weak for Ruby/Python: jsx_present is constant False (never bimodal) and content_signal_match collapses to shebang/none, so Ruby/Python bimodal detection effectively runs on 2 live dimensions vs TS's... |
 | Generated-file skip (is_likely_generated) | ✅ | ✅ | ✅ | Implemented. is_likely_generated now matches the bare 'generated by' marker on the lowercased first 200 bytes (discovery.py:556,561), so '# Generated by Django ...' migrations are skipped (the `is_likely_generated` gate in `cluster_files`, clustering.py). Content-based, language-agnostic. Full parity. |
+| Polyglot secondary-corpus clustering | ✅ | ✅ | ✅ | Language-agnostic and orthogonal to the three columns: bootstrap binds one PRIMARY language, then `_secondary_language_files` picks up every other language the repo genuinely contains (manifest plus real source, same `discover_files` filters, kill switch `CHAMELEON_CROSS_LANGUAGE_INDEX=0`) and feeds it into `cluster_files`, so each secondary language derives its own archetypes and canonical witness. The sampling cap is split evenly across the languages present BEFORE the per-directory round-robin, so a package-per-directory monorepo cannot starve a second language to zero. Secondary files reach clustering, the calls index and symbol signatures; they never reach `extract_all_conventions` (one repo-wide language) or the function catalog (a cataloged function carries no language, so cross-language pairs would be unjoinable reuse leads). |
 
 ### 3. Archetype naming & framework priors
 
@@ -201,14 +261,14 @@ identically regardless of language.
 
 | Capability | TS | Ruby | Py | Notes |
 |---|:--:|:--:|:--:|---|
-| eval-call (bare eval()) | ✅ | ✅ | ✅ |  |
+| eval-call (bare eval()) | ✅ | ✅ | ✅ | Also fires at the extraction tier: the security gate is `lint_engine.security_language`, which claims every source language, so `.php .go .rs .java .cs` all reach this rule. PHP's bare `eval(` is the canonical RCE the rule exists for and is block-eligible; Go/Rust/Java/C# have no `eval` builtin, so their hits are user-defined symbols and are deliberately NOT block-eligible (see dim 14). |
 | eval-call (Python exec()) | - | - | ✅ | _exclusive: python_ |
 | eval-call (Ruby string-arg *_eval) | - | ✅ | - | _exclusive: ruby_ |
 | eval-call (Ruby send(:eval)) | - | ✅ | - | _exclusive: ruby_ |
 | weak-hash | ✅ | ✅ | ✅ | Implemented. The sink gate includes python (_WEAK_HASH_RE scan in lint_engine.py); _WEAK_HASH_RE matches hashlib.md5/sha1, gated on a crypto context so a benign cache-key MD5 stays quiet. Advisory warning, like TS/Ruby. Full parity. |
 | insecure-random | ✅ | ✅ | ✅ | Implemented for all three. Ruby `rand(...)` / `Random.rand` in a crypto context (token/salt/nonce within +/-200 chars) nudges to `SecureRandom` (lint_engine.py), the same context gate as Python `random.*` and TS `Math.random`; `SecureRandom` itself is the secure target and never flags. Advisory warning. Full parity. |
 | sql-string-interpolation | - | ✅ | - | _exclusive: ruby_ |
-| secret-detected-in-content | ✅ | ✅ | ✅ |  |
+| secret-detected-in-content | ✅ | ✅ | ✅ | Language-independent by construction (`BLOCK_RULE_LANGUAGES` maps it to `None`), and the widened gate carries it to every source language: a hardcoded key in a `.go` file is block-eligible on the same terms as one in a `.rb` file. Still `None` for prose - a credential-shaped token in markdown or config text has no inline `chameleon-ignore` escape and stays advisory. |
 | string/comment stripper (per language) | ✅ | ✅ | ✅ | Python stripper is regex-based and does NOT model implicit string concatenation or nested f-string expressions; adequate for the eval/exec token scan it feeds but weaker than the TS/Ruby strippers' coverage of their respective string forms... |
 | command-injection sink (os.system / subprocess shell=True) | - | ✅ | ✅ | Implemented for both. Python flags os.system/os.popen/subprocess(shell=True); Ruby flags `system`/`exec` (call shape confirmed from raw content), backticks, and `%x{}` (lint_engine.py). The backtick/`%x{}` arms run on raw content with comment + string-literal span suppression (a `#{}` inside a backtick reads as a comment in the stripped copy); `execute` (ActiveRecord) and string/comment mentions don't flag. Advisory warning. Full parity. |
 | insecure-deserialization sink (pickle / yaml.load) | - | ✅ | ✅ | Implemented for both. Python flags pickle.load/loads and yaml.load (not yaml.safe_load); Ruby flags `Marshal.load` and `YAML.load` (the dot-anchored `load` leaves `YAML.safe_load` and `Marshal.dump` clean), run on the strings-stripped scan (lint_engine.py). The hook and tool paths pass language to scan_dangerous_sinks. Advisory warning. Full parity. |
@@ -315,6 +375,7 @@ identically regardless of language.
 | Calls index - module_attribute grade (Python `mod.func()` module-attribute call edges) | - | - | ✅ | _exclusive: python_ (v2.50). `from pkg import mod; mod.func()` — the Python analog of `typed_property` / `constant_receiver`: the receiver must be a from-imported name whose `pkg.mod` specifier resolves to a real in-repo module FILE, and the member must be a callable defined at MODULE level in that file (a class-member-only name yields no edge — it would be an AttributeError through the module object). Additive like typed_property: a new value in VALID_GRADES (calls_index.py), no calls-index schema bump; refresh adds the edges. TS `import * as ns; ns.f()` already resolves through the import grade's ns_aliases; Ruby `Const.method` through constant_receiver. |
 | get_callers / get_drift caller facts (tool read over calls index) | ✅ | ✅ | ✅ | Python: full. With the import grade built for Python, `get_callers` reads calls_index.json via `load_calls_index` (tools.py) - no TS export regex - and the judge's committed-callers grounding reads the same artifact (`caller_facts_for_diffs`, judge.py). Real import-grade Python callers. No longer starved. |
 | get_callees (forward callees over the calls index) | ✅ | ✅ | ✅ | Forward counterpart of get_callers: inverts the committed calls_index to answer 'what does this function call', returning {callee, file, grade} over the deterministic same_file / import / constant_receiver grades (server.py, tools.py). All three read the same artifact. Full parity. |
+| get_symbol_edit_plan (definition span + references + importers, in one call) | ✅ | ✅ | ✅ | Three legs off the committed artifacts: `definition` (path + start/end line + kind) from symbol_signatures.json, `references` from the calls index at their deterministic grade, `importers` by delegating to `query_symbol_importers` - so the importers leg inherits that row's dispatch exactly (reverse_index.json for TS/Python, the constant graph for Ruby). `complete: false` whenever a leg was unavailable or truncated, so a short list never reads as a verified blast radius - including the polyglot case: the importer surfaces are built from the PRIMARY parse only, so a file whose language is not in the profile's stored language set forces `complete: false` rather than reporting a verified-zero importer set. Full parity on the same terms as its three inputs. |
 | get_blast_radius (transitive / multi-hop callers) | ✅ | ✅ | ✅ | Walks calls_index UPWARD from a function and returns the bounded transitive caller chains - the 'if I change this, what transitively reaches it' question beyond one-hop get_callers - depth-clamped and fanout/total-node capped, the same reach the turn-end judge walks (blast_radius.py, server.py). Same calls snapshot for all three. Full parity. |
 | Callable signatures index (per-symbol params/return/span) | ✅ | ⚠️ | ✅ | Python: full (typed). libcst_dump emits declared param `type` + `return_type` (omitted when unannotated), so Python signature rows carry params+types+return+span (the `build_symbol_signatures` call in `_bootstrap_single`, bootstrap/orchestrator.py). Verified: typed entries in symbol_signatures.json. Ruby stays ⚠️ (no static types). |
 | Class/module NAME index + search (symbol_signatures.json `classes` section) | ✅ | ✅ | ✅ | v2.50, additive: a parallel `classes` map (rel -> classname -> {start_line, extends?, keyword?}) rides symbol_signatures.json with no schema bump — an old artifact simply has no `classes` key, so class search stays empty until a refresh. Ruby records the truthful `module`/`class` keyword and a block-form nested class is stored under its qualified constant path (the searchable identity; a leaf query still hits on the substring tier); TS/Python omit the keyword (all classes). `search_codebase` returns kind='class' rows (comprehension.py). Full parity. |
@@ -375,8 +436,8 @@ identically regardless of language.
 | naming-convention-violation block rule | ✅ | ✅ | ✅ | Implemented for the applicable casing set: snake_case functions + PascalCase classes at >=0.60 consistency, dunder/underscore exempt (_python_naming_violations in lint_engine.py; BLOCK_RULE_LANGUAGES in violation_class.py). Constant-casing deliberately not derived, interface-prefix is TS-exclusive. Calibration certifies on real Python casing entries. |
 | inheritance-convention-violation block rule | ❌ | ✅ | ✅ | Implemented (now ruby+python). inheritance-convention-violation is block-eligible for {ruby, python} (violation_class.py:244) and fires on real Python signal via _python_inheritance_violations, so calibration can certify it for Python. TS stays ❌ (class inheritance exists but no sibling rule is derived). |
 | file-naming-convention-violation block rule | ✅ | ✅ | ✅ | Implemented, at parity with Ruby. The `_file_naming_violations` extension gate now includes `_PY_EXTENSIONS` (lint_engine.py), so a .py basename whose casing/compound-suffix breaks the dominant pattern is flagged (rule is None=language-independent). Fires rarely only because most modules are single lowercase words (no-signal), Python's filename distribution, not a shortfall. |
-| secret-detected-in-content block rule (kind-gated hard-block) | ✅ | ✅ | ✅ |  |
-| eval-call block rule (deterministic dangerous sink) | ✅ | ✅ | ✅ |  |
+| secret-detected-in-content block rule (kind-gated hard-block) | ✅ | ✅ | ✅ | `BLOCK_RULE_LANGUAGES["secret-detected-in-content"] is None`, so the extraction tier gets it too. |
+| eval-call block rule (deterministic dangerous sink) | ✅ | ✅ | ✅ | Block-eligibility is scoped to `{typescript, ruby, python, php}` (`BLOCK_RULE_LANGUAGES["eval-call"]`). Go, Rust, Java and C# are deliberately excluded: `_EVAL_CALL_RE` is `(?<![.\w])eval\s*\(`, whose lookbehind excludes only `.eval(`, so it matches a DEFINITION as readily as a call - and those four have no `eval` builtin, so `func eval(x string)` / `pub fn eval(...)` / `Object eval(String s)` each blocked well-formed code once the security gate widened. The rule still FIRES there at error severity; only the block is withheld. Route by returned severity plus block-eligibility, not by rule name. |
 | removed-export-breaks-importers Stop block (opt-in crossfile existence deny) | ✅ | - | ✅ | v2.46, opt-in: `enforcement.crossfile_existence_block` (default false) on top of mode shadow/enforce. A named export the turn removed from an existing module that indexed importers still reference denies at Stop (never inline), FP-hardened by `_confirmed_crossfile_break_sites` (hook_helper.py): HEAD-scoped turn-introduced check + strict per-importer re-sourcing. Block scope is TS/Python `export` breaks ONLY; Ruby `constant` breaks (and the deleted-target/barrel cases) stay advisory-only by design — Ruby resolves constants globally, so "no other file defines it" cannot be cheaply proven at Stop, and under-block is the safe direction. Shadow logs would_block; overridable inline with `chameleon-ignore removed-export-breaks-importers`; counts against `stop_block_cap`. |
 | Calibration language allowlist (which profiles calibrate at all) | ✅ | ✅ | ✅ | Allowlist parity is correct - Python is a first-class calibration language. The phantom-import and file-naming block rules now fire on real Python signal and calibration certifies them honestly - the active-but-inert footgun this note flagged before the parity work is closed (see those rows). |
 | Override-feedback demotion / SECURITY_BLOCK_RULES exemption | ✅ | ✅ | ✅ |  |
@@ -494,5 +555,16 @@ retallied by script from the final tables, and drifted file:line references
 replaced with symbol references (file + backticked symbol, each confirmed present
 in the named file). Line numbers move with every release: verify a row by grepping
 the named symbol, not by line number; the few line refs that remain were
-re-checked against the current source at this refresh. Re-run and regenerate when the language pipelines
+re-checked against the current source at this refresh.
+
+Row-level refresh on 2026-08-03 (v4.10.0 plus its follow-up commits), covering the
+multi-language work: the two-tier language model and its scoping note, the extraction
+tier's real convention coverage (measured on a bootstrapped Go repo, not inferred), the
+widened security gate in dim 5 with the eval-call block-eligibility asymmetry in dim 5
+and dim 14, polyglot secondary-corpus clustering in dim 2, and `get_symbol_edit_plan` in
+dim 11. The three-language tallies in "At a glance" were NOT re-derived at this refresh -
+none of the above added or removed a first-class cell - and the extraction tier is
+excluded from them by design.
+
+Re-run and regenerate when the language pipelines
 change; the per-dimension tables above are the authoritative current state._

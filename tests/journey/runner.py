@@ -24,6 +24,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from tests.journey.harness import preflight  # noqa: E402
+from tests.journey.harness.claude import abnormal_termination  # noqa: E402
 from tests.journey.harness.context import JourneyContext, build_context  # noqa: E402
 from tests.journey.harness.fixtures import setup_fixture  # noqa: E402
 
@@ -268,6 +269,44 @@ def _run_acts(ctx: JourneyContext, args: argparse.Namespace, acts: list | None =
             f"[ACT {act_id}] done in {elapsed:.1f}s, cost ${act_result.cost_usd:.2f} (cumulative ${ctx.cost_so_far_usd:.2f})",
             file=sys.stderr,
         )
+
+        # A worker that stopped mid-task leaves checkpoints for the phases it
+        # reached and nothing for the rest, and an act reading those cannot
+        # tell "the assertion held" from "the session died before the step
+        # ran" -- so a phase can be reported PASS, or promoted to PASS by a
+        # transcript cross-check, off a session that never did the work. A
+        # phase with no events lands as SKIP, which alone never fails a run,
+        # so without this the gate goes green on a dead worker. Every phase of
+        # such an act is recorded ERROR with its original outcome kept in the
+        # notes: partial detail survives, but the run cannot go green on a
+        # worker that died.
+        #
+        # An act whose every declared phase PASSED is the exception: it holds
+        # the whole result it came for, so exhausting the turn cap on the way
+        # out is a budget fact rather than a lost one, and voiding those
+        # outcomes would discard work the worker demonstrably did. A deferred
+        # tool stays fatal regardless -- see abnormal_termination.
+        phases_complete = bool(act_result.phase_outcomes) and all(
+            outcome.status == "PASS" for outcome in act_result.phase_outcomes
+        )
+        abnormal = abnormal_termination(act_result, work_complete=phases_complete)
+        if abnormal:
+            print(f"[ACT {act_id}] SESSION TERMINATED ABNORMALLY: {abnormal}", file=sys.stderr)
+            for phase_outcome in act_result.phase_outcomes:
+                all_results.append(
+                    {
+                        "act": act_id,
+                        "phase": phase_outcome.phase,
+                        "status": "ERROR",
+                        "notes": (
+                            f"session terminated abnormally: {abnormal}; "
+                            f"act reported {phase_outcome.status}: {phase_outcome.notes}"
+                        ),
+                    }
+                )
+            any_failed = True
+            continue
+
         for phase_outcome in act_result.phase_outcomes:
             all_results.append(
                 {
@@ -310,7 +349,11 @@ def _write_outputs(ctx: JourneyContext, results: list[dict]) -> None:
         "|-----|-------|--------|-------|",
     ]
     for r in results:
-        lines.append(f"| {r['act']} | {r['phase']} | {r['status']} | {r['notes'][:80]} |")
+        # Wide enough that an abnormal-termination note, whose reason prefix
+        # alone runs past 60 characters, still leaves the act's own verdict
+        # visible after it -- that pairing is the whole point of keeping the
+        # original outcome in the note.
+        lines.append(f"| {r['act']} | {r['phase']} | {r['status']} | {r['notes'][:200]} |")
 
     (ctx.run_dir / "run.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"results: {json_path}", file=sys.stderr)

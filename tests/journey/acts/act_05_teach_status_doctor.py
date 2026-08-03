@@ -132,4 +132,5 @@ def run(ctx: JourneyContext) -> ActResult:
         cost_usd=session.cost_usd,
         phase_outcomes=list(outcomes.values()),
         checkpoint_parse_errors=parse_errors,
+        terminal_reason=session.terminal_reason,
     )

@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-7C3AED.svg)](https://docs.claude.com/claude-code)
 [![Languages](https://img.shields.io/badge/languages-TS%20%7C%20Ruby%20%7C%20Python%20%2B5-2ea44f.svg)](#languages-and-frameworks)
-[![Tests](https://img.shields.io/badge/unit%20tests-6%2C934-blue.svg)](#proof-not-promises)
+[![Tests](https://img.shields.io/badge/unit%20tests-7%2C261-blue.svg)](#proof-not-promises)
 [![Listed on ClaudePluginHub](https://www.claudepluginhub.com/badge/crisnahine-chameleon)](https://www.claudepluginhub.com/plugins/crisnahine-chameleon?ref=badge)
 
 **Your AI writes code that works, and it reads wrong. Chameleon shows the model your repo's own conventions at the moment it types, then reviews the turn's diff before you do.**
@@ -80,7 +80,7 @@ total: 1  (deterministic, from the committed calls index)
   src/auth/auth.controller.ts:18   grade=typed_property   (DI edge)
 ```
 
-Real output from the bundled `golden-ts-nestjs` fixture, so you can reproduce it exactly. Every returned site is a call the bootstrap actually recorded, graded by how it was resolved (`same_file`, `import`, `constant_receiver`, `typed_property` for a dependency-injection edge, `module_attribute` for Python). `get_blast_radius` walks the same index to the transitive callers a change reaches. The same profile answers the rest of the comprehension surface fully offline: `search_codebase` (functions and classes by name, ranked, with signature and caller count), `get_callees`, `query_symbol_importers`, `describe_codebase`, and `explain_edit`, a post-incident replay of exactly what chameleon knew and did the last time a file was edited. No embeddings service, no network.
+Real output from the bundled `golden-ts-nestjs` fixture, so you can reproduce it exactly. Every returned site is a call the bootstrap actually recorded, graded by how it was resolved (`same_file`, `import`, `constant_receiver`, `typed_property` for a dependency-injection edge, `module_attribute` for Python). `get_blast_radius` walks the same index to the transitive callers a change reaches. The same profile answers the rest of the comprehension surface fully offline: `search_codebase` (functions and classes by name, ranked, with signature and caller count), `get_callees`, `query_symbol_importers`, `describe_codebase`, `get_symbol_edit_plan` (one call for the three questions a symbol edit asks: where the definition starts and ends, who calls it, who imports it, answered with line ranges rather than prose), and `explain_edit`, a post-incident replay of exactly what chameleon knew and did the last time a file was edited. No embeddings service, no network.
 
 ---
 
@@ -118,7 +118,7 @@ And chameleon writes the rule file for you, in the one channel models actually o
 |---|---|---|
 | `axios` instead of `@/lib/http` | The canonical witness already imports the wrapper; teach the rule once and every later edit also gets the counterexample quoted from your own repo | Before the edit |
 | The second `formatDate` | Turn-end semantic duplication catch, grounded in the real call graph; `search_codebase` finds the original first | Turn end |
-| Rename breaks 7 callers | Inbound-callers block before the edit; contract-break and removed-export checks against a prebuilt import index at turn end; `get_blast_radius` for the transitive picture | Before and after |
+| Rename breaks 7 callers | Inbound-callers block before the edit; `get_symbol_edit_plan` for the definition's line range plus its callers and importers in one call; contract-break and removed-export checks against a prebuilt import index at turn end; `get_blast_radius` for the transitive picture | Before and after |
 | Hardcoded `sk_live_` key | Deterministic write-time block (AWS `AKIA`, GitHub `ghp_`, Anthropic `sk-ant-`, Stripe `sk_live_`, Slack, Google, PEM keys, more), even on brand-new files; same for error-severity `eval`/`exec` | At write, always |
 | Hallucinated dependency | A don't-invent-dependencies protocol in context; phantom-import probes against the live disk; a deterministic dependency diff scan in PR review. About 1 in 5 AI-recommended packages do not exist, and attackers pre-register the recurring fake names | Write time and PR review |
 | The three-hour review loop | A turn-end correctness judge reads the diff in the same minute it was written; `/chameleon-pr-review` runs the mechanical review rounds before a human opens the PR | Turn end and pre-review |
@@ -127,7 +127,7 @@ And chameleon writes the rule file for you, in the one channel models actually o
 
 ## The full surface
 
-Seven hooks across six lifecycle events, 19 MCP tools (16 comprehension/conformance + 3 operator dispatchers), 15 skills. You will call almost none of it directly; it works behind two moments, before the model writes and after the turn ends.
+Seven hooks across six lifecycle events, 21 MCP tools (18 comprehension/conformance + 3 operator dispatchers), 15 skills. You will call almost none of it directly; it works behind two moments, before the model writes and after the turn ends.
 
 | When | What runs |
 |---|---|
@@ -160,12 +160,12 @@ Framework-agnostic by default: chameleon learns your repo's own conventions, so 
 
 **Extraction tier** — Go, Rust, Java, C# and PHP. These are parsed in-process by tree-sitter from a declarative language spec, and they get the derivation half of the product: archetype clustering, a canonical witness, conventions, callable signatures and imports, so the per-edit block shows the model a real file from your repo to imitate.
 
-They do **not** get per-edit convention lint rules, the reverse/exports index, or graded cross-file call edges (same-file edges only). They **do** get secret and eval-sink detection, block-eligible on the same terms as a first-class language: those two read the file's content rather than a derived shape, so they need no extractor, and a hardcoded key in a `.go` file blocks at write time exactly as the same key in a `.rb` file does. That split is deliberate and reported rather than implied — `/chameleon-doctor` prints the tier and names exactly what is absent, because a rule that never fires looks identical to a codebase with nothing wrong. `plugin/mcp/chameleon_mcp/language_support.py` is the single source of that claim, and its tests hold it to the actual wiring.
+They do **not** get per-edit convention lint rules, the reverse/exports index, or graded cross-file call edges (same-file edges only). They **do** get secret and eval-sink detection: those two read the file's content rather than a derived shape, so they need no extractor. A leaked credential is a credential in any language, so a hardcoded key in a `.go` file blocks at write time exactly as the same key in a `.rb` file does. The eval half stops one step short of that. Every extraction-tier language reports the finding, but only PHP joins the three first-class languages in blocking on it, because Go, Rust, Java and C# have no eval builtin: there, `func eval(x string)` is somebody's own function, and blocking it would refuse well-formed code. That split is deliberate and reported rather than implied - `/chameleon-doctor` prints the tier and names exactly what is absent, because a rule that never fires looks identical to a codebase with nothing wrong. `plugin/mcp/chameleon_mcp/language_support.py` is the single source of that claim, and its tests hold it to the actual wiring.
 
-| Tier | Languages | Derivation | Convention lint | Secret + eval detection |
-|---|---|---|---|---|
-| First-class | TypeScript/JavaScript, Ruby, Python | yes | yes | yes |
-| Extraction | Go, Rust, Java, C#, PHP | yes | no | yes |
+| Tier | Languages | Derivation | Convention lint | Hard-kind secret | eval sink |
+|---|---|---|---|---|---|
+| First-class | TypeScript/JavaScript, Ruby, Python | yes | yes | finding + block | finding + block |
+| Extraction | Go, Rust, Java, C#, PHP | yes | no | finding + block | finding; blocks on PHP only |
 
 ---
 
@@ -259,7 +259,7 @@ import axios from "axios"; // chameleon-ignore import-preference-violation
 ## The tradeoffs, straight
 
 1. **It costs tokens and latency per turn.** Injecting a witness file and spawning a turn-end judge is not free. If your edits are tiny and your repo has no conventions worth keeping, leave it off.
-2. **Three languages.** TypeScript/JavaScript, Ruby, Python. If your repo is something else, this isn't for you yet.
+2. **Three languages get the whole product.** TypeScript/JavaScript, Ruby, Python. Go, Rust, Java, C# and PHP get the derivation half and the write-time secret block, but no convention lint, no reverse index, and no cross-file call edges. See [Languages and frameworks](#languages-and-frameworks) for exactly what is absent. Anything outside those eight, this isn't for you yet.
 3. **It catches a slice, not the ceiling.** Roughly 45% of AI-generated code ships an OWASP Top 10 vulnerability regardless of model or tooling (Veracode, 2026). Chameleon blocks secrets and eval deterministically and its judge catches a real but bounded set of logic bugs. It is not a SAST and won't pretend to be one.
 4. **No made-up efficacy number.** We will not print "writes better code by X%". We ship the measuring instrument instead: an effectiveness harness that runs paired Claude sessions, context off vs on, and reports the delta. Reproducible for about $3-5 at the ci tier:
 
@@ -287,7 +287,7 @@ Every number below is checkable in this repo right now:
 
 | What | Count | Verify yourself |
 |---|---|---|
-| Unit tests | **6,934** | `PYTHONPATH=. plugin/mcp/.venv/bin/python -m pytest tests/unit/ --co -q` |
+| Unit tests | **7,261** | `PYTHONPATH=. plugin/mcp/.venv/bin/python -m pytest tests/unit/ --co -q` |
 | Released versions | **270** (v0.1.1 to v4.9.2) | `git tag \| wc -l` |
 | Changelog | **10,000+ lines** | `wc -l CHANGELOG.md` |
 | CI | ubuntu + macos + **native Windows**, Python 3.11-3.13 | [.github/workflows/ci.yml](.github/workflows/ci.yml) |

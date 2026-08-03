@@ -16,8 +16,11 @@ holds everything deeper. Reading order by intent:
   pipeline, cross-file indexes, storage layout, and the security posture.
   The single most complete document in the repo.
 - [language-support-matrix.md](language-support-matrix.md) — the per-language
-  capability parity matrix (TypeScript/JavaScript, Ruby, Python): every
-  capability, per language, with ✅/⚠️/❌/n-a marks and code-grounded notes.
+  capability parity matrix for the three first-class languages
+  (TypeScript/JavaScript, Ruby, Python): every capability, per language, with
+  ✅/⚠️/❌/n-a marks and code-grounded notes. Its lede also states what the
+  extraction tier (Go, Rust, Java, C#, PHP) does and does not get; that tier has
+  no columns in the grid.
 - [hot-path-budget.md](hot-path-budget.md) — the latency budget for the
   per-edit hot path and every layer's timeout ceiling.
 

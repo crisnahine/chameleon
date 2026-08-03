@@ -21,6 +21,7 @@ class _FakeSession:
         self.session_id = "sess-1"
         self.result_text = ""
         self.bash_commands = ["npm test"]
+        self.terminal_reason = "completed"
 
 
 @pytest.fixture()

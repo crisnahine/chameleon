@@ -34,8 +34,11 @@ S2 `plane` + `excalidraw` (`bulletproof-react` as the S1 no-fan-out contrast) ·
 
 ## Tier-1 cells — full per-subsystem sign-off
 
-The action/signal is the same shape across the three core languages; the file you
-edit changes per cell. Per cell, pick a real source file of that language:
+The action/signal is the same shape across the three first-class languages; the file you
+edit changes per cell. There is no cell for an extraction-tier language (Go, Rust, Java,
+C#, PHP): that tier is scoped out of the verification program and covered by unit tests
+only, per `docs/verification-matrix.md` § A. Per cell, pick a real source file of that
+language:
 C1 → a `.tsx`/`.ts` under `excalidraw-app/` or `packages/`; C5 → an `app/**/*.rb`;
 C7 → a `readthedocs/**/*.py`; E1 → an `app/**/*.rb` (large-repo timing focus).
 
@@ -121,7 +124,14 @@ framework is detected, then the cell's signature framework behavior:
   context; the statusline tracks each repo's own trust state. Negative: neither
   repo's archetypes or idioms may leak into the other's advisories.
 - **E2 `golden-messy`** — edit the conflict-markered `src/version.ts` and a unicode-named
-  file → no crash (per-file isolation); detection picks the dominant language.
+  file → no crash (per-file isolation); detection picks the dominant language. Polyglot
+  derivation adds a second signal: bootstrap now also clusters every SECONDARY language
+  the repo genuinely contains (a build manifest plus real source clears the same bar a
+  primary does), so `describe_codebase` should list per-language archetypes with a
+  witness whose extension matches, and the PRIMARY language must not have moved. Negative:
+  a single vendored file of another language, with no manifest, must add no archetype;
+  `CHAMELEON_CROSS_LANGUAGE_INDEX=0` → the secondary corpus disappears and the primary
+  profile is unchanged.
 
 ---
 

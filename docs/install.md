@@ -1,6 +1,6 @@
 # Installing chameleon
 
-chameleon is a Claude Code plugin that learns your repo's conventions and feeds the model archetype-aware context on every edit, and adds a comprehension layer (`search_codebase`, `describe_codebase`, `get_callees`) for asking how the codebase fits together. See the [README.md](../README.md) for the full picture. It supports TypeScript/JavaScript, Ruby, and Python as first-class languages. The core is framework-agnostic (it learns each repo's own conventions, so any framework works), with deeper awareness where a framework's conventions are strong: Next.js and NestJS for TypeScript/JavaScript, Rails for Ruby, and Django, DRF, Flask, and FastAPI for Python.
+chameleon is a Claude Code plugin that learns your repo's conventions and feeds the model archetype-aware context on every edit, and adds a comprehension layer (`search_codebase`, `describe_codebase`, `get_callees`) for asking how the codebase fits together. See the [README.md](../README.md) for the full picture. It supports TypeScript/JavaScript, Ruby, and Python as first-class languages, plus Go, Rust, Java, C# and PHP at a shallower extraction tier (a profile and security checks, but no per-edit lint rules). The [README's tier table](../README.md) says exactly what each tier gets. The core is framework-agnostic (it learns each repo's own conventions, so any framework works), with deeper awareness where a framework's conventions are strong: Next.js and NestJS for TypeScript/JavaScript, Rails for Ruby, and Django, DRF, Flask, and FastAPI for Python.
 
 Two ways to read this guide:
 
@@ -53,6 +53,8 @@ The per-OS prerequisite commands below are what the script points you at when so
 | `uv` | runs chameleon's Python server | Always |
 | Node.js 20+ | reads TypeScript/JavaScript files | Always |
 | Ruby 3.0+ with `prism` | reads Ruby files | Only if you edit Ruby repos |
+
+Go, Rust, Java, C# and PHP repos need nothing extra. Their parsers are tree-sitter grammars that ship as Python dependencies of chameleon's own server and run in-process, so there is no toolchain to install for them the way Node and Ruby are needed above.
 
 You never run `uv sync` or `npm install` by hand. chameleon builds its own Python environment and Node dependencies the first time it runs. You only install the three tools above; chameleon handles the rest. See [How dependencies resolve](#how-dependencies-resolve) if you want the detail.
 
@@ -183,7 +185,7 @@ The very first time the server starts it builds a Python environment (about 5 to
 
 ## Your first profile
 
-Open a TypeScript/JavaScript, Ruby, or Python repo in Claude Code.
+Open a TypeScript/JavaScript, Ruby, or Python repo in Claude Code. A Go, Rust, Java, C# or PHP repo also profiles, at the shallower extraction tier; run `/chameleon-doctor` afterwards and its `language_support` line tells you what that tier does and does not do for your repo.
 
 1. **Bootstrap a profile.** Skip this only if `.chameleon/` already exists and you trust who committed it.
 

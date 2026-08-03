@@ -83,7 +83,7 @@ def run(ctx: JourneyContext) -> ActResult:
         cwd=cwd,
         env={**ctx.env, "CHAMELEON_JOURNEY_CHECKPOINT": str(ctx.current_checkpoint_file)},
         transcript_path=transcript,
-        max_turns=40,
+        max_turns=55,
         allowed_tools=[
             "Bash",
             "Read",
@@ -170,4 +170,5 @@ def run(ctx: JourneyContext) -> ActResult:
         cost_usd=session.cost_usd,
         phase_outcomes=list(outcomes.values()),
         checkpoint_parse_errors=parse_errors,
+        terminal_reason=session.terminal_reason,
     )

@@ -101,8 +101,12 @@ log it as a gap and call it out rather than expanding scope silently.)
 Produce the finite matrix that everything else is measured against. Derive it from the
 codebase, not memory.
 
-- **Languages (the complete supported set — exactly three; there is no open-ended
-  universe):**
+- **Languages: two tiers, eight names.** The tier is declared in
+  `plugin/mcp/chameleon_mcp/language_support.py`, which is the source of truth for what
+  each name gets; the matrix below is scoped to the first-class tier (see the scoping
+  note that closes this bullet).
+
+  **First-class (the three the matrix cells are built from):**
   - **TypeScript/JavaScript** — `.ts .tsx .js .jsx .mjs .cjs`, AST via the TypeScript
     Compiler API (`plugin/scripts/ts_dump.mjs`).
   - **Ruby** — `.rb`, AST via Prism (`plugin/scripts/prism_dump.rb`).
@@ -112,10 +116,34 @@ codebase, not memory.
     `.pyi` files are never clustered into the profile — don't assume a `.pyi`-heavy
     cell is profiled.
 
-  No other languages are supported. Go, Rust, Java, and C# have no extractor, dumper, or
-  detection signal — `detect_language()` returns only these three
-  (`plugin/mcp/chameleon_mcp/lint_engine.py`) and `EXTRACTORS = [TypeScript, Ruby, Python]`
-  (`plugin/mcp/chameleon_mcp/extractors/registry.py`) — and MUST NOT appear in the matrix.
+  (All three now parse in-process through tree-sitter by default; the dump scripts above
+  are the fallback path, kept and still exercised. `CHAMELEON_TREE_SITTER=0` reverts to
+  them. The extraction tier has no such fallback: with that switch off, a repo it claims
+  stops at `failed_extractor_unavailable`.)
+
+  **Extraction tier:** Go (`.go`), Rust (`.rs`), Java (`.java`), C# (`.cs`), PHP (`.php`),
+  each a declarative spec in `extractors/treesitter/lang/specs.py` (`ALL`) rather than a
+  hand-written table module, and each registered as an extractor
+  (`EXTRACTORS` in `extractors/registry.py` splices `_spec_driven_extractor_classes()`
+  between Ruby and Python). They derive archetypes, a canonical witness, callable
+  signatures, imports and the convention sections that key off the parsed shape rather
+  than a language arm, and they get secret and eval-sink detection (with one asymmetry:
+  `eval-call` fires but is not block-eligible for Go/Rust/Java/C#, which have no `eval`
+  builtin). They do NOT get per-edit lint rules, the reverse/exports index, or graded
+  cross-file call edges. `docs/language-support-matrix.md` § "What 'conventions' means at
+  the extraction tier" lists which sections derive and which stay empty.
+
+  `detect_language()` still returns only the three, and that is a contract rather than a
+  capability statement (`lint_engine.py`, "Narrow BY CONTRACT"): handing a heuristic
+  dimension extractor a language it has no arm for yields an empty snapshot that
+  mismatches every real archetype query. The security checks read content rather than a
+  derived shape, so they run off the wider `lint_engine.security_language`.
+
+  **Scoping decision:** the verification program stays scoped to the first-class tier.
+  The extraction tier ships covered by unit tests only (`tests/unit/test_spec_driven_lang.py`
+  validates every spec against its loaded grammar; `tests/unit/test_language_support.py`
+  pins the declaration against the wiring). It gets no golden repo, no matrix cell and no
+  human sign-off. State that plainly rather than leaving the tier unmentioned.
 - **Frameworks / repo shapes:** Chameleon is framework-**agnostic** by default — it learns
   each repo's own conventions, so any framework in a supported language works. The named
   frameworks below add a deeper, framework-aware layer on top:
@@ -124,6 +152,14 @@ codebase, not memory.
     dedicated DRF/Django authz-guard layer — not a separate framework tag), Flask, FastAPI
     (else agnostic, incl. plain scripts).
   - **TypeScript/JavaScript** → Next.js, NestJS (else agnostic, incl. Node CLI / plain).
+
+  Those six are the only families with a deeper layer, and they remain the matrix's
+  framework axis. The `framework` TAG stored in `profile.json` is now wider than the six:
+  when no hardcoded arm matches, `_classify_framework` falls through to
+  `_taxonomy_framework`, which scores the 64 framework profiles in
+  `chameleon_mcp/knowledge/taxonomy.json` off manifest and config-file names and can
+  return any of them. A tag outside the six carries no behavior (it is descriptive
+  metadata), so it opens no new cell.
 
   Repo **shapes** (orthogonal to framework, all handled agnostically): single-package,
   monorepo / workspace (`packages` / `apps` / `libs` / `workspaces`), and hybrid
