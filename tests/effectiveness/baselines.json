@@ -3,18 +3,20 @@
     "ci": {
       "convention": {
         "off": {
-          "cost_usd_mean": 0.3385,
+          "cost_usd_mean": 1.1153,
           "findings_per_task": 0.0,
-          "run_id": "effectiveness_20260612T025136Z",
-          "verification_rate": 0.5,
-          "wall_seconds_mean": 92.405
+          "run_id": "effectiveness_20260803T034125Z",
+          "setting_sources": "project,local",
+          "verification_rate": 1.0,
+          "wall_seconds_mean": 112.0
         },
         "shadow": {
-          "cost_usd_mean": 0.4189,
+          "cost_usd_mean": 0.9023,
           "findings_per_task": 0.0,
-          "run_id": "effectiveness_20260612T025136Z",
-          "verification_rate": 0.5,
-          "wall_seconds_mean": 170.655
+          "run_id": "effectiveness_20260803T034125Z",
+          "setting_sources": "project,local",
+          "verification_rate": 1.0,
+          "wall_seconds_mean": 105.585
         },
         "shadow~judge_crossfile_facts=false": {
           "cost_usd_mean": 0.4823,
@@ -26,18 +28,20 @@
       },
       "crossfile": {
         "off": {
-          "cost_usd_mean": 0.3118,
-          "findings_per_task": 3.5,
-          "run_id": "effectiveness_20260612T025136Z",
-          "verification_rate": 0.0,
-          "wall_seconds_mean": 83.98
+          "cost_usd_mean": 0.8893,
+          "findings_per_task": 0.6667,
+          "run_id": "effectiveness_20260803T034125Z",
+          "setting_sources": "project,local",
+          "verification_rate": 1.0,
+          "wall_seconds_mean": 71.7067
         },
         "shadow": {
-          "cost_usd_mean": 0.5505,
-          "findings_per_task": 3.5,
-          "run_id": "effectiveness_20260612T025136Z",
-          "verification_rate": 0.0,
-          "wall_seconds_mean": 142.705
+          "cost_usd_mean": 0.8216,
+          "findings_per_task": 0.6667,
+          "run_id": "effectiveness_20260803T034125Z",
+          "setting_sources": "project,local",
+          "verification_rate": 1.0,
+          "wall_seconds_mean": 76.5067
         },
         "shadow~judge_crossfile_facts=false": {
           "cost_usd_mean": 0.4685,
@@ -49,20 +53,22 @@
       },
       "duplication": {
         "off": {
-          "cost_usd_mean": 0.2595,
+          "cost_usd_mean": 0.7152,
           "duplication_rate": 0.0,
           "findings_per_task": 0.0,
-          "run_id": "effectiveness_20260612T025136Z",
-          "verification_rate": 0.0,
-          "wall_seconds_mean": 61.47
+          "run_id": "effectiveness_20260803T034125Z",
+          "setting_sources": "project,local",
+          "verification_rate": 0.3333,
+          "wall_seconds_mean": 54.6133
         },
         "shadow": {
-          "cost_usd_mean": 0.2911,
+          "cost_usd_mean": 0.7446,
           "duplication_rate": 0.0,
           "findings_per_task": 0.0,
-          "run_id": "effectiveness_20260612T025136Z",
-          "verification_rate": 0.0,
-          "wall_seconds_mean": 101.015
+          "run_id": "effectiveness_20260803T034125Z",
+          "setting_sources": "project,local",
+          "verification_rate": 0.6667,
+          "wall_seconds_mean": 74.5733
         },
         "shadow~judge_crossfile_facts=false": {
           "cost_usd_mean": 0.2617,
@@ -75,18 +81,20 @@
       },
       "verification": {
         "off": {
-          "cost_usd_mean": 0.3143,
-          "findings_per_task": 0.5,
-          "run_id": "effectiveness_20260612T025136Z",
-          "verification_rate": 0.5,
-          "wall_seconds_mean": 77.545
+          "cost_usd_mean": 0.6075,
+          "findings_per_task": 0.0,
+          "run_id": "effectiveness_20260803T034125Z",
+          "setting_sources": "project,local",
+          "verification_rate": 0.6667,
+          "wall_seconds_mean": 37.3833
         },
         "shadow": {
-          "cost_usd_mean": 0.2965,
-          "findings_per_task": 0.5,
-          "run_id": "effectiveness_20260612T025136Z",
-          "verification_rate": 0.5,
-          "wall_seconds_mean": 102.385
+          "cost_usd_mean": 0.6566,
+          "findings_per_task": 0.0,
+          "run_id": "effectiveness_20260803T034125Z",
+          "setting_sources": "project,local",
+          "verification_rate": 0.6667,
+          "wall_seconds_mean": 67.6067
         },
         "shadow~judge_crossfile_facts=false": {
           "cost_usd_mean": 0.2941,
@@ -100,5 +108,5 @@
   },
   "comment": "Headline metrics per (tier, category, arm), updated manually at release. Shape: baselines.<tier>.<category>.<arm> = {findings_per_task, verification_rate, duplication_rate, cost_usd_mean, wall_seconds_mean, run_id}.",
   "schema_version": 1,
-  "updated": "2026-06-12"
+  "updated": "2026-08-03"
 }

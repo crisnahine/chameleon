@@ -73,6 +73,24 @@ age individually. Do not mix a pre-change baseline with post-change numbers.
 
 ## Runs
 
+### effectiveness_20260803T034125Z (ci tier, 4.10.0 release re-seed)
+
+12 tasks x (off, shadow) on claude-sonnet-5, 24 cells, 23 ok and 1 error, $19.87.
+The error is a rails convention cell that hit its turn cap; the turn cap exits
+non-zero, so the cell is dropped rather than scored, and `error_max_turns` in
+`run.md` counts it.
+
+This is the run `baselines.json` is seeded from, and it is the FIRST published
+run whose workers ran without user-scope settings (`--setting-sources
+project,local`, see "Spawn environment" above). Its numbers are therefore not
+comparable cell-for-cell with the three runs below, which inherited whatever the
+operator had installed. Every entry it seeded carries `setting_sources`; an entry
+without that field predates the change.
+
+No `--panel`, so there is no blind pairwise vote and no causal preference to
+report. `metrics.json` carries an empty `causal_preference` rather than an
+omitted one, so a reader can tell "not run" from "run and inconclusive".
+
 ### effectiveness_20260615T175635Z (dup tier, causal round 1)
 
 46 duplication tasks x (off, shadow) on sonnet, blind 3-vote judge panel,

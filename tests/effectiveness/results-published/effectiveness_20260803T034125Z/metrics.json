@@ -1,0 +1,126 @@
+{
+  "run_id": "effectiveness_20260803T034125Z",
+  "tier": "ci",
+  "arms": [
+    "off",
+    "shadow"
+  ],
+  "model": "claude-sonnet-5",
+  "toggle": null,
+  "cells_total": 24,
+  "cells_ok": 23,
+  "cells_error": 1,
+  "total_cost_usd": 19.8655,
+  "per_arm": {
+    "off": {
+      "cells": 12,
+      "cost_usd_mean": 0.8318,
+      "wall_seconds_mean": 68.9258
+    },
+    "shadow": {
+      "cells": 11,
+      "cost_usd_mean": 0.7703,
+      "wall_seconds_mean": 78.8391
+    }
+  },
+  "per_category_arm": {
+    "convention|off": {
+      "cells": 3,
+      "model": "claude-sonnet-5",
+      "findings_per_task": 0.0,
+      "conv_violations_mean": 0.0,
+      "broken_exports_mean": null,
+      "callers_stale_mean": null,
+      "verification_rate": 1.0,
+      "duplication_rate": null,
+      "cost_usd_mean": 1.1153,
+      "wall_seconds_mean": 112.0
+    },
+    "convention|shadow": {
+      "cells": 2,
+      "model": "claude-sonnet-5",
+      "findings_per_task": 0.0,
+      "conv_violations_mean": 0.0,
+      "broken_exports_mean": null,
+      "callers_stale_mean": null,
+      "verification_rate": 1.0,
+      "duplication_rate": null,
+      "cost_usd_mean": 0.9023,
+      "wall_seconds_mean": 105.585
+    },
+    "crossfile|off": {
+      "cells": 3,
+      "model": "claude-sonnet-5",
+      "findings_per_task": 0.6667,
+      "conv_violations_mean": 0.6667,
+      "broken_exports_mean": 0.0,
+      "callers_stale_mean": 0.0,
+      "verification_rate": 1.0,
+      "duplication_rate": null,
+      "cost_usd_mean": 0.8893,
+      "wall_seconds_mean": 71.7067
+    },
+    "crossfile|shadow": {
+      "cells": 3,
+      "model": "claude-sonnet-5",
+      "findings_per_task": 0.6667,
+      "conv_violations_mean": 0.6667,
+      "broken_exports_mean": 0.0,
+      "callers_stale_mean": 0.0,
+      "verification_rate": 1.0,
+      "duplication_rate": null,
+      "cost_usd_mean": 0.8216,
+      "wall_seconds_mean": 76.5067
+    },
+    "duplication|off": {
+      "cells": 3,
+      "model": "claude-sonnet-5",
+      "findings_per_task": 0.0,
+      "conv_violations_mean": 0.0,
+      "broken_exports_mean": null,
+      "callers_stale_mean": null,
+      "verification_rate": 0.3333,
+      "duplication_rate": 0.0,
+      "cost_usd_mean": 0.7152,
+      "wall_seconds_mean": 54.6133
+    },
+    "duplication|shadow": {
+      "cells": 3,
+      "model": "claude-sonnet-5",
+      "findings_per_task": 0.0,
+      "conv_violations_mean": 0.0,
+      "broken_exports_mean": null,
+      "callers_stale_mean": null,
+      "verification_rate": 0.6667,
+      "duplication_rate": 0.0,
+      "cost_usd_mean": 0.7446,
+      "wall_seconds_mean": 74.5733
+    },
+    "verification|off": {
+      "cells": 3,
+      "model": "claude-sonnet-5",
+      "findings_per_task": 0.0,
+      "conv_violations_mean": 0.0,
+      "broken_exports_mean": null,
+      "callers_stale_mean": null,
+      "verification_rate": 0.6667,
+      "duplication_rate": null,
+      "cost_usd_mean": 0.6075,
+      "wall_seconds_mean": 37.3833
+    },
+    "verification|shadow": {
+      "cells": 3,
+      "model": "claude-sonnet-5",
+      "findings_per_task": 0.0,
+      "conv_violations_mean": 0.0,
+      "broken_exports_mean": null,
+      "callers_stale_mean": null,
+      "verification_rate": 0.6667,
+      "duplication_rate": null,
+      "cost_usd_mean": 0.6566,
+      "wall_seconds_mean": 67.6067
+    }
+  },
+  "causal_preference": [],
+  "setting_sources": "project,local"
+}

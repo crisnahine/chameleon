@@ -5,8 +5,8 @@ paths:
 
 # Effectiveness eval (A/B: does chameleon improve agent output?)
 
-Spawns real `claude -p` sessions — local only, never CI. Tier ci (~$3-5) runs
-8 tasks on committed fixtures; tier full (~$25-45) needs the
+Spawns real `claude -p` sessions — local only, never CI. Tier ci (~$20, measured over 24 cells on claude-sonnet-5) runs
+12 tasks on committed fixtures; tier full (~$25-45) needs the
 `CHAMELEON_TEST_*_REPO` env vars and asks before spending.
 
 ```bash
@@ -16,7 +16,7 @@ PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.effectiveness.runner --dry-run
 
 # Tier-ci A/B (off vs shadow), budget-capped
 PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.effectiveness.runner \
-  --tier ci --arms off,shadow --max-budget-usd 8
+  --tier ci --arms off,shadow --max-budget-usd 25
 
 # Feature-level toggle experiment (paired arm from shadow)
 PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.effectiveness.runner \

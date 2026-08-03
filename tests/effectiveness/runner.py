@@ -4,7 +4,7 @@ Usage:
   PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.effectiveness.runner --list
   PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.effectiveness.runner --dry-run
   PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.effectiveness.runner \
-      --tier ci --arms off,shadow --max-budget-usd 8
+      --tier ci --arms off,shadow --max-budget-usd 25
 
 Exit codes: 0 = ran (scores may still be bad — advisory by design),
 1 = harness-level failure (budget, preflight, no cells ran), 2 = usage error.
@@ -52,9 +52,14 @@ from tests.journey.harness.claude import abnormal_termination, spawn_claude  # n
 from tests.journey.harness.context import build_context  # noqa: E402
 from tests.journey.harness.fixtures import GitVersionError, setup_fixture  # noqa: E402
 
-# Per-session cost ceiling used for budget projection (tier-ci tasks cap at
-# 12 turns on sonnet; observed journey acts of similar size run $0.15-0.30).
-EST_CELL_USD = 0.30
+# Per-session cost ceiling used for budget projection. Re-derived from a
+# recorded run rather than estimated: effectiveness_20260803T034125Z spent
+# $19.87 over 24 tier-ci cells on claude-sonnet-5, a mean of $0.83. The
+# projection only gates the run at startup, so an estimate under the real cost
+# lets a run start and then stop partway when the cap is reached, which leaves
+# the tail of the cell list unmeasured -- and the tail is one whole fixture
+# language, not a random sample.
+EST_CELL_USD = 0.85
 EST_VOTE_USD = 0.05
 
 FIXTURE_SEEDS = {"ts": "eff_ts", "rails": "eff_rails", "py": "eff_py"}
@@ -111,7 +116,12 @@ def build_parser() -> argparse.ArgumentParser:
         "Arms not listed fall back to --model.",
     )
     p.add_argument("--panel", action="store_true", help="Run the blind pairwise judge panel")
-    p.add_argument("--max-budget-usd", type=float, default=8.0)
+    # Has to clear a whole tier-ci run (24 cells x EST_CELL_USD = $20.40) or the
+    # default refuses every full run. A cap under the projection is not a
+    # cheaper run, it is a run that stops partway through an ordered cell list,
+    # so the cells it never reaches are one fixture language rather than a
+    # random sample.
+    p.add_argument("--max-budget-usd", type=float, default=25.0)
     p.add_argument(
         "--results-dir",
         default=str(_REPO_ROOT / "tests" / "effectiveness" / "results"),
@@ -523,20 +533,24 @@ def _run_one_cell(args, ctx, pack, fixture_repo, task, arm, rep) -> dict:
             "stop_reason": getattr(session, "stop_reason", ""),
             **result_meta,
         }
-        # Read the worktree before judging the session, for two reasons: an
-        # error cell keeps its worktree for forensics, so it needs the patch
-        # written beside it or there is nothing to inspect; and a cell that
-        # already produced changed files carries a scoreable result, which is
-        # what decides whether an unclean end state cost anything.
+        # Read the worktree before judging the session: an error cell keeps its
+        # worktree for forensics, so the patch has to be written beside it or
+        # there is nothing to inspect when someone goes looking.
         changed = _changed_files(dest, baseline_sha)
         diff = _session_diff(dest, baseline_sha)
         (ctx.run_dir / "diffs" / f"{cell_id}.patch").write_text(diff, encoding="utf-8")
-        # Wider than the return code, which a session that stopped mid-task
-        # still reports as 0 alongside subtype "success" -- scoring that cell
-        # would measure a diff missing the edit the session never made. A cell
-        # that changed files and then ran out of turns is scored on what it
-        # wrote: dropping it would shrink the measured population, and turn-cap
-        # rates differ per arm, so the loss would not fall evenly across them.
+        # Wider than the return code alone, which a session that stopped on a
+        # deferred tool still reports as 0 alongside subtype "success" --
+        # scoring that cell would measure a diff missing the edit the session
+        # never made.
+        #
+        # `work_complete` only reaches end states that leave a ZERO exit. The
+        # turn cap is not one of them: it exits 1 with subtype
+        # "error_max_turns", so the return-code branch drops a turn-capped cell
+        # whether or not it wrote anything, exactly as it did before this
+        # argument existed. That is worth knowing when reading the numbers,
+        # because turn-cap rates differ per arm and the cells lost to them do
+        # not fall evenly across arms.
         abnormal = abnormal_termination(session, work_complete=bool(changed))
         if abnormal:
             reason = f"session ended abnormally: {abnormal}"

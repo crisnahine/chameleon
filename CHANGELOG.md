@@ -78,13 +78,15 @@ whether the release gate can be believed.
   Before this, a phase whose worker died before reaching it emitted no events and
   landed as SKIP, and SKIP alone never failed a run.
 - **Not every unclean end state is a lost result.** `abnormal_termination()`
-  takes `work_complete`: an act that reported PASS on every phase it declared, or
-  an eval cell that produced a scoreable diff, already holds what it came for, so
-  exhausting the turn cap on the way out is a budget fact rather than a missing
-  answer. Failing those would also bias the eval, because turn-cap rates differ
-  per arm and the dropped cells would not fall evenly across them. A deferred
-  tool is fatal either way: the state the session saw is not the state it asked
-  for.
+  takes `work_complete`: an act that reported PASS on every phase it declared
+  already holds what it came for, so exhausting the turn cap on the way out is a
+  budget fact rather than a missing answer. A deferred tool is fatal either way,
+  because the state the session saw is not the state it asked for. The flag
+  reaches only end states that leave a zero exit, which the turn cap does not:
+  it exits 1 with subtype `error_max_turns`, so an eval cell that hits it is
+  dropped on the return code as it always was. Worth knowing when reading eval
+  numbers, since turn-cap rates differ per arm and the cells lost to them do not
+  fall evenly across arms.
 - **The end state was read off the wrong result frame.** One `claude -p` process
   emits several when a background task finishes after the main run has ended its
   turn: the CLI wakes the same session, and that segment emits its own frame
